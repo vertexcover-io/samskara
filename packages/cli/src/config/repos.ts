@@ -1,5 +1,6 @@
 // AI-generated. See PROMPT.md for the prompts and model used.
 
+import { detectRepo, findGitRoot } from "@claude-sessions/core";
 import { atomicWriteJson, readJsonOr, withFileLock } from "./atomic.js";
 import { reposPath } from "./paths.js";
 
@@ -84,3 +85,78 @@ export const findRepoByLocalPath = (
   }
   return null;
 };
+
+export interface ResolvedRepo {
+  canonical_url: string;
+  entry: RepoEntry;
+  /**
+   * The canonical URL the cwd actually resolves to via git. Usually equals
+   * `canonical_url`, but for a same-remote clone under a different path it is
+   * what `detectRepo` reported — the authoritative value to ship on ingest.
+   */
+  resolved_url: string;
+}
+
+// A session's cwd is wherever Claude was launched — often a subdirectory, a
+// git worktree, or a renamed/temp clone, none of which equal the registered
+// git-toplevel `local_path`. Matching by exact path silently drops those
+// sessions. detectRepo() shells out to git, so memoize per cwd for the life of
+// the process (the watcher re-checks the same handful of cwds every tick).
+const cwdRepoCache = new Map<string, ResolvedRepo | null>();
+
+/**
+ * Resolve a session cwd to the enabled repo it belongs to, by git identity
+ * rather than path equality. Fast path first (exact match, then a pure-fs
+ * `findGitRoot` toplevel match — no shell); only then fall back to
+ * `detectRepo(cwd)` and match on canonical URL, which also catches same-remote
+ * clones under a different path. Scoped to ENABLED repos so we never capture a
+ * repo the user didn't opt into. Returns null when the cwd maps to no enabled
+ * repo.
+ */
+export const resolveEnabledRepoForCwd = (cwd: string): ResolvedRepo | null => {
+  const cached = cwdRepoCache.get(cwd);
+  if (cached !== undefined) return cached;
+
+  const repos = listRepos().filter((r) => r.entry.enabled);
+
+  // Fast path 1: exact local_path match (no filesystem/git work).
+  for (const r of repos) {
+    if (r.entry.local_path === cwd) {
+      const hit: ResolvedRepo = { ...r, resolved_url: r.canonical_url };
+      cwdRepoCache.set(cwd, hit);
+      return hit;
+    }
+  }
+
+  // Fast path 2: cwd is inside an enabled repo — its git toplevel equals a
+  // registered local_path. Pure filesystem walk, no shell.
+  const top = findGitRoot(cwd);
+  if (top) {
+    for (const r of repos) {
+      if (r.entry.local_path === top) {
+        const hit: ResolvedRepo = { ...r, resolved_url: r.canonical_url };
+        cwdRepoCache.set(cwd, hit);
+        return hit;
+      }
+    }
+  }
+
+  // Slow path: resolve the cwd's git remote and match on canonical URL. Catches
+  // a same-remote clone/worktree living under an unregistered path.
+  const identity = detectRepo(cwd);
+  if (identity) {
+    for (const r of repos) {
+      if (r.canonical_url === identity.canonical_url) {
+        const hit: ResolvedRepo = { ...r, resolved_url: identity.canonical_url };
+        cwdRepoCache.set(cwd, hit);
+        return hit;
+      }
+    }
+  }
+
+  cwdRepoCache.set(cwd, null);
+  return null;
+};
+
+/** Test-only: clear the cwd→repo memo so config changes take effect. */
+export const _clearCwdRepoCache = (): void => cwdRepoCache.clear();

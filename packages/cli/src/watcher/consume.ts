@@ -2,8 +2,8 @@
 
 import { existsSync, statSync } from "node:fs";
 import { streamEvents } from "@claude-sessions/adapter-claude";
-import { type CanonicalEvent, redact } from "@claude-sessions/core";
-import { listRepos } from "../config/repos.js";
+import { type CanonicalEvent, detectRepo, redact } from "@claude-sessions/core";
+import { type ResolvedRepo, resolveEnabledRepoForCwd } from "../config/repos.js";
 import { getFileState, setFileState } from "../config/state.js";
 import { readSessionMeta } from "../discover.js";
 import { listCommitsInWindow } from "../git-commits.js";
@@ -207,14 +207,33 @@ const buildSessionPayload = (
   };
 };
 
-const repoForCwd = (
-  cwd: string,
-): { canonical_url: string; entry: { local_path: string } } | null => {
-  // Match by exact local_path; the watcher only enables canonical paths.
-  for (const r of listRepos()) {
-    if (r.entry.enabled && r.entry.local_path === cwd) return r;
-  }
-  return null;
+/**
+ * Resolve the repo a session cwd belongs to, by git identity (see
+ * `resolveEnabledRepoForCwd`) rather than exact path equality — a session's
+ * cwd is often a subdirectory, worktree, or renamed clone of the enabled repo.
+ *
+ * When `forceEnabled` is set (the `isPathEnabled` override / `sync --verify`
+ * repair path), a cwd that maps to no *enabled* repo still resolves via
+ * `detectRepo` so the events can be ingested with a correct canonical URL.
+ */
+const repoForCwd = (cwd: string, forceEnabled: boolean): ResolvedRepo | null => {
+  const enabled = resolveEnabledRepoForCwd(cwd);
+  if (enabled) return enabled;
+  if (!forceEnabled) return null;
+  // Forced ingest (explicit repair): derive identity straight from git so we
+  // still ship a real canonical_url + local_path for a repo that isn't enabled.
+  const identity = detectRepo(cwd);
+  if (!identity) return null;
+  return {
+    canonical_url: identity.canonical_url,
+    entry: {
+      local_path: identity.toplevel,
+      enabled: false,
+      manual_override_url: null,
+      enabled_at: "",
+    },
+    resolved_url: identity.canonical_url,
+  };
 };
 
 /**
@@ -247,9 +266,10 @@ export const consumeFile = async (
   const meta = readSessionMeta(path);
   if (!meta.cwd) return { uploaded: 0, skipped: true, reason: "no-cwd" };
 
-  const repo = (opts.isPathEnabled ?? ((cwd) => repoForCwd(cwd) !== null))(meta.cwd)
-    ? repoForCwd(meta.cwd)
-    : null;
+  // `isPathEnabled` lets callers force ingest past the enable gate (tests, and
+  // `sync --verify`'s explicit repair). Default gating is git-identity based.
+  const forced = opts.isPathEnabled ? opts.isPathEnabled(meta.cwd) : false;
+  const repo = repoForCwd(meta.cwd, forced);
   if (!repo) return { uploaded: 0, skipped: true, reason: "not-enabled" };
 
   // REQ-040 + EDGE-018/EDGE-019: a sidecar marker withdraws the session
@@ -310,7 +330,7 @@ export const consumeFile = async (
     sessionId,
     meta.cwd,
     collected,
-    repo.canonical_url,
+    repo.resolved_url,
     subagent?.mainSessionId,
   );
 
