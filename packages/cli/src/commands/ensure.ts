@@ -1,9 +1,13 @@
 // AI-generated. See PROMPT.md for the prompts and model used.
 
-import { fileURLToPath } from "node:url";
 import { detectRepo } from "@claude-sessions/core";
 import { readCredentials } from "../config/credentials.js";
-import { isWatcherAlive, startWatcherDaemon, watchLogPath } from "../config/daemon.js";
+import {
+  isWatcherAlive,
+  resolveCliEntry,
+  startWatcherDaemon,
+  watchLogPath,
+} from "../config/daemon.js";
 import { getRepo } from "../config/repos.js";
 import { ensureAuthenticated } from "./_pair.js";
 
@@ -25,8 +29,6 @@ export interface EnsureOptions {
   stdout?: NodeJS.WritableStream;
   stderr?: NodeJS.WritableStream;
 }
-
-const resolveCliEntry = (): string => fileURLToPath(new URL("../main.js", import.meta.url));
 
 /** Emit a SessionStart hook payload that injects guidance into the session. */
 const emitContext = (stdout: NodeJS.WritableStream, lines: string[]): void => {
@@ -81,19 +83,30 @@ export const ensureCommand = async (opts: EnsureOptions = {}): Promise<number> =
   // autostart path: every Claude Code launch revives the watcher if it died.
   const watcherAlive = opts.isWatcherAliveImpl ?? isWatcherAlive;
   const startDaemon = opts.startWatcherDaemonImpl ?? startWatcherDaemon;
+  const watcherContext: string[] = [];
   if (!opts.skipDaemon && !watcherAlive()) {
     try {
       const pid = startDaemon({ cliEntry: opts.cliEntry ?? resolveCliEntry() });
       stderr.write(`claude-sessions: started watcher (pid ${pid}). logs: ${watchLogPath()}\n`);
+      // Verify the daemon actually came up — a spawn that returns a pid but
+      // dies immediately would otherwise leave capture silently off. Surface
+      // it to the agent so the user is told, rather than losing events quietly.
+      if (!watcherAlive()) {
+        watcherContext.push(
+          `Claude-sessions capture may be OFF: the event watcher was started but is not running. Tell the user to check ${watchLogPath()} and restart it with \`claude-sessions watch\`.`,
+        );
+      }
     } catch (err) {
-      stderr.write(
-        `claude-sessions: failed to start watcher: ${err instanceof Error ? err.message : String(err)}\n`,
+      const msg = err instanceof Error ? err.message : String(err);
+      stderr.write(`claude-sessions: failed to start watcher: ${msg}\n`);
+      watcherContext.push(
+        `Claude-sessions capture is OFF: the event watcher failed to start (${msg}). This session's logs will not be saved until it is running.`,
       );
     }
   }
 
   // 3. Is the current repo enabled for capture?
-  const context: string[] = [];
+  const context: string[] = [...watcherContext];
   const id = detectRepo(cwd);
   if (id) {
     const entry = getRepo(id.canonical_url);

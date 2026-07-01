@@ -99,10 +99,17 @@ export const startMockServer = async (): Promise<MockServerHandle> => {
         res.end(JSON.stringify(out.body ?? {}));
         return;
       }
-      // Default: 200 with a generic ingest-style body.
+      // Default: 200 echoing the real server's contract — account for every
+      // event we received (all counted as freshly accepted). The client's
+      // offset-verification (accepted + duplicates === sent) depends on this;
+      // a mock that always reported 0 would spuriously fail verification.
+      const sentEvents =
+        body && typeof body === "object" && Array.isArray((body as { events?: unknown[] }).events)
+          ? (body as { events: unknown[] }).events.length
+          : 0;
       res.statusCode = 200;
       res.setHeader("content-type", "application/json");
-      res.end(JSON.stringify({ ok: true, accepted_events: 0, skipped_duplicates: 0 }));
+      res.end(JSON.stringify({ ok: true, accepted_events: sentEvents, skipped_duplicates: 0 }));
     });
   });
 

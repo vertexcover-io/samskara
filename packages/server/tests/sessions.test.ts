@@ -1351,3 +1351,56 @@ describe("GET /api/repos/:canonical/facets (repo-scoped filters)", () => {
     expect(json.sessions.map((s) => s.id).sort()).toEqual(["mu-alice", "mu-bob"]);
   });
 });
+
+describe("GET /api/sessions/:id/event-count", () => {
+  const insertEvents = async (sessionId: string, count: number): Promise<void> => {
+    await db.db.insert(events).values(
+      Array.from({ length: count }, (_, i) => ({
+        sessionId,
+        eventUuid: `${sessionId}-ev-${i}`,
+        parentUuid: null,
+        ts: new Date(`2026-05-01T10:0${i}:00.000Z`),
+        type: "user_msg",
+        payload: { content_md: `event ${i}` },
+      })),
+    );
+  };
+
+  it("returns the exact stored event count", async () => {
+    const seed = await seedUser(db.db, env.JWT_SECRET, {
+      githubLogin: "count-alice",
+      repoUrl: "github.com/example/count",
+    });
+    const sessionId = "count-session-1";
+    await insertSession(sessionId, seed.user.id, seed.repoId);
+    await insertEvents(sessionId, 3);
+
+    const res = await get(`/api/sessions/${sessionId}/event-count`, seed.token);
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { count: number }).toEqual({ count: 3 });
+  });
+
+  it("404s for an unknown session", async () => {
+    const seed = await seedUser(db.db, env.JWT_SECRET, {
+      githubLogin: "count-bob",
+      repoUrl: "github.com/example/count2",
+    });
+    const res = await get("/api/sessions/does-not-exist/event-count", seed.token);
+    expect(res.status).toBe(404);
+  });
+
+  it("masks a private session's count as 0", async () => {
+    const seed = await seedUser(db.db, env.JWT_SECRET, {
+      githubLogin: "count-carol",
+      repoUrl: "github.com/example/count3",
+    });
+    const sessionId = "count-session-private";
+    await insertSession(sessionId, seed.user.id, seed.repoId);
+    await insertEvents(sessionId, 5);
+    await db.db.update(sessions).set({ isPrivate: true }).where(eq(sessions.id, sessionId));
+
+    const res = await get(`/api/sessions/${sessionId}/event-count`, seed.token);
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { count: number }).toEqual({ count: 0 });
+  });
+});

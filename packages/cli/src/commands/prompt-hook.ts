@@ -1,5 +1,6 @@
 // AI-generated. See PROMPT.md for the prompts and model used.
 
+import { reviveWatcher } from "../config/daemon.js";
 import { HttpError, type UploadClient } from "../upload/client.js";
 
 /**
@@ -24,6 +25,8 @@ export interface PromptHookOptions {
   client: UploadClient;
   stdin?: NodeJS.ReadableStream;
   stdout?: NodeJS.WritableStream;
+  /** Inject the watcher-revive (tests). Defaults to `reviveWatcher`. */
+  reviveWatcherImpl?: () => number | null;
 }
 
 interface PromptHookInput {
@@ -52,6 +55,14 @@ const readStdin = async (stdin: NodeJS.ReadableStream): Promise<string> => {
 export const promptHookCommand = async (opts: PromptHookOptions): Promise<number> => {
   const stdin = opts.stdin ?? process.stdin;
   const stdout = opts.stdout ?? process.stdout;
+
+  // Revive the watcher if it died — every hook boundary is a chance to recover,
+  // not just SessionStart. Fail-open: a spawn failure must never block the turn.
+  try {
+    (opts.reviveWatcherImpl ?? reviveWatcher)();
+  } catch {
+    // ignore — capture reliability must not compromise the user's turn.
+  }
 
   let input: PromptHookInput;
   try {

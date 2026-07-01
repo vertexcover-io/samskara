@@ -22,6 +22,7 @@ const clientWith = (getSession: () => Promise<SessionDetail>): UploadClient =>
 const run = async (
   input: unknown,
   getSession: () => Promise<SessionDetail>,
+  reviveWatcherImpl: () => number | null = () => 1234,
 ): Promise<{ code: number; out: string }> => {
   const out = captureStdout();
   const raw = typeof input === "string" ? input : JSON.stringify(input);
@@ -29,6 +30,8 @@ const run = async (
     client: clientWith(getSession),
     stdin: Readable.from([raw]),
     stdout: out.stream,
+    // Stub the daemon revive so the hook test never spawns a real watcher.
+    reviveWatcherImpl,
   });
   return { code, out: out.get() };
 };
@@ -103,5 +106,29 @@ describe("promptHookCommand", () => {
     const { code, out } = await run("not json {{{", async () => detail(null));
     expect(code).toBe(0);
     expect(isInject(out)).toBe(false);
+  });
+
+  it("revives the watcher on entry (recovery at every hook boundary)", async () => {
+    let revived = 0;
+    await run(
+      { session_id: "sess-1" },
+      async () => detail(null),
+      () => {
+        revived++;
+        return 1234;
+      },
+    );
+    expect(revived).toBe(1);
+  });
+
+  it("does not throw when the watcher revive fails", async () => {
+    const { code } = await run(
+      { session_id: "sess-1" },
+      async () => detail(null),
+      () => {
+        throw new Error("spawn failed");
+      },
+    );
+    expect(code).toBe(0);
   });
 });

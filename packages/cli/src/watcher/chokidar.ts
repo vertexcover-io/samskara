@@ -193,10 +193,16 @@ export class JsonlWatcher {
     const next = prev
       .catch(() => undefined)
       .then(async () => {
+        const log = this.opts.logger ?? ((m) => console.error(m));
         try {
-          await consumeFile(path, this.opts.client);
+          const result = await consumeFile(path, this.opts.client);
+          // Log the happy path too: a silent success is indistinguishable from
+          // "never ran" in watch.log, which is exactly how event-loss went
+          // unnoticed. One line per real upload makes a gap visible evidence.
+          if (!result.skipped && result.uploaded > 0) {
+            log(`uploaded ${result.uploaded} event(s) for ${basename(path)}`);
+          }
         } catch (err) {
-          const log = this.opts.logger ?? ((m) => console.error(m));
           if (err instanceof HttpError) {
             log(`upload failed for ${path}: ${err.message}`);
           } else {

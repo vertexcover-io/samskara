@@ -165,6 +165,140 @@ describe("retry + offset semantics (REQ-045)", () => {
   });
 });
 
+describe("ingest verification (false-2xx guard)", () => {
+  it("a 2xx under-count throws and leaves the offset put; the next tick re-reads and succeeds", async () => {
+    const repo = makeTempGitRepo("git@github.com:fixture/verify.git");
+    try {
+      const sid = "session-verify-1";
+      const file = createSessionFile(fixture.projectsRoot, repo.path, sid, [
+        buildEvent({ uuid: "v1", sessionId: sid, cwd: repo.path }),
+        buildEvent({ uuid: "v2", sessionId: sid, cwd: repo.path, type: "assistant" }),
+      ]);
+      await enableCommand({ path: repo.path, client: buildClient(), skipBackfill: true });
+      expect(getFileState(file.path)).toBe(null);
+
+      // First consume: 200 but the server only accounts for 1 of the 2 events
+      // sent (a transient partial-commit / deploy-mid-request). This must throw
+      // and NOT advance the offset — exactly the false-2xx that stranded events.
+      server.enqueue("/api/ingest", 200, {
+        ok: true,
+        accepted_events: 1,
+        skipped_duplicates: 0,
+      });
+      const client = buildClient();
+      await expect(consumeFile(file.path, client)).rejects.toThrow(/verification failed/);
+      expect(getFileState(file.path)).toBe(null);
+
+      // Next watcher tick re-reads from the un-advanced offset; the default 200
+      // now honestly echoes 2 accepted, so the offset advances and dedupe holds.
+      await consumeFile(file.path, client);
+      const state = getFileState(file.path);
+      expect(state?.byte_offset).toBe(statSync(file.path).size);
+      expect(ingestCalls().length).toBe(2);
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it("a persistent under-count with no retries throws and leaves the offset untouched", async () => {
+    const repo = makeTempGitRepo("git@github.com:fixture/verify2.git");
+    try {
+      const sid = "session-verify-2";
+      const file = createSessionFile(fixture.projectsRoot, repo.path, sid, [
+        buildEvent({ uuid: "w1", sessionId: sid, cwd: repo.path }),
+        buildEvent({ uuid: "w2", sessionId: sid, cwd: repo.path, type: "assistant" }),
+      ]);
+      await enableCommand({ path: repo.path, client: buildClient(), skipBackfill: true });
+      expect(getFileState(file.path)).toBe(null);
+
+      server.setHandler("/api/ingest", () => ({
+        status: 200,
+        body: { ok: true, accepted_events: 0, skipped_duplicates: 0 },
+      }));
+      const noRetry = new UploadClient({
+        serverUrl: server.url,
+        token: "test-token",
+        retryDelaysMs: [],
+      });
+      let threw = false;
+      try {
+        await consumeFile(file.path, noRetry);
+      } catch (err) {
+        threw = true;
+        expect((err as Error).name).toBe("IngestVerificationError");
+      }
+      expect(threw).toBe(true);
+      expect(getFileState(file.path)).toBe(null);
+    } finally {
+      repo.cleanup();
+    }
+  });
+});
+
+describe("sync --verify reconciliation", () => {
+  it("re-pushes a session the server is missing events for, and no-ops when counts match", async () => {
+    const repo = makeTempGitRepo("git@github.com:fixture/reconcile.git");
+    try {
+      const sid = "session-reconcile-1";
+      createSessionFile(fixture.projectsRoot, repo.path, sid, [
+        buildEvent({ uuid: "rc1", sessionId: sid, cwd: repo.path }),
+        buildEvent({ uuid: "rc2", sessionId: sid, cwd: repo.path, type: "assistant" }),
+      ]);
+      // Enable without backfilling so the server starts with zero events —
+      // exactly the "title present, transcript empty" broken state.
+      await enableCommand({ path: repo.path, client: buildClient(), skipBackfill: true });
+
+      // Server reports 0 events for this session; local has 2 → must re-push.
+      server.setMethodHandler("GET", `/api/sessions/${sid}/event-count`, () => ({
+        status: 200,
+        body: { count: 0 },
+      }));
+      await syncCommand({ client: buildClient(), verify: true });
+      const ingests = ingestCalls();
+      expect(ingests.length).toBe(1);
+      expect((ingests[0] as { events: unknown[] }).events.length).toBe(2);
+
+      // Now the server "has" all events; verify again → no new ingest.
+      server.setMethodHandler("GET", `/api/sessions/${sid}/event-count`, () => ({
+        status: 200,
+        body: { count: 2 },
+      }));
+      await syncCommand({ client: buildClient(), verify: true });
+      expect(ingestCalls().length).toBe(1);
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it("falls back to /events when the server lacks the /event-count route (older server)", async () => {
+    const repo = makeTempGitRepo("git@github.com:fixture/reconcile-old.git");
+    try {
+      const sid = "session-reconcile-old";
+      createSessionFile(fixture.projectsRoot, repo.path, sid, [
+        buildEvent({ uuid: "ro1", sessionId: sid, cwd: repo.path }),
+        buildEvent({ uuid: "ro2", sessionId: sid, cwd: repo.path, type: "assistant" }),
+      ]);
+      await enableCommand({ path: repo.path, client: buildClient(), skipBackfill: true });
+
+      // Older server: no /event-count route (404). Fallback reads /events,
+      // which already returns both events → verify must be a no-op, NOT a
+      // spurious re-push (the bug when 404 was conflated with "0 events").
+      server.setMethodHandler("GET", `/api/sessions/${sid}/event-count`, () => ({
+        status: 404,
+        body: { error: "not found" },
+      }));
+      server.setMethodHandler("GET", `/api/sessions/${sid}/events`, () => ({
+        status: 200,
+        body: { events: [{ event_uuid: "ro1" }, { event_uuid: "ro2" }] },
+      }));
+      await syncCommand({ client: buildClient(), verify: true });
+      expect(ingestCalls().length).toBe(0);
+    } finally {
+      repo.cleanup();
+    }
+  });
+});
+
 describe("inode replacement (EDGE-002)", () => {
   it("replacing the JSONL with a different inode re-ingests new content without duplicates", async () => {
     const repo = makeTempGitRepo("git@github.com:fixture/inode.git");

@@ -78,6 +78,25 @@ export interface ConsumeOptions {
   isPathEnabled?: (cwd: string) => boolean;
 }
 
+/**
+ * Thrown when the server returns 2xx for an ingest batch but accounts for
+ * fewer events than we sent (accepted + duplicates < sent). Signals that the
+ * offset must NOT advance — the events did not durably land. Non-fatal: the
+ * watcher's next tick re-reads from the un-advanced offset and retries.
+ */
+export class IngestVerificationError extends Error {
+  constructor(
+    readonly sessionId: string,
+    readonly sent: number,
+    readonly confirmed: number,
+  ) {
+    super(
+      `ingest verification failed for ${sessionId}: sent ${sent} events, server confirmed ${confirmed}`,
+    );
+    this.name = "IngestVerificationError";
+  }
+}
+
 export interface ConsumeResult {
   uploaded: number;
   skipped: boolean;
@@ -314,6 +333,7 @@ export const consumeFile = async (
   // server dedupes on event_uuid so retrying the whole window on a partial
   // failure is safe (offset advances only after every chunk succeeds).
   const CHUNK = 500;
+  let confirmed = 0;
   for (let i = 0; i < fullPayload.events.length; i += CHUNK) {
     const slice = fullPayload.events.slice(i, i + CHUNK);
     const chunkPayload: IngestPayload = {
@@ -321,7 +341,18 @@ export const consumeFile = async (
       events: slice,
       ...(i === 0 && commits ? { commits } : {}),
     };
-    await client.ingest(chunkPayload);
+    const res = await client.ingest(chunkPayload);
+    confirmed += res.accepted_events + res.skipped_duplicates;
+  }
+
+  // The server MUST account for every event we sent — either freshly accepted
+  // or recognized as a duplicate. A 2xx that persisted fewer rows than we sent
+  // (transient DB blip, a deploy mid-request, a partial commit) would otherwise
+  // let us advance the offset over events that never landed, stranding them
+  // forever with no error. Throwing here keeps the offset put; the next tick
+  // re-reads and the server dedupes on event_uuid, so the retry is idempotent.
+  if (confirmed !== fullPayload.events.length) {
+    throw new IngestVerificationError(sessionId, fullPayload.events.length, confirmed);
   }
 
   const lastUuid = collected[collected.length - 1]?.event_uuid ?? null;

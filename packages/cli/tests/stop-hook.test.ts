@@ -61,6 +61,8 @@ const run = async (
     stdout: out.stream,
     readSession: () => fakeSession(50),
     readSettingsImpl: () => settings(),
+    // Stub the daemon revive so the hook test never spawns a real watcher.
+    reviveWatcherImpl: () => 1234,
     readWatermarkImpl: async (): Promise<WatermarkState> => ({
       summary: { status: "ok" } as WatermarkState["summary"],
       fresh: false,
@@ -169,6 +171,21 @@ describe("stopHookCommand", () => {
     expect(code).toBe(0);
     expect(isBlock(out)).toBe(false);
     expect(out.trim()).toBe("");
+  });
+
+  it("revives the watcher even when summaries are disabled (capture is independent)", async () => {
+    let revived = 0;
+    await run(
+      { session_id: "sess-1", transcript_path: transcript, stop_hook_active: false },
+      {
+        readSettingsImpl: () => settings({ summary_enabled: false }),
+        reviveWatcherImpl: () => {
+          revived++;
+          return 1234;
+        },
+      },
+    );
+    expect(revived).toBe(1);
   });
 
   it("omits the learnings clause and anchors when learnings are disabled", async () => {

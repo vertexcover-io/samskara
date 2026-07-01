@@ -348,6 +348,41 @@ export class UploadClient {
   }
 
   /**
+   * Server-side count of stored events for a session. Used by `sync --verify`
+   * to detect sessions whose events never landed (title/summary present,
+   * transcript empty). Returns 0 for an unknown session so a missing row
+   * reconciles as "needs push".
+   *
+   * Prefers the lightweight `GET /:id/event-count`. Against an OLDER server
+   * that lacks that route, a 404 is ambiguous (endpoint-missing vs
+   * session-missing), so we fall back to counting `GET /:id/events` rather than
+   * assuming 0 — otherwise every session would be re-pushed on every run.
+   */
+  async getEventCount(sessionId: string): Promise<number> {
+    const id = encodeURIComponent(sessionId);
+    const res = await this.fetchImpl(`${this.serverUrl}/api/sessions/${id}/event-count`, {
+      method: "GET",
+      headers: { authorization: `Bearer ${this.token}` },
+    });
+    if (res.status === 404) {
+      // Distinguish "no such route" (older server) from "no such session".
+      const evRes = await this.fetchImpl(`${this.serverUrl}/api/sessions/${id}/events`, {
+        method: "GET",
+        headers: { authorization: `Bearer ${this.token}` },
+      });
+      if (evRes.status === 404) return 0;
+      const evText = await evRes.text();
+      if (!evRes.ok) throw new HttpError(evRes.status, evText || evRes.statusText);
+      const evBody = evText ? (JSON.parse(evText) as { events?: unknown[] }) : {};
+      return evBody.events?.length ?? 0;
+    }
+    const text = await res.text();
+    if (!res.ok) throw new HttpError(res.status, text || res.statusText);
+    const body = text ? (JSON.parse(text) as { count?: number }) : {};
+    return body.count ?? 0;
+  }
+
+  /**
    * GET /api/sessions/:id/blob — raw NDJSON bytes used by `fork` to
    * reconstruct a resumable transcript locally.
    */

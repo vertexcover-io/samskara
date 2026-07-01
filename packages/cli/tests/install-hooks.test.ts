@@ -23,27 +23,41 @@ type Settings = {
 const read = (): Settings => JSON.parse(readFileSync(settingsPath, "utf8"));
 const commands = (s: Settings, event: string): (string | undefined)[] =>
   (s.hooks?.[event] ?? []).flatMap((m) => (m.hooks ?? []).map((h) => h.command));
+// Managed hooks carry a stable `claude-sessions:<subcommand>` marker regardless
+// of the (machine-specific) absolute path they invoke.
+const hasManaged = (s: Settings, event: string, subcommand: string): boolean =>
+  commands(s, event).some((c) => (c ?? "").includes(`claude-sessions:${subcommand}`));
+const cliEntry = "/abs/path/to/main.js";
+const install = () => installHooksCommand({ settingsPath, cliEntry, stdout: sink, stderr: sink });
 
 describe("install-hooks", () => {
   it("creates settings.json with the SessionStart, UserPromptSubmit and Stop hooks", () => {
-    const code = installHooksCommand({ settingsPath, stdout: sink, stderr: sink });
+    const code = install();
     expect(code).toBe(0);
-    expect(commands(read(), "SessionStart")).toContain("claude-sessions ensure");
-    expect(commands(read(), "UserPromptSubmit")).toContain("claude-sessions prompt-hook");
-    expect(commands(read(), "Stop")).toContain("claude-sessions stop-hook");
+    const s = read();
+    expect(hasManaged(s, "SessionStart", "ensure")).toBe(true);
+    expect(hasManaged(s, "UserPromptSubmit", "prompt-hook")).toBe(true);
+    expect(hasManaged(s, "Stop", "stop-hook")).toBe(true);
+    // Commands are absolute (no PATH dependency) and reference the CLI entry.
+    expect(commands(s, "SessionStart")[0]).toContain(cliEntry);
+    expect(commands(s, "SessionStart")[0]).not.toMatch(/^claude-sessions /);
   });
 
   it("is idempotent — no duplicate entries on re-run", () => {
-    installHooksCommand({ settingsPath, stdout: sink, stderr: sink });
-    installHooksCommand({ settingsPath, stdout: sink, stderr: sink });
+    install();
+    install();
     const s = read();
-    expect(commands(s, "SessionStart").filter((c) => c === "claude-sessions ensure")).toHaveLength(
-      1,
-    );
     expect(
-      commands(s, "UserPromptSubmit").filter((c) => c === "claude-sessions prompt-hook"),
+      commands(s, "SessionStart").filter((c) => (c ?? "").includes("claude-sessions:ensure")),
     ).toHaveLength(1);
-    expect(commands(s, "Stop").filter((c) => c === "claude-sessions stop-hook")).toHaveLength(1);
+    expect(
+      commands(s, "UserPromptSubmit").filter((c) =>
+        (c ?? "").includes("claude-sessions:prompt-hook"),
+      ),
+    ).toHaveLength(1);
+    expect(
+      commands(s, "Stop").filter((c) => (c ?? "").includes("claude-sessions:stop-hook")),
+    ).toHaveLength(1);
   });
 
   it("preserves unrelated keys and a pre-existing Stop hook", () => {
@@ -54,13 +68,13 @@ describe("install-hooks", () => {
         hooks: { Stop: [{ hooks: [{ type: "command", command: "echo hi" }] }] },
       }),
     );
-    installHooksCommand({ settingsPath, stdout: sink, stderr: sink });
+    install();
     const s = read();
     expect(s.model).toBe("opus");
     // Our Stop hook is appended alongside the user's existing one.
     expect(commands(s, "Stop")).toContain("echo hi");
-    expect(commands(s, "Stop")).toContain("claude-sessions stop-hook");
-    expect(commands(s, "SessionStart")).toContain("claude-sessions ensure");
+    expect(hasManaged(s, "Stop", "stop-hook")).toBe(true);
+    expect(hasManaged(s, "SessionStart", "ensure")).toBe(true);
   });
 
   it("uninstall removes only our entries, keeping others", () => {
@@ -73,18 +87,18 @@ describe("install-hooks", () => {
         },
       }),
     );
-    installHooksCommand({ settingsPath, stdout: sink, stderr: sink });
+    install();
     uninstallHooksCommand({ settingsPath, stdout: sink, stderr: sink });
     const s = read();
     expect(commands(s, "SessionStart")).toContain("other");
-    expect(commands(s, "SessionStart")).not.toContain("claude-sessions ensure");
+    expect(hasManaged(s, "SessionStart", "ensure")).toBe(false);
     expect(commands(s, "Stop")).toContain("echo hi");
-    expect(commands(s, "Stop")).not.toContain("claude-sessions stop-hook");
-    expect(commands(s, "UserPromptSubmit")).not.toContain("claude-sessions prompt-hook");
+    expect(hasManaged(s, "Stop", "stop-hook")).toBe(false);
+    expect(hasManaged(s, "UserPromptSubmit", "prompt-hook")).toBe(false);
   });
 
   it("uninstall drops the hooks key entirely when nothing else remains", () => {
-    installHooksCommand({ settingsPath, stdout: sink, stderr: sink });
+    install();
     uninstallHooksCommand({ settingsPath, stdout: sink, stderr: sink });
     expect(read().hooks).toBeUndefined();
   });

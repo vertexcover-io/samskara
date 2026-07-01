@@ -131,9 +131,17 @@ const main = async (): Promise<void> => {
     .command("sync")
     .description("One-shot catch-up: ingest any pending events for watched repos.")
     .option("--full-scan", "Re-read every JSONL from byte 0 (server dedupes by event_uuid)")
-    .action(async (opts: { fullScan?: boolean }) => {
+    .option(
+      "--verify",
+      "Reconcile local vs server event counts and re-push any missing (incl. disabled repos)",
+    )
+    .action(async (opts: { fullScan?: boolean; verify?: boolean }) => {
       const client = buildClient();
-      const code = await syncCommand({ client, fullScan: opts.fullScan === true });
+      const code = await syncCommand({
+        client,
+        fullScan: opts.fullScan === true,
+        verify: opts.verify === true,
+      });
       process.exit(code);
     });
 

@@ -1,8 +1,12 @@
 // AI-generated. See PROMPT.md for the prompts and model used.
 
-import { fileURLToPath } from "node:url";
 import { detectRepo } from "@claude-sessions/core";
-import { isWatcherAlive, startWatcherDaemon, stopWatcherDaemon } from "../config/daemon.js";
+import {
+  isWatcherAlive,
+  resolveCliEntry,
+  startWatcherDaemon,
+  stopWatcherDaemon,
+} from "../config/daemon.js";
 import { upsertRepo } from "../config/repos.js";
 import { findSessionsForRepo } from "../discover.js";
 import type { UploadClient } from "../upload/client.js";
@@ -23,8 +27,6 @@ export interface EnableOptions {
    */
   refreshDaemon?: () => void;
 }
-
-const resolveCliEntry = (): string => fileURLToPath(new URL("../main.js", import.meta.url));
 
 /**
  * `claude-sessions enable [path]` — register the repo locally + on the

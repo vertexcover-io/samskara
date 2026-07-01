@@ -230,6 +230,31 @@ export const buildSessionsRouter = (db: DbClient, env: Env): Hono<{ Variables: A
   });
 
   /**
+   * GET /api/sessions/:id/event-count — lightweight COUNT(*) of stored events.
+   * Used by `sync --verify` to reconcile local vs server without pulling the
+   * full events array. Owner-only RBAC; private sessions report 0 (masked).
+   */
+  router.get("/:id/event-count", async (c) => {
+    const sessionId = c.req.param("id");
+
+    const sessRows = await db
+      .select({ id: sessions.id, isPrivate: sessions.isPrivate })
+      .from(sessions)
+      .where(eq(sessions.id, sessionId))
+      .limit(1);
+    const sess = sessRows[0];
+    if (!sess) return c.json({ error: "session not found" }, 404);
+    if (sess.isPrivate) return c.json({ count: 0 });
+
+    const rows = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(events)
+      .where(eq(events.sessionId, sessionId));
+
+    return c.json({ count: rows[0]?.count ?? 0 });
+  });
+
+  /**
    * GET /api/sessions/:id/tool-calls — paired tool calls + results, in
    * chronological order. The canonical event stream stores call and
    * result as two separate `tool_use` rows joined by `tool_use_id`; this

@@ -3,6 +3,7 @@
 import { existsSync } from "node:fs";
 import { readSessionSync } from "@claude-sessions/adapter-claude";
 import type { CanonicalSession } from "@claude-sessions/core";
+import { reviveWatcher } from "../config/daemon.js";
 import { type SettingsFile, readSettings } from "../config/settings.js";
 import { readWatermark } from "../summarizer/index.js";
 import { detectSignals, renderSignalAnchors } from "../summarizer/signals.js";
@@ -54,6 +55,8 @@ export interface StopHookOptions {
   readWatermarkImpl?: typeof readWatermark;
   /** Inject persistent settings (tests). Defaults to `readSettings()`. */
   readSettingsImpl?: () => SettingsFile;
+  /** Inject the watcher-revive (tests). Defaults to `reviveWatcher`. */
+  reviveWatcherImpl?: () => number | null;
 }
 
 interface StopHookInput {
@@ -87,6 +90,15 @@ export const stopHookCommand = async (opts: StopHookOptions): Promise<number> =>
   const stdout = opts.stdout ?? process.stdout;
   const minEvents = opts.minEvents ?? DEFAULT_MIN_EVENTS;
   const minDelta = opts.minDelta ?? DEFAULT_FRESH_DELTA;
+
+  // Revive the watcher before anything else — independent of the summary gate
+  // (a dead watcher must be recovered even when summaries are disabled) and
+  // fail-open so it can never wedge the stop.
+  try {
+    (opts.reviveWatcherImpl ?? reviveWatcher)();
+  } catch {
+    // ignore — never block the stop on capture-daemon housekeeping.
+  }
 
   let input: StopHookInput;
   try {
