@@ -1,10 +1,11 @@
 // AI-generated. See PROMPT.md for the prompts and model used.
 
-import { existsSync, renameSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, statSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { enableCommand } from "../src/commands/enable.js";
 import { syncCommand } from "../src/commands/sync.js";
-import { listRepos } from "../src/config/repos.js";
+import { _clearCwdRepoCache, listRepos } from "../src/config/repos.js";
 import { getFileState } from "../src/config/state.js";
 import { UploadClient } from "../src/upload/client.js";
 import { consumeFile } from "../src/watcher/consume.js";
@@ -24,6 +25,9 @@ let server: MockServerHandle;
 beforeEach(async () => {
   fixture = makeFixtureEnv();
   server = await startMockServer();
+  // The cwd→repo resolver memoizes; each test registers fresh repos, so drop
+  // any resolution cached from a prior test.
+  _clearCwdRepoCache();
 });
 
 afterEach(async () => {
@@ -293,6 +297,104 @@ describe("sync --verify reconciliation", () => {
       }));
       await syncCommand({ client: buildClient(), verify: true });
       expect(ingestCalls().length).toBe(0);
+    } finally {
+      repo.cleanup();
+    }
+  });
+});
+
+describe("repo matching by git identity (cwd != local_path)", () => {
+  it("ingests a session whose cwd is a SUBDIRECTORY of the enabled repo", async () => {
+    const repo = makeTempGitRepo("git@github.com:fixture/subdir.git");
+    try {
+      await enableCommand({ path: repo.path, client: buildClient(), skipBackfill: true });
+      _clearCwdRepoCache();
+
+      // Session ran from a subdir — the common case that exact-match dropped.
+      const subdir = join(repo.path, "packages", "web");
+      mkdirSync(subdir, { recursive: true });
+      const sid = "session-subdir-1";
+      const file = createSessionFile(fixture.projectsRoot, subdir, sid, [
+        buildEvent({ uuid: "s1", sessionId: sid, cwd: subdir }),
+        buildEvent({ uuid: "s2", sessionId: sid, cwd: subdir, type: "assistant" }),
+      ]);
+
+      const result = await consumeFile(file.path, buildClient());
+      expect(result.skipped).toBe(false);
+      expect(result.uploaded).toBe(2);
+      const payload = ingestCalls()[0] as { session: { repo: { canonical_url: string } } };
+      expect(payload.session.repo.canonical_url).toBe("github.com/fixture/subdir");
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it("ingests a session from a same-remote clone under a DIFFERENT path", async () => {
+    // The enabled repo and a sibling checkout share one origin — vaidik's
+    // `Andromeda-temp` case. Exact path match fails; identity match succeeds.
+    const origin = "git@github.com:fixture/andromeda.git";
+    const enabled = makeTempGitRepo(origin);
+    const sibling = makeTempGitRepo(origin);
+    try {
+      await enableCommand({ path: enabled.path, client: buildClient(), skipBackfill: true });
+      _clearCwdRepoCache();
+
+      const sid = "session-sibling-1";
+      const file = createSessionFile(fixture.projectsRoot, sibling.path, sid, [
+        buildEvent({ uuid: "sb1", sessionId: sid, cwd: sibling.path }),
+        buildEvent({ uuid: "sb2", sessionId: sid, cwd: sibling.path, type: "assistant" }),
+      ]);
+
+      const result = await consumeFile(file.path, buildClient());
+      expect(result.skipped).toBe(false);
+      expect(result.uploaded).toBe(2);
+      const payload = ingestCalls()[0] as { session: { repo: { canonical_url: string } } };
+      expect(payload.session.repo.canonical_url).toBe("github.com/fixture/andromeda");
+    } finally {
+      enabled.cleanup();
+      sibling.cleanup();
+    }
+  });
+
+  it("does NOT ingest a session from an unrelated, un-enabled repo", async () => {
+    const enabled = makeTempGitRepo("git@github.com:fixture/enabled-repo.git");
+    const other = makeTempGitRepo("git@github.com:fixture/some-other-repo.git");
+    try {
+      await enableCommand({ path: enabled.path, client: buildClient(), skipBackfill: true });
+      _clearCwdRepoCache();
+
+      const sid = "session-unrelated-1";
+      const file = createSessionFile(fixture.projectsRoot, other.path, sid, [
+        buildEvent({ uuid: "un1", sessionId: sid, cwd: other.path }),
+      ]);
+
+      const result = await consumeFile(file.path, buildClient());
+      expect(result.skipped).toBe(true);
+      expect(result.reason).toBe("not-enabled");
+      expect(ingestCalls().length).toBe(0);
+    } finally {
+      enabled.cleanup();
+      other.cleanup();
+    }
+  });
+
+  it("discovery (findSessionsForRepo via sync) finds a subdir-cwd session", async () => {
+    const repo = makeTempGitRepo("git@github.com:fixture/discover-subdir.git");
+    try {
+      await enableCommand({ path: repo.path, client: buildClient(), skipBackfill: true });
+      _clearCwdRepoCache();
+
+      const subdir = join(repo.path, "apps", "api");
+      mkdirSync(subdir, { recursive: true });
+      const sid = "session-discover-subdir";
+      createSessionFile(fixture.projectsRoot, subdir, sid, [
+        buildEvent({ uuid: "d1", sessionId: sid, cwd: subdir }),
+      ]);
+
+      // sync uses findSessionsForRepo; if discovery still filtered by exact
+      // cwd this would upload nothing.
+      await syncCommand({ client: buildClient() });
+      expect(ingestCalls().length).toBe(1);
     } finally {
       repo.cleanup();
     }

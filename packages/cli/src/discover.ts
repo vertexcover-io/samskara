@@ -3,6 +3,7 @@
 import { closeSync, existsSync, openSync, readSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { findGitRoot } from "@claude-sessions/core";
 
 /**
  * Where Claude Code stores per-cwd JSONL transcripts. Override via the
@@ -121,7 +122,13 @@ export const findSessionsForRepo = (
     const cwdRaw = anchor.cwd;
     const cwd = typeof cwdRaw === "string" ? cwdRaw : null;
     if (!cwd) continue;
-    if (!localPaths.includes(cwd)) continue;
+    // A session's cwd is often a subdirectory or worktree of the repo, not the
+    // registered toplevel. Match by exact path first (cheap), then fall back to
+    // resolving the cwd's git toplevel (pure filesystem) and checking that.
+    // Without this, subdir sessions are never discovered — so `sync --verify`
+    // can't even find them to reconcile.
+    const belongs = localPaths.includes(cwd) || localPaths.includes(findGitRoot(cwd) ?? "\0");
+    if (!belongs) continue;
     const sidRaw = anchor.sessionId;
     const session_id = typeof sidRaw === "string" ? sidRaw : null;
     results.push({ path, cwd, session_id });
