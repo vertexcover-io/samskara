@@ -62,11 +62,14 @@ export const buildReposRouter = (db: DbClient, env: Env): Hono<{ Variables: Auth
   });
 
   /**
-   * GET /api/repos/:canonical/sessions — list sessions for a single repo,
-   * newest first. `:canonical` is URL-encoded canonical_url.
+   * GET /api/repos/sessions?repo=<canonical_url> — list sessions for a single
+   * repo, newest first. `repo` is the canonical_url passed as a query param
+   * (not a path segment) so embedded slashes survive proxies that normalize
+   * encoded slashes in the path (e.g. Azure App Service decodes %2F → /).
    */
-  router.get("/:canonical/sessions", async (c) => {
-    const canonical = decodeURIComponent(c.req.param("canonical"));
+  router.get("/sessions", async (c) => {
+    const canonical = c.req.query("repo") ?? "";
+    if (!canonical) return c.json({ repo: null, sessions: [] }, 400);
     const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 50), 1), 200);
     // Repeated query params (?user=a&user=b) accumulate into OR-sets, so each
     // filter narrows to "any of the selected values".
@@ -137,13 +140,15 @@ export const buildReposRouter = (db: DbClient, env: Env): Hono<{ Variables: Auth
   });
 
   /**
-   * GET /api/repos/:canonical/facets — distinct branches and session authors
-   * scoped to THIS repo's non-private sessions. Powers the repo-view filter
-   * bar so its dropdowns only list values that actually occur in the project
-   * (e.g. the user menu shows only members who pushed ≥1 session here).
+   * GET /api/repos/facets?repo=<canonical_url> — distinct branches and session
+   * authors scoped to THIS repo's non-private sessions. Powers the repo-view
+   * filter bar so its dropdowns only list values that actually occur in the
+   * project (e.g. the user menu shows only members who pushed ≥1 session here).
+   * `repo` is a query param for the same proxy-safety reason as /sessions.
    */
-  router.get("/:canonical/facets", async (c) => {
-    const canonical = decodeURIComponent(c.req.param("canonical"));
+  router.get("/facets", async (c) => {
+    const canonical = c.req.query("repo") ?? "";
+    if (!canonical) return c.json({ branches: [], users: [] }, 400);
 
     const repoRow = await db
       .select({ id: repos.id })

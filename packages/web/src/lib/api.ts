@@ -101,11 +101,11 @@ export const useRepoSessions = (
     enabled: !!canonicalUrl,
     queryFn: () => {
       const qs = new URLSearchParams();
+      qs.set("repo", canonicalUrl ?? "");
       for (const u of users) qs.append("user", u);
       for (const b of branches) qs.append("branch", b);
-      const suffix = qs.toString() ? `?${qs.toString()}` : "";
       return apiFetch<{ repo: { canonical_url: string } | null; sessions: SessionListItem[] }>(
-        `/api/repos/${encodeURIComponent(canonicalUrl ?? "")}/sessions${suffix}`,
+        `/api/repos/sessions?${qs.toString()}`,
       );
     },
   });
@@ -116,7 +116,7 @@ export const useRepoFacets = (canonicalUrl: string | undefined) =>
     queryKey: ["repo-facets", canonicalUrl],
     enabled: !!canonicalUrl,
     queryFn: () =>
-      apiFetch<RepoFacets>(`/api/repos/${encodeURIComponent(canonicalUrl ?? "")}/facets`),
+      apiFetch<RepoFacets>(`/api/repos/facets?repo=${encodeURIComponent(canonicalUrl ?? "")}`),
   });
 
 // ----- Sessions -----------------------------------------------------------
