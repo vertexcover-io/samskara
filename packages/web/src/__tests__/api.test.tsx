@@ -4,7 +4,14 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, apiFetch, useEnabledRepos, useRecentSessions } from "../lib/api";
+import {
+  ApiError,
+  apiFetch,
+  useEnabledRepos,
+  useRecentSessions,
+  useRepoFacets,
+  useRepoSessions,
+} from "../lib/api";
 
 interface FetchCall {
   url: string;
@@ -86,6 +93,33 @@ describe("useEnabledRepos", () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(captured[0]?.url).toBe("/api/repos");
     expect(result.current.data?.repos).toHaveLength(1);
+  });
+});
+
+describe("useRepoSessions / useRepoFacets", () => {
+  const canonical = "github.com/vertexcover-io/claude-sessions";
+
+  it("requests /api/repos/sessions with repo as a query param (not path)", async () => {
+    globalThis.fetch = mockFetch(() => jsonResponse(200, { repo: null, sessions: [] }));
+    const qc = new QueryClient();
+    const { result } = renderHook(() => useRepoSessions(canonical, { branches: ["main"] }), {
+      wrapper: wrap(qc),
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    const url = captured[0]?.url ?? "";
+    expect(url).toMatch(/^\/api\/repos\/sessions\?/);
+    expect(url).toContain(`repo=${encodeURIComponent(canonical)}`);
+    expect(url).toContain("branch=main");
+    expect(url).not.toContain(`${encodeURIComponent(canonical)}/sessions`);
+  });
+
+  it("requests /api/repos/facets with repo as a query param (not path)", async () => {
+    globalThis.fetch = mockFetch(() => jsonResponse(200, { branches: [], users: [] }));
+    const qc = new QueryClient();
+    const { result } = renderHook(() => useRepoFacets(canonical), { wrapper: wrap(qc) });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    const url = captured[0]?.url ?? "";
+    expect(url).toBe(`/api/repos/facets?repo=${encodeURIComponent(canonical)}`);
   });
 });
 

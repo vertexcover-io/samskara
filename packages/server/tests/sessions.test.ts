@@ -1206,7 +1206,7 @@ describe("global reads + attribution (GitHub OAuth)", () => {
   });
 });
 
-describe("GET /api/repos/:canonical/facets (repo-scoped filters)", () => {
+describe("GET /api/repos/facets (repo-scoped filters, ?repo= query)", () => {
   const insertOn = async (
     id: string,
     userId: string,
@@ -1252,7 +1252,7 @@ describe("GET /api/repos/:canonical/facets (repo-scoped filters)", () => {
     await insertOn("f-carol", carol.user.id, carol.repoId, "main");
 
     const res = await get(
-      `/api/repos/${encodeURIComponent(alice.repoCanonical)}/facets`,
+      `/api/repos/facets?repo=${encodeURIComponent(alice.repoCanonical)}`,
       alice.token,
     );
     expect(res.status).toBe(200);
@@ -1279,7 +1279,7 @@ describe("GET /api/repos/:canonical/facets (repo-scoped filters)", () => {
     await insertOn("fp-bob", bob.user.id, bob.repoId, "secret", true);
 
     const res = await get(
-      `/api/repos/${encodeURIComponent(alice.repoCanonical)}/facets`,
+      `/api/repos/facets?repo=${encodeURIComponent(alice.repoCanonical)}`,
       alice.token,
     );
     const json = (await res.json()) as {
@@ -1290,7 +1290,7 @@ describe("GET /api/repos/:canonical/facets (repo-scoped filters)", () => {
     expect(json.branches).not.toContain("secret");
   });
 
-  it("GET /:canonical/sessions?branch=<b> narrows to that branch", async () => {
+  it("GET /sessions?repo=<r>&branch=<b> narrows to that branch", async () => {
     const alice = await seedUser(db.db, env.JWT_SECRET, {
       githubLogin: "branch-alice",
       repoUrl: "github.com/example/branchfilter",
@@ -1299,7 +1299,7 @@ describe("GET /api/repos/:canonical/facets (repo-scoped filters)", () => {
     await insertOn("bf-feat", alice.user.id, alice.repoId, "feat/y");
 
     const res = await get(
-      `/api/repos/${encodeURIComponent(alice.repoCanonical)}/sessions?branch=feat/y`,
+      `/api/repos/sessions?repo=${encodeURIComponent(alice.repoCanonical)}&branch=feat/y`,
       alice.token,
     );
     expect(res.status).toBe(200);
@@ -1317,7 +1317,7 @@ describe("GET /api/repos/:canonical/facets (repo-scoped filters)", () => {
     await insertOn("mb-feat", alice.user.id, alice.repoId, "feat/z");
 
     const res = await get(
-      `/api/repos/${encodeURIComponent(alice.repoCanonical)}/sessions?branch=main&branch=demo`,
+      `/api/repos/sessions?repo=${encodeURIComponent(alice.repoCanonical)}&branch=main&branch=demo`,
       alice.token,
     );
     expect(res.status).toBe(200);
@@ -1343,11 +1343,29 @@ describe("GET /api/repos/:canonical/facets (repo-scoped filters)", () => {
     await insertOn("mu-carol", carol.user.id, carol.repoId, "main");
 
     const res = await get(
-      `/api/repos/${encodeURIComponent(alice.repoCanonical)}/sessions?user=multi-u-alice&user=multi-u-bob`,
+      `/api/repos/sessions?repo=${encodeURIComponent(alice.repoCanonical)}&user=multi-u-alice&user=multi-u-bob`,
       alice.token,
     );
     expect(res.status).toBe(200);
     const json = (await res.json()) as { sessions: Array<{ id: string }> };
     expect(json.sessions.map((s) => s.id).sort()).toEqual(["mu-alice", "mu-bob"]);
+  });
+
+  it("GET /sessions with no ?repo= is a 400", async () => {
+    const alice = await seedUser(db.db, env.JWT_SECRET, {
+      githubLogin: "no-repo-sess",
+      repoUrl: "github.com/example/norepo-sess",
+    });
+    const res = await get("/api/repos/sessions", alice.token);
+    expect(res.status).toBe(400);
+  });
+
+  it("GET /facets with no ?repo= is a 400", async () => {
+    const alice = await seedUser(db.db, env.JWT_SECRET, {
+      githubLogin: "no-repo-facet",
+      repoUrl: "github.com/example/norepo-facet",
+    });
+    const res = await get("/api/repos/facets", alice.token);
+    expect(res.status).toBe(400);
   });
 });
