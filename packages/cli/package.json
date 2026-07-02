@@ -7,7 +7,7 @@
     "claude-sessions": "./dist/main.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && chmod +x dist/main.js",
+    "build": "tsc -p tsconfig.json && node scripts/make-executable.mjs",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
