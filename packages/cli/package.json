@@ -1,0 +1,21 @@
+{
+  "name": "@samskara/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "samskara": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "commander": "13.1.0"
+  },
+  "devDependencies": {
+    "typescript": "5.7.3",
+    "vitest": "3.0.5"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "name": "samskara",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.2.19",
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "db:generate": "bun run --cwd packages/server db:generate",
+    "db:migrate": "bun run --cwd packages/server db:migrate",
+    "stack:up": "docker compose up -d",
+    "stack:down": "docker compose down",
+    "prepare": "git config core.hooksPath .githooks 2>/dev/null || true"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "1.9.4",
+    "turbo": "2.5.5",
+    "typescript": "5.7.3",
+    "@types/node": "22.13.1"
+  }
+}

@@ -1,0 +1,19 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: samskara
+      POSTGRES_PASSWORD: samskara
+      POSTGRES_DB: samskara
+    volumes:
+      - samskara_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U samskara -d samskara"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  samskara_pgdata:
