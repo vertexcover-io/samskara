@@ -35,6 +35,8 @@ type Common = {
   readonly agentId?: string
   readonly parentUuid?: string
   readonly role?: string
+  readonly gitBranch?: string
+  readonly gitCommit?: string
 }
 
 const blockToMessage = (
@@ -105,6 +107,8 @@ export const normalizeClaude = (
     agentId: str(data.agentId),
     parentUuid: str(data.parentUuid),
     role: str(message.role),
+    gitBranch: str(data.gitBranch),
+    gitCommit: str(data.gitSha) ?? str(data.gitCommit),
   }
   if (common.lineUuid === "") return []
 
@@ -140,7 +144,7 @@ const contextFrom = (
 ): CollectContext | undefined => {
   const withCwd = records.find((r) => isObject(r.data) && str(r.data.cwd))
   if (!withCwd || !isObject(withCwd.data)) return undefined
-  return { cwd: str(withCwd.data.cwd), gitBranch: str(withCwd.data.gitBranch) }
+  return { cwd: str(withCwd.data.cwd) }
 }
 
 export const createClaudePlugin = (fs: FileSystem): AgentPlugin => ({

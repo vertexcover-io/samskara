@@ -20,6 +20,12 @@ export type RepoIdentity = {
   readonly repoName: string
 }
 
+export type ProjectIdentity = {
+  readonly name: string // git repo name, or cwd basename
+  readonly slug: string // "<owner>-<reponame>", or cwd with separators → "-"
+  // NOTE: no ownerId — the server derives it from the JWT user
+}
+
 export type TokenUsage = {
   readonly input: number
   readonly output: number
@@ -58,6 +64,8 @@ export type NormalizedMessage = {
   readonly toolCall?: ToolCall
   readonly toolResult?: ToolResult
   readonly agentId?: string
+  readonly gitBranch?: string
+  readonly gitCommit?: string
 }
 
 export type RawLine = {
@@ -77,8 +85,6 @@ export type SessionFields = {
   readonly model?: string
   readonly title?: string
   readonly cwd?: string
-  readonly gitBranch?: string
-  readonly gitCommit?: string
   readonly cliVersion?: string
   readonly permissionMode?: string
 }
@@ -86,7 +92,7 @@ export type SessionFields = {
 export type IngestBase = {
   readonly sessionId: string
   readonly sourceRelativePath: string
-  readonly repo: RepoIdentity
+  readonly project: ProjectIdentity
   readonly rawLines: ReadonlyArray<RawLine>
   readonly messages: ReadonlyArray<NormalizedMessage>
 }
@@ -99,4 +105,3 @@ export type IngestResponse =
   | { readonly ingested: number; readonly deduped: number }
   | { readonly error: "sessionNotFound" }
   | { readonly error: "unauthorized" }
-  | { readonly error: "repoNotWritable" }

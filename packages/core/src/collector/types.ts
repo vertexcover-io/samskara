@@ -54,7 +54,6 @@ export type WatcherState = z.infer<typeof watcherStateSchema>
 
 export type CollectContext = {
   readonly cwd?: string
-  readonly gitBranch?: string
 }
 
 export type CollectResult = {

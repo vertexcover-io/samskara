@@ -4,7 +4,7 @@ import type { IngestPayload } from "./index.js"
 const base = {
   sessionId: "sess-1",
   sourceRelativePath: "sess-1.jsonl",
-  repo: { host: "github", owner: "acme", ownerType: "org", repoName: "widget" },
+  project: { name: "widget", slug: "acme-widget" },
   rawLines: [{ lineUuid: "u1", raw: "{}" }],
   messages: [],
 } as const
