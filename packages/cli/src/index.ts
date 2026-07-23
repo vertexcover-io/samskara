@@ -19,22 +19,13 @@ program
 program
   .command("watch")
   .description("Run the capture daemon: discover and ingest Claude session files")
-  .option("--host <host>", "override repo host (default: resolved from each session's git repo)")
-  .option("--owner <owner>", "override repo owner")
-  .option("--owner-type <type>", "override owner type: user or org")
-  .option("--repo-name <name>", "override repo name")
-  .action((options: { host?: string; owner?: string; ownerType?: string; repoName?: string }) => {
-    const { host, owner, ownerType, repoName } = options
-    const repoOverride =
-      host && owner && repoName
-        ? {
-            host,
-            owner,
-            ownerType: ownerType === "org" ? ("org" as const) : ("user" as const),
-            repoName,
-          }
-        : undefined
-    return watch({ repoOverride })
+  .option("--project-name <name>", "override project name (default: resolved from the session dir)")
+  .option("--project-slug <slug>", "override project slug (default: resolved from the session dir)")
+  .action((options: { projectName?: string; projectSlug?: string }) => {
+    const { projectName, projectSlug } = options
+    const projectOverride =
+      projectName && projectSlug ? { name: projectName, slug: projectSlug } : undefined
+    return watch({ projectOverride })
   })
 
 program.parseAsync()

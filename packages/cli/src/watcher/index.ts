@@ -1,12 +1,12 @@
 import { execFile } from "node:child_process"
 import { glob as nodeGlob, readFile, rename, stat, writeFile } from "node:fs/promises"
-import { homedir, userInfo } from "node:os"
+import { homedir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
-import { type FileSystem, type RepoIdentity, createClaudePlugin } from "@samskara/core"
+import { type FileSystem, type ProjectIdentity, createClaudePlugin } from "@samskara/core"
 import { apiBase } from "../config.js"
 import { type WatcherConfig, type WatcherDeps, runCycle } from "./driver.js"
-import { type GitRunner, resolveRepo } from "./resolveRepo.js"
+import { type GitRunner, resolveProject } from "./resolveProject.js"
 import { createHttpSink } from "./sink.js"
 
 const CYCLE_MS = 10_000
@@ -50,15 +50,14 @@ const readToken = async (): Promise<string> => {
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
 export type WatchOptions = {
-  readonly repoOverride?: RepoIdentity
+  readonly projectOverride?: ProjectIdentity
 }
 
 export const watch = async (options: WatchOptions = {}): Promise<void> => {
   const token = await readToken()
-  const osUser = userInfo().username
   const config: WatcherConfig = {
     statePath: join(homedir(), ".samskara", "state.json"),
-    repoOverride: options.repoOverride,
+    projectOverride: options.projectOverride,
   }
   const deps: WatcherDeps = {
     fs: nodeFs,
@@ -66,7 +65,7 @@ export const watch = async (options: WatchOptions = {}): Promise<void> => {
     sink: createHttpSink({ apiBase, token, fetch: globalThis.fetch }),
     glob: globAll,
     plugin: createClaudePlugin(nodeFs),
-    resolveRepo: (cwd) => resolveRepo(cwd, { runGit, osUser }),
+    resolveProject: (startDir) => resolveProject(startDir, { runGit }),
   }
 
   for (;;) {

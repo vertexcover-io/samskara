@@ -6,8 +6,8 @@ import type {
   FileSystem,
   IngestPayload,
   NormalizedMessage,
+  ProjectIdentity,
   RawLine,
-  RepoIdentity,
   WatcherState,
 } from "@samskara/core"
 import { readState, writeState } from "@samskara/core"
@@ -18,7 +18,7 @@ export type Clock = { now(): number }
 
 export type WatcherConfig = {
   readonly statePath: string
-  readonly repoOverride?: RepoIdentity
+  readonly projectOverride?: ProjectIdentity
 }
 
 export type WatcherDeps = {
@@ -27,14 +27,12 @@ export type WatcherDeps = {
   readonly sink: { send(payload: IngestPayload): Promise<{ status: number }> }
   readonly glob: (pattern: string) => Promise<ReadonlyArray<string>>
   readonly plugin: AgentPlugin
-  readonly resolveRepo: (cwd: string) => Promise<RepoIdentity>
+  readonly resolveProject: (startDir: string) => Promise<ProjectIdentity>
 }
 
-const LOCAL_UNKNOWN: RepoIdentity = {
-  host: "local",
-  owner: "unknown",
-  ownerType: "user",
-  repoName: "unknown",
+const PROJECT_UNKNOWN: ProjectIdentity = {
+  name: "unknown",
+  slug: "unknown",
 }
 
 const isSubagentPath = (path: string): boolean => /\/subagents\/agent-[a-f0-9]+\.jsonl$/.test(path)
@@ -46,7 +44,7 @@ const rawLinesFor = (messages: ReadonlyArray<NormalizedMessage>): ReadonlyArray<
   [...new Set(messages.map((m) => m.lineUuid))].map((lineUuid) => ({ lineUuid, raw: "{}" }))
 
 const buildPayload = (
-  repo: RepoIdentity,
+  project: ProjectIdentity,
   sessionId: string,
   changed: ChangedFile,
   result: CollectResult,
@@ -54,7 +52,7 @@ const buildPayload = (
   const shared = {
     sessionId,
     sourceRelativePath: changed.path,
-    repo,
+    project,
     rawLines: rawLinesFor(result.messages),
     messages: result.messages,
   }
@@ -76,19 +74,19 @@ const buildPayload = (
   return {
     ...shared,
     type: "main",
-    session: { cwd: result.context?.cwd, gitBranch: result.context?.gitBranch },
+    session: { cwd: result.context?.cwd },
   }
 }
 
-const repoFor = async (
+const projectFor = async (
   config: WatcherConfig,
   deps: WatcherDeps,
   result: CollectResult,
-): Promise<RepoIdentity> => {
-  if (config.repoOverride) return config.repoOverride
+): Promise<ProjectIdentity> => {
+  if (config.projectOverride) return config.projectOverride
   const cwd = result.context?.cwd
-  if (!cwd) return LOCAL_UNKNOWN
-  return deps.resolveRepo(cwd)
+  if (!cwd) return PROJECT_UNKNOWN
+  return deps.resolveProject(cwd)
 }
 
 const changedFileFor = async (
@@ -120,8 +118,8 @@ const flushFile = async (
     const sessionId = capped.result.newState.sessionId
     if (!sessionId) return { files }
 
-    const repo = await repoFor(config, deps, capped.result)
-    const payload = buildPayload(repo, sessionId, changed, capped.result)
+    const project = await projectFor(config, deps, capped.result)
+    const payload = buildPayload(project, sessionId, changed, capped.result)
     const { status } = await deps.sink.send(payload)
     if (status < 200 || status >= 300) return { files }
 

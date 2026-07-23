@@ -4,7 +4,7 @@ import { join } from "node:path"
 import {
   type FileSystem,
   type IngestPayload,
-  type RepoIdentity,
+  type ProjectIdentity,
   createClaudePlugin,
 } from "@samskara/core"
 import { beforeEach, describe, expect, test } from "vitest"
@@ -21,7 +21,7 @@ const nodeFs: FileSystem = {
   },
 }
 
-const repo: RepoIdentity = { host: "github", owner: "acme", ownerType: "user", repoName: "widget" }
+const project: ProjectIdentity = { name: "widget", slug: "acme-widget" }
 
 const assistantLine = (uuid: string, sessionId: string, extra: Record<string, unknown> = {}) =>
   JSON.stringify({
@@ -52,7 +52,7 @@ describe("watcher driver", () => {
     sink: createInMemorySink(),
     glob: async () => [],
     plugin: createClaudePlugin(nodeFs),
-    resolveRepo: async () => repo,
+    resolveProject: async () => project,
     ...over,
   })
 
@@ -60,7 +60,7 @@ describe("watcher driver", () => {
     dir = await mkdtemp(join(tmpdir(), "samskara-watch-"))
     projects = join(dir, "projects")
     await mkdir(projects, { recursive: true })
-    config = { statePath: join(dir, "state.json"), repoOverride: repo }
+    config = { statePath: join(dir, "state.json"), projectOverride: project }
   })
 
   test("flushes a grown main file and advances the watermark", async () => {
@@ -159,16 +159,11 @@ describe("watcher driver", () => {
     expect(state.files[main]?.cursor.lastLineProcessed).toBe(2500)
   })
 
-  test("auto-resolves repo from the session cwd when no override is given", async () => {
+  test("auto-resolves the project from the session cwd when no override is given", async () => {
     const main = join(projects, "sess-1.jsonl")
     await writeFile(main, `${assistantLine("l1", "sess-1")}\n`, "utf8")
 
-    const resolved: RepoIdentity = {
-      host: "github",
-      owner: "refrens",
-      ownerType: "org",
-      repoName: "andromeda",
-    }
+    const resolved: ProjectIdentity = { name: "andromeda", slug: "refrens-andromeda" }
     const seenCwds: string[] = []
     const sink = createInMemorySink()
     await runCycle(
@@ -176,17 +171,17 @@ describe("watcher driver", () => {
       deps({
         sink,
         glob: async () => [main],
-        resolveRepo: async (cwd) => {
-          seenCwds.push(cwd)
+        resolveProject: async (startDir) => {
+          seenCwds.push(startDir)
           return resolved
         },
       }),
     )
 
     expect(seenCwds).toEqual(["/work/app"])
-    expect(sink.received[0]?.repo).toEqual(resolved)
+    expect(sink.received[0]?.project).toEqual(resolved)
     const payload = sink.received[0]
-    if (payload?.type === "main") expect(payload.session.gitBranch).toBe("main")
+    expect(payload?.messages.every((m) => m.gitBranch === "main")).toBe(true)
   })
 
   test("does not flush or advance the watermark when no sessionId is known", async () => {
