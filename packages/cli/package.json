@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@samskara/core": "workspace:*",
     "commander": "13.1.0",
     "zod": "^4.4.3"
   },

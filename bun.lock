@@ -17,6 +17,7 @@
         "samskara": "./dist/index.js",
       },
       "dependencies": {
+        "@samskara/core": "workspace:*",
         "commander": "13.1.0",
         "zod": "^4.4.3",
       },
@@ -28,6 +29,9 @@
     "packages/core": {
       "name": "@samskara/core",
       "version": "0.0.0",
+      "dependencies": {
+        "zod": "^4.4.3",
+      },
       "devDependencies": {
         "typescript": "5.7.3",
         "vitest": "3.0.5",
@@ -39,6 +43,7 @@
       "dependencies": {
         "@hono/node-server": "1.13.8",
         "@hono/zod-validator": "0.7.6",
+        "@samskara/core": "workspace:*",
         "drizzle-orm": "0.39.1",
         "hono": "4.7.0",
         "jose": "^6.2.4",
