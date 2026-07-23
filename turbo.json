@@ -1,6 +1,16 @@
 {
   "$schema": "https://turbo.build/schema.json",
-  "globalEnv": ["DATABASE_URL"],
+  "globalEnv": [
+    "DATABASE_URL",
+    "GITHUB_CLIENT_ID",
+    "GITHUB_CLIENT_SECRET",
+    "PUBLIC_BASE_URL",
+    "COOKIE_SECURE",
+    "JWT_SECRET",
+    "JWT_EXPIRES_IN",
+    "SAMSKARA_API_URL",
+    "VITE_API_BASE_URL"
+  ],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],

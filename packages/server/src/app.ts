@@ -1,7 +1,22 @@
 import { Hono } from "hono"
+import type { Db } from "./db/client.js"
+import type { Env } from "./lib/env.js"
+import { authRoutes } from "./routes/auth.js"
+import { type GithubClient, createGithubClient } from "./services/github.js"
+import { type PairingStore, createPairingStore } from "./services/pairing.js"
 
-export const app = new Hono()
+type Deps = {
+  readonly githubClient?: GithubClient
+  readonly pairingStore?: PairingStore
+}
 
-app.get("/health", (c) => c.json({ status: "ok" }))
+export const buildApp = (db: Db, env: Env, deps: Deps = {}): Hono => {
+  const githubClient = deps.githubClient ?? createGithubClient(env)
+  const pairingStore = deps.pairingStore ?? createPairingStore()
+  const app = new Hono()
 
-// TODO(milestone): mount ./routes (GitHub OAuth + Organization gating, MCP route, ingest, search)
+  app.get("/health", (c) => c.json({ status: "ok" }))
+  app.route("/api/auth", authRoutes({ db, env, githubClient, pairingStore }))
+
+  return app
+}

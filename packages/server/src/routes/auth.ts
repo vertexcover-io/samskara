@@ -1,0 +1,125 @@
+import { randomBytes } from "node:crypto"
+import { zValidator } from "@hono/zod-validator"
+import { Hono } from "hono"
+import { z } from "zod"
+import type { Db } from "../db/client.js"
+import {
+  clearSessionCookie,
+  clearStateCookie,
+  readStateCookie,
+  setSessionCookie,
+  setStateCookie,
+} from "../lib/cookies.js"
+import type { Env } from "../lib/env.js"
+import { signToken } from "../lib/jwt.js"
+import { type AuthVariables, requireAuth } from "../lib/require-auth.js"
+import {
+  NotMemberError,
+  type User,
+  gateOrgs,
+  syncUserOrgs,
+  upsertUserFromGithub,
+} from "../services/auth.js"
+import type { GithubClient } from "../services/github.js"
+import type { PairingStore } from "../services/pairing.js"
+
+type Deps = {
+  readonly db: Db
+  readonly env: Env
+  readonly githubClient: GithubClient
+  readonly pairingStore: PairingStore
+}
+
+const callbackUrl = (env: Env) => `${env.publicBaseUrl}/api/auth/github/callback`
+
+const authorizeUrl = (env: Env, state: string): string => {
+  const url = new URL("https://github.com/login/oauth/authorize")
+  url.searchParams.set("client_id", env.githubClientId)
+  url.searchParams.set("redirect_uri", callbackUrl(env))
+  url.searchParams.set("scope", "read:org user:email")
+  url.searchParams.set("state", state)
+  return url.toString()
+}
+
+const callbackQuerySchema = z.object({
+  code: z.string().optional(),
+  state: z.string().optional(),
+})
+
+const cliExchangeSchema = z.object({ code: z.string().min(1) })
+
+const publicUser = (user: User) => ({
+  id: user.id,
+  githubLogin: user.githubLogin,
+  email: user.email,
+  name: user.name,
+  avatarUrl: user.avatarUrl,
+})
+
+export const authRoutes = ({
+  db,
+  env,
+  githubClient,
+  pairingStore,
+}: Deps): Hono<{ Variables: AuthVariables }> => {
+  const app = new Hono<{ Variables: AuthVariables }>()
+
+  app.get("/github/start", (c) => {
+    const state = randomBytes(16).toString("hex")
+    setStateCookie(c, state, env)
+    return c.redirect(authorizeUrl(env, state))
+  })
+
+  app.get("/github/callback", zValidator("query", callbackQuerySchema), async (c) => {
+    const { code, state: queryState } = c.req.valid("query")
+    const cookieState = readStateCookie(c)
+    if (!queryState || !cookieState || queryState !== cookieState) {
+      clearStateCookie(c)
+      return c.redirect("/?error=bad_state")
+    }
+    clearStateCookie(c)
+
+    if (!code) return c.redirect("/?error=bad_state")
+
+    const { accessToken } = await githubClient.exchangeCode(code, callbackUrl(env))
+    const profile = await githubClient.getProfile(accessToken)
+    const orgSlugs = await githubClient.getOrgs(accessToken)
+
+    let orgIds: ReadonlyArray<string>
+    try {
+      orgIds = (await gateOrgs(db, orgSlugs)).orgIds
+    } catch (error) {
+      if (error instanceof NotMemberError) return c.redirect("/?error=not_member")
+      throw error
+    }
+
+    const user = await upsertUserFromGithub(db, profile)
+    await syncUserOrgs(db, user.id, orgIds)
+
+    const token = await signToken(env, { sub: user.id, aud: "web" })
+    setSessionCookie(c, token, env)
+    return c.redirect("/")
+  })
+
+  app.get("/me", requireAuth({ db, env }, "web"), (c) => c.json(publicUser(c.get("user"))))
+
+  app.post("/logout", requireAuth({ db, env }, "web"), (c) => {
+    clearSessionCookie(c)
+    return c.json({ ok: true })
+  })
+
+  app.post("/cli-code", requireAuth({ db, env }, "web"), (c) =>
+    c.json({ code: pairingStore.mint(c.get("user").id) }),
+  )
+
+  app.post("/cli-exchange", zValidator("json", cliExchangeSchema), async (c) => {
+    const { code } = c.req.valid("json")
+    const userId = pairingStore.redeem(code)
+    if (!userId) return c.json({ error: "unauthorized" }, 401)
+
+    const token = await signToken(env, { sub: userId, aud: "cli" })
+    return c.json({ token })
+  })
+
+  return app
+}
