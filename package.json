@@ -13,6 +13,7 @@
     "format": "biome format --write .",
     "db:generate": "bun run --cwd packages/server db:generate",
     "db:migrate": "bun run --cwd packages/server db:migrate",
+    "seed:org": "bun run --cwd packages/server seed:org",
     "stack:up": "docker compose up -d",
     "stack:down": "docker compose down",
     "prepare": "git config core.hooksPath .githooks 2>/dev/null || true"

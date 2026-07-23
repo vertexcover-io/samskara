@@ -4,3 +4,6 @@ dist
 *.tsbuildinfo
 .env
 .DS_Store
+.harness/features/*/verification/
+.harness/runtime/
+.harness/knowledge/
