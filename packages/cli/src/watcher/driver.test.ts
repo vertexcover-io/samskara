@@ -6,6 +6,7 @@ import {
   type IngestPayload,
   type ProjectIdentity,
   createClaudePlugin,
+  createLogger,
 } from "@samskara/core"
 import { beforeEach, describe, expect, test } from "vitest"
 import { type WatcherConfig, type WatcherDeps, runCycle } from "./driver.js"
@@ -53,6 +54,7 @@ describe("watcher driver", () => {
     glob: async () => [],
     plugin: createClaudePlugin(nodeFs),
     resolveProject: async () => project,
+    log: createLogger({ service: "samskara-cli-test" }, { level: "silent" }),
     ...over,
   })
 

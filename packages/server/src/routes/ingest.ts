@@ -87,7 +87,14 @@ export const ingestRoutes = ({ db, env }: Deps): Hono<{ Variables: AuthVariables
 
   app.post("/", requireAuth({ db, env }, "cli"), zValidator("json", zIngest), async (c) => {
     const payload = c.req.valid("json")
-    const result = await ingest(db, c.get("user").id, payload)
+    const log = c.get("log")
+    log?.setBindings({
+      sessionId: payload.sessionId,
+      eventCount: payload.messages.length,
+      repo: payload.project.slug,
+      isSubagent: payload.type === "subagent",
+    })
+    const result = await ingest({ db, log, userId: c.get("user").id }, payload)
     if ("error" in result && result.error === "sessionNotFound") return c.json(result, 409)
     return c.json(result, 200)
   })

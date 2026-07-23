@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import type { IngestPayload } from "@samskara/core"
+import { createLogger } from "@samskara/core"
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql"
 import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
@@ -94,6 +95,7 @@ describe.skipIf(!dockerAvailable())("ingest route", () => {
         getOrgs: async () => [],
         getVerifiedEmails: async () => [],
       },
+      rootLog: createLogger({ service: "test" }, { level: "silent" }),
     })
     teardown = async () => {
       await created.client.end()

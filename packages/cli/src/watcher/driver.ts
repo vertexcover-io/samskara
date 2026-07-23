@@ -11,6 +11,7 @@ import type {
   WatcherState,
 } from "@samskara/core"
 import { readState, writeState } from "@samskara/core"
+import type pino from "pino"
 
 export const LINE_CAP = 2000
 
@@ -28,6 +29,7 @@ export type WatcherDeps = {
   readonly glob: (pattern: string) => Promise<ReadonlyArray<string>>
   readonly plugin: AgentPlugin
   readonly resolveProject: (startDir: string) => Promise<ProjectIdentity>
+  readonly log: pino.Logger
 }
 
 const PROJECT_UNKNOWN: ProjectIdentity = {
@@ -111,17 +113,28 @@ const flushFile = async (
     const result = await deps.plugin.collect(changed, prev)
 
     if (result.messages.length === 0) {
+      deps.log.debug({ path }, "No new messages to ingest")
       return { files: { ...files, [path]: result.newState } }
     }
 
     const capped = capMessages(result, prev)
     const sessionId = capped.result.newState.sessionId
-    if (!sessionId) return { files }
+    if (!sessionId) {
+      deps.log.warn({ path }, "Skipped file: no sessionId resolved")
+      return { files }
+    }
 
     const project = await projectFor(config, deps, capped.result)
     const payload = buildPayload(project, sessionId, changed, capped.result)
     const { status } = await deps.sink.send(payload)
-    if (status < 200 || status >= 300) return { files }
+    if (status < 200 || status >= 300) {
+      deps.log.warn({ path, sessionId, status }, "Upload rejected by server")
+      return { files }
+    }
+    deps.log.info(
+      { path, sessionId, status, messageCount: capped.result.messages.length },
+      "Uploaded session file",
+    )
 
     files = { ...files, [path]: capped.result.newState }
     if (!capped.more) return { files }

@@ -4,6 +4,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
 import { type FileSystem, type ProjectIdentity, createClaudePlugin } from "@samskara/core"
+import type pino from "pino"
 import { apiBase } from "../config.js"
 import { type WatcherConfig, type WatcherDeps, runCycle } from "./driver.js"
 import { type GitRunner, resolveProject } from "./resolveProject.js"
@@ -51,9 +52,11 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 
 export type WatchOptions = {
   readonly projectOverride?: ProjectIdentity
+  readonly log: pino.Logger
 }
 
-export const watch = async (options: WatchOptions = {}): Promise<void> => {
+export const watch = async (options: WatchOptions): Promise<void> => {
+  const { log } = options
   const token = await readToken()
   const config: WatcherConfig = {
     statePath: join(homedir(), ".samskara", "state.json"),
@@ -66,11 +69,12 @@ export const watch = async (options: WatchOptions = {}): Promise<void> => {
     glob: globAll,
     plugin: createClaudePlugin(nodeFs),
     resolveProject: (startDir) => resolveProject(startDir, { runGit }),
+    log,
   }
 
   for (;;) {
-    await runCycle(config, deps).catch((error: unknown) => {
-      console.error(error instanceof Error ? error.message : String(error))
+    await runCycle(config, deps).catch((err: unknown) => {
+      log.error({ err }, "Watch cycle failed")
     })
     await sleep(CYCLE_MS)
   }

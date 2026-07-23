@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import type { IngestPayload, NormalizedMessage } from "@samskara/core"
+import { createLogger } from "@samskara/core"
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql"
 import { and, eq } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
@@ -14,7 +15,9 @@ import {
   toolResult,
   users,
 } from "../db/schema.js"
-import { ingest } from "./ingest.js"
+import { type Ctx, ingest } from "./ingest.js"
+
+const testLog = () => createLogger({ service: "test" }, { level: "silent" })
 
 const dockerAvailable = () => {
   try {
@@ -57,6 +60,7 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
   let teardown: () => Promise<void>
   let db: Db
   let userId: string
+  let ctx: Ctx
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start()
@@ -74,6 +78,7 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
       .returning()
     if (!user) throw new Error("seed user failed")
     userId = user.id
+    ctx = { db, log: testLog(), userId }
     teardown = async () => {
       await created.client.end()
       await container.stop()
@@ -107,7 +112,7 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
         toolResult: { callId: "toolu_1", output: "ok", status: "success" },
       }),
     ]
-    const result = await ingest(db, userId, mainPayload("sess-main", msgs))
+    const result = await ingest(ctx, mainPayload("sess-main", msgs))
     expect(result).toEqual({ ingested: 3, deduped: 0 })
 
     const rows = await db.select().from(messages).where(eq(messages.sessionId, "sess-main"))
@@ -142,7 +147,7 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
         toolCall: { id: "toolu_1", name: "Read", input: { path: "x" } },
       }),
     ]
-    const result = await ingest(db, userId, mainPayload("sess-main", msgs))
+    const result = await ingest(ctx, mainPayload("sess-main", msgs))
     expect(result).toEqual({ ingested: 0, deduped: 1 })
 
     const calls = await db.select().from(toolCall).where(eq(toolCall.toolId, "toolu_1"))
@@ -159,7 +164,7 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
       rawLines: [{ lineUuid: "g1", raw: "{}" }],
       messages: [message({ lineUuid: "g1", agentId: "agent-x" })],
     }
-    const result = await ingest(db, userId, payload)
+    const result = await ingest(ctx, payload)
     expect(result).toEqual({ error: "sessionNotFound" })
 
     const subs = await db.select().from(subagents).where(eq(subagents.sessionId, "ghost-session"))
@@ -169,7 +174,7 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
   })
 
   test("subagent flush after main creates subagent row (I5)", async () => {
-    await ingest(db, userId, mainPayload("sess-sub", [message({ lineUuid: "m1" })]))
+    await ingest(ctx, mainPayload("sess-sub", [message({ lineUuid: "m1" })]))
     const payload: IngestPayload = {
       type: "subagent",
       sessionId: "sess-sub",
@@ -179,7 +184,7 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
       rawLines: [{ lineUuid: "y1", raw: "{}" }],
       messages: [message({ lineUuid: "y1", agentId: "agent-y" })],
     }
-    const result = await ingest(db, userId, payload)
+    const result = await ingest(ctx, payload)
     expect(result).toEqual({ ingested: 1, deduped: 0 })
     const [sub] = await db.select().from(subagents).where(eq(subagents.agentId, "agent-y"))
     expect(sub?.agentType).toBe("fork")
@@ -192,8 +197,11 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
       .returning()
     if (!other) throw new Error("seed user failed")
 
-    await ingest(db, userId, mainPayload("sess-mine", [message({ lineUuid: "a1" })]))
-    await ingest(db, other.id, mainPayload("sess-theirs", [message({ lineUuid: "b1" })]))
+    await ingest(ctx, mainPayload("sess-mine", [message({ lineUuid: "a1" })]))
+    await ingest(
+      { db, log: testLog(), userId: other.id },
+      mainPayload("sess-theirs", [message({ lineUuid: "b1" })]),
+    )
 
     const rows = await db.select().from(projects).where(eq(projects.slug, "acme-widget"))
     const owners = new Set(rows.map((r) => r.ownerId))
@@ -202,7 +210,7 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
   })
 
   test("resolves parentAgentId across flushes (I4)", async () => {
-    await ingest(db, userId, mainPayload("sess-nest", [message({ lineUuid: "n1" })]))
+    await ingest(ctx, mainPayload("sess-nest", [message({ lineUuid: "n1" })]))
 
     const parentFlush: IngestPayload = {
       type: "subagent",
@@ -221,7 +229,7 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
         }),
       ],
     }
-    await ingest(db, userId, parentFlush)
+    await ingest(ctx, parentFlush)
 
     const childFlush: IngestPayload = {
       type: "subagent",
@@ -232,7 +240,7 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
       rawLines: [{ lineUuid: "c1", raw: "{}" }],
       messages: [message({ lineUuid: "c1", agentId: "agent-child" })],
     }
-    await ingest(db, userId, childFlush)
+    await ingest(ctx, childFlush)
 
     const [child] = await db
       .select()
