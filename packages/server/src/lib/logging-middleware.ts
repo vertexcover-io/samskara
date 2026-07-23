@@ -6,7 +6,8 @@ export const loggingMiddleware = (
   rootLog: pino.Logger,
 ): MiddlewareHandler<{ Variables: { log: pino.Logger } }> => {
   return async (c, next) => {
-    const reqId = c.req.header("x-request-id") ?? randomUUID()
+    const forwarded = c.req.header("x-request-id")?.trim()
+    const reqId = forwarded ? forwarded : randomUUID()
     c.header("x-request-id", reqId)
 
     const userAgent = c.req.header("user-agent")
