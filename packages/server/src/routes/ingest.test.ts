@@ -30,13 +30,13 @@ const env: Env = {
   jwtExpiresIn: "7d",
 }
 
-const repo = { host: "github", owner: "acme", ownerType: "user", repoName: "widget" } as const
+const project = { name: "widget", slug: "acme-widget" } as const
 
 const mainPayload = (sessionId: string): IngestPayload => ({
   type: "main",
   sessionId,
   sourceRelativePath: `${sessionId}.jsonl`,
-  repo,
+  project,
   session: { model: "claude-opus-4-8" },
   rawLines: [{ lineUuid: "l1", raw: "{}" }],
   messages: [
@@ -135,7 +135,7 @@ describe.skipIf(!dockerAvailable())("ingest route", () => {
       type: "subagent",
       sessionId: "no-session",
       sourceRelativePath: "subagents/agent-z.jsonl",
-      repo,
+      project,
       agent: { agentId: "agent-z" },
       rawLines: [{ lineUuid: "z1", raw: "{}" }],
       messages: [

@@ -6,8 +6,8 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest"
 import { type Db, createDb } from "./client.js"
 import {
   messages,
-  orgRepos,
   orgs,
+  projects,
   repos,
   sessions,
   subagents,
@@ -15,7 +15,7 @@ import {
   toolCall,
   toolResult,
   userOrgs,
-  userRepos,
+  userProjectGrant,
   users,
 } from "./schema.js"
 
@@ -57,49 +57,85 @@ describe.skipIf(!dockerAvailable())("identity mesh schema", () => {
     await teardown?.()
   })
 
-  test("inserts entities, links them, and reverse-looks-up repo visibility", async () => {
+  test("inserts entities, links them, and reverse-looks-up project visibility", async () => {
     const [user] = await db
       .insert(users)
       .values({ githubId: 1, githubLogin: "vertexcover" })
+      .returning()
+    const [other] = await db
+      .insert(users)
+      .values({ githubId: 2, githubLogin: "teammate" })
       .returning()
     const [org] = await db
       .insert(orgs)
       .values({ githubSlug: "refrens", githubOrgId: 42 })
       .returning()
-    const [remoteRepo] = await db
-      .insert(repos)
-      .values({ host: "github", owner: "refrens", ownerType: "org", repoName: "andromeda" })
-      .returning()
-    const [localRepo] = await db
-      .insert(repos)
-      .values({
-        host: "local",
-        owner: "vertexcover",
-        ownerType: "user",
-        repoName: "/Users/x/work/myapp",
-      })
-      .returning()
 
-    if (!user || !org || !remoteRepo || !localRepo) throw new Error("insert returned no row")
+    if (!user || !other || !org) throw new Error("insert returned no row")
 
     await db.insert(userOrgs).values({ userId: user.id, orgId: org.id })
-    await db.insert(userRepos).values([
-      { userId: user.id, repoId: remoteRepo.id },
-      { userId: user.id, repoId: localRepo.id },
-    ])
-    await db.insert(orgRepos).values({ orgId: org.id, repoId: remoteRepo.id })
 
-    const visibleUsers = await db
-      .select({ id: users.id, login: users.githubLogin })
-      .from(userRepos)
-      .innerJoin(users, eq(users.id, userRepos.userId))
-      .where(eq(userRepos.repoId, remoteRepo.id))
+    const [project] = await db
+      .insert(projects)
+      .values({ name: "andromeda", slug: "refrens-andromeda", ownerId: user.id })
+      .returning()
+    if (!project) throw new Error("project insert returned no row")
 
-    expect(visibleUsers).toHaveLength(1)
-    expect(visibleUsers[0]?.login).toBe("vertexcover")
+    // Owner is admin by derivation and has NO grant row; grants elevate OTHER users.
+    await db.insert(userProjectGrant).values({
+      userId: other.id,
+      projectId: project.id,
+      scope: "viewer",
+    })
+
+    const grantedUsers = await db
+      .select({ login: users.githubLogin })
+      .from(userProjectGrant)
+      .innerJoin(users, eq(users.id, userProjectGrant.userId))
+      .where(eq(userProjectGrant.projectId, project.id))
+
+    expect(grantedUsers).toHaveLength(1)
+    expect(grantedUsers[0]?.login).toBe("teammate")
+  })
+
+  test("UNIQUE(slug, ownerId) allows the same slug for two different owners", async () => {
+    const [a] = await db.insert(users).values({ githubId: 11, githubLogin: "owner-a" }).returning()
+    const [b] = await db.insert(users).values({ githubId: 12, githubLogin: "owner-b" }).returning()
+    if (!a || !b) throw new Error("insert returned no row")
+
+    await db.insert(projects).values({ name: "widget", slug: "acme-widget", ownerId: a.id })
+    const [mine] = await db
+      .insert(projects)
+      .values({ name: "widget", slug: "acme-widget", ownerId: b.id })
+      .returning()
+    expect(mine).toBeDefined()
+
+    await expect(
+      db.insert(projects).values({ name: "widget", slug: "acme-widget", ownerId: a.id }),
+    ).rejects.toThrow()
+  })
+
+  test("userProjectGrant.scope CHECK rejects an invalid scope", async () => {
+    const [u] = await db
+      .insert(users)
+      .values({ githubId: 13, githubLogin: "scope-user" })
+      .returning()
+    if (!u) throw new Error("insert returned no row")
+    const [p] = await db
+      .insert(projects)
+      .values({ name: "proj", slug: "scope-proj", ownerId: u.id })
+      .returning()
+    if (!p) throw new Error("project insert returned no row")
+
+    await expect(
+      db.insert(userProjectGrant).values({ userId: u.id, projectId: p.id, scope: "owner" }),
+    ).rejects.toThrow()
   })
 
   test("UNIQUE rejects a duplicate repo identity but allows a different local path", async () => {
+    await db
+      .insert(repos)
+      .values({ host: "github", owner: "refrens", ownerType: "org", repoName: "andromeda" })
     await expect(
       db
         .insert(repos)
@@ -160,17 +196,13 @@ describe.skipIf(!dockerAvailable())("session data model", () => {
       .insert(users)
       .values({ githubId: 100 + seedCounter, githubLogin: `user-${seedCounter}` })
       .returning()
-    const [repo] = await db
-      .insert(repos)
-      .values({
-        host: "local",
-        owner: "vertexcover",
-        ownerType: "user",
-        repoName: `/work/app-${seedCounter}`,
-      })
+    if (!user) throw new Error("seed user returned no row")
+    const [project] = await db
+      .insert(projects)
+      .values({ name: `app-${seedCounter}`, slug: `slug-${seedCounter}`, ownerId: user.id })
       .returning()
-    if (!user || !repo) throw new Error("seed insert returned no row")
-    return { user, repo }
+    if (!project) throw new Error("seed project returned no row")
+    return { user, project }
   }
 
   beforeAll(async () => {
@@ -196,10 +228,10 @@ describe.skipIf(!dockerAvailable())("session data model", () => {
   })
 
   const seedSession = async (id: string) => {
-    const { user, repo } = await seed()
+    const { user, project } = await seed()
     const [session] = await db
       .insert(sessions)
-      .values({ id, source: "claude_code", userId: user.id, repoId: repo.id })
+      .values({ id, source: "claude_code", userId: user.id, projectId: project.id })
       .returning()
     if (!session) throw new Error("session insert returned no row")
     return session

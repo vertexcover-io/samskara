@@ -2,13 +2,11 @@ import type { IngestPayload, IngestResponse, NormalizedMessage, RawLine } from "
 import type { Db, Querier } from "../db/client.js"
 import type { MessageRow } from "../repositories/messages.repo.js"
 import * as messagesRepo from "../repositories/messages.repo.js"
-import * as orgReposRepo from "../repositories/orgRepos.repo.js"
-import * as reposRepo from "../repositories/repos.repo.js"
+import * as projectsRepo from "../repositories/projects.repo.js"
 import * as sessionsRepo from "../repositories/sessions.repo.js"
 import * as subagentsRepo from "../repositories/subagents.repo.js"
 import * as tokenUsageRepo from "../repositories/tokenUsage.repo.js"
 import * as toolRowsRepo from "../repositories/toolRows.repo.js"
-import * as userReposRepo from "../repositories/userRepos.repo.js"
 
 const providerFor = (model?: string): string | undefined =>
   model?.startsWith("claude-") ? "anthropic" : undefined
@@ -34,24 +32,12 @@ const toMessageRow = (
   sourceSchemaVersion: message.sourceSchemaVersion,
   isSubagent: message.agentId !== undefined,
   agentId: message.agentId,
+  gitBranch: message.gitBranch,
+  gitCommit: message.gitCommit,
 })
 
 const rawMap = (rawLines: ReadonlyArray<RawLine>): ReadonlyMap<string, string> =>
   new Map(rawLines.map((line) => [line.lineUuid, line.raw] as const))
-
-const grantRepoAccess = async (
-  tx: Querier,
-  userId: string,
-  payload: IngestPayload,
-): Promise<string> => {
-  const repoId = await reposRepo.upsertByIdentity(tx, payload.repo)
-  await userReposRepo.grant(tx, userId, repoId)
-  if (payload.repo.ownerType === "org") {
-    const orgId = await orgReposRepo.findOrgIdBySlug(tx, payload.repo.owner)
-    if (orgId) await orgReposRepo.link(tx, orgId, repoId)
-  }
-  return repoId
-}
 
 const deriveToolRows = async (
   tx: Querier,
@@ -91,14 +77,17 @@ export const ingest = async (
 ): Promise<IngestResponse> => {
   try {
     return await db.transaction(async (tx) => {
-      const repoId = await grantRepoAccess(tx, userId, payload)
+      const projectId = await projectsRepo.upsert(tx, {
+        identity: payload.project,
+        ownerId: userId,
+      })
 
       if (payload.type === "main") {
         await sessionsRepo.upsert(tx, {
           id: payload.sessionId,
           source: "claude_code",
           userId,
-          repoId,
+          projectId,
           fields: payload.session,
         })
       } else {

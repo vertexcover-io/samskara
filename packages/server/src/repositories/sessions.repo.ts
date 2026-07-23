@@ -8,7 +8,7 @@ export type UpsertSessionInput = {
   readonly id: string
   readonly source: string
   readonly userId: string
-  readonly repoId: string
+  readonly projectId: string
   readonly fields: SessionFields
 }
 
@@ -19,20 +19,18 @@ const keepExisting = (column: PgColumn) =>
   sql`coalesce(${sql.raw(`excluded."${column.name}"`)}, ${column})`
 
 export const upsert = async (db: Querier, input: UpsertSessionInput): Promise<void> => {
-  const { id, source, userId, repoId, fields } = input
+  const { id, source, userId, projectId, fields } = input
   await db
     .insert(sessions)
     .values({
       id,
       source,
       userId,
-      repoId,
+      projectId,
       model: fields.model,
       provider: providerFor(fields.model),
       title: fields.title,
       cwd: fields.cwd,
-      gitBranch: fields.gitBranch,
-      gitCommit: fields.gitCommit,
       cliVersion: fields.cliVersion,
       permissionMode: fields.permissionMode,
     })
@@ -43,8 +41,6 @@ export const upsert = async (db: Querier, input: UpsertSessionInput): Promise<vo
         provider: keepExisting(sessions.provider),
         title: keepExisting(sessions.title),
         cwd: keepExisting(sessions.cwd),
-        gitBranch: keepExisting(sessions.gitBranch),
-        gitCommit: keepExisting(sessions.gitCommit),
         cliVersion: keepExisting(sessions.cliVersion),
         permissionMode: keepExisting(sessions.permissionMode),
         updatedAt: sql`now()`,

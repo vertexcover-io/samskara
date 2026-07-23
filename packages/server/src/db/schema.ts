@@ -74,60 +74,62 @@ export const userOrgs = pgTable(
   (t) => [primaryKey({ columns: [t.userId, t.orgId] }), index("user_orgs_org_id_idx").on(t.orgId)],
 )
 
-export const userRepos = pgTable(
-  "user_repos",
+export const projects = pgTable(
+  "projects",
   {
-    userId: uuid("user_id")
+    id: uuid("id").primaryKey().defaultRandom(),
+    name: text("name").notNull(),
+    slug: text("slug").notNull(),
+    ownerId: uuid("ownerId")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    repoId: uuid("repo_id")
-      .notNull()
-      .references(() => repos.id, { onDelete: "cascade" }),
-    createdAt,
+    createdAt: createdAtCamel,
+    updatedAt: updatedAtCamel,
   },
-  (t) => [
-    primaryKey({ columns: [t.userId, t.repoId] }),
-    index("user_repos_repo_id_idx").on(t.repoId),
-  ],
+  (t) => [unique("projects_slug_owner_unique").on(t.slug, t.ownerId)],
 )
 
-export const orgRepos = pgTable(
-  "org_repos",
+export const userProjectGrant = pgTable(
+  "userProjectGrant",
   {
-    orgId: uuid("org_id")
+    userId: uuid("userId")
       .notNull()
-      .references(() => orgs.id, { onDelete: "cascade" }),
-    repoId: uuid("repo_id")
+      .references(() => users.id, { onDelete: "cascade" }),
+    projectId: uuid("projectId")
       .notNull()
-      .references(() => repos.id, { onDelete: "cascade" }),
-    createdAt,
+      .references(() => projects.id, { onDelete: "cascade" }),
+    scope: text("scope").notNull(),
+    createdAt: createdAtCamel,
   },
   (t) => [
-    primaryKey({ columns: [t.orgId, t.repoId] }),
-    index("org_repos_repo_id_idx").on(t.repoId),
+    primaryKey({ columns: [t.userId, t.projectId] }),
+    check("userProjectGrant_scope_check", sql`${t.scope} in ('admin', 'editor', 'viewer')`),
+    index("userProjectGrant_projectId_idx").on(t.projectId),
   ],
 )
 
-export const sessions = pgTable("sessions", {
-  id: text("id").primaryKey(),
-  source: text("source").notNull(),
-  userId: uuid("userId")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
-  repoId: uuid("repoId")
-    .notNull()
-    .references(() => repos.id, { onDelete: "cascade" }),
-  model: text("model"),
-  provider: text("provider"),
-  title: text("title"),
-  cwd: text("cwd"),
-  gitBranch: text("gitBranch"),
-  gitCommit: text("gitCommit"),
-  cliVersion: text("cliVersion"),
-  permissionMode: text("permissionMode"),
-  createdAt: createdAtCamel,
-  updatedAt: updatedAtCamel,
-})
+export const sessions = pgTable(
+  "sessions",
+  {
+    id: text("id").primaryKey(),
+    source: text("source").notNull(),
+    userId: uuid("userId")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    projectId: uuid("projectId")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    model: text("model"),
+    provider: text("provider"),
+    title: text("title"),
+    cwd: text("cwd"),
+    cliVersion: text("cliVersion"),
+    permissionMode: text("permissionMode"),
+    createdAt: createdAtCamel,
+    updatedAt: updatedAtCamel,
+  },
+  (t) => [index("sessions_projectId_idx").on(t.projectId)],
+)
 
 export const messages = pgTable(
   "messages",
@@ -151,6 +153,8 @@ export const messages = pgTable(
     sourceSchemaVersion: integer("sourceSchemaVersion").notNull(),
     isSubagent: boolean("isSubagent").notNull().default(false),
     agentId: text("agentId"),
+    gitBranch: text("gitBranch"),
+    gitCommit: text("gitCommit"),
     createdAt: createdAtCamel,
   },
   (t) => [

@@ -5,7 +5,15 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { and, eq } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
 import { type Db, createDb } from "../db/client.js"
-import { messages, orgRepos, orgs, subagents, toolCall, toolResult, users } from "../db/schema.js"
+import {
+  messages,
+  projects,
+  sessions,
+  subagents,
+  toolCall,
+  toolResult,
+  users,
+} from "../db/schema.js"
 import { ingest } from "./ingest.js"
 
 const dockerAvailable = () => {
@@ -19,7 +27,7 @@ const dockerAvailable = () => {
 
 const packageDir = fileURLToPath(new URL("../..", import.meta.url))
 
-const repo = { host: "github", owner: "acme", ownerType: "user", repoName: "widget" } as const
+const project = { name: "widget", slug: "acme-widget" } as const
 
 const message = (
   over: Partial<NormalizedMessage> & Pick<NormalizedMessage, "lineUuid">,
@@ -38,7 +46,7 @@ const mainPayload = (sessionId: string, msgs: ReadonlyArray<NormalizedMessage>):
   type: "main",
   sessionId,
   sourceRelativePath: `${sessionId}.jsonl`,
-  repo,
+  project,
   session: { model: "claude-opus-4-8", title: "hello" },
   rawLines: [...new Set(msgs.map((m) => m.lineUuid))].map((lineUuid) => ({ lineUuid, raw: "{}" })),
   messages: msgs,
@@ -76,9 +84,16 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
     await teardown?.()
   })
 
-  test("main flush creates session, grants repo, inserts fanned-out messages", async () => {
+  test("main flush upserts the project, creates the session, inserts fanned-out messages", async () => {
     const msgs = [
-      message({ lineUuid: "l1", subIndex: 0, msgType: "assistant", content: "hi" }),
+      message({
+        lineUuid: "l1",
+        subIndex: 0,
+        msgType: "assistant",
+        content: "hi",
+        gitBranch: "main",
+        gitCommit: "abc123",
+      }),
       message({
         lineUuid: "l1",
         subIndex: 1,
@@ -97,6 +112,20 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
 
     const rows = await db.select().from(messages).where(eq(messages.sessionId, "sess-main"))
     expect(rows).toHaveLength(3)
+
+    // Project resolved from slug + the JWT user as owner; session bound to it.
+    const [proj] = await db.select().from(projects).where(eq(projects.slug, "acme-widget"))
+    expect(proj?.ownerId).toBe(userId)
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, "sess-main"))
+    expect(session?.projectId).toBe(proj?.id)
+
+    // git facts live per-message now.
+    const [assistant] = await db
+      .select()
+      .from(messages)
+      .where(and(eq(messages.lineUuid, "l1"), eq(messages.subIndex, 0)))
+    expect(assistant?.gitBranch).toBe("main")
+    expect(assistant?.gitCommit).toBe("abc123")
 
     const [call] = await db.select().from(toolCall).where(eq(toolCall.toolId, "toolu_1"))
     expect(call?.toolName).toBe("Read")
@@ -125,7 +154,7 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
       type: "subagent",
       sessionId: "ghost-session",
       sourceRelativePath: "subagents/agent-x.jsonl",
-      repo,
+      project,
       agent: { agentId: "agent-x", agentType: "Explore" },
       rawLines: [{ lineUuid: "g1", raw: "{}" }],
       messages: [message({ lineUuid: "g1", agentId: "agent-x" })],
@@ -145,7 +174,7 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
       type: "subagent",
       sessionId: "sess-sub",
       sourceRelativePath: "subagents/agent-y.jsonl",
-      repo,
+      project,
       agent: { agentId: "agent-y", agentType: "fork" },
       rawLines: [{ lineUuid: "y1", raw: "{}" }],
       messages: [message({ lineUuid: "y1", agentId: "agent-y" })],
@@ -156,21 +185,20 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
     expect(sub?.agentType).toBe("fork")
   })
 
-  test("org repo links to a seeded org; still grants userRepo", async () => {
-    const [org] = await db
-      .insert(orgs)
-      .values({ githubSlug: "acme-org", githubOrgId: 77 })
+  test("two users in the same repo get two distinct project rows (same slug)", async () => {
+    const [other] = await db
+      .insert(users)
+      .values({ githubId: 9002, githubLogin: "other-ingest-user" })
       .returning()
-    if (!org) throw new Error("seed org failed")
+    if (!other) throw new Error("seed user failed")
 
-    const orgPayload: IngestPayload = {
-      ...mainPayload("sess-org", [message({ lineUuid: "o1" })]),
-      repo: { host: "github", owner: "acme-org", ownerType: "org", repoName: "andromeda" },
-    }
-    await ingest(db, userId, orgPayload)
+    await ingest(db, userId, mainPayload("sess-mine", [message({ lineUuid: "a1" })]))
+    await ingest(db, other.id, mainPayload("sess-theirs", [message({ lineUuid: "b1" })]))
 
-    const links = await db.select().from(orgRepos).where(eq(orgRepos.orgId, org.id))
-    expect(links).toHaveLength(1)
+    const rows = await db.select().from(projects).where(eq(projects.slug, "acme-widget"))
+    const owners = new Set(rows.map((r) => r.ownerId))
+    expect(owners.has(userId)).toBe(true)
+    expect(owners.has(other.id)).toBe(true)
   })
 
   test("resolves parentAgentId across flushes (I4)", async () => {
@@ -180,7 +208,7 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
       type: "subagent",
       sessionId: "sess-nest",
       sourceRelativePath: "subagents/agent-parent.jsonl",
-      repo,
+      project,
       agent: { agentId: "agent-parent", spawnDepth: 1 },
       rawLines: [{ lineUuid: "p1", raw: "{}" }],
       messages: [
@@ -199,7 +227,7 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
       type: "subagent",
       sessionId: "sess-nest",
       sourceRelativePath: "subagents/agent-child.jsonl",
-      repo,
+      project,
       agent: { agentId: "agent-child", spawnDepth: 2, spawnToolUseId: "toolu_spawn" },
       rawLines: [{ lineUuid: "c1", raw: "{}" }],
       messages: [message({ lineUuid: "c1", agentId: "agent-child" })],

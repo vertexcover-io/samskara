@@ -13,11 +13,9 @@ type Deps = {
   readonly env: Env
 }
 
-const zRepo = z.object({
-  host: z.string(),
-  owner: z.string(),
-  ownerType: z.enum(["user", "org"]),
-  repoName: z.string(),
+const zProject = z.object({
+  name: z.string(),
+  slug: z.string(),
 })
 
 const zTokens = z.object({
@@ -48,12 +46,14 @@ const zMessage = z.object({
     .object({ callId: z.string(), output: z.string(), status: z.enum(["success", "failure"]) })
     .optional(),
   agentId: z.string().optional(),
+  gitBranch: z.string().optional(),
+  gitCommit: z.string().optional(),
 })
 
 const zBase = {
   sessionId: z.string(),
   sourceRelativePath: z.string(),
-  repo: zRepo,
+  project: zProject,
   rawLines: z.array(z.object({ lineUuid: z.string(), raw: z.string() })),
   messages: z.array(zMessage),
 }
@@ -62,8 +62,6 @@ const zSession = z.object({
   model: z.string().optional(),
   title: z.string().optional(),
   cwd: z.string().optional(),
-  gitBranch: z.string().optional(),
-  gitCommit: z.string().optional(),
   cliVersion: z.string().optional(),
   permissionMode: z.string().optional(),
 })
