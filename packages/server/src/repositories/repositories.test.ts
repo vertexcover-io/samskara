@@ -51,7 +51,7 @@ describe.skipIf(!dockerAvailable())("ingest repositories", () => {
       source: "claude_code",
       userId: user.id,
       projectId,
-      fields: { model: "claude-opus-4-8" },
+      fields: { title: "initial title" },
     })
     return { userId: user.id, projectId }
   }
@@ -91,8 +91,9 @@ describe.skipIf(!dockerAvailable())("ingest repositories", () => {
     expect(all).toHaveLength(1)
   })
 
-  test("sessions.upsert enriches without changing id; provider derived", async () => {
+  test("sessions.upsert enriches the title without changing id; null keeps existing", async () => {
     const { userId, projectId } = await seedSession("sess-repo-enrich")
+    // A non-null title on a later flush wins (coalesce excluded first).
     await sessionsRepo.upsert(db, {
       id: "sess-repo-enrich",
       source: "claude_code",
@@ -100,9 +101,15 @@ describe.skipIf(!dockerAvailable())("ingest repositories", () => {
       projectId,
       fields: { title: "later title" },
     })
+    // A flush with no title keeps the existing one.
+    await sessionsRepo.upsert(db, {
+      id: "sess-repo-enrich",
+      source: "claude_code",
+      userId,
+      projectId,
+      fields: {},
+    })
     const [row] = await db.select().from(sessions).where(eq(sessions.id, "sess-repo-enrich"))
-    expect(row?.provider).toBe("anthropic")
-    expect(row?.model).toBe("claude-opus-4-8")
     expect(row?.title).toBe("later title")
     expect(await sessionsRepo.exists(db, "sess-repo-enrich")).toBe(true)
     expect(await sessionsRepo.exists(db, "nope")).toBe(false)

@@ -1,4 +1,4 @@
-import type { IngestPayload, IngestResponse, NormalizedMessage, RawLine } from "@samskara/core"
+import type { IngestPayload, IngestResponse, NormalizedMessage, ParsedRecord } from "@samskara/core"
 import type pino from "pino"
 import type { Db, Querier } from "../db/client.js"
 import type { MessageRow } from "../repositories/messages.repo.js"
@@ -9,14 +9,27 @@ import * as subagentsRepo from "../repositories/subagents.repo.js"
 import * as tokenUsageRepo from "../repositories/tokenUsage.repo.js"
 import * as toolRowsRepo from "../repositories/toolRows.repo.js"
 
+// A message enriched with its record's line-level facts — the flat unit the repos key on.
+type FlatMessage = NormalizedMessage & {
+  readonly lineUuid: string
+  readonly lineNumber: number
+  readonly raw: string
+}
+
 const providerFor = (model?: string): string | undefined =>
   model?.startsWith("claude-") ? "anthropic" : undefined
 
-const toMessageRow = (
-  sessionId: string,
-  rawByLine: ReadonlyMap<string, string>,
-  message: NormalizedMessage,
-): MessageRow => ({
+const flatten = (records: ReadonlyArray<ParsedRecord>): ReadonlyArray<FlatMessage> =>
+  records.flatMap((record) =>
+    record.messages.map((message) => ({
+      ...message,
+      lineUuid: record.lineUuid,
+      lineNumber: record.lineNumber,
+      raw: record.raw,
+    })),
+  )
+
+const toMessageRow = (sessionId: string, message: FlatMessage): MessageRow => ({
   sessionId,
   lineUuid: message.lineUuid,
   subIndex: message.subIndex,
@@ -29,7 +42,7 @@ const toMessageRow = (
   provider: message.provider ?? providerFor(message.model),
   content: message.content,
   thinking: message.thinking,
-  raw: rawByLine.get(message.lineUuid) ?? {},
+  raw: message.raw,
   sourceSchemaVersion: message.sourceSchemaVersion,
   isSubagent: message.agentId !== undefined,
   agentId: message.agentId,
@@ -37,12 +50,9 @@ const toMessageRow = (
   gitCommit: message.gitCommit,
 })
 
-const rawMap = (rawLines: ReadonlyArray<RawLine>): ReadonlyMap<string, string> =>
-  new Map(rawLines.map((line) => [line.lineUuid, line.raw] as const))
-
 const deriveToolRows = async (
   tx: Querier,
-  messages: ReadonlyArray<NormalizedMessage>,
+  messages: ReadonlyArray<FlatMessage>,
   idByKey: ReadonlyMap<messagesRepo.MessageKey, string>,
 ): Promise<void> => {
   const withTools = messages.filter((m) => m.toolCall || m.toolResult)
@@ -58,7 +68,7 @@ const deriveToolRows = async (
 
 const storeTokens = async (
   tx: Querier,
-  messages: ReadonlyArray<NormalizedMessage>,
+  messages: ReadonlyArray<FlatMessage>,
   idByKey: ReadonlyMap<messagesRepo.MessageKey, string>,
 ): Promise<void> => {
   const withTokens = messages.filter((m) => m.tokens)
@@ -79,6 +89,7 @@ export type Ctx = {
 
 export const ingest = async (ctx: Ctx, payload: IngestPayload): Promise<IngestResponse> => {
   const { db, log, userId } = ctx
+  const flat = flatten(payload.records)
   try {
     return await db.transaction(async (tx) => {
       const projectId = await projectsRepo.upsert(tx, {
@@ -93,7 +104,7 @@ export const ingest = async (ctx: Ctx, payload: IngestPayload): Promise<IngestRe
           source: "claude_code",
           userId,
           projectId,
-          fields: payload.session,
+          fields: { title: payload.title },
         })
         log.info({ sessionId: payload.sessionId }, "Session created or updated")
       } else {
@@ -115,8 +126,7 @@ export const ingest = async (ctx: Ctx, payload: IngestPayload): Promise<IngestRe
         )
       }
 
-      const raw = rawMap(payload.rawLines)
-      const rows = payload.messages.map((m) => toMessageRow(payload.sessionId, raw, m))
+      const rows = flat.map((m) => toMessageRow(payload.sessionId, m))
       const { ingested, deduped, idByKey } = await messagesRepo.insertManyIgnoreConflicts(
         tx,
         payload.sessionId,
@@ -124,8 +134,8 @@ export const ingest = async (ctx: Ctx, payload: IngestPayload): Promise<IngestRe
       )
       log.info({ sessionId: payload.sessionId, inserted: ingested, deduped }, "Messages inserted")
 
-      await deriveToolRows(tx, payload.messages, idByKey)
-      await storeTokens(tx, payload.messages, idByKey)
+      await deriveToolRows(tx, flat, idByKey)
+      await storeTokens(tx, flat, idByKey)
       await subagentsRepo.resolveParentAgentIds(tx, payload.sessionId)
       log.debug({ sessionId: payload.sessionId }, "Tool rows and token usage stored")
 
@@ -134,7 +144,7 @@ export const ingest = async (ctx: Ctx, payload: IngestPayload): Promise<IngestRe
           sessionId: payload.sessionId,
           accepted: ingested,
           duplicates: deduped,
-          eventCount: payload.messages.length,
+          eventCount: flat.length,
         },
         "Ingestion completed",
       )

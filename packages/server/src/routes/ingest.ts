@@ -26,14 +26,12 @@ const zTokens = z.object({
 })
 
 const zMessage = z.object({
-  lineUuid: z.string(),
   subIndex: z.number().int().nonnegative(),
   sessionId: z.string(),
   source: z.string(),
   sourceSchemaVersion: z.number().int(),
   msgType: z.enum(MSG_TYPES),
   timestamp: z.string(),
-  lineNumber: z.number().int().positive(),
   content: z.string().optional(),
   thinking: z.string().optional(),
   model: z.string().optional(),
@@ -50,21 +48,20 @@ const zMessage = z.object({
   gitCommit: z.string().optional(),
 })
 
+const zRecord = z.object({
+  lineUuid: z.string(),
+  lineNumber: z.number().int().positive(),
+  raw: z.string(),
+  messages: z.array(zMessage),
+})
+
 const zBase = {
   sessionId: z.string(),
-  sourceRelativePath: z.string(),
   project: zProject,
-  rawLines: z.array(z.object({ lineUuid: z.string(), raw: z.string() })),
-  messages: z.array(zMessage),
-}
-
-const zSession = z.object({
-  model: z.string().optional(),
+  sourceRelativePath: z.string(),
   title: z.string().optional(),
-  cwd: z.string().optional(),
-  cliVersion: z.string().optional(),
-  permissionMode: z.string().optional(),
-})
+  records: z.array(zRecord),
+}
 
 const zAgent = z.object({
   agentId: z.string(),
@@ -75,7 +72,7 @@ const zAgent = z.object({
 })
 
 const zIngest = z.discriminatedUnion("type", [
-  z.object({ ...zBase, type: z.literal("main"), session: zSession }),
+  z.object({ ...zBase, type: z.literal("main") }),
   z.object({ ...zBase, type: z.literal("subagent"), agent: zAgent }),
 ])
 
@@ -90,7 +87,7 @@ export const ingestRoutes = ({ db, env }: Deps): Hono<{ Variables: AuthVariables
     const log = c.get("log")
     log?.setBindings({
       sessionId: payload.sessionId,
-      eventCount: payload.messages.length,
+      eventCount: payload.records.reduce((n, r) => n + r.messages.length, 0),
       repo: payload.project.slug,
       isSubagent: payload.type === "subagent",
     })

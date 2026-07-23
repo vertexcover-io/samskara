@@ -1,81 +1,54 @@
 import { z } from "zod"
-import type { NormalizedMessage } from "../ingest/types.js"
+import type { IngestPayload, ParsedRecord, ProjectIdentity } from "../ingest/types.js"
+import type { FileSystem } from "./fs.js"
 
-export type ChangedFile = {
-  readonly path: string
-  readonly source: string
-  readonly mtime: number
-  readonly size: number
-}
+// Framework-owned base — present on every checkpoint regardless of plugin. `source` is the discriminant.
+export const checkpointBaseSchema = z.object({
+  filePath: z.string(),
+  lastUpdatedAt: z.string(),
+})
 
-export type SubagentInfo = {
-  readonly agentId: string
-  readonly agentType?: string
-  readonly description?: string
-  readonly spawnDepth?: number
-  readonly spawnToolUseId?: string
-  readonly sourceRelativePath: string
-}
+export const claudeCheckpointSchema = checkpointBaseSchema.extend({
+  source: z.literal("claude_code"),
+  mtime: z.number(),
+  size: z.number(),
+  lineProcessed: z.number(),
+})
 
-export const lineCursorSchema = z
+export const checkpointSchema = claudeCheckpointSchema
+export const checkpointStoreSchema = z
   .object({
-    kind: z.literal("line"),
-    lastLineProcessed: z.number(),
+    checkpoints: z.record(z.string(), checkpointSchema),
   })
   .readonly()
 
-export const resumeCursorSchema = lineCursorSchema
+export type CheckpointBase = z.infer<typeof checkpointBaseSchema>
+export type ClaudeCheckpoint = z.infer<typeof claudeCheckpointSchema>
+export type Checkpoint = z.infer<typeof checkpointSchema>
+export type CheckpointStore = z.infer<typeof checkpointStoreSchema>
 
-export const fileStateSchema = z
-  .object({
-    filePath: z.string(),
-    source: z.string(),
-    sessionId: z.string().nullable(),
-    type: z.enum(["main", "subagent"]),
-    agentId: z.string().nullable(),
-    retryCount: z.number(),
-    lastError: z.string().nullable(),
-    lastMtime: z.number(),
-    lastSize: z.number(),
-    cursor: resumeCursorSchema,
-  })
-  .readonly()
+// What checkpointAt returns — the plugin's arm minus the framework-owned base fields.
+export type CheckpointBody = Omit<ClaudeCheckpoint, keyof CheckpointBase>
 
-export const watcherStateSchema = z
-  .object({
-    files: z.record(z.string(), fileStateSchema),
-  })
-  .readonly()
-
-export type LineCursor = z.infer<typeof lineCursorSchema>
-export type ResumeCursor = z.infer<typeof resumeCursorSchema>
-export type FileState = z.infer<typeof fileStateSchema>
-export type WatcherState = z.infer<typeof watcherStateSchema>
-
-export type CollectContext = {
-  readonly cwd?: string
+export type CollectDeps = {
+  readonly fs: FileSystem
+  readonly glob: (pattern: string) => Promise<ReadonlyArray<string>>
+  readonly resolveProject: (startDir: string) => Promise<ProjectIdentity>
 }
 
-export type CollectResult = {
-  readonly messages: ReadonlyArray<NormalizedMessage>
-  readonly subagents?: ReadonlyArray<SubagentInfo>
-  readonly newState: FileState
-  readonly context?: CollectContext
+// One participant's freshly-parsed, not-yet-sent work — an IngestPayload plus transport-only fields.
+export type SessionTrack = IngestPayload & {
+  readonly checkpointKey: string
+  readonly records: ReadonlyArray<ParsedRecord>
+  readonly checkpointAt: (lineNumber: number) => CheckpointBody
+}
+
+export type SessionBatch = {
+  readonly sessionId: string
+  readonly tracks: ReadonlyArray<SessionTrack>
 }
 
 export interface AgentPlugin {
   readonly source: string
-  readonly globs: ReadonlyArray<string>
-  collect(changed: ChangedFile, prev: FileState | null): Promise<CollectResult>
-}
-
-export type SessionContext = {
-  readonly repo: {
-    readonly host: string
-    readonly owner: string
-    readonly ownerType: "user" | "org"
-    readonly repoName: string
-  }
-  readonly gitBranch?: string
-  readonly gitCommit?: string
+  collect(prev: CheckpointStore, deps: CollectDeps): Promise<ReadonlyArray<SessionBatch>>
 }

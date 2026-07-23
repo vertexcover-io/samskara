@@ -1,30 +1,25 @@
 import type { FileSystem } from "./fs.js"
-import type { FileState, LineCursor } from "./types.js"
 
 export type NumberedLine = { readonly lineNumber: number; readonly text: string }
 
 export type ReadNewLinesResult = {
   readonly lines: ReadonlyArray<NumberedLine>
-  readonly cursor: LineCursor
+  readonly lastLineProcessed: number
 }
-
-const lastProcessed = (prev: FileState | null): number =>
-  prev && prev.cursor.kind === "line" ? prev.cursor.lastLineProcessed : 0
 
 export const readNewLines = async (
   fs: FileSystem,
   path: string,
-  prev: FileState | null,
+  fromLine: number,
 ): Promise<ReadNewLinesResult> => {
-  const already = lastProcessed(prev)
   const content = await fs.readFile(path)
   const complete = content.split("\n").slice(0, -1)
 
   const lines = complete
-    .slice(already)
-    .map((text, index) => ({ lineNumber: already + index + 1, text }))
+    .slice(fromLine)
+    .map((text, index) => ({ lineNumber: fromLine + index + 1, text }))
 
-  return { lines, cursor: { kind: "line", lastLineProcessed: complete.length } }
+  return { lines, lastLineProcessed: complete.length }
 }
 
 export type ParsedLine = { readonly lineNumber: number; readonly data: unknown }

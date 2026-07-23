@@ -1,10 +1,24 @@
-import type { NormalizedMessage, TokenUsage } from "../../ingest/types.js"
+import type {
+  AgentInfo,
+  NormalizedMessage,
+  ParsedRecord,
+  ProjectIdentity,
+  TokenUsage,
+} from "../../ingest/types.js"
 import type { FileSystem } from "../fs.js"
 import { compact, iterJsonLines, readNewLines } from "../helpers.js"
-import type { AgentPlugin, ChangedFile, CollectContext, FileState, SubagentInfo } from "../types.js"
+import type {
+  AgentPlugin,
+  CheckpointBody,
+  CheckpointStore,
+  CollectDeps,
+  SessionBatch,
+  SessionTrack,
+} from "../types.js"
 
 const SOURCE = "claude_code"
 const SCHEMA_VERSION = 1
+const GLOB = "~/.claude/projects/**/*.jsonl"
 
 const SUBAGENT_PATH = /\/subagents\/agent-[a-f0-9]+\.jsonl$/
 
@@ -27,10 +41,8 @@ const tokensFrom = (usage: unknown): TokenUsage | undefined => {
 }
 
 type Common = {
-  readonly lineUuid: string
   readonly sessionId: string
   readonly timestamp: string
-  readonly lineNumber: number
   readonly model?: string
   readonly agentId?: string
   readonly parentUuid?: string
@@ -87,10 +99,7 @@ const blockToMessage = (
   return null
 }
 
-export const normalizeClaude = (
-  data: unknown,
-  lineNumber: number,
-): ReadonlyArray<NormalizedMessage> => {
+export const normalizeClaude = (data: unknown): ReadonlyArray<NormalizedMessage> => {
   if (!isObject(data)) return []
   const message = data.message
   if (!isObject(message)) return []
@@ -99,10 +108,8 @@ export const normalizeClaude = (
   if (!Array.isArray(content)) return []
 
   const common: Common = {
-    lineUuid: str(data.uuid) ?? "",
     sessionId: str(data.sessionId) ?? "",
     timestamp: str(data.timestamp) ?? "",
-    lineNumber,
     model: str(message.model),
     agentId: str(data.agentId),
     parentUuid: str(data.parentUuid),
@@ -110,7 +117,6 @@ export const normalizeClaude = (
     gitBranch: str(data.gitBranch),
     gitCommit: str(data.gitSha) ?? str(data.gitCommit),
   }
-  if (common.lineUuid === "") return []
 
   const tokens = tokensFrom(message.usage)
   return compact(content.map((block, index) => blockToMessage(block, index, common, tokens)))
@@ -119,7 +125,7 @@ export const normalizeClaude = (
 export const readClaudeSidecar = async (
   fs: FileSystem,
   transcriptPath: string,
-): Promise<SubagentInfo | null> => {
+): Promise<AgentInfo | null> => {
   const metaPath = transcriptPath.replace(/\.jsonl$/, ".meta.json")
   try {
     const parsed: unknown = JSON.parse(await fs.readFile(metaPath))
@@ -132,50 +138,132 @@ export const readClaudeSidecar = async (
       description: str(parsed.description),
       spawnDepth: typeof parsed.spawnDepth === "number" ? parsed.spawnDepth : undefined,
       spawnToolUseId: str(parsed.spawnToolUseId),
-      sourceRelativePath: transcriptPath,
     }
   } catch {
     return null
   }
 }
 
-const contextFrom = (
-  records: ReadonlyArray<{ readonly data: unknown }>,
-): CollectContext | undefined => {
-  const withCwd = records.find((r) => isObject(r.data) && str(r.data.cwd))
-  if (!withCwd || !isObject(withCwd.data)) return undefined
-  return { cwd: str(withCwd.data.cwd) }
+type ParsedFile = {
+  readonly path: string
+  readonly sessionId: string | null
+  readonly agent: AgentInfo | null
+  readonly cwd?: string
+  readonly records: ReadonlyArray<ParsedRecord>
+  readonly stat: { readonly mtime: number; readonly size: number }
+}
+
+const checkpointAtFor =
+  (stat: { readonly mtime: number; readonly size: number }) =>
+  (lineNumber: number): CheckpointBody => ({
+    source: SOURCE,
+    mtime: stat.mtime,
+    size: stat.size,
+    lineProcessed: lineNumber,
+  })
+
+const parseFile = async (fs: FileSystem, path: string, fromLine: number): Promise<ParsedFile> => {
+  const stat = await fs.stat(path)
+  const { lines } = await readNewLines(fs, path, fromLine)
+  const parsedLines = iterJsonLines(lines)
+
+  const records = parsedLines.flatMap(({ lineNumber, data }): ParsedRecord[] => {
+    if (!isObject(data)) return []
+    const lineUuid = str(data.uuid)
+    if (!lineUuid) return []
+    const messages = normalizeClaude(data)
+    return [{ lineUuid, lineNumber, raw: JSON.stringify(data), messages }]
+  })
+
+  const allMessages = records.flatMap((r) => r.messages)
+  const sessionId = allMessages.find((m) => m.sessionId)?.sessionId || null
+  const cwd = parsedLines.map((p) => p.data).find((d) => isObject(d) && str(d.cwd)) as
+    | Record<string, unknown>
+    | undefined
+  const isSubagent = SUBAGENT_PATH.test(path)
+  const agent = isSubagent ? await readClaudeSidecar(fs, path) : null
+
+  return {
+    path,
+    sessionId,
+    agent,
+    cwd: cwd ? str(cwd.cwd) : undefined,
+    records,
+    stat: { mtime: stat.mtimeMs, size: stat.size },
+  }
+}
+
+const isChanged = (
+  prev: CheckpointStore,
+  path: string,
+  stat: { readonly mtime: number; readonly size: number },
+): boolean => {
+  const cp = prev.checkpoints[path]
+  if (!cp) return true
+  return cp.mtime !== stat.mtime || cp.size !== stat.size
+}
+
+const fromLineFor = (prev: CheckpointStore, path: string): number =>
+  prev.checkpoints[path]?.lineProcessed ?? 0
+
+const buildTrack = async (
+  file: ParsedFile,
+  sessionId: string,
+  project: ProjectIdentity,
+): Promise<SessionTrack> => {
+  const shared = {
+    sessionId,
+    project,
+    sourceRelativePath: file.path,
+    records: file.records,
+    checkpointKey: file.path,
+    checkpointAt: checkpointAtFor(file.stat),
+  }
+  if (file.agent) {
+    return { ...shared, type: "subagent", agent: file.agent }
+  }
+  return { ...shared, type: "main" }
+}
+
+const groupBySession = (tracks: ReadonlyArray<SessionTrack>): ReadonlyArray<SessionBatch> => {
+  const bySession = new Map<string, SessionTrack[]>()
+  for (const track of tracks) {
+    const list = bySession.get(track.sessionId) ?? []
+    list.push(track)
+    bySession.set(track.sessionId, list)
+  }
+  return [...bySession.entries()].map(([sessionId, list]) => ({
+    sessionId,
+    tracks: [...list].sort((a, b) => Number(a.type === "subagent") - Number(b.type === "subagent")),
+  }))
 }
 
 export const createClaudePlugin = (fs: FileSystem): AgentPlugin => ({
   source: SOURCE,
-  globs: ["~/.claude/projects/**/*.jsonl"],
-  collect: async (changed, prev) => {
-    const { lines, cursor } = await readNewLines(fs, changed.path, prev)
-    const records = iterJsonLines(lines)
-    const messages = records.flatMap(({ lineNumber, data }) => normalizeClaude(data, lineNumber))
-    const isSubagent = SUBAGENT_PATH.test(changed.path)
-    const sidecar = isSubagent ? await readClaudeSidecar(fs, changed.path) : null
-    const subagents = sidecar ? [sidecar] : undefined
-    const agentId = messages.find((m) => m.agentId)?.agentId ?? sidecar?.agentId ?? null
-    const sessionId = messages.find((m) => m.sessionId)?.sessionId ?? prev?.sessionId ?? null
-    const context = contextFrom(records)
-    return {
-      messages,
-      subagents,
-      context,
-      newState: {
-        filePath: changed.path,
-        source: SOURCE,
-        sessionId,
-        type: agentId ? "subagent" : "main",
-        agentId,
-        retryCount: 0,
-        lastError: null,
-        lastMtime: changed.mtime,
-        lastSize: changed.size,
-        cursor,
-      },
+  collect: async (prev, deps) => {
+    const discovered = [...new Set(await deps.glob(GLOB))]
+
+    const changedPaths: string[] = []
+    for (const path of discovered) {
+      const stat = await fs.stat(path)
+      if (isChanged(prev, path, { mtime: stat.mtimeMs, size: stat.size })) changedPaths.push(path)
     }
+
+    const parsed = await Promise.all(
+      changedPaths.map((path) => parseFile(fs, path, fromLineFor(prev, path))),
+    )
+
+    const tracks = compact(
+      await Promise.all(
+        parsed.map(async (file): Promise<SessionTrack | null> => {
+          if (!file.sessionId || file.records.length === 0) return null
+          if (!file.cwd) return null
+          const project = await deps.resolveProject(file.cwd)
+          return buildTrack(file, file.sessionId, project)
+        }),
+      ),
+    )
+
+    return groupBySession(tracks)
   },
 })

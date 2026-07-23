@@ -1,8 +1,11 @@
-import type { SessionFields } from "@samskara/core"
 import { eq, sql } from "drizzle-orm"
 import type { PgColumn } from "drizzle-orm/pg-core"
 import type { Querier } from "../db/client.js"
 import { sessions } from "../db/schema.js"
+
+export type SessionFields = {
+  readonly title?: string
+}
 
 export type UpsertSessionInput = {
   readonly id: string
@@ -11,9 +14,6 @@ export type UpsertSessionInput = {
   readonly projectId: string
   readonly fields: SessionFields
 }
-
-const providerFor = (model?: string): string | undefined =>
-  model?.startsWith("claude-") ? "anthropic" : undefined
 
 const keepExisting = (column: PgColumn) =>
   sql`coalesce(${sql.raw(`excluded."${column.name}"`)}, ${column})`
@@ -27,22 +27,12 @@ export const upsert = async (db: Querier, input: UpsertSessionInput): Promise<vo
       source,
       userId,
       projectId,
-      model: fields.model,
-      provider: providerFor(fields.model),
       title: fields.title,
-      cwd: fields.cwd,
-      cliVersion: fields.cliVersion,
-      permissionMode: fields.permissionMode,
     })
     .onConflictDoUpdate({
       target: sessions.id,
       set: {
-        model: keepExisting(sessions.model),
-        provider: keepExisting(sessions.provider),
         title: keepExisting(sessions.title),
-        cwd: keepExisting(sessions.cwd),
-        cliVersion: keepExisting(sessions.cliVersion),
-        permissionMode: keepExisting(sessions.permissionMode),
         updatedAt: sql`now()`,
       },
     })

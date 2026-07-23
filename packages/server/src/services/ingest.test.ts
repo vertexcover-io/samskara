@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
-import type { IngestPayload, NormalizedMessage } from "@samskara/core"
+import type { IngestPayload, NormalizedMessage, ParsedRecord } from "@samskara/core"
 import { createLogger } from "@samskara/core"
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql"
 import { and, eq } from "drizzle-orm"
@@ -32,27 +32,43 @@ const packageDir = fileURLToPath(new URL("../..", import.meta.url))
 
 const project = { name: "widget", slug: "acme-widget" } as const
 
+// Test message carrying its line identity; grouped into ParsedRecords by lineUuid.
+type TestMessage = NormalizedMessage & { readonly lineUuid: string; readonly lineNumber?: number }
+
 const message = (
-  over: Partial<NormalizedMessage> & Pick<NormalizedMessage, "lineUuid">,
-): NormalizedMessage => ({
+  over: Partial<NormalizedMessage> & { readonly lineUuid: string; readonly lineNumber?: number },
+): TestMessage => ({
   subIndex: 0,
   sessionId: "s",
   source: "claude_code",
   sourceSchemaVersion: 1,
   msgType: "assistant",
   timestamp: "2026-07-23T00:00:00.000Z",
-  lineNumber: 1,
   ...over,
 })
 
-const mainPayload = (sessionId: string, msgs: ReadonlyArray<NormalizedMessage>): IngestPayload => ({
+const recordsFrom = (msgs: ReadonlyArray<TestMessage>): ReadonlyArray<ParsedRecord> => {
+  const byLine = new Map<string, TestMessage[]>()
+  for (const m of msgs) {
+    const list = byLine.get(m.lineUuid) ?? []
+    list.push(m)
+    byLine.set(m.lineUuid, list)
+  }
+  return [...byLine.entries()].map(([lineUuid, list], index) => ({
+    lineUuid,
+    lineNumber: list[0]?.lineNumber ?? index + 1,
+    raw: "{}",
+    messages: list.map(({ lineUuid: _u, lineNumber: _n, ...rest }) => rest),
+  }))
+}
+
+const mainPayload = (sessionId: string, msgs: ReadonlyArray<TestMessage>): IngestPayload => ({
   type: "main",
   sessionId,
   sourceRelativePath: `${sessionId}.jsonl`,
   project,
-  session: { model: "claude-opus-4-8", title: "hello" },
-  rawLines: [...new Set(msgs.map((m) => m.lineUuid))].map((lineUuid) => ({ lineUuid, raw: "{}" })),
-  messages: msgs,
+  title: "hello",
+  records: recordsFrom(msgs),
 })
 
 describe.skipIf(!dockerAvailable())("ingest service", () => {
@@ -161,8 +177,7 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
       sourceRelativePath: "subagents/agent-x.jsonl",
       project,
       agent: { agentId: "agent-x", agentType: "Explore" },
-      rawLines: [{ lineUuid: "g1", raw: "{}" }],
-      messages: [message({ lineUuid: "g1", agentId: "agent-x" })],
+      records: recordsFrom([message({ lineUuid: "g1", agentId: "agent-x" })]),
     }
     const result = await ingest(ctx, payload)
     expect(result).toEqual({ error: "sessionNotFound" })
@@ -181,8 +196,7 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
       sourceRelativePath: "subagents/agent-y.jsonl",
       project,
       agent: { agentId: "agent-y", agentType: "fork" },
-      rawLines: [{ lineUuid: "y1", raw: "{}" }],
-      messages: [message({ lineUuid: "y1", agentId: "agent-y" })],
+      records: recordsFrom([message({ lineUuid: "y1", agentId: "agent-y" })]),
     }
     const result = await ingest(ctx, payload)
     expect(result).toEqual({ ingested: 1, deduped: 0 })
@@ -218,8 +232,7 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
       sourceRelativePath: "subagents/agent-parent.jsonl",
       project,
       agent: { agentId: "agent-parent", spawnDepth: 1 },
-      rawLines: [{ lineUuid: "p1", raw: "{}" }],
-      messages: [
+      records: recordsFrom([
         message({
           lineUuid: "p1",
           subIndex: 0,
@@ -227,7 +240,7 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
           agentId: "agent-parent",
           toolCall: { id: "toolu_spawn", name: "Task", input: {} },
         }),
-      ],
+      ]),
     }
     await ingest(ctx, parentFlush)
 
@@ -237,8 +250,7 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
       sourceRelativePath: "subagents/agent-child.jsonl",
       project,
       agent: { agentId: "agent-child", spawnDepth: 2, spawnToolUseId: "toolu_spawn" },
-      rawLines: [{ lineUuid: "c1", raw: "{}" }],
-      messages: [message({ lineUuid: "c1", agentId: "agent-child" })],
+      records: recordsFrom([message({ lineUuid: "c1", agentId: "agent-child" })]),
     }
     await ingest(ctx, childFlush)
 

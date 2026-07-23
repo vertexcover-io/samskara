@@ -2,7 +2,8 @@ import { mkdir, mkdtemp, readFile, rename, stat, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, test } from "vitest"
-import type { ChangedFile } from "../types.js"
+import type { ProjectIdentity } from "../../ingest/types.js"
+import type { CheckpointStore, CollectDeps } from "../types.js"
 import { createClaudePlugin, normalizeClaude, readClaudeSidecar } from "./claude.js"
 
 const nodeFs = {
@@ -15,9 +16,24 @@ const nodeFs = {
   },
 }
 
+const project: ProjectIdentity = { name: "widget", slug: "acme-widget" }
+
+const collectDeps = (
+  glob: ReadonlyArray<string>,
+  over: Partial<CollectDeps> = {},
+): CollectDeps => ({
+  fs: nodeFs,
+  glob: async () => glob,
+  resolveProject: async () => project,
+  ...over,
+})
+
+const empty: CheckpointStore = { checkpoints: {} }
+
 const assistantLine = {
   uuid: "line-1",
   sessionId: "sess-1",
+  cwd: "/work/app",
   timestamp: "2026-07-23T00:00:00.000Z",
   message: {
     role: "assistant",
@@ -43,33 +59,32 @@ const userToolResultLine = {
 
 describe("normalizeClaude", () => {
   test("fans an assistant line into text + N tool_use messages", () => {
-    const msgs = normalizeClaude(assistantLine, 1)
+    const msgs = normalizeClaude(assistantLine)
     expect(msgs).toHaveLength(3)
     expect(msgs.map((m) => m.msgType)).toEqual(["assistant", "toolCall", "toolCall"])
     expect(msgs.map((m) => m.subIndex)).toEqual([0, 1, 2])
-    expect(msgs.every((m) => m.lineUuid === "line-1")).toBe(true)
     expect(msgs[1]?.toolCall).toEqual({ id: "toolu_1", name: "Read", input: { path: "x" } })
   })
 
   test("maps token usage and derives provider", () => {
-    const [first] = normalizeClaude(assistantLine, 1)
+    const [first] = normalizeClaude(assistantLine)
     expect(first?.tokens).toEqual({ input: 120, output: 40, cached: 8, thinking: 0 })
     expect(first?.provider).toBe("anthropic")
   })
 
   test("produces a toolResult message from a user tool_result block", () => {
-    const [msg] = normalizeClaude(userToolResultLine, 2)
+    const [msg] = normalizeClaude(userToolResultLine)
     expect(msg?.msgType).toBe("toolResult")
     expect(msg?.toolResult).toEqual({ callId: "toolu_1", output: "ok", status: "success" })
   })
 
   test("metadata-only line yields no messages", () => {
-    expect(normalizeClaude({ uuid: "x", type: "summary" }, 1)).toEqual([])
+    expect(normalizeClaude({ uuid: "x", type: "summary" })).toEqual([])
   })
 })
 
 describe("readClaudeSidecar", () => {
-  test("returns SubagentInfo when .meta.json is present", async () => {
+  test("returns AgentInfo when .meta.json is present", async () => {
     const dir = await mkdtemp(join(tmpdir(), "samskara-claude-"))
     await mkdir(join(dir, "subagents"), { recursive: true })
     const transcript = join(dir, "subagents", "agent-af66.jsonl")
@@ -92,7 +107,29 @@ describe("readClaudeSidecar", () => {
 })
 
 describe("collect", () => {
-  test("end-to-end on a subagent transcript yields messages, subagents, and a cursor", async () => {
+  test("groups a main file into a session batch with a main track and records", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "samskara-claude-"))
+    const path = join(dir, "sess-1.jsonl")
+    await writeFile(path, `${JSON.stringify(assistantLine)}\n`, "utf8")
+
+    const plugin = createClaudePlugin(nodeFs)
+    const batches = await plugin.collect(empty, collectDeps([path]))
+
+    expect(batches).toHaveLength(1)
+    expect(batches[0]?.sessionId).toBe("sess-1")
+    const track = batches[0]?.tracks[0]
+    expect(track?.type).toBe("main")
+    expect(track?.records).toHaveLength(1)
+    expect(track?.records[0]?.lineUuid).toBe("line-1")
+    expect(track?.records[0]?.lineNumber).toBe(1)
+    expect(track?.records[0]?.messages).toHaveLength(3)
+    expect(track?.project).toEqual(project)
+    expect(track?.checkpointKey).toBe(path)
+    expect(track?.checkpointAt(1).lineProcessed).toBe(1)
+    expect(track?.checkpointAt(1).source).toBe("claude_code")
+  })
+
+  test("a subagent file yields a subagent track carrying agent info", async () => {
     const dir = await mkdtemp(join(tmpdir(), "samskara-claude-"))
     await mkdir(join(dir, "subagents"), { recursive: true })
     const path = join(dir, "subagents", "agent-af66.jsonl")
@@ -103,14 +140,99 @@ describe("collect", () => {
       "utf8",
     )
 
-    const changed: ChangedFile = { path, source: "claude_code", mtime: 1, size: 1 }
     const plugin = createClaudePlugin(nodeFs)
-    const result = await plugin.collect(changed, null)
+    const batches = await plugin.collect(empty, collectDeps([path]))
+    const track = batches[0]?.tracks[0]
+    expect(track?.type).toBe("subagent")
+    if (track?.type !== "subagent") throw new Error("expected subagent")
+    expect(track.agent.agentId).toBe("af66")
+    expect(track.agent.agentType).toBe("Explore")
+  })
 
-    expect(result.messages).toHaveLength(3)
-    expect(result.subagents?.[0]?.agentId).toBe("af66")
-    expect(result.newState.cursor.lastLineProcessed).toBe(1)
-    expect(result.newState.type).toBe("subagent")
-    expect(result.newState.agentId).toBe("af66")
+  test("main + subagent of one session group into a single batch, main first", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "samskara-claude-"))
+    await mkdir(join(dir, "subagents"), { recursive: true })
+    const main = join(dir, "sess-1.jsonl")
+    const sub = join(dir, "subagents", "agent-af66.jsonl")
+    await writeFile(main, `${JSON.stringify(assistantLine)}\n`, "utf8")
+    await writeFile(sub, `${JSON.stringify({ ...assistantLine, agentId: "af66" })}\n`, "utf8")
+    await writeFile(
+      sub.replace(/\.jsonl$/, ".meta.json"),
+      JSON.stringify({ agentId: "af66" }),
+      "utf8",
+    )
+
+    const plugin = createClaudePlugin(nodeFs)
+    const batches = await plugin.collect(empty, collectDeps([sub, main]))
+    expect(batches).toHaveLength(1)
+    expect(batches[0]?.tracks.map((t) => t.type)).toEqual(["main", "subagent"])
+  })
+
+  test("skips an unchanged file (matching mtime + size) without reading it", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "samskara-claude-"))
+    const path = join(dir, "sess-1.jsonl")
+    await writeFile(path, `${JSON.stringify(assistantLine)}\n`, "utf8")
+    const s = await stat(path)
+
+    const prev: CheckpointStore = {
+      checkpoints: {
+        [path]: {
+          filePath: path,
+          lastUpdatedAt: "2026-07-24T00:00:00.000Z",
+          source: "claude_code",
+          mtime: s.mtimeMs,
+          size: s.size,
+          lineProcessed: 1,
+        },
+      },
+    }
+
+    const plugin = createClaudePlugin(nodeFs)
+    const batches = await plugin.collect(prev, collectDeps([path]))
+    expect(batches).toHaveLength(0)
+  })
+
+  test("reads only from the stored watermark when a file has grown", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "samskara-claude-"))
+    const path = join(dir, "sess-1.jsonl")
+    await writeFile(path, `${JSON.stringify(assistantLine)}\n`, "utf8")
+    await writeFile(
+      path,
+      `${JSON.stringify(assistantLine)}\n${JSON.stringify({ ...userToolResultLine, cwd: "/work/app" })}\n`,
+      "utf8",
+    )
+
+    const prev: CheckpointStore = {
+      checkpoints: {
+        [path]: {
+          filePath: path,
+          lastUpdatedAt: "2026-07-24T00:00:00.000Z",
+          source: "claude_code",
+          mtime: 0,
+          size: 0,
+          lineProcessed: 1,
+        },
+      },
+    }
+
+    const plugin = createClaudePlugin(nodeFs)
+    const batches = await plugin.collect(prev, collectDeps([path]))
+    const records = batches[0]?.tracks[0]?.records ?? []
+    expect(records).toHaveLength(1)
+    expect(records[0]?.lineUuid).toBe("line-2")
+    expect(records[0]?.lineNumber).toBe(2)
+  })
+
+  test("emits no track for a file whose starting dir can't be resolved (no cwd)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "samskara-claude-"))
+    const path = join(dir, "no-cwd.jsonl")
+    const noCwd = { ...assistantLine }
+    // biome-ignore lint/performance/noDelete: test fixture
+    delete (noCwd as { cwd?: string }).cwd
+    await writeFile(path, `${JSON.stringify({ ...assistantLine, cwd: undefined })}\n`, "utf8")
+
+    const plugin = createClaudePlugin(nodeFs)
+    const batches = await plugin.collect(empty, collectDeps([path]))
+    expect(batches).toHaveLength(0)
   })
 })

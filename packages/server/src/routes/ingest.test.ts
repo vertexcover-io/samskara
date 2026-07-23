@@ -38,19 +38,23 @@ const mainPayload = (sessionId: string): IngestPayload => ({
   sessionId,
   sourceRelativePath: `${sessionId}.jsonl`,
   project,
-  session: { model: "claude-opus-4-8" },
-  rawLines: [{ lineUuid: "l1", raw: "{}" }],
-  messages: [
+  title: "hello",
+  records: [
     {
       lineUuid: "l1",
-      subIndex: 0,
-      sessionId,
-      source: "claude_code",
-      sourceSchemaVersion: 1,
-      msgType: "assistant",
-      timestamp: "2026-07-23T00:00:00.000Z",
       lineNumber: 1,
-      content: "hi",
+      raw: "{}",
+      messages: [
+        {
+          subIndex: 0,
+          sessionId,
+          source: "claude_code",
+          sourceSchemaVersion: 1,
+          msgType: "assistant",
+          timestamp: "2026-07-23T00:00:00.000Z",
+          content: "hi",
+        },
+      ],
     },
   ],
 })
@@ -139,18 +143,22 @@ describe.skipIf(!dockerAvailable())("ingest route", () => {
       sourceRelativePath: "subagents/agent-z.jsonl",
       project,
       agent: { agentId: "agent-z" },
-      rawLines: [{ lineUuid: "z1", raw: "{}" }],
-      messages: [
+      records: [
         {
           lineUuid: "z1",
-          subIndex: 0,
-          sessionId: "no-session",
-          source: "claude_code",
-          sourceSchemaVersion: 1,
-          msgType: "assistant",
-          timestamp: "2026-07-23T00:00:00.000Z",
           lineNumber: 1,
-          agentId: "agent-z",
+          raw: "{}",
+          messages: [
+            {
+              subIndex: 0,
+              sessionId: "no-session",
+              source: "claude_code",
+              sourceSchemaVersion: 1,
+              msgType: "assistant",
+              timestamp: "2026-07-23T00:00:00.000Z",
+              agentId: "agent-z",
+            },
+          ],
         },
       ],
     }

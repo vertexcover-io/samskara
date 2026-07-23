@@ -56,11 +56,10 @@ export type WatchOptions = {
 }
 
 export const watch = async (options: WatchOptions): Promise<void> => {
-  const { log } = options
+  const { log, projectOverride } = options
   const token = await readToken()
   const config: WatcherConfig = {
     statePath: join(homedir(), ".samskara", "state.json"),
-    projectOverride: options.projectOverride,
   }
   const deps: WatcherDeps = {
     fs: nodeFs,
@@ -68,7 +67,9 @@ export const watch = async (options: WatchOptions): Promise<void> => {
     sink: createHttpSink({ apiBase, token, fetch: globalThis.fetch }),
     glob: globAll,
     plugin: createClaudePlugin(nodeFs),
-    resolveProject: (startDir) => resolveProject(startDir, { runGit }),
+    resolveProject: projectOverride
+      ? async () => projectOverride
+      : (startDir) => resolveProject(startDir, { runGit }),
     log,
   }
 

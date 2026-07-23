@@ -45,15 +45,14 @@ export type ToolResult = {
   readonly status: "success" | "failure"
 }
 
+// Line-level fields (lineUuid, lineNumber) live on the ParsedRecord; a message keeps subIndex.
 export type NormalizedMessage = {
-  readonly lineUuid: string
   readonly subIndex: number
   readonly sessionId: string
   readonly source: string
   readonly sourceSchemaVersion: number
   readonly msgType: MsgType
   readonly timestamp: string
-  readonly lineNumber: number
   readonly content?: string
   readonly thinking?: string
   readonly model?: string
@@ -68,9 +67,12 @@ export type NormalizedMessage = {
   readonly gitCommit?: string
 }
 
-export type RawLine = {
+// One source line with its own fan-out; raw is shared by the line's messages.
+export type ParsedRecord = {
   readonly lineUuid: string
+  readonly lineNumber: number
   readonly raw: string
+  readonly messages: ReadonlyArray<NormalizedMessage>
 }
 
 export type AgentInfo = {
@@ -81,24 +83,16 @@ export type AgentInfo = {
   readonly spawnToolUseId?: string
 }
 
-export type SessionFields = {
-  readonly model?: string
-  readonly title?: string
-  readonly cwd?: string
-  readonly cliVersion?: string
-  readonly permissionMode?: string
-}
-
 export type IngestBase = {
   readonly sessionId: string
-  readonly sourceRelativePath: string
   readonly project: ProjectIdentity
-  readonly rawLines: ReadonlyArray<RawLine>
-  readonly messages: ReadonlyArray<NormalizedMessage>
+  readonly sourceRelativePath: string
+  readonly title?: string
+  readonly records: ReadonlyArray<ParsedRecord>
 }
 
 export type IngestPayload =
-  | (IngestBase & { readonly type: "main"; readonly session: SessionFields })
+  | (IngestBase & { readonly type: "main" })
   | (IngestBase & { readonly type: "subagent"; readonly agent: AgentInfo })
 
 export type IngestResponse =

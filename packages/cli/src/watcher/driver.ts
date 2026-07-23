@@ -1,25 +1,25 @@
 import type {
   AgentPlugin,
-  ChangedFile,
-  CollectResult,
-  FileState,
+  Checkpoint,
+  CheckpointBody,
+  CheckpointStore,
+  CollectDeps,
   FileSystem,
   IngestPayload,
-  NormalizedMessage,
+  ParsedRecord,
   ProjectIdentity,
-  RawLine,
-  WatcherState,
+  SessionBatch,
+  SessionTrack,
 } from "@samskara/core"
-import { readState, writeState } from "@samskara/core"
+import { readCheckpoints, writeCheckpoints } from "@samskara/core"
 import type pino from "pino"
 
-export const LINE_CAP = 2000
+export const MESSAGE_CAP = 2000
 
 export type Clock = { now(): number }
 
 export type WatcherConfig = {
   readonly statePath: string
-  readonly projectOverride?: ProjectIdentity
 }
 
 export type WatcherDeps = {
@@ -32,143 +32,130 @@ export type WatcherDeps = {
   readonly log: pino.Logger
 }
 
-const PROJECT_UNKNOWN: ProjectIdentity = {
-  name: "unknown",
-  slug: "unknown",
+export type Chunk = {
+  readonly records: ReadonlyArray<ParsedRecord>
+  readonly lastCompleteLine: number
 }
 
-const isSubagentPath = (path: string): boolean => /\/subagents\/agent-[a-f0-9]+\.jsonl$/.test(path)
+const messageCount = (record: ParsedRecord): number => record.messages.length
 
-const orderMainFirst = (paths: ReadonlyArray<string>): ReadonlyArray<string> =>
-  [...paths].sort((a, b) => Number(isSubagentPath(a)) - Number(isSubagentPath(b)))
+// Slice a track's records into chunks of at most `cap` fanned-out messages, in order.
+// A record may straddle a boundary — both chunks carry the same lineUuid/raw with disjoint
+// message subsets. `lastCompleteLine` is the last line whose entire fan-out fit in that chunk.
+export const sliceByMessages = (
+  records: ReadonlyArray<ParsedRecord>,
+  cap: number,
+): ReadonlyArray<Chunk> => {
+  const chunks: Chunk[] = []
+  let current: ParsedRecord[] = []
+  let count = 0
+  let lastComplete = 0
 
-const rawLinesFor = (messages: ReadonlyArray<NormalizedMessage>): ReadonlyArray<RawLine> =>
-  [...new Set(messages.map((m) => m.lineUuid))].map((lineUuid) => ({ lineUuid, raw: "{}" }))
-
-const buildPayload = (
-  project: ProjectIdentity,
-  sessionId: string,
-  changed: ChangedFile,
-  result: CollectResult,
-): IngestPayload => {
-  const shared = {
-    sessionId,
-    sourceRelativePath: changed.path,
-    project,
-    rawLines: rawLinesFor(result.messages),
-    messages: result.messages,
+  const flush = () => {
+    if (current.length === 0) return
+    chunks.push({ records: current, lastCompleteLine: lastComplete })
+    current = []
+    count = 0
   }
-  if (result.newState.type === "subagent") {
-    const info = result.subagents?.[0]
-    const agentId = result.newState.agentId ?? info?.agentId ?? ""
-    return {
-      ...shared,
-      type: "subagent",
-      agent: {
-        agentId,
-        agentType: info?.agentType,
-        description: info?.description,
-        spawnDepth: info?.spawnDepth,
-        spawnToolUseId: info?.spawnToolUseId,
-      },
+
+  for (const record of records) {
+    const n = messageCount(record)
+
+    // A record with no messages still carries its line — attach it and mark it complete.
+    if (n === 0) {
+      current.push(record)
+      lastComplete = record.lineNumber
+      continue
+    }
+
+    let offset = 0
+    while (offset < n) {
+      if (count === cap) flush()
+      const room = cap - count
+      const slice = record.messages.slice(offset, offset + room)
+      current.push({ ...record, messages: slice })
+      count += slice.length
+      offset += slice.length
+      // The line is complete only once its final messages are in this chunk.
+      if (offset === n) lastComplete = record.lineNumber
     }
   }
-  return {
-    ...shared,
-    type: "main",
-    session: { cwd: result.context?.cwd },
-  }
+  flush()
+
+  return chunks
 }
 
-const projectFor = async (
+const wrap = (track: SessionTrack, base: Clock, body: CheckpointBody): Checkpoint => ({
+  ...body,
+  filePath: track.checkpointKey,
+  lastUpdatedAt: new Date(base.now()).toISOString(),
+})
+
+const payloadFor = (track: SessionTrack, records: ReadonlyArray<ParsedRecord>): IngestPayload => {
+  const { checkpointKey: _key, checkpointAt: _at, records: _all, ...payload } = track
+  return { ...payload, records }
+}
+
+const lineProcessedOf = (prev: CheckpointStore, key: string): number =>
+  prev.checkpoints[key]?.lineProcessed ?? 0
+
+const syncSession = async (
+  batch: SessionBatch,
+  prev: CheckpointStore,
+  deps: WatcherDeps,
+): Promise<Record<string, Checkpoint>> => {
+  const updated: Record<string, Checkpoint> = {}
+  const { sessionId } = batch
+
+  for (const track of batch.tracks) {
+    if (!track.sessionId) continue
+
+    for (const chunk of sliceByMessages(track.records, MESSAGE_CAP)) {
+      const { status } = await deps.sink.send(payloadFor(track, chunk.records))
+      if (status < 200 || status >= 300) {
+        deps.log.warn({ sessionId, key: track.checkpointKey, status }, "flush failed")
+        return updated
+      }
+      deps.log.debug({ sessionId, key: track.checkpointKey, status }, "flush ok")
+
+      // Advance only when this chunk fully sent a new line past our watermark. A chunk that ends
+      // mid-line (lastCompleteLine not beyond the prior mark) records nothing, so its unchanged
+      // mtime/size can't make the plugin skip the file before those lines are re-sent.
+      const alreadyAt = lineProcessedOf(prev, track.checkpointKey)
+      const currentAt = updated[track.checkpointKey]?.lineProcessed ?? alreadyAt
+      if (chunk.lastCompleteLine > currentAt) {
+        updated[track.checkpointKey] = wrap(
+          track,
+          deps.clock,
+          track.checkpointAt(chunk.lastCompleteLine),
+        )
+      }
+    }
+  }
+
+  return updated
+}
+
+export const runCycle = async (
   config: WatcherConfig,
   deps: WatcherDeps,
-  result: CollectResult,
-): Promise<ProjectIdentity> => {
-  if (config.projectOverride) return config.projectOverride
-  const cwd = result.context?.cwd
-  if (!cwd) return PROJECT_UNKNOWN
-  return deps.resolveProject(cwd)
-}
+): Promise<CheckpointStore> => {
+  const prev = await readCheckpoints(deps.fs, config.statePath)
 
-const changedFileFor = async (
-  fs: FileSystem,
-  plugin: AgentPlugin,
-  path: string,
-): Promise<ChangedFile> => {
-  const s = await fs.stat(path)
-  return { path, source: plugin.source, mtime: s.mtimeMs, size: s.size }
-}
-
-const flushFile = async (
-  config: WatcherConfig,
-  deps: WatcherDeps,
-  path: string,
-  state: WatcherState,
-): Promise<WatcherState> => {
-  let files = state.files
-  for (;;) {
-    const prev = files[path] ?? null
-    const changed = await changedFileFor(deps.fs, deps.plugin, path)
-    const result = await deps.plugin.collect(changed, prev)
-
-    if (result.messages.length === 0) {
-      deps.log.debug({ path }, "No new messages to ingest")
-      return { files: { ...files, [path]: result.newState } }
-    }
-
-    const capped = capMessages(result, prev)
-    const sessionId = capped.result.newState.sessionId
-    if (!sessionId) {
-      deps.log.warn({ path }, "Skipped file: no sessionId resolved")
-      return { files }
-    }
-
-    const project = await projectFor(config, deps, capped.result)
-    const payload = buildPayload(project, sessionId, changed, capped.result)
-    const { status } = await deps.sink.send(payload)
-    if (status < 200 || status >= 300) {
-      deps.log.warn({ path, sessionId, status }, "Upload rejected by server")
-      return { files }
-    }
-    deps.log.info(
-      { path, sessionId, status, messageCount: capped.result.messages.length },
-      "Uploaded session file",
-    )
-
-    files = { ...files, [path]: capped.result.newState }
-    if (!capped.more) return { files }
+  const collectDeps: CollectDeps = {
+    fs: deps.fs,
+    glob: deps.glob,
+    resolveProject: deps.resolveProject,
   }
-}
+  const batches = await deps.plugin.collect(prev, collectDeps)
 
-const capMessages = (
-  result: CollectResult,
-  prev: FileState | null,
-): { readonly result: CollectResult; readonly more: boolean } => {
-  const already = prev && prev.cursor.kind === "line" ? prev.cursor.lastLineProcessed : 0
-  const maxLine = already + LINE_CAP
-  const withinCap = result.messages.filter((m) => m.lineNumber <= maxLine)
-  if (withinCap.length === result.messages.length) return { result, more: false }
+  const results = await Promise.all(batches.map((batch) => syncSession(batch, prev, deps)))
 
-  return {
-    result: {
-      ...result,
-      messages: withinCap,
-      newState: { ...result.newState, cursor: { kind: "line", lastLineProcessed: maxLine } },
-    },
-    more: true,
-  }
-}
+  // Sessions touch disjoint tracks, so the maps never collide.
+  const checkpoints = { ...prev.checkpoints }
+  for (const map of results) Object.assign(checkpoints, map)
 
-export const runCycle = async (config: WatcherConfig, deps: WatcherDeps): Promise<WatcherState> => {
-  const state = await readState(deps.fs, config.statePath)
-  const discovered = (await Promise.all(deps.plugin.globs.map((g) => deps.glob(g)))).flat()
-  const ordered = orderMainFirst([...new Set(discovered)])
-
-  let next = state
-  for (const path of ordered) {
-    next = await flushFile(config, deps, path, next)
-  }
-  await writeState(deps.fs, config.statePath, next)
+  const next: CheckpointStore = { checkpoints }
+  await writeCheckpoints(deps.fs, config.statePath, next)
   return next
 }

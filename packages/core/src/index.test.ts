@@ -1,26 +1,29 @@
 import { expect, test } from "vitest"
-import type { IngestPayload } from "./index.js"
+import type { IngestPayload, ParsedRecord } from "./index.js"
+
+const records: ReadonlyArray<ParsedRecord> = [
+  { lineUuid: "u1", lineNumber: 1, raw: "{}", messages: [] },
+]
 
 const base = {
   sessionId: "sess-1",
-  sourceRelativePath: "sess-1.jsonl",
   project: { name: "widget", slug: "acme-widget" },
-  rawLines: [{ lineUuid: "u1", raw: "{}" }],
-  messages: [],
+  sourceRelativePath: "sess-1.jsonl",
+  records,
 } as const
 
-test("main payload narrows to session, not agent", () => {
+test("main payload narrows to type main, no agent block", () => {
   const payload = {
     ...base,
     type: "main",
-    session: { model: "claude-opus-4-8" },
+    title: "hello",
   } satisfies IngestPayload
 
   if (payload.type !== "main") throw new Error("expected main")
-  expect(payload.session.model).toBe("claude-opus-4-8")
+  expect(payload.title).toBe("hello")
 })
 
-test("subagent payload narrows to agent, not session", () => {
+test("subagent payload narrows to agent", () => {
   const payload = {
     ...base,
     type: "subagent",
