@@ -11,9 +11,9 @@ package builds, typechecks, lints, and passes its tests.
 
 | Package             | Purpose                                                        |
 | ------------------- | -------------------------------------------------------------- |
-| `@samskara/core`    | Canonical shared types (session, event, `SourceAdapter`). Stub. |
-| `@samskara/cli`     | `samskara` binary. `--version`, and `login` (CLI pairing).     |
-| `@samskara/server`  | Hono API on Node. Drizzle + postgres-js + pgvector. Auth + `/health`. |
+| `@samskara/core`    | Shared types, the collector framework (`SourceAdapter` + Claude plugin), ingest types, and the `createLogger` logging factory. |
+| `@samskara/cli`     | `samskara` binary. `--version`, `--verbose`, `login` (CLI pairing), `watch` (capture daemon). |
+| `@samskara/server`  | Hono API on Node. Drizzle + postgres-js + pgvector. Auth + `/health` + `/api/ingest`. |
 | `@samskara/web`     | Vite 6 + React 18 + Tailwind v4 UI. GitHub login entry.        |
 
 ## Requirements
@@ -60,23 +60,46 @@ GitHub OAuth web login, gated to members of a seeded org. Config lives in `.env`
 | POST | `/api/auth/logout`          | web      | Clear session cookie |
 | POST | `/api/auth/cli-code`        | web      | Mint a CLI pairing code |
 | POST | `/api/auth/cli-exchange`    | none     | Redeem a code → `aud:cli` JWT |
+| POST | `/api/ingest`               | cli      | Flush a captured session (messages, tool calls, subagents) |
 
 Tokens are audience-scoped (`aud: web | cli`) and checked per route by `requireAuth(aud)`.
 `samskara login` pairs the CLI: it redeems a code for an `aud:cli` token stored at
-`~/.samskara/token` (`0600`).
+`~/.samskara/token` (`0600`). `samskara watch` runs the capture daemon: it polls for Claude Code
+session files, resolves the owning project, and POSTs flushes to `/api/ingest`.
+
+## Logging
+
+Every package logs structured NDJSON via `createLogger(base, opts?)` from `@samskara/core`
+(pino under the hood — no pretty transport, ever). `base` must include `service`
+(`samskara-server`, `samskara-cli`), and `createLogger` redacts `token`, `authorization`,
+`*.token`, `req.headers.authorization`, `password`, and `secret` from every line.
+
+- **Level:** `LOG_LEVEL` env var (`fatal`|`error`|`warn`|`info`|`debug`|`trace`) if set and
+  valid; otherwise `info` when `NODE_ENV=production`, `debug` otherwise. An invalid `LOG_LEVEL`
+  falls back to the same default and warns once (never throws).
+- **CLI:** `samskara --verbose <command>` forces `debug` regardless of env/`NODE_ENV`.
+- **Server:** a global Hono middleware (`lib/logging-middleware.ts`) mints a `reqId` (trusts an
+  incoming `x-request-id` header if non-blank, else `randomUUID()`), echoes it on the response,
+  and binds a per-request child logger to `c.set("log", …)` carrying `{reqId, method, path}`.
+  `requireAuth` enriches it with `userId`; the ingest handler enriches it with
+  `{sessionId, eventCount, repo, isSubagent}` via `setBindings` (same instance, not re-childed).
+  One `info` completion line `{status, ms}` is logged per request; `onError` logs at `error`
+  through `c.get("log")` when present, else the server root logger, and always returns
+  `{error: "internal"}` with status 500.
 
 ## Server structure
 
 ```
 packages/server/src/
   db/            client.ts (postgres-js + drizzle), customTypes.ts (vector), schema.ts
-  repositories/  drizzle queries per model (users/orgs/userOrgs)
-  routes/        auth.ts (OAuth + session + CLI pairing)
-  services/      github.ts (GithubClient seam), auth.ts (gate + upsert), pairing.ts
-  lib/           env.ts (zod config), jwt.ts (jose), cookies.ts, require-auth.ts
+  repositories/  drizzle queries per model (users/orgs/projects/sessions)
+  routes/        auth.ts (OAuth + session + CLI pairing), ingest.ts (session flush)
+  services/      github.ts (GithubClient seam), auth.ts (gate + upsert), pairing.ts, ingest.ts
+  lib/           env.ts (zod config), jwt.ts (jose), cookies.ts, require-auth.ts,
+                 logging-middleware.ts (reqId + request child logger)
   scripts/       seed-org.ts
-  app.ts         buildApp(db, env, deps) — Hono app, /health + /api/auth
-  index.ts       Node server entry
+  app.ts         buildApp(db, env, deps) — Hono app, /health + /api/auth + /api/ingest
+  index.ts       Node server entry — logs "server listening" via the root logger
 ```
 
 ## Database
@@ -87,9 +110,9 @@ Postgres 16 with the pgvector extension, exposed on host port **5433**:
 bun run stack:up
 ```
 
-The identity mesh (`users`, `orgs`, `repos`, `user_orgs`, `user_repos`, `org_repos`,
-`sessions`, `messages`, `subagents`, `token_usage`) is defined in `db/schema.ts` with
-drizzle-kit migrations under `packages/server/migrations/`. Apply them with
+The identity mesh (`users`, `orgs`, `repos`, `user_orgs`, `projects`, `user_project_grant`,
+`sessions`, `messages`, `tool_call`, `tool_result`, `subagents`, `token_usage`) is defined in
+`db/schema.ts` with drizzle-kit migrations under `packages/server/migrations/`. Apply them with
 `bun run db:migrate`. The auth system adds no new tables (pairing codes are in-memory).
 
 The server package's Vitest suite spins up a real `pgvector/pgvector:pg16` container via
