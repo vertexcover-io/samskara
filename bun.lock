@@ -19,6 +19,7 @@
       "dependencies": {
         "@samskara/core": "workspace:*",
         "commander": "13.1.0",
+        "pino": "^9",
         "zod": "^4.4.3",
       },
       "devDependencies": {
