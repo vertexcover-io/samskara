@@ -5,6 +5,7 @@ const complete = {
   GITHUB_CLIENT_ID: "cid",
   GITHUB_CLIENT_SECRET: "secret",
   PUBLIC_BASE_URL: "http://localhost:3000",
+  WEB_BASE_URL: "http://localhost:8000",
   COOKIE_SECURE: "false",
   JWT_SECRET: "jwt",
 }
@@ -16,6 +17,7 @@ describe("loadEnv", () => {
       githubClientId: "cid",
       githubClientSecret: "secret",
       publicBaseUrl: "http://localhost:3000",
+      webBaseUrl: "http://localhost:8000",
       cookieSecure: false,
       jwtSecret: "jwt",
       jwtExpiresIn: "7d",

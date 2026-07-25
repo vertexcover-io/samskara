@@ -49,7 +49,8 @@ bun run seed:org <github-slug>   # seed an allowed org (login is gated to member
 
 GitHub OAuth web login, gated to members of a seeded org. Config lives in `.env` (see
 `.env.example`): `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET`, `JWT_SECRET`, `PUBLIC_BASE_URL`,
-`COOKIE_SECURE`, `JWT_EXPIRES_IN` (default `7d`). Ports: backend `:3000`, web `:8000`
+`WEB_BASE_URL` (default `http://localhost:8000`), `COOKIE_SECURE`, `JWT_EXPIRES_IN` (default `7d`).
+Ports: backend `:3000`, web `:8000`
 (Vite proxies `/api` → `:3000`).
 
 | Method | Path | Auth | Purpose |

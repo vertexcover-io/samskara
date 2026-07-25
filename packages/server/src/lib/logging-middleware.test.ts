@@ -77,6 +77,7 @@ describe("loggingMiddleware", () => {
       githubClientId: "id",
       githubClientSecret: "secret",
       publicBaseUrl: "http://localhost:3000",
+      webBaseUrl: "http://localhost:8000",
       cookieSecure: false,
       jwtSecret: "test-secret-value",
       jwtExpiresIn: "7d",
