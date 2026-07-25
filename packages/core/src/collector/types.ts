@@ -26,19 +26,6 @@ export type Checkpoint = z.infer<typeof checkpointSchema>
 export type CheckpointStore = z.infer<typeof checkpointStoreSchema>
 export type CheckpointBody = Omit<ClaudeCheckpoint, keyof CheckpointBase>
 
-export type LineOutcome =
-  | { readonly kind: "record"; readonly lineNumber: number; readonly record: ParsedRecord }
-  | {
-      readonly kind: "skip"
-      readonly lineNumber: number
-      readonly reason: "blank" | "malformedJson" | "nonObjectJson"
-    }
-  | {
-      readonly kind: "blocked"
-      readonly lineNumber: number
-      readonly reason: "unresolvedAttribution" | "contextConflict"
-    }
-
 export type CollectDeps = {
   readonly fs: FileSystem
   readonly glob: (pattern: string) => Promise<ReadonlyArray<string>>
@@ -46,27 +33,12 @@ export type CollectDeps = {
   readonly log: pino.Logger
 }
 
-type TrackTransport = {
+export type SessionTrack = IngestPayload & {
+  readonly records: ReadonlyArray<ParsedRecord>
   readonly checkpointKey: string
-  readonly outcomes: ReadonlyArray<LineOutcome>
+  readonly lastLineProcessed: number
   readonly checkpointAt: (lineNumber: number) => CheckpointBody
 }
-
-export type IngestSessionTrack = IngestPayload &
-  TrackTransport & {
-    readonly kind: "ingest"
-    readonly records: ReadonlyArray<ParsedRecord>
-  }
-
-export type CheckpointOnlyTrack = TrackTransport & {
-  readonly kind: "checkpointOnly"
-  readonly type: "main"
-  readonly sessionId: string
-  readonly sourceRelativePath: string
-  readonly records: readonly []
-}
-
-export type SessionTrack = IngestSessionTrack | CheckpointOnlyTrack
 
 export type SessionBatch = {
   readonly sessionId: string

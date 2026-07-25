@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rename, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, test } from "vitest"
-import { compact, iterJsonLines, readNewLines } from "./helpers.js"
+import { compact, completeLines, parseJsonLines } from "./helpers.js"
 import { readCheckpoints, writeCheckpoints } from "./state.js"
 import type { Checkpoint } from "./types.js"
 
@@ -17,8 +17,6 @@ const nodeFs = {
   },
 }
 
-const tempDir = () => mkdtemp(join(tmpdir(), "samskara-helpers-"))
-
 const checkpoint = (lineProcessed: number): Checkpoint => ({
   filePath: "/a.jsonl",
   lastUpdatedAt: "2026-07-24T00:00:00.000Z",
@@ -28,58 +26,37 @@ const checkpoint = (lineProcessed: number): Checkpoint => ({
   lineProcessed,
 })
 
-describe("readNewLines", () => {
-  test("returns only lines beyond the watermark and advances it", async () => {
-    const dir = await tempDir()
-    const path = join(dir, "a.jsonl")
-    await writeFile(path, "one\ntwo\nthree\n", "utf8")
-
-    const result = await readNewLines(nodeFs, path, 1)
-    expect(result.lines).toEqual([
+describe("completeLines", () => {
+  test("numbers every complete line and drops the torn trailing line", () => {
+    expect(completeLines("one\ntwo\nthree\n")).toEqual([
+      { lineNumber: 1, text: "one" },
       { lineNumber: 2, text: "two" },
       { lineNumber: 3, text: "three" },
     ])
-    expect(result.lastLineProcessed).toBe(3)
-  })
-
-  test("same content yields no new lines", async () => {
-    const dir = await tempDir()
-    const path = join(dir, "b.jsonl")
-    await writeFile(path, "one\ntwo\n", "utf8")
-    const result = await readNewLines(nodeFs, path, 2)
-    expect(result.lines).toEqual([])
-    expect(result.lastLineProcessed).toBe(2)
-  })
-
-  test("torn trailing line is not emitted until completed", async () => {
-    const dir = await tempDir()
-    const path = join(dir, "c.jsonl")
-    await writeFile(path, "one\ntwo\npar", "utf8")
-
-    const torn = await readNewLines(nodeFs, path, 0)
-    expect(torn.lines.map((l) => l.text)).toEqual(["one", "two"])
-    expect(torn.lastLineProcessed).toBe(2)
-
-    await writeFile(path, "one\ntwo\npartial\n", "utf8")
-    const healed = await readNewLines(nodeFs, path, torn.lastLineProcessed)
-    expect(healed.lines).toEqual([{ lineNumber: 3, text: "partial" }])
+    expect(completeLines("one\ntwo\npar")).toEqual([
+      { lineNumber: 1, text: "one" },
+      { lineNumber: 2, text: "two" },
+    ])
   })
 })
 
-describe("iterJsonLines", () => {
-  test("S5: complete blank, malformed, non-object, and object lines have explicit outcomes", () => {
-    const outcomes = iterJsonLines([
-      { lineNumber: 1, text: '{"a":1}' },
-      { lineNumber: 2, text: "   " },
-      { lineNumber: 3, text: "not json" },
-      { lineNumber: 4, text: "false" },
+describe("parseJsonLines", () => {
+  test("S5: blank lines are skipped and objects keep their line numbers", () => {
+    expect(
+      parseJsonLines([
+        { lineNumber: 1, text: '{"a":1}' },
+        { lineNumber: 2, text: "   " },
+        { lineNumber: 3, text: '{"b":2}' },
+      ]),
+    ).toEqual([
+      { lineNumber: 1, data: { a: 1 } },
+      { lineNumber: 3, data: { b: 2 } },
     ])
-    expect(outcomes).toEqual([
-      { kind: "object", lineNumber: 1, data: { a: 1 } },
-      { kind: "skip", lineNumber: 2, reason: "blank" },
-      { kind: "skip", lineNumber: 3, reason: "malformedJson" },
-      { kind: "skip", lineNumber: 4, reason: "nonObjectJson" },
-    ])
+  })
+
+  test("S5: malformed and non-object lines throw", () => {
+    expect(() => parseJsonLines([{ lineNumber: 3, text: "not json" }])).toThrow()
+    expect(() => parseJsonLines([{ lineNumber: 4, text: "false" }])).toThrow(/Line 4/)
   })
 })
 

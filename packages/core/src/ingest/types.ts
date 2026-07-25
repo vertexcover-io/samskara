@@ -66,12 +66,11 @@ const commonShape = {
 
 const tokenOwnerShape = { ...commonShape, tokens: tokenUsageSchema.optional() }
 
+/** Conversation fields are copied from the transcript as-is, not mapped to our own vocabulary. */
 const conversationDetailsSchema = z
   .object({
-    origin: z
-      .enum(["human", "assistant", "taskNotification", "coordinator", "runtime", "sdk", "unknown"])
-      .optional(),
-    promptSource: z.enum(["typed", "queued", "sdk", "system", "unknown"]).optional(),
+    origin: nonemptyString.optional(),
+    promptSource: nonemptyString.optional(),
     deliveryMode: z.enum(["activeTurn", "turnBoundary"]).optional(),
     isMeta: z.boolean().optional(),
     sourceMessageId: nonemptyString.optional(),

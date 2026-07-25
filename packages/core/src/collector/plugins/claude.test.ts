@@ -40,6 +40,13 @@ const collectDeps = (
 
 const empty: CheckpointStore = { checkpoints: {} }
 
+const mkTranscriptDir = async (): Promise<string> => {
+  const root = await mkdtemp(join(tmpdir(), "samskara-claude-"))
+  const dir = join(root, ".claude", "projects", "bucket")
+  await mkdir(dir, { recursive: true })
+  return dir
+}
+
 const assistantLine = {
   uuid: "line-1",
   sessionId: "sess-1",
@@ -161,6 +168,7 @@ describe("normalizeClaude", () => {
       sessionId: "sess-1",
       trackId: "main",
       sourceRelativePath: "sess-1.jsonl",
+      projectDir: "-Users-me-app",
     })
     expect(
       classifyClaudePath(`${root}/bucket/sess-1/subagents/workflows/wf/agent-a1.jsonl`, root),
@@ -169,6 +177,7 @@ describe("normalizeClaude", () => {
       trackId: "agent:a1",
       agentId: "a1",
       sourceRelativePath: "sess-1/subagents/workflows/wf/agent-a1.jsonl",
+      projectDir: "bucket",
     })
     expect(
       classifyClaudePath(`${root}/bucket/sess-1/subagents/workflows/wf/journal.jsonl`, root),
@@ -237,7 +246,7 @@ describe("normalizeClaude", () => {
     })
   })
 
-  test("S10: conversation roles and provenance follow explicit precedence", () => {
+  test("S10: conversation roles are mapped and provenance is copied from the transcript", () => {
     const fixtures = [
       [
         {
@@ -263,7 +272,7 @@ describe("normalizeClaude", () => {
         {
           role: "assistant",
           content: { type: "reasoning", value: "why", signature: "sig" },
-          details: { origin: "assistant" },
+          details: {},
         },
       ],
       [
@@ -280,7 +289,7 @@ describe("normalizeClaude", () => {
         {
           role: "unknown",
           content: { type: "image", value: "abc", mediaType: "image/png", encoding: "base64" },
-          details: { origin: "sdk", promptSource: "sdk" },
+          details: { promptSource: "sdk" },
         },
       ],
       [
@@ -293,7 +302,7 @@ describe("normalizeClaude", () => {
         {
           role: "developer",
           content: { type: "text", value: "meta" },
-          details: { origin: "runtime", promptSource: "unknown", isMeta: true },
+          details: { promptSource: "future", isMeta: true },
         },
       ],
     ] as const
@@ -718,7 +727,7 @@ describe("readClaudeSidecar", () => {
 
 describe("collect", () => {
   test("groups a main file into a session batch with a main track and records", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "samskara-claude-"))
+    const dir = await mkTranscriptDir()
     const path = join(dir, "sess-1.jsonl")
     await writeFile(path, `${JSON.stringify(assistantLine)}\n`, "utf8")
 
@@ -733,14 +742,14 @@ describe("collect", () => {
     expect(track?.records[0]?.lineUuid).toMatch(/^[0-9a-f-]{36}$/)
     expect(track?.records[0]?.lineNumber).toBe(1)
     expect(track?.records[0]?.messages).toHaveLength(3)
-    expect(track?.kind === "ingest" ? track.project : undefined).toEqual(project)
+    expect(track?.project).toEqual(project)
     expect(track?.checkpointKey).toBe(path)
     expect(track?.checkpointAt(1).lineProcessed).toBe(1)
     expect(track?.checkpointAt(1).source).toBe("claude_code")
   })
 
   test("a real-format subagent file yields a subagent track carrying agent info", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "samskara-claude-"))
+    const dir = await mkTranscriptDir()
     await mkdir(join(dir, "sess-1", "subagents"), { recursive: true })
     const path = join(dir, "sess-1", "subagents", "agent-af66.jsonl")
     await writeFile(path, `${JSON.stringify({ ...assistantLine, agentId: "af66" })}\n`, "utf8")
@@ -765,7 +774,7 @@ describe("collect", () => {
   })
 
   test("main + subagent of one session group into a single batch, main first", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "samskara-claude-"))
+    const dir = await mkTranscriptDir()
     await mkdir(join(dir, "sess-1", "subagents"), { recursive: true })
     const main = join(dir, "sess-1.jsonl")
     const sub = join(dir, "sess-1", "subagents", "agent-af66.jsonl")
@@ -784,7 +793,7 @@ describe("collect", () => {
   })
 
   test("skips an unchanged file (matching mtime + size) without reading it", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "samskara-claude-"))
+    const dir = await mkTranscriptDir()
     const path = join(dir, "sess-1.jsonl")
     await writeFile(path, `${JSON.stringify(assistantLine)}\n`, "utf8")
     const s = await stat(path)
@@ -808,7 +817,7 @@ describe("collect", () => {
   })
 
   test("reads only from the stored watermark when a file has grown", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "samskara-claude-"))
+    const dir = await mkTranscriptDir()
     const path = join(dir, "sess-1.jsonl")
     await writeFile(path, `${JSON.stringify(assistantLine)}\n`, "utf8")
     await writeFile(
@@ -839,7 +848,7 @@ describe("collect", () => {
   })
 
   test("emits no track for a file whose starting dir can't be resolved (no cwd)", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "samskara-claude-"))
+    const dir = await mkTranscriptDir()
     const path = join(dir, "no-cwd.jsonl")
     const noCwd = { ...assistantLine }
     // biome-ignore lint/performance/noDelete: test fixture

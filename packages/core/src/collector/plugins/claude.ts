@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto"
 import { basename, posix } from "node:path"
+import { z } from "zod"
 import type {
   AgentInfo,
   NormalizedMessage,
@@ -9,15 +10,12 @@ import type {
 } from "../../ingest/types.js"
 import { normalizedMessageSchema } from "../../ingest/types.js"
 import type { FileSystem } from "../fs.js"
-import { compact, iterJsonLines, readNewLines } from "../helpers.js"
+import { compact, completeLines, parseJsonLines } from "../helpers.js"
 import type {
   AgentPlugin,
   CheckpointBody,
-  CheckpointOnlyTrack,
   CheckpointStore,
   CollectDeps,
-  IngestSessionTrack,
-  LineOutcome,
   SessionBatch,
   SessionTrack,
 } from "../types.js"
@@ -111,55 +109,50 @@ export type ClaudePathContext = {
   readonly trackId: string
   readonly agentId?: string
   readonly sourceRelativePath: string
+  readonly projectDir: string
 }
 
 const normalizePath = (path: string): string => path.replaceAll("\\", "/")
-const discoveryRootFor = (path: string): string | undefined => {
+export const discoveryRootFor = (path: string): string | undefined => {
   const marker = "/.claude/projects/"
-  const index = path.indexOf(marker)
-  return index < 0 ? undefined : path.slice(0, index + marker.length - 1)
+  const index = normalizePath(path).indexOf(marker)
+  return index < 0 ? undefined : normalizePath(path).slice(0, index + marker.length - 1)
 }
+
+const MAIN_PATH = /^[^/]+\/([^/]+\.jsonl)$/
+const SUBAGENT_PATH = /^[^/]+\/(([^/]+)\/subagents\/(?:.+\/)?(agent-(.+)\.jsonl|[^/]+\.jsonl))$/
+const WORKFLOW_JOURNAL_PATH = /\/subagents\/workflows\/[^/]+\/journal\.jsonl$/
 
 export const classifyClaudePath = (
   transcriptPath: string,
-  discoveryRoot = discoveryRootFor(normalizePath(transcriptPath)),
+  discoveryRoot: string,
 ): ClaudePathContext | null => {
   const normalized = normalizePath(transcriptPath)
-  const rootRelative = discoveryRoot
-    ? normalized.slice(normalizePath(discoveryRoot).replace(/\/$/, "").length + 1)
-    : basename(normalized)
-  const rootParts = rootRelative.split("/").filter(Boolean)
-  const absoluteParts = normalized.split("/").filter(Boolean)
-  const absoluteSubagentsIndex = absoluteParts.indexOf("subagents")
-  const relativeParts = discoveryRoot
-    ? rootParts.slice(1)
-    : absoluteSubagentsIndex >= 1
-      ? absoluteParts.slice(absoluteSubagentsIndex - 1)
-      : rootParts
-  const sourceRelativePath = relativeParts.join("/")
-  const filename = relativeParts.at(-1) ?? basename(normalized)
-  if (!filename.endsWith(".jsonl")) return null
+  const rootRelative = normalized.slice(normalizePath(discoveryRoot).replace(/\/$/, "").length + 1)
+  const projectDir = rootRelative.slice(0, rootRelative.indexOf("/"))
+  const mainMatch = MAIN_PATH.exec(rootRelative)
+  const subagentMatch = SUBAGENT_PATH.exec(rootRelative)
 
-  if (/\/subagents\/workflows\/[^/]+\/journal\.jsonl$/.test(`/${sourceRelativePath}`)) {
-    return null
+  if (mainMatch) {
+    const [, filename] = mainMatch
+    if (!filename) return null
+    return {
+      sessionId: filename.slice(0, -".jsonl".length),
+      trackId: "main",
+      sourceRelativePath: filename,
+      projectDir,
+    }
   }
 
-  const subagentsIndex = relativeParts.indexOf("subagents")
-  if (subagentsIndex >= 1) {
-    const sessionId = relativeParts[subagentsIndex - 1]
-    if (!sessionId) return null
-    const agentMatch = /^agent-(.+)\.jsonl$/.exec(filename)
+  if (subagentMatch && !WORKFLOW_JOURNAL_PATH.test(`/${rootRelative}`)) {
+    const [, sourceRelativePath, sessionId, , namedAgentId] = subagentMatch
+    if (!sessionId || !sourceRelativePath) return null
     const agentId =
-      agentMatch?.[1] ?? `path-${createHash("sha256").update(sourceRelativePath).digest("hex")}`
-    return { sessionId, trackId: `agent:${agentId}`, agentId, sourceRelativePath }
+      namedAgentId ?? `path-${createHash("sha256").update(sourceRelativePath).digest("hex")}`
+    return { sessionId, trackId: `agent:${agentId}`, agentId, sourceRelativePath, projectDir }
   }
 
-  if (discoveryRoot && rootParts.length !== 2) return null
-  return {
-    sessionId: filename.slice(0, -".jsonl".length),
-    trackId: "main",
-    sourceRelativePath: sourceRelativePath || filename,
-  }
+  return null
 }
 
 const roleFor = (role: unknown): "user" | "assistant" | "system" | "developer" | "unknown" => {
@@ -203,7 +196,7 @@ const fallbackSubtype = (data: Record<string, unknown>): string => {
 const contentSubtype = (block: unknown): string =>
   isObject(block) ? (stringValue(block.type) ?? "message.content") : "message.content"
 
-const baseFor = (data: Record<string, unknown>, context: ClaudeLineContext) => {
+const parseCommonFields = (data: Record<string, unknown>, context: ClaudeLineContext) => {
   const message = isObject(data.message) ? data.message : undefined
   const model = stringValue(message?.model)
   return {
@@ -232,44 +225,22 @@ const nonnegativeIntegerValue = (value: unknown): number | undefined => {
 }
 const firstString = (...values: ReadonlyArray<unknown>): string | undefined =>
   values.map(stringValue).find((value) => value !== undefined)
-const knownPromptSource = (
-  value: unknown,
-): "typed" | "queued" | "sdk" | "system" | "unknown" | undefined => {
-  if (value === undefined) return undefined
-  if (value === "typed" || value === "queued" || value === "sdk" || value === "system") return value
-  return "unknown"
-}
-const originKind = (value: unknown): string | undefined =>
-  isObject(value) ? stringValue(value.kind) : stringValue(value)
+/**
+ * Copies the transcript's own conversation fields. `deliveryMode` is the one value we
+ * derive: queued prompts land on a turn boundary unless the caller knows otherwise.
+ */
 const conversationDetailsFor = (
   data: Record<string, unknown>,
-  role: ReturnType<typeof roleFor>,
-  deliveryMode?: "activeTurn" | "turnBoundary",
-) => {
-  const promptSource = knownPromptSource(data.promptSource)
-  const declaredOrigin = originKind(data.origin)
-  const origin =
-    declaredOrigin === "human"
-      ? "human"
-      : declaredOrigin === "task-notification"
-        ? "taskNotification"
-        : declaredOrigin === "coordinator"
-          ? "coordinator"
-          : role === "assistant"
-            ? "assistant"
-            : promptSource === "sdk"
-              ? "sdk"
-              : promptSource === "system" || data.isMeta === true
-                ? "runtime"
-                : "unknown"
-  return {
-    origin,
-    promptSource,
-    deliveryMode,
-    isMeta: typeof data.isMeta === "boolean" ? data.isMeta : undefined,
-    sourceMessageId: firstString(data.sourceMessageId, data.messageId),
-  }
-}
+  deliveryMode: "activeTurn" | "turnBoundary" | undefined = data.promptSource === "queued"
+    ? "turnBoundary"
+    : undefined,
+) => ({
+  origin: isObject(data.origin) ? stringValue(data.origin.kind) : stringValue(data.origin),
+  promptSource: stringValue(data.promptSource),
+  deliveryMode,
+  isMeta: typeof data.isMeta === "boolean" ? data.isMeta : undefined,
+  sourceMessageId: firstString(data.sourceMessageId, data.messageId),
+})
 
 const hookAliases = (data: Record<string, unknown>) => ({
   hookEvent: stringValue(data.hookEvent),
@@ -299,30 +270,47 @@ const asyncHookStatus = (
   if (stringValue(data.error) || stringValue(data.stderr)) return "failure"
   return "unknown"
 }
-const custom = (base: ReturnType<typeof baseFor>, subType: string): NormalizedMessage =>
-  parsedMessage({ ...base, subIndex: 0, msgType: "custom", subType })
-const normalized = (
-  base: ReturnType<typeof baseFor>,
+type CommonFields = ReturnType<typeof parseCommonFields>
+
+const buildMessage = (common: CommonFields, fields: Record<string, unknown>): NormalizedMessage =>
+  parsedMessage({ ...common, subIndex: 0, ...fields })
+
+const detailedMessage = (
+  common: CommonFields,
   msgType: Exclude<NormalizedMessage["msgType"], "custom" | "systemEvent" | "message">,
   details: unknown,
-): NormalizedMessage => parsedMessage({ ...base, subIndex: 0, msgType, details })
-const systemEvent = (base: ReturnType<typeof baseFor>, subType: string): NormalizedMessage =>
-  parsedMessage({ ...base, subIndex: 0, msgType: "systemEvent", subType })
+): NormalizedMessage => buildMessage(common, { msgType, details })
 
-const hookInfo = (value: unknown): { readonly command?: string; readonly durationMs?: number } => {
+/** Validate `data` against `schema`; build a message from it, or fall back to `custom`. */
+const buildParsed = <T>(
+  schema: z.ZodType<T>,
+  data: Record<string, unknown>,
+  common: CommonFields,
+  subType: string,
+  build: (parsed: T) => NormalizedMessage,
+): NormalizedMessage => {
+  const parsed = schema.safeParse(data)
+  return parsed.success
+    ? build(parsed.data)
+    : buildMessage(common, { msgType: "custom", subType: subType })
+}
+
+const hookSummaryEntry = (
+  value: unknown,
+): { readonly command?: string; readonly durationMs?: number } => {
   if (!isObject(value)) return {}
   return {
     command: typeof value.command === "string" ? value.command : undefined,
     durationMs: nonnegativeIntegerValue(value.durationMs),
   }
 }
-const hookMessage = (
+const handleHookMessage = (
   data: Record<string, unknown>,
-  base: ReturnType<typeof baseFor>,
+  base: CommonFields,
 ): NormalizedMessage | undefined => {
   const type = stringValue(data.type)
   if (type === "hook_progress") {
-    return normalized(base, "hookCall", {
+    return detailedMessage(base, "hookCall", {
       phase: "progress",
       type,
       ...hookAliases(data),
@@ -331,7 +319,7 @@ const hookMessage = (
   }
   if (type === "hook_additional_context") {
     if (!("content" in data)) return undefined
-    return normalized(base, "hookCall", {
+    return detailedMessage(base, "hookCall", {
       phase: "context",
       type,
       hookEvent: stringValue(data.hookEvent),
@@ -343,7 +331,7 @@ const hookMessage = (
   if (type === "hook_success" || type === "hook_non_blocking_error" || type === "hook_cancelled") {
     const status =
       type === "hook_success" ? "success" : type === "hook_cancelled" ? "cancelled" : "failure"
-    return normalized(base, "hookCall", {
+    return detailedMessage(base, "hookCall", {
       phase: "result",
       type,
       status,
@@ -351,7 +339,7 @@ const hookMessage = (
     })
   }
   if (type === "async_hook_response") {
-    return normalized(base, "hookCall", {
+    return detailedMessage(base, "hookCall", {
       phase: "result",
       type,
       status: asyncHookStatus(data),
@@ -370,10 +358,10 @@ const tagValue = (content: string, tag: string): string | undefined => {
   const end = content.indexOf(closing, valueStart)
   return end < 0 ? undefined : content.slice(valueStart, end)
 }
-const localCommandMessage = (
+const handleLocalCommandMessage = (
   data: Record<string, unknown>,
   content: string,
-  base: ReturnType<typeof baseFor>,
+  base: CommonFields,
 ): NormalizedMessage => {
   const command =
     tagValue(content, "command-name") ??
@@ -381,7 +369,7 @@ const localCommandMessage = (
     (typeof data.command === "string" ? data.command : undefined)
   const exitCode = integerValue(data.exitCode)
   const status = exitCode === undefined ? "unknown" : exitCode === 0 ? "success" : "failure"
-  return normalized(base, "localCommand", {
+  return detailedMessage(base, "localCommand", {
     command,
     commandType: command?.startsWith("/") ? "slash" : "unknown",
     status,
@@ -397,163 +385,203 @@ const hasLocalCommandMarker = (content: string): boolean =>
     content.includes(marker),
   )
 
-const attachmentMessage = (
+const optionalString = z.string().min(1).optional()
+const nonnegativeNumber = z.number().finite().nonnegative()
+const nonnegativeInt = z.number().int().nonnegative()
+/** Builds a fileEvent, or undefined when the attachment names no path. */
+const fileEventMessage = (
   attachment: Record<string, unknown>,
-  base: ReturnType<typeof baseFor>,
+  common: CommonFields,
+  type: string,
+  fields: Record<string, unknown>,
+): NormalizedMessage | undefined => {
+  const path = firstString(attachment.filename, attachment.path)
+  return path ? detailedMessage(common, "fileEvent", { type, path, ...fields }) : undefined
+}
+
+const budgetSchema = z.object({
+  used: nonnegativeNumber,
+  total: nonnegativeNumber,
+  remaining: nonnegativeNumber,
+})
+const selectedLinesSchema = z.object({ lineStart: nonnegativeInt, lineEnd: nonnegativeInt })
+
+const handleAttachmentMessage = (
+  attachment: Record<string, unknown>,
+  common: CommonFields,
 ): NormalizedMessage => {
   const type = stringValue(attachment.type) ?? "attachment"
-  const hook = hookMessage(attachment, base)
+  const hook = handleHookMessage(attachment, common)
   if (hook) return hook
-  if (type === "queued_command") {
-    if (typeof attachment.prompt !== "string") return custom(base, type)
-    return parsedMessage({
-      ...base,
-      subIndex: 0,
-      msgType: "message",
-      role: "user",
-      content: { type: "text", value: attachment.prompt },
-      details: {
-        ...conversationDetailsFor(attachment, "user", "activeTurn"),
-        promptSource: "queued",
-      },
-    })
-  }
-  if (type === "read_truncation_notice") {
-    return normalized(base, "progress", {
-      progressType: "readTruncation",
-      callId: stringValue(attachment.toolUseID),
-      stdout: typeof attachment.banner === "string" ? attachment.banner : undefined,
-    })
-  }
-  if (type === "date_change" || type === "auto_mode") return systemEvent(base, type)
-  if (type === "budget_usd") {
-    const usedUsd = finiteNonnegative(attachment.used)
-    const totalUsd = finiteNonnegative(attachment.total)
-    const remainingUsd = finiteNonnegative(attachment.remaining)
-    return usedUsd === undefined || totalUsd === undefined || remainingUsd === undefined
-      ? custom(base, type)
-      : normalized(base, "usage", { type: "budget", usedUsd, totalUsd, remainingUsd })
-  }
-  const path = firstString(attachment.filename, attachment.path)
-  if (type === "edited_text_file") {
-    return path
-      ? normalized(base, "fileEvent", {
-          type: "edited",
-          path,
+
+  const asCustom = buildMessage(common, { msgType: "custom", subType: type })
+
+  switch (type) {
+    case "queued_command":
+      return typeof attachment.prompt === "string"
+        ? buildMessage(common, {
+            msgType: "message",
+            role: "user",
+            content: { type: "text", value: attachment.prompt },
+            details: {
+              ...conversationDetailsFor(attachment, "activeTurn"),
+              promptSource: "queued",
+            },
+          })
+        : asCustom
+    case "read_truncation_notice":
+      return detailedMessage(common, "progress", {
+        progressType: "readTruncation",
+        callId: stringValue(attachment.toolUseID),
+        stdout: typeof attachment.banner === "string" ? attachment.banner : undefined,
+      })
+    case "date_change":
+    case "auto_mode":
+      return buildMessage(common, { msgType: "systemEvent", subType: type })
+    case "budget_usd":
+      return buildParsed(budgetSchema, attachment, common, type, ({ used, total, remaining }) =>
+        detailedMessage(common, "usage", {
+          type: "budget",
+          usedUsd: used,
+          totalUsd: total,
+          remainingUsd: remaining,
+        }),
+      )
+    case "edited_text_file":
+      return (
+        fileEventMessage(attachment, common, "edited", {
           snippet: typeof attachment.snippet === "string" ? attachment.snippet : undefined,
-        })
-      : custom(base, type)
-  }
-  if (type === "file" || type === "already_read_file") {
-    return path
-      ? normalized(base, "fileEvent", {
-          type: "attached",
-          path,
+        }) ?? asCustom
+      )
+    case "file":
+    case "already_read_file":
+      return (
+        fileEventMessage(attachment, common, "attached", {
           displayPath:
             typeof attachment.displayPath === "string" ? attachment.displayPath : undefined,
           value: attachment.value,
-          alreadyRead: type === "already_read_file" ? true : undefined,
-        })
-      : custom(base, type)
+          alreadyRead: type === "already_read_file" || undefined,
+        }) ?? asCustom
+      )
+    case "opened_file_in_ide":
+      return fileEventMessage(attachment, common, "openedInIde", {}) ?? asCustom
+    case "selected_lines_in_ide":
+      return buildParsed(
+        selectedLinesSchema,
+        attachment,
+        common,
+        type,
+        (lines) =>
+          fileEventMessage(attachment, common, "selectedInIde", {
+            ...lines,
+            value: firstString(attachment.content, attachment.value),
+          }) ?? asCustom,
+      )
+    default:
+      return asCustom
   }
-  if (type === "opened_file_in_ide") {
-    return path ? normalized(base, "fileEvent", { type: "openedInIde", path }) : custom(base, type)
-  }
-  if (type === "selected_lines_in_ide") {
-    const lineStart = nonnegativeIntegerValue(attachment.lineStart)
-    const lineEnd = nonnegativeIntegerValue(attachment.lineEnd)
-    return path && lineStart !== undefined && lineEnd !== undefined
-      ? normalized(base, "fileEvent", {
-          type: "selectedInIde",
-          path,
-          lineStart,
-          lineEnd,
-          value:
-            typeof attachment.content === "string"
-              ? attachment.content
-              : typeof attachment.value === "string"
-                ? attachment.value
-                : undefined,
-        })
-      : custom(base, type)
-  }
-  return custom(base, type)
 }
 
-const systemMessage = (
+/** `system` subtypes that carry no payload — recorded as bare timeline events. */
+const NOTICE_SUBTYPES = new Set([
+  "away_summary",
+  "scheduled_task_fire",
+  "informational",
+  "model_refusal_fallback",
+  "bridge_status",
+  "date_change",
+  "auto_mode",
+])
+
+const stopHookSummaryMessage = (
   data: Record<string, unknown>,
-  base: ReturnType<typeof baseFor>,
+  common: CommonFields,
+): NormalizedMessage => {
+  const hookInfos = Array.isArray(data.hookInfos) ? data.hookInfos.map(hookSummaryEntry) : []
+  return detailedMessage(common, "hookCall", {
+    phase: "summary",
+    type: "stop_hook_summary",
+    hookCount: nonnegativeIntegerValue(data.hookCount) ?? hookInfos.length,
+    hookInfos,
+    hookErrors: Array.isArray(data.hookErrors) ? data.hookErrors : [],
+    preventedContinuation: data.preventedContinuation === true,
+    stopReason: typeof data.stopReason === "string" ? data.stopReason : undefined,
+    hasOutput: typeof data.hasOutput === "boolean" ? data.hasOutput : undefined,
+  })
+}
+
+const turnDurationMessage = (
+  data: Record<string, unknown>,
+  common: CommonFields,
+): NormalizedMessage => {
+  const aborted = data.status === "aborted" || data.status === "interrupted"
+  return detailedMessage(common, "turnEvent", {
+    type: aborted ? "aborted" : "duration",
+    status: aborted ? "aborted" : "completed",
+    durationMs: nonnegativeIntegerValue(data.durationMs),
+    messageCount: nonnegativeIntegerValue(data.messageCount),
+    pendingBackgroundAgentCount: nonnegativeIntegerValue(data.pendingBackgroundAgentCount),
+    pendingWorkflowCount: nonnegativeIntegerValue(data.pendingWorkflowCount),
+    reason: typeof data.reason === "string" ? data.reason : undefined,
+  })
+}
+
+const compactBoundaryMessage = (
+  data: Record<string, unknown>,
+  common: CommonFields,
+): NormalizedMessage => {
+  const metadata = isObject(data.compactMetadata) ? data.compactMetadata : data
+  return detailedMessage(common, "compaction", {
+    type: "boundary",
+    trigger: stringValue(metadata.trigger),
+    summary: typeof metadata.summary === "string" ? metadata.summary : undefined,
+    preTokens: nonnegativeIntegerValue(metadata.preTokens),
+    postTokens: nonnegativeIntegerValue(metadata.postTokens),
+    droppedTokens: nonnegativeIntegerValue(metadata.droppedTokens),
+    durationMs: nonnegativeIntegerValue(metadata.durationMs),
+    logicalParentUuid: stringValue(metadata.logicalParentUuid),
+    preservedMessageUuids: Array.isArray(metadata.preservedMessageUuids)
+      ? metadata.preservedMessageUuids.filter(
+          (item): item is string => stringValue(item) !== undefined,
+        )
+      : undefined,
+  })
+}
+
+const handleSystemMessage = (
+  data: Record<string, unknown>,
+  common: CommonFields,
 ): NormalizedMessage => {
   const subType = stringValue(data.subtype) ?? "system"
-  if (subType === "stop_hook_summary") {
-    const hookInfos = Array.isArray(data.hookInfos) ? data.hookInfos.map(hookInfo) : []
-    const hookErrors = Array.isArray(data.hookErrors) ? data.hookErrors : []
-    return normalized(base, "hookCall", {
-      phase: "summary",
-      type: subType,
-      hookCount: nonnegativeIntegerValue(data.hookCount) ?? hookInfos.length,
-      hookInfos,
-      hookErrors,
-      preventedContinuation: data.preventedContinuation === true,
-      stopReason: typeof data.stopReason === "string" ? data.stopReason : undefined,
-      hasOutput: typeof data.hasOutput === "boolean" ? data.hasOutput : undefined,
-    })
+  switch (subType) {
+    case "stop_hook_summary":
+      return stopHookSummaryMessage(data, common)
+    case "turn_duration":
+      return turnDurationMessage(data, common)
+    case "compact_boundary":
+      return compactBoundaryMessage(data, common)
+    case "local_command":
+      return handleLocalCommandMessage(
+        data,
+        typeof data.content === "string" ? data.content : "",
+        common,
+      )
+    default:
+      return NOTICE_SUBTYPES.has(subType)
+        ? buildMessage(common, { msgType: "systemEvent", subType: subType })
+        : buildMessage(common, { msgType: "custom", subType: subType })
   }
-  if (subType === "turn_duration") {
-    const aborted = data.status === "aborted" || data.status === "interrupted"
-    return normalized(base, "turnEvent", {
-      type: aborted ? "aborted" : "duration",
-      status: aborted ? "aborted" : "completed",
-      durationMs: nonnegativeIntegerValue(data.durationMs),
-      messageCount: nonnegativeIntegerValue(data.messageCount),
-      pendingBackgroundAgentCount: nonnegativeIntegerValue(data.pendingBackgroundAgentCount),
-      pendingWorkflowCount: nonnegativeIntegerValue(data.pendingWorkflowCount),
-      reason: typeof data.reason === "string" ? data.reason : undefined,
-    })
-  }
-  if (subType === "compact_boundary") {
-    const metadata = isObject(data.compactMetadata) ? data.compactMetadata : data
-    return normalized(base, "compaction", {
-      type: "boundary",
-      trigger: stringValue(metadata.trigger),
-      summary: typeof metadata.summary === "string" ? metadata.summary : undefined,
-      preTokens: nonnegativeIntegerValue(metadata.preTokens),
-      postTokens: nonnegativeIntegerValue(metadata.postTokens),
-      droppedTokens: nonnegativeIntegerValue(metadata.droppedTokens),
-      durationMs: nonnegativeIntegerValue(metadata.durationMs),
-      logicalParentUuid: stringValue(metadata.logicalParentUuid),
-      preservedMessageUuids: Array.isArray(metadata.preservedMessageUuids)
-        ? metadata.preservedMessageUuids.filter(
-            (item): item is string => stringValue(item) !== undefined,
-          )
-        : undefined,
-    })
-  }
-  if (subType === "local_command") {
-    const content = typeof data.content === "string" ? data.content : ""
-    return localCommandMessage(data, content, base)
-  }
-  const notices = new Set([
-    "away_summary",
-    "scheduled_task_fire",
-    "informational",
-    "model_refusal_fallback",
-    "bridge_status",
-    "date_change",
-    "auto_mode",
-  ])
-  return notices.has(subType) ? systemEvent(base, subType) : custom(base, subType)
 }
 
-const progressMessage = (
+const handleProgressMessage = (
   data: Record<string, unknown>,
-  base: ReturnType<typeof baseFor>,
+  base: CommonFields,
 ): NormalizedMessage => {
   const progress = isObject(data.data) ? data.data : undefined
-  if (!progress) return custom(base, "progress")
+  if (!progress) return buildMessage(base, { msgType: "custom", subType: "progress" })
   const type = stringValue(progress.type)
-  if (!type) return custom(base, "progress")
-  const hook = hookMessage(progress, base)
+  if (!type) return buildMessage(base, { msgType: "custom", subType: "progress" })
+  const hook = handleHookMessage(progress, base)
   if (hook) return hook
   const callId = firstString(progress.toolUseID, progress.toolUseId, progress.toolCallId)
   const stdout = typeof progress.stdout === "string" ? progress.stdout : undefined
@@ -566,169 +594,189 @@ const progressMessage = (
       return converted !== undefined && Number.isInteger(converted) ? converted : undefined
     })()
   if (!callId && stdout === undefined && stderr === undefined && elapsedMs === undefined) {
-    return custom(base, type)
+    return buildMessage(base, { msgType: "custom", subType: type })
   }
-  return normalized(base, "progress", { progressType: type, callId, stdout, stderr, elapsedMs })
+  return detailedMessage(base, "progress", {
+    progressType: type,
+    callId,
+    stdout,
+    stderr,
+    elapsedMs,
+  })
 }
 
-const topLevelMessage = (
+/** Requires `key` to be present on the object, even when its value may be undefined. */
+const requiredKey = <T extends z.ZodTypeAny>(schema: T, key: string) =>
+  schema.refine((value) => isObject(value) && key in value)
+
+const queueOperationSchema = z.object({
+  operation: z.enum(["enqueue", "dequeue", "remove", "popAll"]).catch("unknown" as never),
+  taskId: optionalString,
+  status: optionalString,
+  summary: z.string().optional(),
+  outputFile: optionalString,
+  value: z.string().optional(),
+})
+const snapshotSchema = requiredKey(
+  z.object({ snapshot: z.unknown(), messageId: optionalString, isUpdate: z.boolean().optional() }),
+  "snapshot",
+)
+const deltaSchema = requiredKey(
+  z.object({
+    path: z.string().min(1),
+    backup: z.unknown(),
+    messageId: optionalString,
+    snapshotMessageId: optionalString,
+  }),
+  "backup",
+)
+const frameLinkSchema = z
+  .object({ path: optionalString, url: optionalString, title: z.string().optional() })
+  .refine((value) => value.path !== undefined || value.url !== undefined)
+
+/**
+ * Renders a line from its `message.content` — `user` and `assistant` lines, plus
+ * any other type that carries conversational content.
+ */
+const handleConversationMessage = (
   data: Record<string, unknown>,
-  base: ReturnType<typeof baseFor>,
-): NormalizedMessage | undefined => {
-  const type = stringValue(data.type)
-  if (type === "attachment") {
-    return isObject(data.attachment)
-      ? attachmentMessage(data.attachment, base)
-      : custom(base, "attachment")
+  common: CommonFields,
+): readonly [NormalizedMessage, ...NormalizedMessage[]] => {
+  const envelope = isObject(data.message) ? data.message : undefined
+  const content = envelope?.content
+
+  // A slash command is typed by its markers, not by the line's type field.
+  if (typeof content === "string" && hasLocalCommandMarker(content)) {
+    return [handleLocalCommandMessage(data, content, common)]
   }
-  if (type === "system") return systemMessage(data, base)
-  if (type === "progress") return progressMessage(data, base)
-  if (type === "summary") return systemEvent(base, "summary")
-  if (type === "queue-operation") {
-    const operation = data.operation
-    const knownOperation =
-      operation === "enqueue" ||
-      operation === "dequeue" ||
-      operation === "remove" ||
-      operation === "popAll"
-        ? operation
-        : "unknown"
-    return normalized(base, "queueOperation", {
-      operation: knownOperation,
-      taskId: stringValue(data.taskId),
-      status: stringValue(data.status),
-      summary: typeof data.summary === "string" ? data.summary : undefined,
-      outputFile: stringValue(data.outputFile),
-      value: typeof data.value === "string" ? data.value : undefined,
+
+  const role = roleFor(envelope?.role)
+  const usage = tokensFrom(envelope?.usage)
+  const details = conversationDetailsFor(data)
+
+  if (typeof content === "string") {
+    const conversation = buildMessage(common, {
+      msgType: "message",
+      role,
+      content: { type: "text", value: content },
+      details,
     })
+    return nonEmpty(withEmbeddedUsage([conversation], usage, common))
   }
-  if (type === "file-history-snapshot") {
-    if (!("snapshot" in data)) return custom(base, type)
-    return normalized(base, "fileEvent", {
-      type: "snapshot",
-      messageId: stringValue(data.messageId),
-      isUpdate: typeof data.isUpdate === "boolean" ? data.isUpdate : undefined,
-      snapshot: data.snapshot,
-    })
+
+  if (Array.isArray(content)) {
+    // An empty content array still yields one message, so the line is never dropped.
+    const blocks = content.length === 0 ? [undefined] : content
+    const messages = blocks.map((block, index) =>
+      handleContentBlock(block, role, common, index, details),
+    )
+    return nonEmpty(withEmbeddedUsage(messages, usage, common))
   }
-  if (type === "file-history-delta") {
-    const path = stringValue(data.path)
-    if (!path || !("backup" in data)) return custom(base, type)
-    return normalized(base, "fileEvent", {
-      type: "delta",
-      messageId: stringValue(data.messageId),
-      snapshotMessageId: stringValue(data.snapshotMessageId),
-      path,
-      backup: data.backup,
-    })
-  }
-  if (type === "frame-link") {
-    const path = stringValue(data.path)
-    const url = stringValue(data.url)
-    return path || url
-      ? normalized(base, "fileEvent", {
-          type: "artifact",
-          path,
-          url,
-          title: typeof data.title === "string" ? data.title : undefined,
-        })
-      : custom(base, type)
-  }
-  return undefined
+
+  return [buildMessage(common, { msgType: "custom", subType: fallbackSubtype(data) })]
 }
 
-const blockMessage = (
+const handleContentBlock = (
   block: unknown,
   role: ReturnType<typeof roleFor>,
-  base: ReturnType<typeof baseFor>,
+  common: CommonFields,
   subIndex: number,
   details: ReturnType<typeof conversationDetailsFor>,
 ): NormalizedMessage => {
-  const shared = { ...base, subIndex }
+  const shared = { ...common, subIndex }
   if (!isObject(block)) {
     return parsedMessage({ ...shared, msgType: "custom", subType: "message.content" })
   }
 
-  if (block.type === "text" && typeof block.text === "string") {
-    return parsedMessage({
-      ...shared,
-      msgType: "message",
-      role,
-      content: { type: "text", value: block.text },
-      details,
-    })
-  }
-  if (block.type === "thinking") {
-    return parsedMessage({
-      ...shared,
-      msgType: "message",
-      role: "assistant",
-      content: {
-        type: "reasoning",
-        value: typeof block.thinking === "string" ? block.thinking : undefined,
-        signature: typeof block.signature === "string" ? block.signature : undefined,
-      },
-      details: { ...details, origin: "assistant" },
-    })
-  }
-  if (block.type === "image") {
-    const source = isObject(block.source) ? block.source : undefined
-    const mediaType = firstString(source?.media_type, source?.mediaType)
-    const encoding = source?.type === "base64" || source?.type === "url" ? source.type : undefined
-    const value = firstString(source?.data, source?.url)
-    if (mediaType && encoding && value) {
+  // Every arm falls back to this when the block is the right type but malformed.
+  const asCustom = () =>
+    parsedMessage({ ...shared, msgType: "custom", subType: contentSubtype(block) })
+
+  switch (stringValue(block.type)) {
+    case "text":
+      return typeof block.text === "string"
+        ? parsedMessage({
+            ...shared,
+            msgType: "message",
+            role,
+            content: { type: "text", value: block.text },
+            details,
+          })
+        : asCustom()
+
+    case "thinking":
       return parsedMessage({
         ...shared,
         msgType: "message",
-        role,
-        content: { type: "image", value, mediaType, encoding },
+        role: "assistant",
+        content: {
+          type: "reasoning",
+          value: typeof block.thinking === "string" ? block.thinking : undefined,
+          signature: typeof block.signature === "string" ? block.signature : undefined,
+        },
         details,
       })
+
+    case "image": {
+      const source = isObject(block.source) ? block.source : undefined
+      const mediaType = firstString(source?.media_type, source?.mediaType)
+      const encoding = source?.type === "base64" || source?.type === "url" ? source.type : undefined
+      const value = firstString(source?.data, source?.url)
+      return mediaType && encoding && value
+        ? parsedMessage({
+            ...shared,
+            msgType: "message",
+            role,
+            content: { type: "image", value, mediaType, encoding },
+            details,
+          })
+        : asCustom()
     }
-  }
-  if (block.type === "fallback") {
-    return parsedMessage({ ...shared, msgType: "systemEvent", subType: "fallback" })
-  }
-  if (block.type === "tool_use") {
-    const callId = stringValue(block.id)
-    const name = stringValue(block.name)
-    if (callId && name) {
-      return parsedMessage({
-        ...shared,
-        msgType: "toolCall",
-        details: { callId, name, input: block.input },
-      })
+
+    case "fallback":
+      return parsedMessage({ ...shared, msgType: "systemEvent", subType: "fallback" })
+
+    case "tool_use": {
+      const callId = stringValue(block.id)
+      const name = stringValue(block.name)
+      return callId && name
+        ? parsedMessage({
+            ...shared,
+            msgType: "toolCall",
+            details: { callId, name, input: block.input },
+          })
+        : asCustom()
     }
-  }
-  if (block.type === "tool_result") {
-    const callId = stringValue(block.tool_use_id)
-    if (callId) {
-      const explicitStatus = stringValue(block.status)
-      const status =
-        explicitStatus === "success" ||
-        explicitStatus === "failure" ||
-        explicitStatus === "cancelled" ||
-        explicitStatus === "unknown"
-          ? explicitStatus
-          : block.is_error === true
-            ? "failure"
-            : block.is_error === false
-              ? "success"
-              : "unknown"
+
+    case "tool_result": {
+      const callId = stringValue(block.tool_use_id)
+      if (!callId) return asCustom()
+      const explicit = z
+        .enum(["success", "failure", "cancelled", "unknown"])
+        .safeParse(stringValue(block.status))
+      const status = explicit.success
+        ? explicit.data
+        : block.is_error === true
+          ? "failure"
+          : block.is_error === false
+            ? "success"
+            : "unknown"
       return parsedMessage({
         ...shared,
         msgType: "toolResult",
         details: { callId, output: block.content, status },
       })
     }
+
+    default:
+      return asCustom()
   }
-  return parsedMessage({ ...shared, msgType: "custom", subType: contentSubtype(block) })
 }
 
 const withEmbeddedUsage = (
   messages: ReadonlyArray<NormalizedMessage>,
   usage: TokenUsage | undefined,
-  base: ReturnType<typeof baseFor>,
+  base: CommonFields,
 ): ReadonlyArray<NormalizedMessage> => {
   if (!usage) return messages
   const assistantIndex = messages.findIndex(
@@ -750,52 +798,65 @@ const withEmbeddedUsage = (
   )
 }
 
+const nonEmpty = (
+  messages: ReadonlyArray<NormalizedMessage>,
+): readonly [NormalizedMessage, ...NormalizedMessage[]] => {
+  const [first, ...rest] = messages
+  if (!first) throw new Error("normalizeClaude produced no messages")
+  return [first, ...rest]
+}
+
 export const normalizeClaude = (
   value: unknown,
   context: ClaudeLineContext = { sessionId: "unknown", trackId: "main", lineNumber: 1 },
 ): readonly [NormalizedMessage, ...NormalizedMessage[]] => {
   const data = isObject(value) ? value : {}
-  const base = baseFor(data, context)
-  const message = isObject(data.message) ? data.message : undefined
-  const role = roleFor(message?.role)
-  const content = message?.content
-  const localCommand =
-    typeof content === "string" && hasLocalCommandMarker(content)
-      ? localCommandMessage(data, content, base)
-      : undefined
-  if (localCommand) return [localCommand]
+  const common = parseCommonFields(data, context)
 
-  const topLevel = topLevelMessage(data, base)
-  if (topLevel) return [topLevel]
-
-  const deliveryMode = data.promptSource === "queued" ? "turnBoundary" : undefined
-  const details = conversationDetailsFor(data, role, deliveryMode)
-  if (typeof content === "string") {
-    const conversation = parsedMessage({
-      ...base,
-      subIndex: 0,
-      msgType: "message",
-      role,
-      content: { type: "text", value: content },
-      details,
-    })
-    const messages = withEmbeddedUsage([conversation], tokensFrom(message?.usage), base)
-    return [messages[0] ?? conversation, ...messages.slice(1)]
+  const type = stringValue(data.type)
+  switch (type) {
+    case "user":
+    case "assistant":
+      return handleConversationMessage(data, common)
+    case "attachment":
+      return [
+        isObject(data.attachment)
+          ? handleAttachmentMessage(data.attachment, common)
+          : buildMessage(common, { msgType: "custom", subType: "attachment" }),
+      ]
+    case "system":
+      return [handleSystemMessage(data, common)]
+    case "progress":
+      return [handleProgressMessage(data, common)]
+    case "summary":
+      return [buildMessage(common, { msgType: "systemEvent", subType: type })]
+    case "queue-operation":
+      return [
+        buildParsed(queueOperationSchema, data, common, type, (details) =>
+          detailedMessage(common, "queueOperation", details),
+        ),
+      ]
+    case "file-history-snapshot":
+      return [
+        buildParsed(snapshotSchema, data, common, type, (details) =>
+          detailedMessage(common, "fileEvent", { type: "snapshot", ...details }),
+        ),
+      ]
+    case "file-history-delta":
+      return [
+        buildParsed(deltaSchema, data, common, type, (details) =>
+          detailedMessage(common, "fileEvent", { type: "delta", ...details }),
+        ),
+      ]
+    case "frame-link":
+      return [
+        buildParsed(frameLinkSchema, data, common, type, (details) =>
+          detailedMessage(common, "fileEvent", { type: "artifact", ...details }),
+        ),
+      ]
+    default:
+      return handleConversationMessage(data, common)
   }
-  if (Array.isArray(content)) {
-    const blocks = content.length === 0 ? [undefined] : content
-    const messages = blocks.map((block, index) => blockMessage(block, role, base, index, details))
-    const withUsage = withEmbeddedUsage(messages, tokensFrom(message?.usage), base)
-    return [
-      withUsage[0] ??
-        parsedMessage({ ...base, subIndex: 0, msgType: "custom", subType: "message.content" }),
-      ...withUsage.slice(1),
-    ]
-  }
-
-  return [
-    parsedMessage({ ...base, subIndex: 0, msgType: "custom", subType: fallbackSubtype(data) }),
-  ]
 }
 
 const pathAgentId = (transcriptPath: string): string | undefined =>
@@ -830,15 +891,6 @@ export const readClaudeSidecar = async (
   }
 }
 
-type ParsedFile = {
-  readonly path: string
-  readonly context: ClaudePathContext
-  readonly cwd?: string
-  readonly outcomes: ReadonlyArray<LineOutcome>
-  readonly stat: { readonly mtime: number; readonly size: number }
-  readonly agent: AgentInfo | null
-}
-
 const checkpointAtFor =
   (stat: { readonly mtime: number; readonly size: number }) =>
   (lineNumber: number): CheckpointBody => ({
@@ -848,136 +900,10 @@ const checkpointAtFor =
     lineProcessed: lineNumber,
   })
 
-const completeObjects = (content: string): ReadonlyArray<Record<string, unknown>> =>
-  iterJsonLines(
-    content
-      .split("\n")
-      .slice(0, -1)
-      .map((text, index) => ({ text, lineNumber: index + 1 })),
-  ).flatMap((outcome) => (outcome.kind === "object" ? [outcome.data] : []))
-
-const cwdFrom = (objects: ReadonlyArray<Record<string, unknown>>): string | undefined =>
-  objects.map((object) => stringValue(object.cwd)).find((cwd) => cwd !== undefined)
-
-const mainPathFor = (path: string, context: ClaudePathContext): string => {
-  const normalized = normalizePath(path)
-  const marker = "/subagents/"
-  const index = normalized.indexOf(marker)
-  if (index < 0) return path
-  return `${posix.dirname(normalized.slice(0, index))}/${context.sessionId}.jsonl`
-}
-
-const fallbackMainCwd = async (
-  fs: FileSystem,
-  path: string,
-  context: ClaudePathContext,
-): Promise<string | undefined> => {
-  if (!context.agentId) return undefined
-  try {
-    return cwdFrom(completeObjects(await fs.readFile(mainPathFor(path, context))))
-  } catch {
-    return undefined
-  }
-}
-
-const parseFile = async (
-  fs: FileSystem,
-  path: string,
-  context: ClaudePathContext,
-  fromLine: number,
-  deps: CollectDeps,
-): Promise<ParsedFile> => {
-  const stat = await fs.stat(path)
-  const content = await fs.readFile(path)
-  const { lines } = await readNewLines(fs, path, fromLine)
-  const jsonOutcomes = iterJsonLines(lines)
-  const cwd = cwdFrom(completeObjects(content)) ?? (await fallbackMainCwd(fs, path, context))
-  const agent = context.agentId ? await readClaudeSidecar(fs, path) : null
-  if (context.agentId) {
-    try {
-      const sidecar: unknown = JSON.parse(await fs.readFile(path.replace(/\.jsonl$/, ".meta.json")))
-      if (isObject(sidecar)) {
-        const sidecarAgentId = stringValue(sidecar.agentId)
-        if (sidecarAgentId && sidecarAgentId !== context.agentId) {
-          deps.log.warn(
-            { path: context.sourceRelativePath },
-            "Claude sidecar agent conflicts with filename",
-          )
-        }
-      }
-    } catch {
-      // Missing or malformed sidecars fall back to filename identity.
-    }
-  }
-
-  let blocked = false
-  const outcomes = jsonOutcomes.flatMap((outcome): ReadonlyArray<LineOutcome> => {
-    if (blocked) return []
-    if (outcome.kind === "skip") {
-      if (outcome.reason !== "blank") {
-        deps.log.warn(
-          {
-            path: context.sourceRelativePath,
-            lineNumber: outcome.lineNumber,
-            reason: outcome.reason,
-          },
-          "Claude transcript line skipped",
-        )
-      }
-      return [outcome]
-    }
-
-    const embeddedSessionId =
-      stringValue(outcome.data.sessionId) ?? stringValue(outcome.data.session_id)
-    if (embeddedSessionId && embeddedSessionId !== context.sessionId) {
-      blocked = true
-      deps.log.warn(
-        { path: context.sourceRelativePath, lineNumber: outcome.lineNumber },
-        "Claude transcript session conflicts with path",
-      )
-      return [{ kind: "blocked", lineNumber: outcome.lineNumber, reason: "contextConflict" }]
-    }
-    if (!cwd) {
-      blocked = true
-      return [{ kind: "blocked", lineNumber: outcome.lineNumber, reason: "unresolvedAttribution" }]
-    }
-
-    const redacted = redactJson(outcome.data)
-    if (!isObject(redacted)) return []
-    const lineContext: ClaudeLineContext = {
-      sessionId: context.sessionId,
-      trackId: context.trackId,
-      lineNumber: outcome.lineNumber,
-      agentId: context.agentId,
-    }
-    const nativeUuid = outcome.data.uuid
-    if (
-      nativeUuid !== undefined &&
-      (typeof nativeUuid !== "string" || !UUID_PATTERN.test(nativeUuid))
-    ) {
-      deps.log.warn(
-        { path: context.sourceRelativePath, lineNumber: outcome.lineNumber },
-        "Claude transcript UUID is invalid; generated deterministic identity",
-      )
-    }
-    const record: ParsedRecord = {
-      lineUuid: lineUuidFor(lineContext, redacted, nativeUuid),
-      lineNumber: outcome.lineNumber,
-      raw: redacted,
-      messages: normalizeClaude(redacted, lineContext),
-    }
-    return [{ kind: "record", lineNumber: outcome.lineNumber, record }]
-  })
-
-  return {
-    path,
-    context,
-    cwd,
-    outcomes,
-    stat: { mtime: stat.mtimeMs, size: stat.size },
-    agent: agent ? { ...agent, agentId: context.agentId ?? agent.agentId } : null,
-  }
-}
+const cwdFrom = (
+  lines: ReadonlyArray<{ readonly data: Record<string, unknown> }>,
+): string | undefined =>
+  lines.map(({ data }) => stringValue(data.cwd)).find((cwd) => cwd !== undefined)
 
 const isChanged = (
   prev: CheckpointStore,
@@ -989,41 +915,6 @@ const isChanged = (
 }
 const fromLineFor = (prev: CheckpointStore, path: string): number =>
   prev.checkpoints[path]?.lineProcessed ?? 0
-
-const checkpointOnlyTrack = (file: ParsedFile): CheckpointOnlyTrack => ({
-  kind: "checkpointOnly",
-  type: "main",
-  sessionId: file.context.sessionId,
-  sourceRelativePath: file.context.sourceRelativePath,
-  checkpointKey: file.path,
-  records: [],
-  outcomes: file.outcomes,
-  checkpointAt: checkpointAtFor(file.stat),
-})
-
-const ingestTrack = (file: ParsedFile, project: ProjectIdentity): IngestSessionTrack => {
-  const records = file.outcomes.flatMap((outcome) =>
-    outcome.kind === "record" ? [outcome.record] : [],
-  )
-  const shared = {
-    kind: "ingest" as const,
-    sessionId: file.context.sessionId,
-    project,
-    sourceRelativePath: file.context.sourceRelativePath,
-    records,
-    outcomes: file.outcomes,
-    checkpointKey: file.path,
-    checkpointAt: checkpointAtFor(file.stat),
-  }
-  if (file.context.agentId) {
-    return {
-      ...shared,
-      type: "subagent",
-      agent: file.agent ?? { agentId: file.context.agentId },
-    }
-  }
-  return { ...shared, type: "main" }
-}
 
 const groupBySession = (tracks: ReadonlyArray<SessionTrack>): ReadonlyArray<SessionBatch> => {
   const grouped = new Map<string, ReadonlyArray<SessionTrack>>()
@@ -1038,41 +929,103 @@ const groupBySession = (tracks: ReadonlyArray<SessionTrack>): ReadonlyArray<Sess
   }))
 }
 
-export const createClaudePlugin = (fs: FileSystem): AgentPlugin => ({
-  source: SOURCE,
-  collect: async (prev, deps) => {
-    const discovered = [...new Set(await deps.glob(GLOB))]
-    const classified = compact(
-      await Promise.all(
-        discovered.map(async (path) => {
-          const context = classifyClaudePath(path)
-          if (!context) return null
-          const stat = await fs.stat(path)
-          return isChanged(prev, path, { mtime: stat.mtimeMs, size: stat.size })
-            ? { path, context }
-            : null
-        }),
-      ),
-    )
-    const files = await Promise.all(
-      classified.map(({ path, context }) =>
-        parseFile(fs, path, context, fromLineFor(prev, path), deps),
-      ),
-    )
-    const tracks = compact(
-      await Promise.all(
-        files.map(async (file): Promise<SessionTrack | null> => {
-          const hasRecord = file.outcomes.some((outcome) => outcome.kind === "record")
-          if (!hasRecord) {
-            const allSkips =
-              file.outcomes.length > 0 && file.outcomes.every((outcome) => outcome.kind === "skip")
-            return allSkips ? checkpointOnlyTrack(file) : null
+const collectTrack = async (
+  fs: FileSystem,
+  path: string,
+  location: ClaudePathContext,
+  fromLine: number,
+  cwdByProjectDir: Map<string, string>,
+  deps: CollectDeps,
+): Promise<SessionTrack | null> => {
+  const stat = await fs.stat(path)
+  const allLines = parseJsonLines(completeLines(await fs.readFile(path)))
+
+  const cwd = cwdByProjectDir.get(location.projectDir) ?? cwdFrom(allLines)
+  if (!cwd) {
+    deps.log.warn({ path: location.sourceRelativePath }, "Claude transcript has no cwd")
+    return null
+  }
+  cwdByProjectDir.set(location.projectDir, cwd)
+
+  const records = allLines
+    .filter(({ lineNumber }) => lineNumber > fromLine)
+    .map(({ lineNumber, data }) => {
+      const redacted = redactJson(data)
+      const lineContext: ClaudeLineContext = {
+        sessionId: location.sessionId,
+        trackId: location.trackId,
+        lineNumber,
+        agentId: location.agentId,
+      }
+      return {
+        lineUuid: lineUuidFor(lineContext, redacted, data.uuid),
+        lineNumber,
+        raw: redacted,
+        messages: normalizeClaude(redacted, lineContext),
+      }
+    })
+  if (records.length === 0) return null
+
+  const shared = {
+    sessionId: location.sessionId,
+    project: await deps.resolveProject(cwd),
+    sourceRelativePath: location.sourceRelativePath,
+    records,
+    checkpointKey: path,
+    lastLineProcessed: allLines.at(-1)?.lineNumber ?? fromLine,
+    checkpointAt: checkpointAtFor({ mtime: stat.mtimeMs, size: stat.size }),
+  }
+  if (!location.agentId) return { ...shared, type: "main" }
+
+  const agent = await readClaudeSidecar(fs, path)
+  return {
+    ...shared,
+    type: "subagent",
+    agent: agent ? { ...agent, agentId: location.agentId } : { agentId: location.agentId },
+  }
+}
+
+export const createClaudePlugin = (fs: FileSystem): AgentPlugin => {
+  const cwdByProjectDir = new Map<string, string>()
+
+  return {
+    source: SOURCE,
+    collect: async (prev, deps) => {
+      const discovered = [...new Set(await deps.glob(GLOB))]
+      const tracks = await Promise.all(
+        discovered.map(async (path): Promise<SessionTrack | null> => {
+          const discoveryRoot = discoveryRootFor(path)
+          if (!discoveryRoot) {
+            deps.log.warn({ path }, "Claude transcript path missing .claude/projects root")
+            return null
           }
-          if (!file.cwd) return null
-          return ingestTrack(file, await deps.resolveProject(file.cwd))
+          const location = classifyClaudePath(path, discoveryRoot)
+          if (!location) {
+            deps.log.warn({ path }, "Claude transcript path shape not supported")
+            return null
+          }
+          const stat = await fs.stat(path)
+          if (!isChanged(prev, path, { mtime: stat.mtimeMs, size: stat.size })) return null
+
+          try {
+            return await collectTrack(
+              fs,
+              path,
+              location,
+              fromLineFor(prev, path),
+              cwdByProjectDir,
+              deps,
+            )
+          } catch (error) {
+            deps.log.error(
+              { path: location.sourceRelativePath, err: error },
+              "Claude transcript skipped: unparseable line",
+            )
+            return null
+          }
         }),
-      ),
-    )
-    return groupBySession(tracks)
-  },
-})
+      )
+      return groupBySession(compact(tracks))
+    },
+  }
+}

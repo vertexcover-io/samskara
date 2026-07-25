@@ -289,7 +289,9 @@ describe.skipIf(!dockerAvailable())("ingest route", () => {
   })
 
   test("S9: a basic transcript reaches authenticated storage and checkpoints without loss", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "samskara-e2e-"))
+    const root = await mkdtemp(join(tmpdir(), "samskara-e2e-"))
+    const dir = join(root, ".claude", "projects", "bucket")
+    await mkdir(dir, { recursive: true })
     const transcript = join(dir, "sess-e2e.jsonl")
     const unknown = { type: "future_record", cwd: "/work/app", token: "secret-value" }
     const assistant = {
@@ -308,7 +310,7 @@ describe.skipIf(!dockerAvailable())("ingest route", () => {
     }
     await writeFile(
       transcript,
-      `\nnot-json\n${JSON.stringify(unknown)}\n${JSON.stringify(assistant)}\n`,
+      `\n${JSON.stringify(unknown)}\n${JSON.stringify(assistant)}\n`,
       "utf8",
     )
 
@@ -322,14 +324,8 @@ describe.skipIf(!dockerAvailable())("ingest route", () => {
       log,
     })
     const track = batches[0]?.tracks[0]
-    if (!track || track.kind !== "ingest") throw new Error("expected ingest track")
-    const {
-      kind: _kind,
-      checkpointKey: _key,
-      checkpointAt,
-      outcomes: _outcomes,
-      ...payload
-    } = track
+    if (!track) throw new Error("expected ingest track")
+    const { checkpointKey: _key, checkpointAt, lastLineProcessed: _last, ...payload } = track
 
     const response = await post(app, payload, cliToken)
     expect(response.status).toBe(200)
@@ -369,7 +365,8 @@ describe.skipIf(!dockerAvailable())("ingest route", () => {
   })
 
   test("S17: a selected session and persisted fixture have no missing source lines", async () => {
-    const root = await mkdtemp(join(tmpdir(), "samskara-session-coverage-"))
+    const projectsRoot = await mkdtemp(join(tmpdir(), "samskara-session-coverage-"))
+    const root = join(projectsRoot, ".claude", "projects")
     const bucket = join(root, "encoded-project")
     const main = join(bucket, "sess-semantic.jsonl")
     const agentA = join(bucket, "sess-semantic", "subagents", "agent-a.jsonl")
@@ -467,12 +464,10 @@ describe.skipIf(!dockerAvailable())("ingest route", () => {
       ),
     )
     for (const track of tracks) {
-      if (track.kind !== "ingest") throw new Error("expected ingest track")
       const {
-        kind: _kind,
         checkpointKey: _checkpointKey,
         checkpointAt: _checkpointAt,
-        outcomes: _outcomes,
+        lastLineProcessed: _lastLineProcessed,
         ...payload
       } = track
       const response = await post(app, payload, cliToken)

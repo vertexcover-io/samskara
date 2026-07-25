@@ -117,7 +117,7 @@ describe("watcher driver", () => {
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "samskara-watch-"))
-    projects = join(dir, "projects")
+    projects = join(dir, ".claude", "projects", "bucket")
     await mkdir(projects, { recursive: true })
     config = { statePath: join(dir, "state.json") }
   })
@@ -292,17 +292,13 @@ describe("watcher driver", () => {
   test("a straddling first chunk that succeeds then fails advances nothing", async () => {
     const key = "/fake/huge.jsonl"
     const track = {
-      kind: "ingest" as const,
       type: "main" as const,
       sessionId: "sess-huge",
       project,
       sourceRelativePath: key,
       checkpointKey: key,
       records: [record(1, MESSAGE_CAP + 5), record(2, 1)],
-      outcomes: [
-        { kind: "record" as const, lineNumber: 1, record: record(1, MESSAGE_CAP + 5) },
-        { kind: "record" as const, lineNumber: 2, record: record(2, 1) },
-      ],
+      lastLineProcessed: 2,
       checkpointAt: (lineNumber: number) => ({
         source: "claude_code" as const,
         mtime: 10,
