@@ -2,7 +2,22 @@ import { expect, test } from "vitest"
 import type { IngestPayload, ParsedRecord } from "./index.js"
 
 const records: ReadonlyArray<ParsedRecord> = [
-  { lineUuid: "u1", lineNumber: 1, raw: "{}", messages: [] },
+  {
+    lineUuid: "0191d942-3ba5-7dba-9a7d-22d65b30258c",
+    lineNumber: 1,
+    raw: {},
+    messages: [
+      {
+        subIndex: 0,
+        sessionId: "sess-1",
+        source: "claude_code",
+        sourceSchemaVersion: 1,
+        trackId: "main",
+        msgType: "custom",
+        subType: "fixture",
+      },
+    ],
+  },
 ]
 
 const base = {

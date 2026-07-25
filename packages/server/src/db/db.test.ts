@@ -244,9 +244,9 @@ describe.skipIf(!dockerAvailable())("session data model", () => {
       .insert(messages)
       .values({
         sessionId: session.id,
-        lineUuid: "line-1",
+        lineUuid: "0191d942-3ba5-7dba-9a7d-22d65b3025b1",
         subIndex: 0,
-        msgType: "assistant",
+        msgType: "message",
         role: "assistant",
         lineNumber: 1,
         sourceSchemaVersion: 1,
@@ -259,7 +259,7 @@ describe.skipIf(!dockerAvailable())("session data model", () => {
       .insert(messages)
       .values({
         sessionId: session.id,
-        lineUuid: "line-1",
+        lineUuid: "0191d942-3ba5-7dba-9a7d-22d65b3025b1",
         subIndex: 1,
         msgType: "toolCall",
         lineNumber: 1,
@@ -279,9 +279,9 @@ describe.skipIf(!dockerAvailable())("session data model", () => {
     await db.insert(messages).values([
       {
         sessionId: session.id,
-        lineUuid: "sub-line-1",
+        lineUuid: "0191d942-3ba5-7dba-9a7d-22d65b3025b2",
         subIndex: 0,
-        msgType: "assistant",
+        msgType: "message",
         lineNumber: 1,
         sourceSchemaVersion: 1,
         isSubagent: true,
@@ -290,9 +290,9 @@ describe.skipIf(!dockerAvailable())("session data model", () => {
       },
       {
         sessionId: session.id,
-        lineUuid: "sub-line-2",
+        lineUuid: "0191d942-3ba5-7dba-9a7d-22d65b3025b3",
         subIndex: 0,
-        msgType: "assistant",
+        msgType: "message",
         lineNumber: 2,
         sourceSchemaVersion: 1,
         isSubagent: true,
@@ -346,9 +346,9 @@ describe.skipIf(!dockerAvailable())("session data model", () => {
 
     const line = {
       sessionId: session.id,
-      lineUuid: "dupe-line",
+      lineUuid: "0191d942-3ba5-7dba-9a7d-22d65b3025b4",
       subIndex: 0,
-      msgType: "user" as const,
+      msgType: "message" as const,
       lineNumber: 1,
       sourceSchemaVersion: 1,
       raw: {},
@@ -369,7 +369,7 @@ describe.skipIf(!dockerAvailable())("session data model", () => {
     await expect(
       db.insert(messages).values({
         sessionId: session.id,
-        lineUuid: "bad-line",
+        lineUuid: "0191d942-3ba5-7dba-9a7d-22d65b3025b5",
         subIndex: 0,
         msgType: "banana",
         lineNumber: 1,
@@ -385,7 +385,7 @@ describe.skipIf(!dockerAvailable())("session data model", () => {
       .insert(messages)
       .values({
         sessionId: session.id,
-        lineUuid: "status-line",
+        lineUuid: "0191d942-3ba5-7dba-9a7d-22d65b3025b6",
         subIndex: 0,
         msgType: "toolResult",
         lineNumber: 1,

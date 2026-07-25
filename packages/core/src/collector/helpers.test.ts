@@ -67,16 +67,18 @@ describe("readNewLines", () => {
 })
 
 describe("iterJsonLines", () => {
-  test("skips blank and malformed lines, keeps line numbers", () => {
-    const parsed = iterJsonLines([
+  test("S5: complete blank, malformed, non-object, and object lines have explicit outcomes", () => {
+    const outcomes = iterJsonLines([
       { lineNumber: 1, text: '{"a":1}' },
       { lineNumber: 2, text: "   " },
       { lineNumber: 3, text: "not json" },
-      { lineNumber: 4, text: '{"b":2}' },
+      { lineNumber: 4, text: "false" },
     ])
-    expect(parsed).toEqual([
-      { lineNumber: 1, data: { a: 1 } },
-      { lineNumber: 4, data: { b: 2 } },
+    expect(outcomes).toEqual([
+      { kind: "object", lineNumber: 1, data: { a: 1 } },
+      { kind: "skip", lineNumber: 2, reason: "blank" },
+      { kind: "skip", lineNumber: 3, reason: "malformedJson" },
+      { kind: "skip", lineNumber: 4, reason: "nonObjectJson" },
     ])
   })
 })

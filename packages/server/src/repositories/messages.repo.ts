@@ -24,7 +24,9 @@ export const insertManyIgnoreConflicts = async (
   const inserted = await db
     .insert(messages)
     .values([...rows])
-    .onConflictDoNothing({ target: [messages.lineUuid, messages.subIndex] })
+    .onConflictDoNothing({
+      target: [messages.sessionId, messages.lineUuid, messages.subIndex],
+    })
     .returning({ id: messages.id, lineUuid: messages.lineUuid, subIndex: messages.subIndex })
 
   const lineUuids = [...new Set(rows.map((r) => r.lineUuid))]

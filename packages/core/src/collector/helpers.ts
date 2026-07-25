@@ -22,18 +22,32 @@ export const readNewLines = async (
   return { lines, lastLineProcessed: complete.length }
 }
 
-export type ParsedLine = { readonly lineNumber: number; readonly data: unknown }
-
-export const iterJsonLines = (lines: ReadonlyArray<NumberedLine>): ReadonlyArray<ParsedLine> =>
-  lines.flatMap(({ lineNumber, text }) => {
-    const trimmed = text.trim()
-    if (trimmed.length === 0) return []
-    try {
-      return [{ lineNumber, data: JSON.parse(trimmed) as unknown }]
-    } catch {
-      return []
+export type JsonLineOutcome =
+  | { readonly kind: "object"; readonly lineNumber: number; readonly data: Record<string, unknown> }
+  | {
+      readonly kind: "skip"
+      readonly lineNumber: number
+      readonly reason: "blank" | "malformedJson" | "nonObjectJson"
     }
-  })
+
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+
+const parseJsonLine = ({ lineNumber, text }: NumberedLine): JsonLineOutcome => {
+  const trimmed = text.trim()
+  if (trimmed.length === 0) return { kind: "skip", lineNumber, reason: "blank" }
+
+  try {
+    const data: unknown = JSON.parse(trimmed)
+    if (!isObject(data)) return { kind: "skip", lineNumber, reason: "nonObjectJson" }
+    return { kind: "object", lineNumber, data }
+  } catch {
+    return { kind: "skip", lineNumber, reason: "malformedJson" }
+  }
+}
+
+export const iterJsonLines = (lines: ReadonlyArray<NumberedLine>): ReadonlyArray<JsonLineOutcome> =>
+  lines.map(parseJsonLine)
 
 export const compact = <T>(items: ReadonlyArray<T | null | undefined>): ReadonlyArray<T> =>
   items.filter((item): item is T => item !== null && item !== undefined)

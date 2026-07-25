@@ -138,17 +138,21 @@ export const messages = pgTable(
     sessionId: text("sessionId")
       .notNull()
       .references(() => sessions.id, { onDelete: "cascade" }),
-    lineUuid: text("lineUuid").notNull(),
+    lineUuid: uuid("lineUuid").notNull(),
     subIndex: integer("subIndex").notNull(),
     parentUuid: text("parentUuid"),
     msgType: text("msgType").notNull(),
+    subType: text("subType"),
     role: text("role"),
     timestamp: timestamp("timestamp", { withTimezone: true }),
     lineNumber: integer("lineNumber").notNull(),
+    source: text("source").notNull().default("claude_code"),
+    sourceRelativePath: text("sourceRelativePath").notNull().default("unknown"),
+    trackId: text("trackId").notNull().default("main"),
     model: text("model"),
     provider: text("provider"),
-    content: text("content"),
-    thinking: text("thinking"),
+    content: jsonb("content"),
+    details: jsonb("details"),
     raw: jsonb("raw").notNull(),
     sourceSchemaVersion: integer("sourceSchemaVersion").notNull(),
     isSubagent: boolean("isSubagent").notNull().default(false),
@@ -158,8 +162,12 @@ export const messages = pgTable(
     createdAt: createdAtCamel,
   },
   (t) => [
-    unique("messages_line_identity").on(t.lineUuid, t.subIndex),
+    unique("messages_line_identity").on(t.sessionId, t.lineUuid, t.subIndex),
     check("messages_msgType_check", sql`${t.msgType} in (${sql.raw(msgTypeValues)})`),
+    check(
+      "messages_role_check",
+      sql`${t.role} is null or ${t.role} in ('user', 'assistant', 'system', 'developer', 'unknown')`,
+    ),
     index("messages_session_line_idx").on(t.sessionId, t.lineNumber),
     index("messages_session_agent_idx").on(t.sessionId, t.agentId),
     index("messages_agent_id_idx").on(t.agentId).where(sql`${t.isSubagent}`),
@@ -190,12 +198,15 @@ export const toolResult = pgTable(
     messageId: uuid("messageId")
       .notNull()
       .references(() => messages.id, { onDelete: "cascade" }),
-    result: text("result"),
+    result: jsonb("result"),
     status: text("status").notNull(),
   },
   (t) => [
     primaryKey({ columns: [t.toolId, t.messageId] }),
-    check("toolResult_status_check", sql`${t.status} in ('success', 'failure')`),
+    check(
+      "toolResult_status_check",
+      sql`${t.status} in ('success', 'failure', 'cancelled', 'unknown')`,
+    ),
     index("toolResult_message_idx").on(t.messageId),
     index("toolResult_tool_idx").on(t.toolId),
   ],

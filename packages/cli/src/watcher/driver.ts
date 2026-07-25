@@ -6,6 +6,8 @@ import type {
   CollectDeps,
   FileSystem,
   IngestPayload,
+  IngestSessionTrack,
+  LineOutcome,
   ParsedRecord,
   ProjectIdentity,
   SessionBatch,
@@ -17,11 +19,7 @@ import type pino from "pino"
 export const MESSAGE_CAP = 2000
 
 export type Clock = { now(): number }
-
-export type WatcherConfig = {
-  readonly statePath: string
-}
-
+export type WatcherConfig = { readonly statePath: string }
 export type WatcherDeps = {
   readonly fs: FileSystem
   readonly clock: Clock
@@ -37,67 +35,114 @@ export type Chunk = {
   readonly lastCompleteLine: number
 }
 
-const messageCount = (record: ParsedRecord): number => record.messages.length
+const chunk = (records: ReadonlyArray<ParsedRecord>): Chunk => ({
+  records,
+  lastCompleteLine: records.at(-1)?.lineNumber ?? 0,
+})
 
-// Slice a track's records into chunks of at most `cap` fanned-out messages, in order.
-// A record may straddle a boundary — both chunks carry the same lineUuid/raw with disjoint
-// message subsets. `lastCompleteLine` is the last line whose entire fan-out fit in that chunk.
 export const sliceByMessages = (
   records: ReadonlyArray<ParsedRecord>,
   cap: number,
 ): ReadonlyArray<Chunk> => {
   const chunks: Chunk[] = []
-  let current: ParsedRecord[] = []
+  let current: ReadonlyArray<ParsedRecord> = []
   let count = 0
-  let lastComplete = 0
 
   const flush = () => {
     if (current.length === 0) return
-    chunks.push({ records: current, lastCompleteLine: lastComplete })
+    chunks.push(chunk(current))
     current = []
     count = 0
   }
 
   for (const record of records) {
-    const n = messageCount(record)
-
-    // A record with no messages still carries its line — attach it and mark it complete.
-    if (n === 0) {
-      current.push(record)
-      lastComplete = record.lineNumber
-      continue
-    }
-
-    let offset = 0
-    while (offset < n) {
-      if (count === cap) flush()
-      const room = cap - count
-      const slice = record.messages.slice(offset, offset + room)
-      current.push({ ...record, messages: slice })
-      count += slice.length
-      offset += slice.length
-      // The line is complete only once its final messages are in this chunk.
-      if (offset === n) lastComplete = record.lineNumber
-    }
+    const recordCount = record.messages.length
+    if (current.length > 0 && count + recordCount > cap) flush()
+    current = [...current, record]
+    count += recordCount
+    if (count >= cap) flush()
   }
   flush()
-
   return chunks
 }
 
-const wrap = (track: SessionTrack, base: Clock, body: CheckpointBody): Checkpoint => ({
+const wrap = (track: SessionTrack, clock: Clock, body: CheckpointBody): Checkpoint => ({
   ...body,
   filePath: track.checkpointKey,
-  lastUpdatedAt: new Date(base.now()).toISOString(),
+  lastUpdatedAt: new Date(clock.now()).toISOString(),
 })
 
-const payloadFor = (track: SessionTrack, records: ReadonlyArray<ParsedRecord>): IngestPayload => {
-  const { checkpointKey: _key, checkpointAt: _at, records: _all, ...payload } = track
+const payloadFor = (
+  track: IngestSessionTrack,
+  records: ReadonlyArray<ParsedRecord>,
+): IngestPayload => {
+  const {
+    kind: _kind,
+    checkpointKey: _key,
+    checkpointAt: _at,
+    outcomes: _outcomes,
+    records: _all,
+    ...payload
+  } = track
   return { ...payload, records }
 }
 
 const lineProcessedOf = (prev: CheckpointStore, key: string): number =>
   prev.checkpoints[key]?.lineProcessed ?? 0
+
+const contiguousLine = (
+  outcomes: ReadonlyArray<LineOutcome>,
+  acceptedLines: ReadonlySet<number>,
+  initialLine: number,
+): number => {
+  let line = initialLine
+  for (const outcome of outcomes) {
+    if (outcome.lineNumber <= initialLine) continue
+    if (outcome.lineNumber !== line + 1) break
+    if (outcome.kind === "blocked") break
+    if (outcome.kind === "record" && !acceptedLines.has(outcome.lineNumber)) break
+    line = outcome.lineNumber
+  }
+  return line
+}
+
+const checkpointFor = (
+  track: SessionTrack,
+  prev: CheckpointStore,
+  acceptedLines: ReadonlySet<number>,
+  clock: Clock,
+): Checkpoint | undefined => {
+  const initialLine = lineProcessedOf(prev, track.checkpointKey)
+  const line = contiguousLine(track.outcomes, acceptedLines, initialLine)
+  return line > initialLine ? wrap(track, clock, track.checkpointAt(line)) : undefined
+}
+
+const syncTrack = async (
+  track: SessionTrack,
+  prev: CheckpointStore,
+  deps: WatcherDeps,
+): Promise<Checkpoint | undefined> => {
+  const acceptedLines = new Set<number>()
+  if (track.kind === "checkpointOnly") {
+    return checkpointFor(track, prev, acceptedLines, deps.clock)
+  }
+
+  let latest = checkpointFor(track, prev, acceptedLines, deps.clock)
+  for (const request of sliceByMessages(track.records, MESSAGE_CAP)) {
+    const { status } = await deps.sink.send(payloadFor(track, request.records))
+    if (status < 200 || status >= 300) {
+      deps.log.warn(
+        { sessionId: track.sessionId, key: track.checkpointKey, status },
+        "flush failed",
+      )
+      return latest
+    }
+    for (const record of request.records) acceptedLines.add(record.lineNumber)
+    latest = checkpointFor(track, prev, acceptedLines, deps.clock) ?? latest
+    deps.log.debug({ sessionId: track.sessionId, key: track.checkpointKey, status }, "flush ok")
+  }
+  return latest
+}
 
 const syncSession = async (
   batch: SessionBatch,
@@ -105,34 +150,10 @@ const syncSession = async (
   deps: WatcherDeps,
 ): Promise<Record<string, Checkpoint>> => {
   const updated: Record<string, Checkpoint> = {}
-  const { sessionId } = batch
-
   for (const track of batch.tracks) {
-    if (!track.sessionId) continue
-
-    for (const chunk of sliceByMessages(track.records, MESSAGE_CAP)) {
-      const { status } = await deps.sink.send(payloadFor(track, chunk.records))
-      if (status < 200 || status >= 300) {
-        deps.log.warn({ sessionId, key: track.checkpointKey, status }, "flush failed")
-        return updated
-      }
-      deps.log.debug({ sessionId, key: track.checkpointKey, status }, "flush ok")
-
-      // Advance only when this chunk fully sent a new line past our watermark. A chunk that ends
-      // mid-line (lastCompleteLine not beyond the prior mark) records nothing, so its unchanged
-      // mtime/size can't make the plugin skip the file before those lines are re-sent.
-      const alreadyAt = lineProcessedOf(prev, track.checkpointKey)
-      const currentAt = updated[track.checkpointKey]?.lineProcessed ?? alreadyAt
-      if (chunk.lastCompleteLine > currentAt) {
-        updated[track.checkpointKey] = wrap(
-          track,
-          deps.clock,
-          track.checkpointAt(chunk.lastCompleteLine),
-        )
-      }
-    }
+    const checkpoint = await syncTrack(track, prev, deps)
+    if (checkpoint) updated[track.checkpointKey] = checkpoint
   }
-
   return updated
 }
 
@@ -141,20 +162,15 @@ export const runCycle = async (
   deps: WatcherDeps,
 ): Promise<CheckpointStore> => {
   const prev = await readCheckpoints(deps.fs, config.statePath)
-
   const collectDeps: CollectDeps = {
     fs: deps.fs,
     glob: deps.glob,
     resolveProject: deps.resolveProject,
+    log: deps.log,
   }
   const batches = await deps.plugin.collect(prev, collectDeps)
-
   const results = await Promise.all(batches.map((batch) => syncSession(batch, prev, deps)))
-
-  // Sessions touch disjoint tracks, so the maps never collide.
-  const checkpoints = { ...prev.checkpoints }
-  for (const map of results) Object.assign(checkpoints, map)
-
+  const checkpoints = Object.assign({}, prev.checkpoints, ...results)
   const next: CheckpointStore = { checkpoints }
   await writeCheckpoints(deps.fs, config.statePath, next)
   return next
