@@ -15,9 +15,6 @@
     "noImplicitOverride": true,
     "forceConsistentCasingInFileNames": true,
     "declaration": true,
-    "sourceMap": true,
-    "paths": {
-      "@samskara/core": ["./packages/core/src/index.ts"]
-    }
+    "sourceMap": true
   }
 }
