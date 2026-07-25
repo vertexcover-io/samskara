@@ -222,12 +222,427 @@ const baseFor = (data: Record<string, unknown>, context: ClaudeLineContext) => {
 }
 
 const parsedMessage = (value: unknown): NormalizedMessage => normalizedMessageSchema.parse(value)
+const finiteNonnegative = (value: unknown): number | undefined =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined
+const integerValue = (value: unknown): number | undefined =>
+  typeof value === "number" && Number.isInteger(value) ? value : undefined
+const nonnegativeIntegerValue = (value: unknown): number | undefined => {
+  const integer = integerValue(value)
+  return integer !== undefined && integer >= 0 ? integer : undefined
+}
+const firstString = (...values: ReadonlyArray<unknown>): string | undefined =>
+  values.map(stringValue).find((value) => value !== undefined)
+const knownPromptSource = (
+  value: unknown,
+): "typed" | "queued" | "sdk" | "system" | "unknown" | undefined => {
+  if (value === undefined) return undefined
+  if (value === "typed" || value === "queued" || value === "sdk" || value === "system") return value
+  return "unknown"
+}
+const originKind = (value: unknown): string | undefined =>
+  isObject(value) ? stringValue(value.kind) : stringValue(value)
+const conversationDetailsFor = (
+  data: Record<string, unknown>,
+  role: ReturnType<typeof roleFor>,
+  deliveryMode?: "activeTurn" | "turnBoundary",
+) => {
+  const promptSource = knownPromptSource(data.promptSource)
+  const declaredOrigin = originKind(data.origin)
+  const origin =
+    declaredOrigin === "human"
+      ? "human"
+      : declaredOrigin === "task-notification"
+        ? "taskNotification"
+        : declaredOrigin === "coordinator"
+          ? "coordinator"
+          : role === "assistant"
+            ? "assistant"
+            : promptSource === "sdk"
+              ? "sdk"
+              : promptSource === "system" || data.isMeta === true
+                ? "runtime"
+                : "unknown"
+  return {
+    origin,
+    promptSource,
+    deliveryMode,
+    isMeta: typeof data.isMeta === "boolean" ? data.isMeta : undefined,
+    sourceMessageId: firstString(data.sourceMessageId, data.messageId),
+  }
+}
+
+const hookAliases = (data: Record<string, unknown>) => ({
+  hookEvent: stringValue(data.hookEvent),
+  hookName: stringValue(data.hookName),
+  hookId: stringValue(data.hookId),
+  toolCallId: firstString(data.toolUseID, data.toolUseId, data.toolCallId),
+})
+const hookResultFields = (data: Record<string, unknown>) => ({
+  ...hookAliases(data),
+  processId: firstString(data.processId, data.pid),
+  command: typeof data.command === "string" ? data.command : undefined,
+  exitCode: integerValue(data.exitCode),
+  stdout: typeof data.stdout === "string" ? data.stdout : undefined,
+  stderr: typeof data.stderr === "string" ? data.stderr : undefined,
+  durationMs: nonnegativeIntegerValue(data.durationMs),
+  timedOut: typeof data.timedOut === "boolean" ? data.timedOut : undefined,
+  timeoutMs: nonnegativeIntegerValue(data.timeoutMs),
+  response: data.response,
+})
+const asyncHookStatus = (
+  data: Record<string, unknown>,
+): "success" | "failure" | "cancelled" | "unknown" => {
+  if (data.cancelled === true || data.isCancelled === true) return "cancelled"
+  const exitCode = integerValue(data.exitCode)
+  if (exitCode !== undefined) return exitCode === 0 ? "success" : "failure"
+  if (typeof data.success === "boolean") return data.success ? "success" : "failure"
+  if (stringValue(data.error) || stringValue(data.stderr)) return "failure"
+  return "unknown"
+}
+const custom = (base: ReturnType<typeof baseFor>, subType: string): NormalizedMessage =>
+  parsedMessage({ ...base, subIndex: 0, msgType: "custom", subType })
+const normalized = (
+  base: ReturnType<typeof baseFor>,
+  msgType: Exclude<NormalizedMessage["msgType"], "custom" | "systemEvent" | "message">,
+  details: unknown,
+): NormalizedMessage => parsedMessage({ ...base, subIndex: 0, msgType, details })
+const systemEvent = (base: ReturnType<typeof baseFor>, subType: string): NormalizedMessage =>
+  parsedMessage({ ...base, subIndex: 0, msgType: "systemEvent", subType })
+
+const hookInfo = (value: unknown): { readonly command?: string; readonly durationMs?: number } => {
+  if (!isObject(value)) return {}
+  return {
+    command: typeof value.command === "string" ? value.command : undefined,
+    durationMs: nonnegativeIntegerValue(value.durationMs),
+  }
+}
+const hookMessage = (
+  data: Record<string, unknown>,
+  base: ReturnType<typeof baseFor>,
+): NormalizedMessage | undefined => {
+  const type = stringValue(data.type)
+  if (type === "hook_progress") {
+    return normalized(base, "hookCall", {
+      phase: "progress",
+      type,
+      ...hookAliases(data),
+      command: typeof data.command === "string" ? data.command : undefined,
+    })
+  }
+  if (type === "hook_additional_context") {
+    if (!("content" in data)) return undefined
+    return normalized(base, "hookCall", {
+      phase: "context",
+      type,
+      hookEvent: stringValue(data.hookEvent),
+      hookName: stringValue(data.hookName),
+      toolCallId: firstString(data.toolUseID, data.toolUseId, data.toolCallId),
+      additionalContext: data.content,
+    })
+  }
+  if (type === "hook_success" || type === "hook_non_blocking_error" || type === "hook_cancelled") {
+    const status =
+      type === "hook_success" ? "success" : type === "hook_cancelled" ? "cancelled" : "failure"
+    return normalized(base, "hookCall", {
+      phase: "result",
+      type,
+      status,
+      ...hookResultFields(data),
+    })
+  }
+  if (type === "async_hook_response") {
+    return normalized(base, "hookCall", {
+      phase: "result",
+      type,
+      status: asyncHookStatus(data),
+      ...hookResultFields(data),
+    })
+  }
+  return undefined
+}
+
+const tagValue = (content: string, tag: string): string | undefined => {
+  const opening = `<${tag}>`
+  const closing = `</${tag}>`
+  const start = content.indexOf(opening)
+  if (start < 0) return undefined
+  const valueStart = start + opening.length
+  const end = content.indexOf(closing, valueStart)
+  return end < 0 ? undefined : content.slice(valueStart, end)
+}
+const localCommandMessage = (
+  data: Record<string, unknown>,
+  content: string,
+  base: ReturnType<typeof baseFor>,
+): NormalizedMessage => {
+  const command =
+    tagValue(content, "command-name") ??
+    tagValue(content, "command-message") ??
+    (typeof data.command === "string" ? data.command : undefined)
+  const exitCode = integerValue(data.exitCode)
+  const status = exitCode === undefined ? "unknown" : exitCode === 0 ? "success" : "failure"
+  return normalized(base, "localCommand", {
+    command,
+    commandType: command?.startsWith("/") ? "slash" : "unknown",
+    status,
+    stdout:
+      tagValue(content, "local-command-stdout") ??
+      (typeof data.stdout === "string" ? data.stdout : undefined),
+    stderr: typeof data.stderr === "string" ? data.stderr : undefined,
+    exitCode,
+  })
+}
+const hasLocalCommandMarker = (content: string): boolean =>
+  ["<local-command-caveat>", "<command-name>", "<command-message>"].some((marker) =>
+    content.includes(marker),
+  )
+
+const attachmentMessage = (
+  attachment: Record<string, unknown>,
+  base: ReturnType<typeof baseFor>,
+): NormalizedMessage => {
+  const type = stringValue(attachment.type) ?? "attachment"
+  const hook = hookMessage(attachment, base)
+  if (hook) return hook
+  if (type === "queued_command") {
+    if (typeof attachment.prompt !== "string") return custom(base, type)
+    return parsedMessage({
+      ...base,
+      subIndex: 0,
+      msgType: "message",
+      role: "user",
+      content: { type: "text", value: attachment.prompt },
+      details: {
+        ...conversationDetailsFor(attachment, "user", "activeTurn"),
+        promptSource: "queued",
+      },
+    })
+  }
+  if (type === "read_truncation_notice") {
+    return normalized(base, "progress", {
+      progressType: "readTruncation",
+      callId: stringValue(attachment.toolUseID),
+      stdout: typeof attachment.banner === "string" ? attachment.banner : undefined,
+    })
+  }
+  if (type === "date_change" || type === "auto_mode") return systemEvent(base, type)
+  if (type === "budget_usd") {
+    const usedUsd = finiteNonnegative(attachment.used)
+    const totalUsd = finiteNonnegative(attachment.total)
+    const remainingUsd = finiteNonnegative(attachment.remaining)
+    return usedUsd === undefined || totalUsd === undefined || remainingUsd === undefined
+      ? custom(base, type)
+      : normalized(base, "usage", { type: "budget", usedUsd, totalUsd, remainingUsd })
+  }
+  const path = firstString(attachment.filename, attachment.path)
+  if (type === "edited_text_file") {
+    return path
+      ? normalized(base, "fileEvent", {
+          type: "edited",
+          path,
+          snippet: typeof attachment.snippet === "string" ? attachment.snippet : undefined,
+        })
+      : custom(base, type)
+  }
+  if (type === "file" || type === "already_read_file") {
+    return path
+      ? normalized(base, "fileEvent", {
+          type: "attached",
+          path,
+          displayPath:
+            typeof attachment.displayPath === "string" ? attachment.displayPath : undefined,
+          value: attachment.value,
+          alreadyRead: type === "already_read_file" ? true : undefined,
+        })
+      : custom(base, type)
+  }
+  if (type === "opened_file_in_ide") {
+    return path ? normalized(base, "fileEvent", { type: "openedInIde", path }) : custom(base, type)
+  }
+  if (type === "selected_lines_in_ide") {
+    const lineStart = nonnegativeIntegerValue(attachment.lineStart)
+    const lineEnd = nonnegativeIntegerValue(attachment.lineEnd)
+    return path && lineStart !== undefined && lineEnd !== undefined
+      ? normalized(base, "fileEvent", {
+          type: "selectedInIde",
+          path,
+          lineStart,
+          lineEnd,
+          value:
+            typeof attachment.content === "string"
+              ? attachment.content
+              : typeof attachment.value === "string"
+                ? attachment.value
+                : undefined,
+        })
+      : custom(base, type)
+  }
+  return custom(base, type)
+}
+
+const systemMessage = (
+  data: Record<string, unknown>,
+  base: ReturnType<typeof baseFor>,
+): NormalizedMessage => {
+  const subType = stringValue(data.subtype) ?? "system"
+  if (subType === "stop_hook_summary") {
+    const hookInfos = Array.isArray(data.hookInfos) ? data.hookInfos.map(hookInfo) : []
+    const hookErrors = Array.isArray(data.hookErrors) ? data.hookErrors : []
+    return normalized(base, "hookCall", {
+      phase: "summary",
+      type: subType,
+      hookCount: nonnegativeIntegerValue(data.hookCount) ?? hookInfos.length,
+      hookInfos,
+      hookErrors,
+      preventedContinuation: data.preventedContinuation === true,
+      stopReason: typeof data.stopReason === "string" ? data.stopReason : undefined,
+      hasOutput: typeof data.hasOutput === "boolean" ? data.hasOutput : undefined,
+    })
+  }
+  if (subType === "turn_duration") {
+    const aborted = data.status === "aborted" || data.status === "interrupted"
+    return normalized(base, "turnEvent", {
+      type: aborted ? "aborted" : "duration",
+      status: aborted ? "aborted" : "completed",
+      durationMs: nonnegativeIntegerValue(data.durationMs),
+      messageCount: nonnegativeIntegerValue(data.messageCount),
+      pendingBackgroundAgentCount: nonnegativeIntegerValue(data.pendingBackgroundAgentCount),
+      pendingWorkflowCount: nonnegativeIntegerValue(data.pendingWorkflowCount),
+      reason: typeof data.reason === "string" ? data.reason : undefined,
+    })
+  }
+  if (subType === "compact_boundary") {
+    const metadata = isObject(data.compactMetadata) ? data.compactMetadata : data
+    return normalized(base, "compaction", {
+      type: "boundary",
+      trigger: stringValue(metadata.trigger),
+      summary: typeof metadata.summary === "string" ? metadata.summary : undefined,
+      preTokens: nonnegativeIntegerValue(metadata.preTokens),
+      postTokens: nonnegativeIntegerValue(metadata.postTokens),
+      droppedTokens: nonnegativeIntegerValue(metadata.droppedTokens),
+      durationMs: nonnegativeIntegerValue(metadata.durationMs),
+      logicalParentUuid: stringValue(metadata.logicalParentUuid),
+      preservedMessageUuids: Array.isArray(metadata.preservedMessageUuids)
+        ? metadata.preservedMessageUuids.filter(
+            (item): item is string => stringValue(item) !== undefined,
+          )
+        : undefined,
+    })
+  }
+  if (subType === "local_command") {
+    const content = typeof data.content === "string" ? data.content : ""
+    return localCommandMessage(data, content, base)
+  }
+  const notices = new Set([
+    "away_summary",
+    "scheduled_task_fire",
+    "informational",
+    "model_refusal_fallback",
+    "bridge_status",
+    "date_change",
+    "auto_mode",
+  ])
+  return notices.has(subType) ? systemEvent(base, subType) : custom(base, subType)
+}
+
+const progressMessage = (
+  data: Record<string, unknown>,
+  base: ReturnType<typeof baseFor>,
+): NormalizedMessage => {
+  const progress = isObject(data.data) ? data.data : undefined
+  if (!progress) return custom(base, "progress")
+  const type = stringValue(progress.type)
+  if (!type) return custom(base, "progress")
+  const hook = hookMessage(progress, base)
+  if (hook) return hook
+  const callId = firstString(progress.toolUseID, progress.toolUseId, progress.toolCallId)
+  const stdout = typeof progress.stdout === "string" ? progress.stdout : undefined
+  const stderr = typeof progress.stderr === "string" ? progress.stderr : undefined
+  const elapsedMs =
+    nonnegativeIntegerValue(progress.elapsedMs) ??
+    (() => {
+      const seconds = finiteNonnegative(progress.elapsedTimeSeconds)
+      const converted = seconds === undefined ? undefined : seconds * 1000
+      return converted !== undefined && Number.isInteger(converted) ? converted : undefined
+    })()
+  if (!callId && stdout === undefined && stderr === undefined && elapsedMs === undefined) {
+    return custom(base, type)
+  }
+  return normalized(base, "progress", { progressType: type, callId, stdout, stderr, elapsedMs })
+}
+
+const topLevelMessage = (
+  data: Record<string, unknown>,
+  base: ReturnType<typeof baseFor>,
+): NormalizedMessage | undefined => {
+  const type = stringValue(data.type)
+  if (type === "attachment") {
+    return isObject(data.attachment)
+      ? attachmentMessage(data.attachment, base)
+      : custom(base, "attachment")
+  }
+  if (type === "system") return systemMessage(data, base)
+  if (type === "progress") return progressMessage(data, base)
+  if (type === "summary") return systemEvent(base, "summary")
+  if (type === "queue-operation") {
+    const operation = data.operation
+    const knownOperation =
+      operation === "enqueue" ||
+      operation === "dequeue" ||
+      operation === "remove" ||
+      operation === "popAll"
+        ? operation
+        : "unknown"
+    return normalized(base, "queueOperation", {
+      operation: knownOperation,
+      taskId: stringValue(data.taskId),
+      status: stringValue(data.status),
+      summary: typeof data.summary === "string" ? data.summary : undefined,
+      outputFile: stringValue(data.outputFile),
+      value: typeof data.value === "string" ? data.value : undefined,
+    })
+  }
+  if (type === "file-history-snapshot") {
+    if (!("snapshot" in data)) return custom(base, type)
+    return normalized(base, "fileEvent", {
+      type: "snapshot",
+      messageId: stringValue(data.messageId),
+      isUpdate: typeof data.isUpdate === "boolean" ? data.isUpdate : undefined,
+      snapshot: data.snapshot,
+    })
+  }
+  if (type === "file-history-delta") {
+    const path = stringValue(data.path)
+    if (!path || !("backup" in data)) return custom(base, type)
+    return normalized(base, "fileEvent", {
+      type: "delta",
+      messageId: stringValue(data.messageId),
+      snapshotMessageId: stringValue(data.snapshotMessageId),
+      path,
+      backup: data.backup,
+    })
+  }
+  if (type === "frame-link") {
+    const path = stringValue(data.path)
+    const url = stringValue(data.url)
+    return path || url
+      ? normalized(base, "fileEvent", {
+          type: "artifact",
+          path,
+          url,
+          title: typeof data.title === "string" ? data.title : undefined,
+        })
+      : custom(base, type)
+  }
+  return undefined
+}
 
 const blockMessage = (
   block: unknown,
   role: ReturnType<typeof roleFor>,
   base: ReturnType<typeof baseFor>,
   subIndex: number,
+  details: ReturnType<typeof conversationDetailsFor>,
 ): NormalizedMessage => {
   const shared = { ...base, subIndex }
   if (!isObject(block)) {
@@ -240,19 +655,39 @@ const blockMessage = (
       msgType: "message",
       role,
       content: { type: "text", value: block.text },
+      details,
     })
   }
   if (block.type === "thinking") {
     return parsedMessage({
       ...shared,
       msgType: "message",
-      role,
+      role: "assistant",
       content: {
         type: "reasoning",
         value: typeof block.thinking === "string" ? block.thinking : undefined,
-        signature: stringValue(block.signature),
+        signature: typeof block.signature === "string" ? block.signature : undefined,
       },
+      details: { ...details, origin: "assistant" },
     })
+  }
+  if (block.type === "image") {
+    const source = isObject(block.source) ? block.source : undefined
+    const mediaType = firstString(source?.media_type, source?.mediaType)
+    const encoding = source?.type === "base64" || source?.type === "url" ? source.type : undefined
+    const value = firstString(source?.data, source?.url)
+    if (mediaType && encoding && value) {
+      return parsedMessage({
+        ...shared,
+        msgType: "message",
+        role,
+        content: { type: "image", value, mediaType, encoding },
+        details,
+      })
+    }
+  }
+  if (block.type === "fallback") {
+    return parsedMessage({ ...shared, msgType: "systemEvent", subType: "fallback" })
   }
   if (block.type === "tool_use") {
     const callId = stringValue(block.id)
@@ -324,21 +759,32 @@ export const normalizeClaude = (
   const message = isObject(data.message) ? data.message : undefined
   const role = roleFor(message?.role)
   const content = message?.content
+  const localCommand =
+    typeof content === "string" && hasLocalCommandMarker(content)
+      ? localCommandMessage(data, content, base)
+      : undefined
+  if (localCommand) return [localCommand]
 
+  const topLevel = topLevelMessage(data, base)
+  if (topLevel) return [topLevel]
+
+  const deliveryMode = data.promptSource === "queued" ? "turnBoundary" : undefined
+  const details = conversationDetailsFor(data, role, deliveryMode)
   if (typeof content === "string") {
-    return [
-      parsedMessage({
-        ...base,
-        subIndex: 0,
-        msgType: "message",
-        role,
-        content: { type: "text", value: content },
-      }),
-    ]
+    const conversation = parsedMessage({
+      ...base,
+      subIndex: 0,
+      msgType: "message",
+      role,
+      content: { type: "text", value: content },
+      details,
+    })
+    const messages = withEmbeddedUsage([conversation], tokensFrom(message?.usage), base)
+    return [messages[0] ?? conversation, ...messages.slice(1)]
   }
   if (Array.isArray(content)) {
     const blocks = content.length === 0 ? [undefined] : content
-    const messages = blocks.map((block, index) => blockMessage(block, role, base, index))
+    const messages = blocks.map((block, index) => blockMessage(block, role, base, index, details))
     const withUsage = withEmbeddedUsage(messages, tokensFrom(message?.usage), base)
     return [
       withUsage[0] ??

@@ -230,9 +230,447 @@ describe("normalizeClaude", () => {
 
   test("metadata-only line yields a custom message", () => {
     expect(normalizeClaude({ uuid: "x", type: "summary" })[0]).toMatchObject({
-      msgType: "custom",
+      msgType: "systemEvent",
       subType: "summary",
     })
+  })
+
+  test("S10: conversation roles and provenance follow explicit precedence", () => {
+    const fixtures = [
+      [
+        {
+          type: "user",
+          origin: { kind: "human" },
+          promptSource: "queued",
+          message: { role: "user", content: "hello" },
+        },
+        {
+          role: "user",
+          content: { type: "text", value: "hello" },
+          details: { origin: "human", promptSource: "queued", deliveryMode: "turnBoundary" },
+        },
+      ],
+      [
+        {
+          type: "assistant",
+          message: {
+            role: "assistant",
+            content: [{ type: "thinking", thinking: "why", signature: "sig" }],
+          },
+        },
+        {
+          role: "assistant",
+          content: { type: "reasoning", value: "why", signature: "sig" },
+          details: { origin: "assistant" },
+        },
+      ],
+      [
+        {
+          type: "user",
+          promptSource: "sdk",
+          message: {
+            role: "alien",
+            content: [
+              { type: "image", source: { type: "base64", media_type: "image/png", data: "abc" } },
+            ],
+          },
+        },
+        {
+          role: "unknown",
+          content: { type: "image", value: "abc", mediaType: "image/png", encoding: "base64" },
+          details: { origin: "sdk", promptSource: "sdk" },
+        },
+      ],
+      [
+        {
+          type: "user",
+          isMeta: true,
+          promptSource: "future",
+          message: { role: "developer", content: [{ type: "text", text: "meta" }] },
+        },
+        {
+          role: "developer",
+          content: { type: "text", value: "meta" },
+          details: { origin: "runtime", promptSource: "unknown", isMeta: true },
+        },
+      ],
+    ] as const
+
+    for (const [source, expected] of fixtures) {
+      expect(normalizeClaude(source)[0]).toMatchObject({ msgType: "message", ...expected })
+    }
+    expect(
+      normalizeClaude({
+        type: "user",
+        message: { role: "user", content: [{ type: "image", source: {} }] },
+      })[0],
+    ).toMatchObject({ msgType: "custom", subType: "image" })
+    expect(normalizeClaude(userToolResultLine)[0]).toMatchObject({ msgType: "toolResult" })
+  })
+
+  test("S11: tool and progress status never depends on guesswork", () => {
+    expect(
+      normalizeClaude({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "c", name: "Read", input: { path: "x" } }],
+        },
+      })[0],
+    ).toMatchObject({
+      msgType: "toolCall",
+      details: { callId: "c", name: "Read", input: { path: "x" } },
+    })
+    expect(
+      normalizeClaude({
+        type: "progress",
+        data: {
+          type: "bash",
+          toolUseID: "first",
+          toolUseId: "second",
+          stdout: "ok",
+          elapsedTimeSeconds: 1.5,
+        },
+      })[0],
+    ).toMatchObject({
+      msgType: "progress",
+      details: { progressType: "bash", callId: "first", stdout: "ok", elapsedMs: 1500 },
+    })
+    expect(normalizeClaude({ type: "progress", data: { type: "bash" } })[0]).toMatchObject({
+      msgType: "custom",
+      subType: "bash",
+    })
+    expect(
+      normalizeClaude({
+        type: "attachment",
+        attachment: { type: "read_truncation_notice", toolUseID: "c", banner: "trimmed" },
+      })[0],
+    ).toMatchObject({
+      msgType: "progress",
+      details: { progressType: "readTruncation", callId: "c", stdout: "trimmed" },
+    })
+  })
+
+  test("S12: hook phases and async status use fixed precedence", () => {
+    const fixtures = [
+      [
+        {
+          type: "progress",
+          data: {
+            type: "hook_progress",
+            hookId: "h",
+            toolUseID: "t",
+            hookEvent: "PreToolUse",
+            command: "check",
+          },
+        },
+        {
+          phase: "progress",
+          type: "hook_progress",
+          hookId: "h",
+          toolCallId: "t",
+          hookEvent: "PreToolUse",
+          command: "check",
+        },
+      ],
+      [
+        { type: "attachment", attachment: { type: "hook_success", hookId: "h" } },
+        { phase: "result", type: "hook_success", status: "success", hookId: "h" },
+      ],
+      [
+        { type: "attachment", attachment: { type: "hook_non_blocking_error", stderr: "bad" } },
+        { phase: "result", type: "hook_non_blocking_error", status: "failure", stderr: "bad" },
+      ],
+      [
+        { type: "attachment", attachment: { type: "hook_cancelled" } },
+        { phase: "result", type: "hook_cancelled", status: "cancelled" },
+      ],
+      [
+        {
+          type: "attachment",
+          attachment: { type: "hook_additional_context", content: { note: "x" } },
+        },
+        { phase: "context", type: "hook_additional_context", additionalContext: { note: "x" } },
+      ],
+      [
+        {
+          type: "attachment",
+          attachment: { type: "async_hook_response", cancelled: true, exitCode: 0, success: true },
+        },
+        { phase: "result", type: "async_hook_response", status: "cancelled", exitCode: 0 },
+      ],
+      [
+        {
+          type: "system",
+          subtype: "stop_hook_summary",
+          hookInfos: [{ command: "lint", durationMs: 2 }],
+          hookErrors: ["x"],
+          preventedContinuation: true,
+        },
+        {
+          phase: "summary",
+          type: "stop_hook_summary",
+          hookCount: 1,
+          hookInfos: [{ command: "lint", durationMs: 2 }],
+          hookErrors: ["x"],
+          preventedContinuation: true,
+        },
+      ],
+    ] as const
+    for (const [source, details] of fixtures) {
+      expect(normalizeClaude(source)[0]).toMatchObject({ msgType: "hookCall", details })
+    }
+    expect(
+      normalizeClaude({
+        type: "attachment",
+        attachment: { type: "hook_additional_context" },
+      })[0],
+    ).toMatchObject({ msgType: "custom", subType: "hook_additional_context" })
+  })
+
+  test("S13: queued prompts and queue operations stay separate", () => {
+    expect(
+      normalizeClaude({
+        type: "attachment",
+        attachment: { type: "queued_command", prompt: "next", origin: { kind: "human" } },
+      })[0],
+    ).toMatchObject({
+      msgType: "message",
+      role: "user",
+      content: { type: "text", value: "next" },
+      details: { origin: "human", promptSource: "queued", deliveryMode: "activeTurn" },
+    })
+    expect(
+      normalizeClaude({ type: "attachment", attachment: { type: "queued_command" } })[0],
+    ).toMatchObject({ msgType: "custom", subType: "queued_command" })
+    for (const operation of ["enqueue", "dequeue", "remove", "popAll"] as const) {
+      expect(
+        normalizeClaude({ type: "queue-operation", operation, taskId: "task" })[0],
+      ).toMatchObject({ msgType: "queueOperation", details: { operation, taskId: "task" } })
+    }
+    expect(normalizeClaude({ type: "queue-operation", operation: "future" })[0]).toMatchObject({
+      msgType: "queueOperation",
+      details: { operation: "unknown" },
+    })
+  })
+
+  test("S14: turns, compaction, and local commands use only explicit evidence", () => {
+    expect(
+      normalizeClaude({
+        type: "system",
+        subtype: "turn_duration",
+        durationMs: 9,
+        messageCount: 2,
+      })[0],
+    ).toMatchObject({
+      msgType: "turnEvent",
+      details: { type: "duration", status: "completed", durationMs: 9, messageCount: 2 },
+    })
+    expect(
+      normalizeClaude({
+        type: "system",
+        subtype: "turn_duration",
+        status: "aborted",
+        reason: "stopped",
+      })[0],
+    ).toMatchObject({
+      msgType: "turnEvent",
+      details: { type: "aborted", status: "aborted", reason: "stopped" },
+    })
+    expect(
+      normalizeClaude({
+        type: "system",
+        subtype: "compact_boundary",
+        compactMetadata: { trigger: "auto", preTokens: 10 },
+      })[0],
+    ).toMatchObject({
+      msgType: "compaction",
+      details: { type: "boundary", trigger: "auto", preTokens: 10 },
+    })
+    expect(normalizeClaude({ type: "summary", summary: "looks compact" })[0]).toMatchObject({
+      msgType: "systemEvent",
+      subType: "summary",
+    })
+    expect(
+      normalizeClaude({
+        type: "user",
+        message: { role: "user", content: "<command-name>/help</command-name>" },
+      })[0],
+    ).toMatchObject({
+      msgType: "localCommand",
+      details: { command: "/help", commandType: "slash", status: "unknown" },
+    })
+    expect(
+      normalizeClaude({
+        type: "system",
+        subtype: "local_command",
+        command: "/status",
+        content: "<local-command-stdout>done</local-command-stdout>",
+      })[0],
+    ).toMatchObject({
+      msgType: "localCommand",
+      details: { command: "/status", commandType: "slash", status: "unknown", stdout: "done" },
+    })
+    expect(
+      normalizeClaude({
+        type: "user",
+        message: { role: "user", content: "<command-name>broken" },
+      })[0],
+    ).toMatchObject({ msgType: "localCommand", details: { status: "unknown" } })
+  })
+
+  test("S15: file and usage events preserve useful fields without duplication", () => {
+    const fixtures = [
+      [
+        {
+          type: "file-history-snapshot",
+          messageId: "m",
+          isUpdate: true,
+          snapshot: { files: [] },
+        },
+        { type: "snapshot", messageId: "m", isUpdate: true, snapshot: { files: [] } },
+      ],
+      [
+        {
+          type: "file-history-delta",
+          messageId: "m",
+          snapshotMessageId: "s",
+          path: "a.ts",
+          backup: "old",
+        },
+        { type: "delta", messageId: "m", snapshotMessageId: "s", path: "a.ts", backup: "old" },
+      ],
+      [
+        {
+          type: "attachment",
+          attachment: { type: "edited_text_file", filename: "a.ts", snippet: "x" },
+        },
+        { type: "edited", path: "a.ts", snippet: "x" },
+      ],
+      [
+        {
+          type: "attachment",
+          attachment: { type: "file", path: "b.ts", displayPath: "B", value: "v" },
+        },
+        { type: "attached", path: "b.ts", displayPath: "B", value: "v" },
+      ],
+      [
+        { type: "attachment", attachment: { type: "already_read_file", filename: "c.ts" } },
+        { type: "attached", path: "c.ts", alreadyRead: true },
+      ],
+      [
+        { type: "attachment", attachment: { type: "opened_file_in_ide", path: "d.ts" } },
+        { type: "openedInIde", path: "d.ts" },
+      ],
+      [
+        {
+          type: "attachment",
+          attachment: {
+            type: "selected_lines_in_ide",
+            path: "e.ts",
+            lineStart: 1,
+            lineEnd: 3,
+            content: "x",
+          },
+        },
+        { type: "selectedInIde", path: "e.ts", lineStart: 1, lineEnd: 3, value: "x" },
+      ],
+      [
+        { type: "frame-link", path: "artifact.md", url: "https://example.test/a", title: "A" },
+        { type: "artifact", path: "artifact.md", url: "https://example.test/a", title: "A" },
+      ],
+    ] as const
+    for (const [source, details] of fixtures)
+      expect(normalizeClaude(source)[0]).toMatchObject({ msgType: "fileEvent", details })
+    expect(
+      normalizeClaude({
+        type: "attachment",
+        attachment: { type: "budget_usd", used: 1, total: 5, remaining: 4 },
+      })[0],
+    ).toMatchObject({
+      msgType: "usage",
+      details: { type: "budget", usedUsd: 1, totalUsd: 5, remainingUsd: 4 },
+    })
+    expect(
+      normalizeClaude({
+        type: "attachment",
+        attachment: { type: "budget_usd", used: -1, total: 5, remaining: 6 },
+      })[0],
+    ).toMatchObject({ msgType: "custom", subType: "budget_usd" })
+    const messages = normalizeClaude({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        usage: { input_tokens: 2, output_tokens: 1 },
+        content: [
+          { type: "text", text: "a" },
+          { type: "text", text: "b" },
+        ],
+      },
+    })
+    expect(
+      messages.filter((message) => "tokens" in message && message.tokens !== undefined),
+    ).toHaveLength(1)
+    expect(
+      normalizeClaude({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          usage: { input_tokens: 2, output_tokens: 1 },
+          content: "single",
+        },
+      })[0],
+    ).toMatchObject({ tokens: { input: 2, output: 1, cached: 0, thinking: 0 } })
+    const toolOnly = normalizeClaude({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        usage: { input_tokens: 2, output_tokens: 1 },
+        content: [{ type: "tool_use", id: "c", name: "Read", input: {} }],
+      },
+    })
+    expect(toolOnly.map((message) => message.msgType)).toEqual(["toolCall", "usage"])
+  })
+
+  test("S16: system and custom records remain timeline-only", () => {
+    for (const subType of [
+      "away_summary",
+      "scheduled_task_fire",
+      "informational",
+      "model_refusal_fallback",
+      "bridge_status",
+      "date_change",
+      "auto_mode",
+    ] as const) {
+      const source =
+        subType === "date_change" || subType === "auto_mode"
+          ? { type: "attachment", attachment: { type: subType } }
+          : { type: "system", subtype: subType }
+      expect(normalizeClaude(source)[0]).toMatchObject({ msgType: "systemEvent", subType })
+      expect(normalizeClaude(source)[0]).not.toHaveProperty("details")
+    }
+    for (const type of [
+      "last-prompt",
+      "mode",
+      "permission-mode",
+      "ai-title",
+      "custom-title",
+      "agent-name",
+      "pr-link",
+      "bridge-session",
+      "relocated",
+      "worktree-state",
+      "fork-context-ref",
+    ] as const) {
+      expect(normalizeClaude({ type })[0]).toMatchObject({ msgType: "custom", subType: type })
+    }
+    expect(normalizeClaude({ type: "system", subtype: "future_system" })[0]).toMatchObject({
+      msgType: "custom",
+      subType: "future_system",
+    })
+    expect(
+      normalizeClaude({ type: "attachment", attachment: { type: "skill_listing", skills: [] } })[0],
+    ).toMatchObject({ msgType: "custom", subType: "skill_listing" })
   })
 })
 
