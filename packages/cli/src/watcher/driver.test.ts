@@ -295,6 +295,41 @@ describe("watcher driver", () => {
     expect(store.checkpoints[main]).toBeUndefined()
   })
 
+  test("REQ-027: a disabled project's transcript is never fully read", async () => {
+    const enabled = join(projects, "sess-on.jsonl")
+    const disabled = join(projects, "sess-off.jsonl")
+    await writeFile(enabled, `${assistantLine("l1", "sess-on", { cwd: "/work/on" })}\n`, "utf8")
+    await writeFile(disabled, `${assistantLine("l2", "sess-off", { cwd: "/work/off" })}\n`, "utf8")
+
+    const reads: string[] = []
+    const countingFs: FileSystem = {
+      ...nodeFs,
+      readFile: (path) => {
+        reads.push(path)
+        return nodeFs.readFile(path)
+      },
+    }
+    const sink = createInMemorySink()
+
+    await runCycle(
+      config,
+      deps({
+        sink,
+        fs: countingFs,
+        glob: async () => [enabled, disabled],
+        plugin: createClaudePlugin(countingFs),
+        resolveProject: async (startDir) =>
+          startDir === "/work/on"
+            ? { name: "on", slug: "acme-on" }
+            : { name: "off", slug: "acme-off" },
+        shouldCapture: async (p) => p.slug === "acme-on",
+      }),
+    )
+
+    expect(sink.received).toHaveLength(1)
+    expect(reads.filter((p) => p === disabled)).toHaveLength(1)
+  })
+
   test("REQ-028,EDGE-012: evaluates project enablement again on every cycle", async () => {
     const main = join(projects, "sess-toggle.jsonl")
     await writeFile(main, `${assistantLine("l1", "sess-toggle")}\n`, "utf8")

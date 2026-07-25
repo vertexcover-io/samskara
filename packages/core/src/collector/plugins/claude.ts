@@ -6,7 +6,7 @@ import type {
   TokenUsage,
 } from "../../ingest/types.js"
 import type { FileSystem } from "../fs.js"
-import { compact, iterJsonLines, readNewLines } from "../helpers.js"
+import { type NumberedLine, compact, iterJsonLines, readNewLines } from "../helpers.js"
 import type {
   AgentPlugin,
   CheckpointBody,
@@ -160,7 +160,6 @@ type ParsedFile = {
   readonly path: string
   readonly sessionId: string | null
   readonly agent: AgentInfo | null
-  readonly cwd?: string
   readonly records: ReadonlyArray<ParsedRecord>
   readonly stat: { readonly mtime: number; readonly size: number }
 }
@@ -174,12 +173,35 @@ const checkpointAtFor =
     lineProcessed: lineNumber,
   })
 
+// Stop at the first line carrying a cwd — early lines can be mode/snapshot records that have none,
+// and the transcript's own content is the only faithful source. The `-Users-me-my-app` directory
+// name can't be reversed: `/` and a literal `-` in a path segment both encode to `-`.
+const cwdOf = (lines: ReadonlyArray<NumberedLine>): string | undefined => {
+  for (const { text } of lines) {
+    const trimmed = text.trim()
+    if (trimmed.length === 0) continue
+    try {
+      const data: unknown = JSON.parse(trimmed)
+      if (!isObject(data)) continue
+      const cwd = str(data.cwd)
+      if (cwd) return cwd
+    } catch {}
+  }
+  return undefined
+}
+
+// `~/.claude/projects/<encoded-cwd>/…` — every transcript below one encoded dir shares a cwd,
+// including the `subagents/` children, so this is the unit a project is resolved for.
+const PROJECT_DIR = /^(.*[/\\]projects[/\\][^/\\]+)(?:[/\\]|$)/
+
+const projectDirOf = (path: string): string =>
+  PROJECT_DIR.exec(path)?.[1] ?? path.replace(/[/\\][^/\\]*$/, "")
+
 const parseFile = async (fs: FileSystem, path: string, fromLine: number): Promise<ParsedFile> => {
   const stat = await fs.stat(path)
   const { lines } = await readNewLines(fs, path, fromLine)
-  const parsedLines = iterJsonLines(lines)
 
-  const records = parsedLines.flatMap(({ lineNumber, data }): ParsedRecord[] => {
+  const records = iterJsonLines(lines).flatMap(({ lineNumber, data }): ParsedRecord[] => {
     if (!isObject(data)) return []
     const lineUuid = str(data.uuid)
     if (!lineUuid) return []
@@ -187,22 +209,10 @@ const parseFile = async (fs: FileSystem, path: string, fromLine: number): Promis
     return [{ lineUuid, lineNumber, raw: JSON.stringify(data), messages }]
   })
 
-  const allMessages = records.flatMap((r) => r.messages)
-  const sessionId = allMessages.find((m) => m.sessionId)?.sessionId || null
-  const cwd = parsedLines.map((p) => p.data).find((d) => isObject(d) && str(d.cwd)) as
-    | Record<string, unknown>
-    | undefined
-  const isSubagent = SUBAGENT_PATH.test(path)
-  const agent = isSubagent ? await readClaudeSidecar(fs, path) : null
+  const sessionId = records.flatMap((r) => r.messages).find((m) => m.sessionId)?.sessionId || null
+  const agent = SUBAGENT_PATH.test(path) ? await readClaudeSidecar(fs, path) : null
 
-  return {
-    path,
-    sessionId,
-    agent,
-    cwd: cwd ? str(cwd.cwd) : undefined,
-    records,
-    stat: { mtime: stat.mtimeMs, size: stat.size },
-  }
+  return { path, sessionId, agent, records, stat: { mtime: stat.mtimeMs, size: stat.size } }
 }
 
 const isChanged = (
@@ -218,11 +228,89 @@ const isChanged = (
 const fromLineFor = (prev: CheckpointStore, path: string): number =>
   prev.checkpoints[path]?.lineProcessed ?? 0
 
-const buildTrack = async (
+const groupByProjectDir = (
+  paths: ReadonlyArray<string>,
+): ReadonlyMap<string, ReadonlyArray<string>> => {
+  const byDir = new Map<string, string[]>()
+  for (const path of paths) {
+    const dir = projectDirOf(path)
+    const list = byDir.get(dir) ?? []
+    list.push(path)
+    byDir.set(dir, list)
+  }
+  return byDir
+}
+
+// Resumed transcripts can have no cwd among their new lines, so probe siblings until one answers
+// rather than stranding the whole directory on the first miss.
+const cwdForDir = async (
+  fs: FileSystem,
+  paths: ReadonlyArray<string>,
+  prev: CheckpointStore,
+): Promise<string | undefined> => {
+  for (const path of paths) {
+    const { lines } = await readNewLines(fs, path, fromLineFor(prev, path))
+    const cwd = cwdOf(lines)
+    if (cwd) return cwd
+  }
+  return undefined
+}
+
+// A directory's identity is fixed — its encoded cwd never changes and neither, in practice, does
+// its git remote — so the probe read and the git-backed resolve are done once for the daemon's
+// lifetime. Enablement is deliberately not cached: it is re-checked against the live registry
+// every cycle so toggling a project takes effect on the next one.
+type ProjectCache = Map<string, Promise<ProjectIdentity | null>>
+
+const projectForDir = (
+  cache: ProjectCache,
+  fs: FileSystem,
+  dir: string,
+  paths: ReadonlyArray<string>,
+  prev: CheckpointStore,
+  resolve: (startDir: string) => Promise<ProjectIdentity>,
+): Promise<ProjectIdentity | null> => {
+  const hit = cache.get(dir)
+  if (hit) return hit
+
+  const pending = cwdForDir(fs, paths, prev).then((cwd) => (cwd ? resolve(cwd) : null))
+  cache.set(dir, pending)
+
+  // A directory with no cwd yet (a transcript opened but not written to) must stay retryable.
+  return pending.then((project) => {
+    if (!project) cache.delete(dir)
+    return project
+  })
+}
+
+// Decide per session directory, from a single probe file, before any transcript is normalized: a
+// directory whose project is disabled is dropped here, so its remaining transcripts are never read.
+const resolveEnabledDirs = async (
+  cache: ProjectCache,
+  fs: FileSystem,
+  changedPaths: ReadonlyArray<string>,
+  prev: CheckpointStore,
+  deps: CollectDeps,
+): Promise<ReadonlyMap<string, ProjectIdentity>> => {
+  const resolved = await Promise.all(
+    [...groupByProjectDir(changedPaths)].map(
+      async ([dir, paths]): Promise<readonly [string, ProjectIdentity] | null> => {
+        const project = await projectForDir(cache, fs, dir, paths, prev, deps.resolveProject)
+        if (!project) return null
+        if (deps.shouldCapture && !(await deps.shouldCapture(project))) return null
+        return [dir, project]
+      },
+    ),
+  )
+
+  return new Map(compact(resolved))
+}
+
+const buildTrack = (
   file: ParsedFile,
   sessionId: string,
   project: ProjectIdentity,
-): Promise<SessionTrack> => {
+): SessionTrack => {
   const shared = {
     sessionId,
     project,
@@ -250,32 +338,36 @@ const groupBySession = (tracks: ReadonlyArray<SessionTrack>): ReadonlyArray<Sess
   }))
 }
 
-export const createClaudePlugin = (fs: FileSystem): AgentPlugin => ({
-  source: SOURCE,
-  collect: async (prev, deps) => {
-    const discovered = [...new Set(await deps.glob(GLOB))]
+export const createClaudePlugin = (fs: FileSystem): AgentPlugin => {
+  const projectCache: ProjectCache = new Map()
 
-    const changedPaths: string[] = []
-    for (const path of discovered) {
-      const stat = await fs.stat(path)
-      if (isChanged(prev, path, { mtime: stat.mtimeMs, size: stat.size })) changedPaths.push(path)
-    }
+  return {
+    source: SOURCE,
+    collect: async (prev, deps) => {
+      const discovered = [...new Set(await deps.glob(GLOB))]
 
-    const parsed = await Promise.all(
-      changedPaths.map((path) => parseFile(fs, path, fromLineFor(prev, path))),
-    )
+      const changedPaths: string[] = []
+      for (const path of discovered) {
+        const stat = await fs.stat(path)
+        if (isChanged(prev, path, { mtime: stat.mtimeMs, size: stat.size })) changedPaths.push(path)
+      }
 
-    const tracks = compact(
-      await Promise.all(
-        parsed.map(async (file): Promise<SessionTrack | null> => {
-          if (!file.sessionId || file.records.length === 0) return null
-          if (!file.cwd) return null
-          const project = await deps.resolveProject(file.cwd)
-          return buildTrack(file, file.sessionId, project)
-        }),
-      ),
-    )
+      const enabledDirs = await resolveEnabledDirs(projectCache, fs, changedPaths, prev, deps)
 
-    return groupBySession(tracks)
-  },
-})
+      const tracks = compact(
+        await Promise.all(
+          changedPaths.map(async (path): Promise<SessionTrack | null> => {
+            const project = enabledDirs.get(projectDirOf(path))
+            if (!project) return null
+
+            const parsed = await parseFile(fs, path, fromLineFor(prev, path))
+            if (!parsed.sessionId || parsed.records.length === 0) return null
+            return buildTrack(parsed, parsed.sessionId, project)
+          }),
+        ),
+      )
+
+      return groupBySession(tracks)
+    },
+  }
+}

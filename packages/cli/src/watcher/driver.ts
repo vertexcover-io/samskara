@@ -148,17 +148,9 @@ export const runCycle = async (
     fs: deps.fs,
     glob: deps.glob,
     resolveProject: deps.resolveProject,
+    ...(deps.shouldCapture ? { shouldCapture: deps.shouldCapture } : {}),
   }
-  const collected = await deps.plugin.collect(prev, collectDeps)
-  const batches = await Promise.all(
-    collected.map(async (batch): Promise<SessionBatch> => {
-      const shouldCapture = deps.shouldCapture
-      if (!shouldCapture) return batch
-      const decisions = await Promise.all(batch.tracks.map((track) => shouldCapture(track.project)))
-      const tracks = batch.tracks.filter((_track, index) => decisions[index] === true)
-      return { ...batch, tracks }
-    }),
-  )
+  const batches = await deps.plugin.collect(prev, collectDeps)
 
   const results = await Promise.all(
     batches

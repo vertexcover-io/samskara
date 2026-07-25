@@ -35,6 +35,9 @@ export type CollectDeps = {
   readonly fs: FileSystem
   readonly glob: (pattern: string) => Promise<ReadonlyArray<string>>
   readonly resolveProject: (startDir: string) => Promise<ProjectIdentity>
+  // A plugin MUST drop tracks this rejects — the driver does not filter again. Consult it as early
+  // as a file's project is known, so an unenabled project costs no parsing.
+  readonly shouldCapture?: (project: ProjectIdentity) => Promise<boolean>
 }
 
 // One participant's freshly-parsed, not-yet-sent work — an IngestPayload plus transport-only fields.

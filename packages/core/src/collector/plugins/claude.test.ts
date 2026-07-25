@@ -269,6 +269,207 @@ describe("collect", () => {
     expect(records[0]?.lineNumber).toBe(2)
   })
 
+  test("drops a file whose project is not enabled before normalizing its records", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "samskara-claude-"))
+    const path = join(dir, "sess-1.jsonl")
+    await writeFile(path, `${JSON.stringify(assistantLine)}\n`, "utf8")
+
+    const plugin = createClaudePlugin(nodeFs)
+    const batches = await plugin.collect(
+      empty,
+      collectDeps([path], { shouldCapture: async () => false }),
+    )
+
+    expect(batches).toHaveLength(0)
+  })
+
+  test("keeps a file whose project is enabled", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "samskara-claude-"))
+    const path = join(dir, "sess-1.jsonl")
+    await writeFile(path, `${JSON.stringify(assistantLine)}\n`, "utf8")
+
+    const plugin = createClaudePlugin(nodeFs)
+    const batches = await plugin.collect(
+      empty,
+      collectDeps([path], { shouldCapture: async () => true }),
+    )
+
+    expect(batches[0]?.tracks[0]?.records).toHaveLength(1)
+  })
+
+  test("resolves each distinct cwd once across the files of a cycle", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "samskara-claude-"))
+    const a = join(dir, "sess-a.jsonl")
+    const b = join(dir, "sess-b.jsonl")
+    await writeFile(a, `${JSON.stringify(assistantLine)}\n`, "utf8")
+    await writeFile(
+      b,
+      `${JSON.stringify({ ...assistantLine, uuid: "line-b", sessionId: "sess-2" })}\n`,
+      "utf8",
+    )
+
+    const seen: string[] = []
+    const plugin = createClaudePlugin(nodeFs)
+    await plugin.collect(
+      empty,
+      collectDeps([a, b], {
+        resolveProject: async (startDir) => {
+          seen.push(startDir)
+          return project
+        },
+      }),
+    )
+
+    expect(seen).toEqual(["/work/app"])
+  })
+
+  test("a disabled project reads one probe file, not every transcript in its directory", async () => {
+    const root = await mkdtemp(join(tmpdir(), "samskara-claude-"))
+    const dir = join(root, "projects", "-work-app")
+    await mkdir(dir, { recursive: true })
+    const paths = ["a", "b", "c", "d"].map((n) => join(dir, `sess-${n}.jsonl`))
+    await Promise.all(
+      paths.map((p, i) =>
+        writeFile(
+          p,
+          `${JSON.stringify({ ...assistantLine, uuid: `u${i}`, sessionId: `sess-${i}` })}\n`,
+          "utf8",
+        ),
+      ),
+    )
+
+    const reads: string[] = []
+    const countingFs = {
+      ...nodeFs,
+      readFile: (path: string) => {
+        reads.push(path)
+        return nodeFs.readFile(path)
+      },
+    }
+
+    const plugin = createClaudePlugin(countingFs)
+    const batches = await plugin.collect(
+      empty,
+      collectDeps(paths, { fs: countingFs, shouldCapture: async () => false }),
+    )
+
+    expect(batches).toHaveLength(0)
+    expect(reads).toHaveLength(1)
+  })
+
+  test("resolves the project once for a whole session directory, subagents included", async () => {
+    const root = await mkdtemp(join(tmpdir(), "samskara-claude-"))
+    const dir = join(root, "projects", "-work-app")
+    await mkdir(join(dir, "subagents"), { recursive: true })
+    const main = join(dir, "sess-1.jsonl")
+    const sub = join(dir, "subagents", "agent-af66.jsonl")
+    await writeFile(main, `${JSON.stringify(assistantLine)}\n`, "utf8")
+    await writeFile(sub, `${JSON.stringify({ ...assistantLine, agentId: "af66" })}\n`, "utf8")
+    await writeFile(
+      sub.replace(/\.jsonl$/, ".meta.json"),
+      JSON.stringify({ agentId: "af66" }),
+      "utf8",
+    )
+
+    const seen: string[] = []
+    const plugin = createClaudePlugin(nodeFs)
+    const batches = await plugin.collect(
+      empty,
+      collectDeps([main, sub], {
+        resolveProject: async (startDir) => {
+          seen.push(startDir)
+          return project
+        },
+      }),
+    )
+
+    expect(seen).toHaveLength(1)
+    expect(batches[0]?.tracks.map((t) => t.type)).toEqual(["main", "subagent"])
+  })
+
+  test("resolves a directory's project once across cycles, not once per cycle", async () => {
+    const root = await mkdtemp(join(tmpdir(), "samskara-claude-"))
+    const dir = join(root, "projects", "-work-app")
+    await mkdir(dir, { recursive: true })
+    const path = join(dir, "sess-1.jsonl")
+    await writeFile(path, `${JSON.stringify(assistantLine)}\n`, "utf8")
+
+    const seen: string[] = []
+    const deps = collectDeps([path], {
+      resolveProject: async (startDir) => {
+        seen.push(startDir)
+        return project
+      },
+    })
+
+    const plugin = createClaudePlugin(nodeFs)
+    await plugin.collect(empty, deps)
+    await writeFile(
+      path,
+      `${JSON.stringify(assistantLine)}\n${JSON.stringify({ ...assistantLine, uuid: "line-2" })}\n`,
+      "utf8",
+    )
+    await plugin.collect(empty, deps)
+
+    expect(seen).toEqual(["/work/app"])
+  })
+
+  test("re-checks enablement every cycle even though the project is cached", async () => {
+    const root = await mkdtemp(join(tmpdir(), "samskara-claude-"))
+    const dir = join(root, "projects", "-work-app")
+    await mkdir(dir, { recursive: true })
+    const path = join(dir, "sess-1.jsonl")
+    await writeFile(path, `${JSON.stringify(assistantLine)}\n`, "utf8")
+
+    let enabled = false
+    const plugin = createClaudePlugin(nodeFs)
+    const deps = collectDeps([path], { shouldCapture: async () => enabled })
+
+    expect(await plugin.collect(empty, deps)).toHaveLength(0)
+    enabled = true
+    expect(await plugin.collect(empty, deps)).toHaveLength(1)
+  })
+
+  test("a directory that had no cwd yet still resolves on a later cycle", async () => {
+    const root = await mkdtemp(join(tmpdir(), "samskara-claude-"))
+    const dir = join(root, "projects", "-work-app")
+    await mkdir(dir, { recursive: true })
+    const path = join(dir, "sess-1.jsonl")
+    const cwdless = JSON.stringify({
+      uuid: "line-0",
+      sessionId: "sess-1",
+      timestamp: "2026-07-23T00:00:00.000Z",
+      message: { role: "assistant", content: [{ type: "text", text: "hi" }] },
+    })
+    await writeFile(path, `${cwdless}\n`, "utf8")
+
+    const plugin = createClaudePlugin(nodeFs)
+    const deps = collectDeps([path])
+    expect(await plugin.collect(empty, deps)).toHaveLength(0)
+
+    await writeFile(path, `${cwdless}\n${JSON.stringify(assistantLine)}\n`, "utf8")
+    const batches = await plugin.collect(empty, deps)
+
+    expect(batches.map((b) => b.sessionId)).toEqual(["sess-1"])
+  })
+
+  test("a probe file with no cwd does not strand its siblings in the same directory", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "samskara-claude-"))
+    const noCwd = join(dir, "aaa-no-cwd.jsonl")
+    const withCwd = join(dir, "bbb-has-cwd.jsonl")
+    await writeFile(
+      noCwd,
+      `${JSON.stringify({ uuid: "n1", sessionId: "sess-n", timestamp: "2026-07-23T00:00:00.000Z", message: { role: "assistant", content: [{ type: "text", text: "hi" }] } })}\n`,
+      "utf8",
+    )
+    await writeFile(withCwd, `${JSON.stringify(assistantLine)}\n`, "utf8")
+
+    const plugin = createClaudePlugin(nodeFs)
+    const batches = await plugin.collect(empty, collectDeps([noCwd, withCwd]))
+
+    expect(batches.map((b) => b.sessionId)).toContain("sess-1")
+  })
+
   test("emits no track for a file whose starting dir can't be resolved (no cwd)", async () => {
     const dir = await mkdtemp(join(tmpdir(), "samskara-claude-"))
     const path = join(dir, "no-cwd.jsonl")
