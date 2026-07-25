@@ -1,3 +1,4 @@
+import { MSG_TYPES } from "@samskara/core"
 import { sql } from "drizzle-orm"
 import {
   bigint,
@@ -14,8 +15,13 @@ import {
   uuid,
 } from "drizzle-orm/pg-core"
 
+const msgTypeValues = MSG_TYPES.map((t) => `'${t}'`).join(", ")
+
 const createdAt = timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
 const updatedAt = timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+
+const createdAtCamel = timestamp("createdAt", { withTimezone: true }).notNull().defaultNow()
+const updatedAtCamel = timestamp("updatedAt", { withTimezone: true }).notNull().defaultNow()
 
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -68,110 +74,158 @@ export const userOrgs = pgTable(
   (t) => [primaryKey({ columns: [t.userId, t.orgId] }), index("user_orgs_org_id_idx").on(t.orgId)],
 )
 
-export const userRepos = pgTable(
-  "user_repos",
+export const projects = pgTable(
+  "projects",
   {
-    userId: uuid("user_id")
+    id: uuid("id").primaryKey().defaultRandom(),
+    name: text("name").notNull(),
+    slug: text("slug").notNull(),
+    ownerId: uuid("ownerId")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    repoId: uuid("repo_id")
-      .notNull()
-      .references(() => repos.id, { onDelete: "cascade" }),
-    createdAt,
+    createdAt: createdAtCamel,
+    updatedAt: updatedAtCamel,
   },
-  (t) => [
-    primaryKey({ columns: [t.userId, t.repoId] }),
-    index("user_repos_repo_id_idx").on(t.repoId),
-  ],
+  (t) => [unique("projects_slug_owner_unique").on(t.slug, t.ownerId)],
 )
 
-export const orgRepos = pgTable(
-  "org_repos",
+export const userProjectGrant = pgTable(
+  "userProjectGrant",
   {
-    orgId: uuid("org_id")
+    userId: uuid("userId")
       .notNull()
-      .references(() => orgs.id, { onDelete: "cascade" }),
-    repoId: uuid("repo_id")
+      .references(() => users.id, { onDelete: "cascade" }),
+    projectId: uuid("projectId")
       .notNull()
-      .references(() => repos.id, { onDelete: "cascade" }),
-    createdAt,
+      .references(() => projects.id, { onDelete: "cascade" }),
+    scope: text("scope").notNull(),
+    createdAt: createdAtCamel,
   },
   (t) => [
-    primaryKey({ columns: [t.orgId, t.repoId] }),
-    index("org_repos_repo_id_idx").on(t.repoId),
+    primaryKey({ columns: [t.userId, t.projectId] }),
+    check("userProjectGrant_scope_check", sql`${t.scope} in ('admin', 'editor', 'viewer')`),
+    index("userProjectGrant_projectId_idx").on(t.projectId),
   ],
 )
 
-export const sessions = pgTable("sessions", {
-  id: text("id").primaryKey(),
-  userId: uuid("user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
-  repoId: uuid("repo_id")
-    .notNull()
-    .references(() => repos.id, { onDelete: "cascade" }),
-  gitBranch: text("git_branch"),
-  gitCommit: text("git_commit"),
-  cliVersion: text("cli_version"),
-  permissionMode: text("permission_mode"),
-  firstEventAt: timestamp("first_event_at", { withTimezone: true }),
-  lastEventAt: timestamp("last_event_at", { withTimezone: true }),
-  messageCount: integer("message_count").notNull().default(0),
-  createdAt,
-  updatedAt,
-})
+export const sessions = pgTable(
+  "sessions",
+  {
+    id: text("id").primaryKey(),
+    source: text("source").notNull(),
+    userId: uuid("userId")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    projectId: uuid("projectId")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    model: text("model"),
+    provider: text("provider"),
+    title: text("title"),
+    cwd: text("cwd"),
+    cliVersion: text("cliVersion"),
+    permissionMode: text("permissionMode"),
+    createdAt: createdAtCamel,
+    updatedAt: updatedAtCamel,
+  },
+  (t) => [index("sessions_projectId_idx").on(t.projectId)],
+)
 
 export const messages = pgTable(
   "messages",
   {
-    uuid: text("uuid").primaryKey(),
-    sessionId: text("session_id")
+    id: uuid("id").primaryKey().defaultRandom(),
+    sessionId: text("sessionId")
       .notNull()
       .references(() => sessions.id, { onDelete: "cascade" }),
-    parentUuid: text("parent_uuid"),
-    type: text("type").notNull(),
+    lineUuid: text("lineUuid").notNull(),
+    subIndex: integer("subIndex").notNull(),
+    parentUuid: text("parentUuid"),
+    msgType: text("msgType").notNull(),
     role: text("role"),
     timestamp: timestamp("timestamp", { withTimezone: true }),
-    lineNumber: integer("line_number").notNull(),
-    sourceRelativePath: text("source_relative_path").notNull(),
-    sourceSchemaVersion: integer("source_schema_version").notNull(),
+    lineNumber: integer("lineNumber").notNull(),
     model: text("model"),
     provider: text("provider"),
     content: text("content"),
     thinking: text("thinking"),
-    toolUseId: text("tool_use_id"),
-    isSubagent: boolean("is_subagent").notNull().default(false),
-    agentId: text("agent_id"),
     raw: jsonb("raw").notNull(),
-    createdAt,
+    sourceSchemaVersion: integer("sourceSchemaVersion").notNull(),
+    isSubagent: boolean("isSubagent").notNull().default(false),
+    agentId: text("agentId"),
+    gitBranch: text("gitBranch"),
+    gitCommit: text("gitCommit"),
+    createdAt: createdAtCamel,
   },
   (t) => [
-    check("messages_type_check", sql`${t.type} in ('user', 'assistant', 'system', 'attachment')`),
+    unique("messages_line_identity").on(t.lineUuid, t.subIndex),
+    check("messages_msgType_check", sql`${t.msgType} in (${sql.raw(msgTypeValues)})`),
     index("messages_session_line_idx").on(t.sessionId, t.lineNumber),
     index("messages_session_agent_idx").on(t.sessionId, t.agentId),
     index("messages_agent_id_idx").on(t.agentId).where(sql`${t.isSubagent}`),
-    index("messages_tool_use_id_idx").on(t.toolUseId),
   ],
 )
+
+export const toolCall = pgTable(
+  "toolCall",
+  {
+    toolId: text("toolId").notNull(),
+    messageId: uuid("messageId")
+      .notNull()
+      .references(() => messages.id, { onDelete: "cascade" }),
+    toolName: text("toolName").notNull(),
+    toolInput: jsonb("toolInput"),
+  },
+  (t) => [
+    primaryKey({ columns: [t.toolId, t.messageId] }),
+    index("toolCall_message_idx").on(t.messageId),
+    index("toolCall_tool_idx").on(t.toolId),
+  ],
+)
+
+export const toolResult = pgTable(
+  "toolResult",
+  {
+    toolId: text("toolId").notNull(),
+    messageId: uuid("messageId")
+      .notNull()
+      .references(() => messages.id, { onDelete: "cascade" }),
+    result: text("result"),
+    status: text("status").notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.toolId, t.messageId] }),
+    check("toolResult_status_check", sql`${t.status} in ('success', 'failure')`),
+    index("toolResult_message_idx").on(t.messageId),
+    index("toolResult_tool_idx").on(t.toolId),
+  ],
+)
+
+export const tokenUsage = pgTable("tokenUsage", {
+  messageId: uuid("messageId")
+    .primaryKey()
+    .references(() => messages.id, { onDelete: "cascade" }),
+  inputTokens: integer("inputTokens").notNull().default(0),
+  outputTokens: integer("outputTokens").notNull().default(0),
+  cachedTokens: integer("cachedTokens").notNull().default(0),
+  thinkingTokens: integer("thinkingTokens").notNull().default(0),
+})
 
 export const subagents = pgTable(
   "subagents",
   {
-    agentId: text("agent_id").notNull(),
-    sessionId: text("session_id")
+    agentId: text("agentId").notNull(),
+    sessionId: text("sessionId")
       .notNull()
       .references(() => sessions.id, { onDelete: "cascade" }),
-    agentType: text("agent_type"),
+    agentType: text("agentType"),
     description: text("description"),
-    spawnDepth: integer("spawn_depth"),
-    spawnToolUseId: text("spawn_tool_use_id"),
-    parentAgentId: text("parent_agent_id"),
-    sourceRelativePath: text("source_relative_path").notNull(),
-    firstEventAt: timestamp("first_event_at", { withTimezone: true }),
-    lastEventAt: timestamp("last_event_at", { withTimezone: true }),
-    messageCount: integer("message_count").notNull().default(0),
-    createdAt,
-    updatedAt,
+    spawnDepth: integer("spawnDepth"),
+    spawnToolUseId: text("spawnToolUseId"),
+    parentAgentId: text("parentAgentId"),
+    sourceRelativePath: text("sourceRelativePath").notNull(),
+    createdAt: createdAtCamel,
+    updatedAt: updatedAtCamel,
   },
   (t) => [
     primaryKey({ columns: [t.sessionId, t.agentId] }),
@@ -179,13 +233,3 @@ export const subagents = pgTable(
     index("subagents_parent_agent_id_idx").on(t.parentAgentId),
   ],
 )
-
-export const tokenUsage = pgTable("token_usage", {
-  messageUuid: text("message_uuid")
-    .primaryKey()
-    .references(() => messages.uuid, { onDelete: "cascade" }),
-  inputTokens: integer("input_tokens").notNull().default(0),
-  outputTokens: integer("output_tokens").notNull().default(0),
-  cachedTokens: integer("cached_tokens").notNull().default(0),
-  thinkingTokens: integer("thinking_tokens").notNull().default(0),
-})

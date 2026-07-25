@@ -11,9 +11,9 @@ package builds, typechecks, lints, and passes its tests.
 
 | Package             | Purpose                                                        |
 | ------------------- | -------------------------------------------------------------- |
-| `@samskara/core`    | Canonical shared types (session, event, `SourceAdapter`). Stub. |
-| `@samskara/cli`     | `samskara` binary. `--version`, and `login` (CLI pairing).     |
-| `@samskara/server`  | Hono API on Node. Drizzle + postgres-js + pgvector. Auth + `/health`. |
+| `@samskara/core`    | Shared types, the collector framework (`SourceAdapter` + Claude plugin), ingest types, and the `createLogger` logging factory. |
+| `@samskara/cli`     | `samskara` binary. Pairing, per-folder capture opt-in, status, and a hook-revived background watcher. |
+| `@samskara/server`  | Hono API on Node. Drizzle + postgres-js + pgvector. Auth + `/health` + `/api/ingest`. |
 | `@samskara/web`     | Vite 6 + React 18 + Tailwind v4 UI. GitHub login entry.        |
 
 ## Requirements
@@ -49,7 +49,8 @@ bun run seed:org <github-slug>   # seed an allowed org (login is gated to member
 
 GitHub OAuth web login, gated to members of a seeded org. Config lives in `.env` (see
 `.env.example`): `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET`, `JWT_SECRET`, `PUBLIC_BASE_URL`,
-`COOKIE_SECURE`, `JWT_EXPIRES_IN` (default `7d`). Ports: backend `:3000`, web `:8000`
+`WEB_BASE_URL` (default `http://localhost:8000`), `COOKIE_SECURE`, `JWT_EXPIRES_IN` (default `7d`).
+Ports: backend `:3000`, web `:8000`
 (Vite proxies `/api` → `:3000`).
 
 | Method | Path | Auth | Purpose |
@@ -60,23 +61,68 @@ GitHub OAuth web login, gated to members of a seeded org. Config lives in `.env`
 | POST | `/api/auth/logout`          | web      | Clear session cookie |
 | POST | `/api/auth/cli-code`        | web      | Mint a CLI pairing code |
 | POST | `/api/auth/cli-exchange`    | none     | Redeem a code → `aud:cli` JWT |
+| POST | `/api/ingest`               | cli      | Flush a captured session (messages, tool calls, subagents) |
 
 Tokens are audience-scoped (`aud: web | cli`) and checked per route by `requireAuth(aud)`.
 `samskara login` pairs the CLI: it redeems a code for an `aud:cli` token stored at
 `~/.samskara/token` (`0600`).
+
+## CLI capture lifecycle
+
+```sh
+samskara init                 # login if needed, install hook, start watcher
+samskara enable [path]        # enable one folder (cwd by default)
+samskara disable [path]       # stop capturing it locally; cloud data is retained
+samskara status               # projects, last-sync timestamps, watcher PID/log
+samskara logout               # stop watcher and remove the CLI token
+```
+
+Capture is local-only and opt-in. Enabled folders live in `~/.samskara/projects.json`; each entry is
+keyed by project slug and stores `{ name, path, enabled, enabledAt }`. Git remotes provide stable
+project identities when available, while non-git folders use a path-derived identity. Override all
+local state paths with `SAMSKARA_HOME`.
+
+`init` installs a managed Claude Code `SessionStart` hook. The hook runs the hidden `ensure` command,
+which revives the detached singleton watcher and tells the agent when authentication or project
+enablement is missing. Watcher output is appended to `~/.samskara/watch.log`; its PID is stored in
+`~/.samskara/watch.pid` (`0600`). `install-hooks` and `uninstall-hooks` manage the hook explicitly.
+The foreground `samskara watch` command remains available for debugging. It polls Claude Code session
+files, resolves the owning project, captures only enabled project slugs, and POSTs flushes to
+`/api/ingest`. Explicit `watch --project-name ... --project-slug ...` overrides bypass the registry.
+
+## Logging
+
+Every package logs structured NDJSON via `createLogger(base, opts?)` from `@samskara/core`
+(pino under the hood — no pretty transport, ever). `base` must include `service`
+(`samskara-server`, `samskara-cli`), and `createLogger` redacts `token`, `authorization`,
+`*.token`, `req.headers.authorization`, `password`, and `secret` from every line.
+
+- **Level:** `LOG_LEVEL` env var (`fatal`|`error`|`warn`|`info`|`debug`|`trace`) if set and
+  valid; otherwise `info` when `NODE_ENV=production`, `debug` otherwise. An invalid `LOG_LEVEL`
+  falls back to the same default and warns once (never throws).
+- **CLI:** `samskara --verbose <command>` forces `debug` regardless of env/`NODE_ENV`.
+- **Server:** a global Hono middleware (`lib/logging-middleware.ts`) mints a `reqId` (trusts an
+  incoming `x-request-id` header if non-blank, else `randomUUID()`), echoes it on the response,
+  and binds a per-request child logger to `c.set("log", …)` carrying `{reqId, method, path}`.
+  `requireAuth` enriches it with `userId`; the ingest handler enriches it with
+  `{sessionId, eventCount, repo, isSubagent}` via `setBindings` (same instance, not re-childed).
+  One `info` completion line `{status, ms}` is logged per request; `onError` logs at `error`
+  through `c.get("log")` when present, else the server root logger, and always returns
+  `{error: "internal"}` with status 500.
 
 ## Server structure
 
 ```
 packages/server/src/
   db/            client.ts (postgres-js + drizzle), customTypes.ts (vector), schema.ts
-  repositories/  drizzle queries per model (users/orgs/userOrgs)
-  routes/        auth.ts (OAuth + session + CLI pairing)
-  services/      github.ts (GithubClient seam), auth.ts (gate + upsert), pairing.ts
-  lib/           env.ts (zod config), jwt.ts (jose), cookies.ts, require-auth.ts
+  repositories/  drizzle queries per model (users/orgs/projects/sessions)
+  routes/        auth.ts (OAuth + session + CLI pairing), ingest.ts (session flush)
+  services/      github.ts (GithubClient seam), auth.ts (gate + upsert), pairing.ts, ingest.ts
+  lib/           env.ts (zod config), jwt.ts (jose), cookies.ts, require-auth.ts,
+                 logging-middleware.ts (reqId + request child logger)
   scripts/       seed-org.ts
-  app.ts         buildApp(db, env, deps) — Hono app, /health + /api/auth
-  index.ts       Node server entry
+  app.ts         buildApp(db, env, deps) — Hono app, /health + /api/auth + /api/ingest
+  index.ts       Node server entry — logs "server listening" via the root logger
 ```
 
 ## Database
@@ -87,9 +133,9 @@ Postgres 16 with the pgvector extension, exposed on host port **5433**:
 bun run stack:up
 ```
 
-The identity mesh (`users`, `orgs`, `repos`, `user_orgs`, `user_repos`, `org_repos`,
-`sessions`, `messages`, `subagents`, `token_usage`) is defined in `db/schema.ts` with
-drizzle-kit migrations under `packages/server/migrations/`. Apply them with
+The identity mesh (`users`, `orgs`, `repos`, `user_orgs`, `projects`, `user_project_grant`,
+`sessions`, `messages`, `tool_call`, `tool_result`, `subagents`, `token_usage`) is defined in
+`db/schema.ts` with drizzle-kit migrations under `packages/server/migrations/`. Apply them with
 `bun run db:migrate`. The auth system adds no new tables (pairing codes are in-memory).
 
 The server package's Vitest suite spins up a real `pgvector/pgvector:pg16` container via

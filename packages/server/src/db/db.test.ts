@@ -6,14 +6,16 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest"
 import { type Db, createDb } from "./client.js"
 import {
   messages,
-  orgRepos,
   orgs,
+  projects,
   repos,
   sessions,
   subagents,
   tokenUsage,
+  toolCall,
+  toolResult,
   userOrgs,
-  userRepos,
+  userProjectGrant,
   users,
 } from "./schema.js"
 
@@ -55,49 +57,85 @@ describe.skipIf(!dockerAvailable())("identity mesh schema", () => {
     await teardown?.()
   })
 
-  test("inserts entities, links them, and reverse-looks-up repo visibility", async () => {
+  test("inserts entities, links them, and reverse-looks-up project visibility", async () => {
     const [user] = await db
       .insert(users)
       .values({ githubId: 1, githubLogin: "vertexcover" })
+      .returning()
+    const [other] = await db
+      .insert(users)
+      .values({ githubId: 2, githubLogin: "teammate" })
       .returning()
     const [org] = await db
       .insert(orgs)
       .values({ githubSlug: "refrens", githubOrgId: 42 })
       .returning()
-    const [remoteRepo] = await db
-      .insert(repos)
-      .values({ host: "github", owner: "refrens", ownerType: "org", repoName: "andromeda" })
-      .returning()
-    const [localRepo] = await db
-      .insert(repos)
-      .values({
-        host: "local",
-        owner: "vertexcover",
-        ownerType: "user",
-        repoName: "/Users/x/work/myapp",
-      })
-      .returning()
 
-    if (!user || !org || !remoteRepo || !localRepo) throw new Error("insert returned no row")
+    if (!user || !other || !org) throw new Error("insert returned no row")
 
     await db.insert(userOrgs).values({ userId: user.id, orgId: org.id })
-    await db.insert(userRepos).values([
-      { userId: user.id, repoId: remoteRepo.id },
-      { userId: user.id, repoId: localRepo.id },
-    ])
-    await db.insert(orgRepos).values({ orgId: org.id, repoId: remoteRepo.id })
 
-    const visibleUsers = await db
-      .select({ id: users.id, login: users.githubLogin })
-      .from(userRepos)
-      .innerJoin(users, eq(users.id, userRepos.userId))
-      .where(eq(userRepos.repoId, remoteRepo.id))
+    const [project] = await db
+      .insert(projects)
+      .values({ name: "andromeda", slug: "refrens-andromeda", ownerId: user.id })
+      .returning()
+    if (!project) throw new Error("project insert returned no row")
 
-    expect(visibleUsers).toHaveLength(1)
-    expect(visibleUsers[0]?.login).toBe("vertexcover")
+    // Owner is admin by derivation and has NO grant row; grants elevate OTHER users.
+    await db.insert(userProjectGrant).values({
+      userId: other.id,
+      projectId: project.id,
+      scope: "viewer",
+    })
+
+    const grantedUsers = await db
+      .select({ login: users.githubLogin })
+      .from(userProjectGrant)
+      .innerJoin(users, eq(users.id, userProjectGrant.userId))
+      .where(eq(userProjectGrant.projectId, project.id))
+
+    expect(grantedUsers).toHaveLength(1)
+    expect(grantedUsers[0]?.login).toBe("teammate")
+  })
+
+  test("UNIQUE(slug, ownerId) allows the same slug for two different owners", async () => {
+    const [a] = await db.insert(users).values({ githubId: 11, githubLogin: "owner-a" }).returning()
+    const [b] = await db.insert(users).values({ githubId: 12, githubLogin: "owner-b" }).returning()
+    if (!a || !b) throw new Error("insert returned no row")
+
+    await db.insert(projects).values({ name: "widget", slug: "acme-widget", ownerId: a.id })
+    const [mine] = await db
+      .insert(projects)
+      .values({ name: "widget", slug: "acme-widget", ownerId: b.id })
+      .returning()
+    expect(mine).toBeDefined()
+
+    await expect(
+      db.insert(projects).values({ name: "widget", slug: "acme-widget", ownerId: a.id }),
+    ).rejects.toThrow()
+  })
+
+  test("userProjectGrant.scope CHECK rejects an invalid scope", async () => {
+    const [u] = await db
+      .insert(users)
+      .values({ githubId: 13, githubLogin: "scope-user" })
+      .returning()
+    if (!u) throw new Error("insert returned no row")
+    const [p] = await db
+      .insert(projects)
+      .values({ name: "proj", slug: "scope-proj", ownerId: u.id })
+      .returning()
+    if (!p) throw new Error("project insert returned no row")
+
+    await expect(
+      db.insert(userProjectGrant).values({ userId: u.id, projectId: p.id, scope: "owner" }),
+    ).rejects.toThrow()
   })
 
   test("UNIQUE rejects a duplicate repo identity but allows a different local path", async () => {
+    await db
+      .insert(repos)
+      .values({ host: "github", owner: "refrens", ownerType: "org", repoName: "andromeda" })
     await expect(
       db
         .insert(repos)
@@ -158,17 +196,13 @@ describe.skipIf(!dockerAvailable())("session data model", () => {
       .insert(users)
       .values({ githubId: 100 + seedCounter, githubLogin: `user-${seedCounter}` })
       .returning()
-    const [repo] = await db
-      .insert(repos)
-      .values({
-        host: "local",
-        owner: "vertexcover",
-        ownerType: "user",
-        repoName: `/work/app-${seedCounter}`,
-      })
+    if (!user) throw new Error("seed user returned no row")
+    const [project] = await db
+      .insert(projects)
+      .values({ name: `app-${seedCounter}`, slug: `slug-${seedCounter}`, ownerId: user.id })
       .returning()
-    if (!user || !repo) throw new Error("seed insert returned no row")
-    return { user, repo }
+    if (!project) throw new Error("seed project returned no row")
+    return { user, project }
   }
 
   beforeAll(async () => {
@@ -193,49 +227,73 @@ describe.skipIf(!dockerAvailable())("session data model", () => {
     await teardown?.()
   })
 
-  test("stores a session with messages, a subagent, and token usage totals", async () => {
-    const { user, repo } = await seed()
-
+  const seedSession = async (id: string) => {
+    const { user, project } = await seed()
     const [session] = await db
       .insert(sessions)
-      .values({ id: "sess-abc", userId: user.id, repoId: repo.id, messageCount: 3 })
+      .values({ id, source: "claude_code", userId: user.id, projectId: project.id })
       .returning()
     if (!session) throw new Error("session insert returned no row")
+    return session
+  }
+
+  test("stores fanned-out messages, tool rows, a subagent, and token totals", async () => {
+    const session = await seedSession("sess-abc")
 
     const [assistant] = await db
       .insert(messages)
       .values({
-        uuid: "msg-main",
         sessionId: session.id,
-        type: "assistant",
+        lineUuid: "line-1",
+        subIndex: 0,
+        msgType: "assistant",
         role: "assistant",
         lineNumber: 1,
-        sourceRelativePath: "sess-abc.jsonl",
         sourceSchemaVersion: 1,
-        isSubagent: false,
         raw: { kind: "assistant" },
       })
       .returning()
     if (!assistant) throw new Error("message insert returned no row")
 
+    const [call] = await db
+      .insert(messages)
+      .values({
+        sessionId: session.id,
+        lineUuid: "line-1",
+        subIndex: 1,
+        msgType: "toolCall",
+        lineNumber: 1,
+        sourceSchemaVersion: 1,
+        raw: { kind: "assistant" },
+      })
+      .returning()
+    if (!call) throw new Error("toolCall message insert returned no row")
+
+    await db
+      .insert(toolCall)
+      .values({ toolId: "toolu_1", messageId: call.id, toolName: "Read", toolInput: { path: "x" } })
+    await db
+      .insert(toolResult)
+      .values({ toolId: "toolu_1", messageId: call.id, result: "ok", status: "success" })
+
     await db.insert(messages).values([
       {
-        uuid: "msg-sub-1",
         sessionId: session.id,
-        type: "assistant",
+        lineUuid: "sub-line-1",
+        subIndex: 0,
+        msgType: "assistant",
         lineNumber: 1,
-        sourceRelativePath: "subagents/agent-x.jsonl",
         sourceSchemaVersion: 1,
         isSubagent: true,
         agentId: "agent-x",
         raw: { kind: "subagent" },
       },
       {
-        uuid: "msg-sub-2",
         sessionId: session.id,
-        type: "assistant",
+        lineUuid: "sub-line-2",
+        subIndex: 0,
+        msgType: "assistant",
         lineNumber: 2,
-        sourceRelativePath: "subagents/agent-x.jsonl",
         sourceSchemaVersion: 1,
         isSubagent: true,
         agentId: "agent-x",
@@ -249,11 +307,10 @@ describe.skipIf(!dockerAvailable())("session data model", () => {
       agentType: "Explore",
       spawnDepth: 1,
       sourceRelativePath: "subagents/agent-x.jsonl",
-      messageCount: 2,
     })
 
     await db.insert(tokenUsage).values({
-      messageUuid: assistant.uuid,
+      messageId: assistant.id,
       inputTokens: 120,
       outputTokens: 45,
       cachedTokens: 10,
@@ -266,72 +323,103 @@ describe.skipIf(!dockerAvailable())("session data model", () => {
         output: sql<number>`coalesce(sum(${tokenUsage.outputTokens}), 0)::int`,
       })
       .from(tokenUsage)
-      .innerJoin(messages, eq(messages.uuid, tokenUsage.messageUuid))
+      .innerJoin(messages, eq(messages.id, tokenUsage.messageId))
       .where(eq(messages.sessionId, session.id))
 
     expect(totals).toEqual({ input: 120, output: 45 })
 
     const subagentLines = await db
-      .select({ uuid: messages.uuid })
+      .select({ id: messages.id })
       .from(messages)
       .where(and(eq(messages.sessionId, session.id), eq(messages.agentId, "agent-x")))
     expect(subagentLines).toHaveLength(2)
+
+    const [derivedResult] = await db
+      .select({ toolId: toolResult.toolId })
+      .from(toolResult)
+      .where(eq(toolResult.messageId, call.id))
+    expect(derivedResult?.toolId).toBe("toolu_1")
   })
 
-  test("messages.uuid UNIQUE rejects a duplicate", async () => {
-    const { user, repo } = await seed()
-    const [session] = await db
-      .insert(sessions)
-      .values({ id: "sess-dupe", userId: user.id, repoId: repo.id })
-      .returning()
-    if (!session) throw new Error("session insert returned no row")
+  test("UNIQUE(lineUuid, subIndex) dedupes but allows a new subIndex", async () => {
+    const session = await seedSession("sess-dupe")
 
     const line = {
-      uuid: "msg-dupe",
       sessionId: session.id,
-      type: "user",
+      lineUuid: "dupe-line",
+      subIndex: 0,
+      msgType: "user" as const,
       lineNumber: 1,
-      sourceRelativePath: "sess-dupe.jsonl",
       sourceSchemaVersion: 1,
       raw: {},
     }
     await db.insert(messages).values(line)
     await expect(db.insert(messages).values({ ...line, lineNumber: 2 })).rejects.toThrow()
+
+    const [second] = await db
+      .insert(messages)
+      .values({ ...line, subIndex: 1 })
+      .returning()
+    expect(second).toBeDefined()
   })
 
-  test("messages.type CHECK rejects a bad value", async () => {
-    const { user, repo } = await seed()
-    const [session] = await db
-      .insert(sessions)
-      .values({ id: "sess-badtype", userId: user.id, repoId: repo.id })
-      .returning()
-    if (!session) throw new Error("session insert returned no row")
+  test("messages.msgType CHECK rejects a bad value", async () => {
+    const session = await seedSession("sess-badtype")
 
     await expect(
       db.insert(messages).values({
-        uuid: "msg-badtype",
         sessionId: session.id,
-        type: "banana",
+        lineUuid: "bad-line",
+        subIndex: 0,
+        msgType: "banana",
         lineNumber: 1,
-        sourceRelativePath: "sess-badtype.jsonl",
         sourceSchemaVersion: 1,
         raw: {},
       }),
     ).rejects.toThrow()
   })
 
-  test("updated_at trigger advances on a sessions UPDATE", async () => {
-    const { user, repo } = await seed()
-    const [session] = await db
-      .insert(sessions)
-      .values({ id: "sess-trigger", userId: user.id, repoId: repo.id })
+  test("toolResult.status CHECK rejects a bad value", async () => {
+    const session = await seedSession("sess-badstatus")
+    const [msg] = await db
+      .insert(messages)
+      .values({
+        sessionId: session.id,
+        lineUuid: "status-line",
+        subIndex: 0,
+        msgType: "toolResult",
+        lineNumber: 1,
+        sourceSchemaVersion: 1,
+        raw: {},
+      })
       .returning()
-    if (!session) throw new Error("session insert returned no row")
+    if (!msg) throw new Error("message insert returned no row")
+
+    await expect(
+      db.insert(toolResult).values({ toolId: "t1", messageId: msg.id, status: "pending" }),
+    ).rejects.toThrow()
+  })
+
+  test("subagents row persists with no meta fields (I5)", async () => {
+    const session = await seedSession("sess-nometa")
+    const [row] = await db
+      .insert(subagents)
+      .values({
+        agentId: "agent-nometa",
+        sessionId: session.id,
+        sourceRelativePath: "subagents/agent-nometa.jsonl",
+      })
+      .returning()
+    expect(row?.agentType).toBeNull()
+  })
+
+  test("updatedAt trigger advances on a sessions UPDATE", async () => {
+    const session = await seedSession("sess-trigger")
     expect(session.updatedAt.getTime()).toBe(session.createdAt.getTime())
 
     const [updated] = await db
       .update(sessions)
-      .set({ messageCount: 7 })
+      .set({ title: "renamed" })
       .where(eq(sessions.id, session.id))
       .returning()
     if (!updated) throw new Error("update returned no row")

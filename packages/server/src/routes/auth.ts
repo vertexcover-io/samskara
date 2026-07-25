@@ -31,6 +31,7 @@ type Deps = {
 }
 
 const callbackUrl = (env: Env) => `${env.publicBaseUrl}/api/auth/github/callback`
+const webUrl = (env: Env, path: string): string => new URL(path, env.webBaseUrl).toString()
 
 const authorizeUrl = (env: Env, state: string): string => {
   const url = new URL("https://github.com/login/oauth/authorize")
@@ -75,11 +76,11 @@ export const authRoutes = ({
     const cookieState = readStateCookie(c)
     if (!queryState || !cookieState || queryState !== cookieState) {
       clearStateCookie(c)
-      return c.redirect("/?error=bad_state")
+      return c.redirect(webUrl(env, "/?error=bad_state"))
     }
     clearStateCookie(c)
 
-    if (!code) return c.redirect("/?error=bad_state")
+    if (!code) return c.redirect(webUrl(env, "/?error=bad_state"))
 
     const { accessToken } = await githubClient.exchangeCode(code, callbackUrl(env))
     const profile = await githubClient.getProfile(accessToken)
@@ -89,7 +90,9 @@ export const authRoutes = ({
     try {
       orgIds = (await gateOrgs(db, orgSlugs)).orgIds
     } catch (error) {
-      if (error instanceof NotMemberError) return c.redirect("/?error=not_member")
+      if (error instanceof NotMemberError) {
+        return c.redirect(webUrl(env, "/?error=not_member"))
+      }
       throw error
     }
 
@@ -98,7 +101,7 @@ export const authRoutes = ({
 
     const token = await signToken(env, { sub: user.id, aud: "web" })
     setSessionCookie(c, token, env)
-    return c.redirect("/")
+    return c.redirect(webUrl(env, "/"))
   })
 
   app.get("/me", requireAuth({ db, env }, "web"), (c) => c.json(publicUser(c.get("user"))))

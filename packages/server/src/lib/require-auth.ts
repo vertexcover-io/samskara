@@ -1,5 +1,6 @@
 import type { Context, MiddlewareHandler } from "hono"
 import { getCookie } from "hono/cookie"
+import type pino from "pino"
 import type { Db } from "../db/client.js"
 import { type User, getUserById } from "../services/auth.js"
 import { SESSION_COOKIE } from "./cookies.js"
@@ -8,6 +9,7 @@ import { type Audience, verifyToken } from "./jwt.js"
 
 export type AuthVariables = {
   user: User
+  log: pino.Logger
 }
 
 type RequireAuthDeps = {
@@ -38,5 +40,6 @@ export const requireAuth =
     if (!user) return c.json({ error: "unauthorized" }, 401)
 
     c.set("user", user)
+    c.get("log")?.setBindings({ userId: user.id })
     return next()
   }

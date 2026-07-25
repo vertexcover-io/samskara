@@ -4,6 +4,9 @@ dist
 *.tsbuildinfo
 .env
 .DS_Store
-.harness/features/*/verification/
-.harness/runtime/
-.harness/knowledge/
+.harness/
+
+.worktrees/
+.pi-subagents
+packages/web/prototype
+packages/web/.impeccable/

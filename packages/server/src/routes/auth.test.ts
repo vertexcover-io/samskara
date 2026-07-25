@@ -29,6 +29,7 @@ const env: Env = {
   githubClientId: "Ov23linvZE00y7VZSI4Y",
   githubClientSecret: "secret",
   publicBaseUrl: "http://localhost:3000",
+  webBaseUrl: "http://localhost:8000",
   cookieSecure: false,
   jwtSecret: "test-secret-value",
   jwtExpiresIn: "7d",
@@ -97,7 +98,7 @@ describe.skipIf(!dockerAvailable())("auth routes (callback + start)", () => {
     })
 
     expect(res.status).toBe(302)
-    expect(res.headers.get("location")).toBe("/")
+    expect(res.headers.get("location")).toBe("http://localhost:8000/")
 
     const setCookie = res.headers.get("set-cookie")
     const token = sessionFrom(setCookie)
@@ -125,7 +126,7 @@ describe.skipIf(!dockerAvailable())("auth routes (callback + start)", () => {
     })
 
     expect(res.status).toBe(302)
-    expect(res.headers.get("location")).toBe("/?error=not_member")
+    expect(res.headers.get("location")).toBe("http://localhost:8000/?error=not_member")
     expect(sessionFrom(res.headers.get("set-cookie"))).toBeUndefined()
 
     const allUsers = await db.select().from(users)
@@ -151,7 +152,7 @@ describe.skipIf(!dockerAvailable())("auth routes (callback + start)", () => {
     })
 
     expect(res.status).toBe(302)
-    expect(res.headers.get("location")).toBe("/?error=bad_state")
+    expect(res.headers.get("location")).toBe("http://localhost:8000/?error=bad_state")
     expect(sessionFrom(res.headers.get("set-cookie"))).toBeUndefined()
     expect(exchanged).toBe(false)
   })

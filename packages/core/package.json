@@ -16,6 +16,10 @@
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run"
   },
+  "dependencies": {
+    "pino": "^9",
+    "zod": "^4.4.3"
+  },
   "devDependencies": {
     "typescript": "5.7.3",
     "vitest": "3.0.5"

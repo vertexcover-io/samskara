@@ -1,7 +1,8 @@
-// All canonical shared types live here (session, event, SourceAdapter interface).
-// Nothing to share yet.
-// TODO(milestone): SourceAdapter interface + Claude adapter
-
-export type Placeholder = {
-  readonly _brand: "samskara-core-placeholder"
-}
+export * from "./ingest/types.js"
+export * from "./logging.js"
+export * from "./collector/types.js"
+export * from "./collector/fs.js"
+export * from "./collector/helpers.js"
+export * from "./collector/state.js"
+export * from "./collector/registry.js"
+export * from "./collector/plugins/claude.js"

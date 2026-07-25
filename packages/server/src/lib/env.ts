@@ -4,6 +4,7 @@ const EnvSchema = z.object({
   GITHUB_CLIENT_ID: z.string().min(1),
   GITHUB_CLIENT_SECRET: z.string().min(1),
   PUBLIC_BASE_URL: z.string().min(1),
+  WEB_BASE_URL: z.string().url().default("http://localhost:8000"),
   COOKIE_SECURE: z.enum(["true", "false"]).transform((value) => value === "true"),
   JWT_SECRET: z.string().min(1),
   JWT_EXPIRES_IN: z.string().min(1).default("7d"),
@@ -13,6 +14,7 @@ export type Env = {
   readonly githubClientId: string
   readonly githubClientSecret: string
   readonly publicBaseUrl: string
+  readonly webBaseUrl: string
   readonly cookieSecure: boolean
   readonly jwtSecret: string
   readonly jwtExpiresIn: string
@@ -30,6 +32,7 @@ export const loadEnv = (source: Source = process.env): Env => {
     githubClientId: parsed.data.GITHUB_CLIENT_ID,
     githubClientSecret: parsed.data.GITHUB_CLIENT_SECRET,
     publicBaseUrl: parsed.data.PUBLIC_BASE_URL,
+    webBaseUrl: parsed.data.WEB_BASE_URL,
     cookieSecure: parsed.data.COOKIE_SECURE,
     jwtSecret: parsed.data.JWT_SECRET,
     jwtExpiresIn: parsed.data.JWT_EXPIRES_IN,
