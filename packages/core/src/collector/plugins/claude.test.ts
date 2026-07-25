@@ -57,6 +57,20 @@ const userToolResultLine = {
   },
 }
 
+const stringUserLine = {
+  uuid: "line-user-string",
+  sessionId: "sess-1",
+  timestamp: "2026-07-23T00:00:02.000Z",
+  message: { role: "user", content: "Review this design." },
+}
+
+const arrayUserTextLine = {
+  uuid: "line-user-array",
+  sessionId: "sess-1",
+  timestamp: "2026-07-23T00:00:03.000Z",
+  message: { role: "user", content: [{ type: "text", text: "Continue." }] },
+}
+
 describe("normalizeClaude", () => {
   test("fans an assistant line into text + N tool_use messages", () => {
     const msgs = normalizeClaude(assistantLine)
@@ -78,28 +92,55 @@ describe("normalizeClaude", () => {
     expect(msg?.toolResult).toEqual({ callId: "toolu_1", output: "ok", status: "success" })
   })
 
+  test.each([
+    ["string content", stringUserLine, "Review this design."],
+    ["text block", arrayUserTextLine, "Continue."],
+  ])("classifies real-format user %s as a user message", (_format, line, content) => {
+    const messages = normalizeClaude(line)
+    expect(messages).toHaveLength(1)
+    expect(messages[0]?.msgType).toBe("user")
+    expect(messages[0]?.content).toBe(content)
+  })
+
   test("metadata-only line yields no messages", () => {
     expect(normalizeClaude({ uuid: "x", type: "summary" })).toEqual([])
   })
 })
 
 describe("readClaudeSidecar", () => {
-  test("returns AgentInfo when .meta.json is present", async () => {
+  test("combines the filename agent id with real Claude sidecar metadata", async () => {
     const dir = await mkdtemp(join(tmpdir(), "samskara-claude-"))
     await mkdir(join(dir, "subagents"), { recursive: true })
     const transcript = join(dir, "subagents", "agent-af66.jsonl")
     await writeFile(
       transcript.replace(/\.jsonl$/, ".meta.json"),
-      JSON.stringify({ agentId: "af66", agentType: "Explore", spawnDepth: 1 }),
+      JSON.stringify({
+        agentType: "general-purpose",
+        description: "Review the design",
+        toolUseId: "toolu_spawn",
+        spawnDepth: 1,
+      }),
       "utf8",
     )
 
     const info = await readClaudeSidecar(nodeFs, transcript)
-    expect(info?.agentId).toBe("af66")
-    expect(info?.agentType).toBe("Explore")
+    expect(info).toEqual({
+      agentId: "af66",
+      agentType: "general-purpose",
+      description: "Review the design",
+      spawnDepth: 1,
+      spawnToolUseId: "toolu_spawn",
+    })
   })
 
-  test("returns null when .meta.json is absent", async () => {
+  test("returns filename-derived agent info when metadata is absent", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "samskara-claude-"))
+    const transcript = join(dir, "subagents", "agent-af66.jsonl")
+    const info = await readClaudeSidecar(nodeFs, transcript)
+    expect(info).toEqual({ agentId: "af66" })
+  })
+
+  test("returns null for a non-subagent path when metadata is absent", async () => {
     const dir = await mkdtemp(join(tmpdir(), "samskara-claude-"))
     const info = await readClaudeSidecar(nodeFs, join(dir, "missing.jsonl"))
     expect(info).toBeNull()
@@ -129,14 +170,14 @@ describe("collect", () => {
     expect(track?.checkpointAt(1).source).toBe("claude_code")
   })
 
-  test("a subagent file yields a subagent track carrying agent info", async () => {
+  test("a real-format subagent file yields a subagent track carrying agent info", async () => {
     const dir = await mkdtemp(join(tmpdir(), "samskara-claude-"))
     await mkdir(join(dir, "subagents"), { recursive: true })
     const path = join(dir, "subagents", "agent-af66.jsonl")
     await writeFile(path, `${JSON.stringify({ ...assistantLine, agentId: "af66" })}\n`, "utf8")
     await writeFile(
       path.replace(/\.jsonl$/, ".meta.json"),
-      JSON.stringify({ agentId: "af66", agentType: "Explore" }),
+      JSON.stringify({ agentType: "Explore", toolUseId: "toolu_spawn", spawnDepth: 1 }),
       "utf8",
     )
 
@@ -145,8 +186,13 @@ describe("collect", () => {
     const track = batches[0]?.tracks[0]
     expect(track?.type).toBe("subagent")
     if (track?.type !== "subagent") throw new Error("expected subagent")
-    expect(track.agent.agentId).toBe("af66")
-    expect(track.agent.agentType).toBe("Explore")
+    expect(track.agent).toEqual({
+      agentId: "af66",
+      agentType: "Explore",
+      description: undefined,
+      spawnDepth: 1,
+      spawnToolUseId: "toolu_spawn",
+    })
   })
 
   test("main + subagent of one session group into a single batch, main first", async () => {

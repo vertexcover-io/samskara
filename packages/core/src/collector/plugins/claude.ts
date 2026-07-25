@@ -20,7 +20,7 @@ const SOURCE = "claude_code"
 const SCHEMA_VERSION = 1
 const GLOB = "~/.claude/projects/**/*.jsonl"
 
-const SUBAGENT_PATH = /\/subagents\/agent-[a-f0-9]+\.jsonl$/
+const SUBAGENT_PATH = /(?:^|[/\\])subagents[/\\]agent-([a-f0-9]+)\.jsonl$/
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null
 
@@ -29,6 +29,12 @@ const num = (v: unknown): number => (typeof v === "number" ? v : 0)
 
 const providerFor = (model?: string): string | undefined =>
   model?.startsWith("claude-") ? "anthropic" : undefined
+
+const textMessageType = (role?: string): "user" | "assistant" | "system" => {
+  if (role === "user") return "user"
+  if (role === "system") return "system"
+  return "assistant"
+}
 
 const tokensFrom = (usage: unknown): TokenUsage | undefined => {
   if (!isObject(usage)) return undefined
@@ -68,7 +74,7 @@ const blockToMessage = (
   const type = block.type
 
   if (type === "text") {
-    return { ...base, msgType: "assistant", content: str(block.text), tokens }
+    return { ...base, msgType: textMessageType(common.role), content: str(block.text), tokens }
   }
   if (type === "thinking") {
     return { ...base, msgType: "assistant", thinking: str(block.thinking), tokens }
@@ -104,9 +110,6 @@ export const normalizeClaude = (data: unknown): ReadonlyArray<NormalizedMessage>
   const message = data.message
   if (!isObject(message)) return []
 
-  const content = message.content
-  if (!Array.isArray(content)) return []
-
   const common: Common = {
     sessionId: str(data.sessionId) ?? "",
     timestamp: str(data.timestamp) ?? "",
@@ -118,29 +121,38 @@ export const normalizeClaude = (data: unknown): ReadonlyArray<NormalizedMessage>
     gitCommit: str(data.gitSha) ?? str(data.gitCommit),
   }
 
+  const content = message.content
   const tokens = tokensFrom(message.usage)
+  if (typeof content === "string") {
+    return compact([blockToMessage({ type: "text", text: content }, 0, common, tokens)])
+  }
+  if (!Array.isArray(content)) return []
   return compact(content.map((block, index) => blockToMessage(block, index, common, tokens)))
 }
+
+const agentIdFromPath = (transcriptPath: string): string | undefined =>
+  SUBAGENT_PATH.exec(transcriptPath)?.[1]
 
 export const readClaudeSidecar = async (
   fs: FileSystem,
   transcriptPath: string,
 ): Promise<AgentInfo | null> => {
+  const pathAgentId = agentIdFromPath(transcriptPath)
+  if (!pathAgentId) return null
+
   const metaPath = transcriptPath.replace(/\.jsonl$/, ".meta.json")
   try {
     const parsed: unknown = JSON.parse(await fs.readFile(metaPath))
-    if (!isObject(parsed)) return null
-    const agentId = str(parsed.agentId)
-    if (!agentId) return null
+    if (!isObject(parsed)) return { agentId: pathAgentId }
     return {
-      agentId,
+      agentId: str(parsed.agentId) ?? pathAgentId,
       agentType: str(parsed.agentType),
       description: str(parsed.description),
       spawnDepth: typeof parsed.spawnDepth === "number" ? parsed.spawnDepth : undefined,
-      spawnToolUseId: str(parsed.spawnToolUseId),
+      spawnToolUseId: str(parsed.toolUseId) ?? str(parsed.spawnToolUseId),
     }
   } catch {
-    return null
+    return { agentId: pathAgentId }
   }
 }
 
