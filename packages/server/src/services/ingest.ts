@@ -1,4 +1,10 @@
-import type { IngestPayload, IngestResponse, NormalizedMessage, ParsedRecord } from "@samskara/core"
+import type {
+  IngestPayload,
+  IngestResponse,
+  NormalizedMessage,
+  ParsedRecord,
+  TokenUsage,
+} from "@samskara/core"
 import type pino from "pino"
 import type { Db, Querier } from "../db/client.js"
 import type { MessageRow } from "../repositories/messages.repo.js"
@@ -9,87 +15,110 @@ import * as subagentsRepo from "../repositories/subagents.repo.js"
 import * as tokenUsageRepo from "../repositories/tokenUsage.repo.js"
 import * as toolRowsRepo from "../repositories/toolRows.repo.js"
 
-// A message enriched with its record's line-level facts — the flat unit the repos key on.
-type FlatMessage = NormalizedMessage & {
+type FlatMessage = {
+  readonly message: NormalizedMessage
   readonly lineUuid: string
   readonly lineNumber: number
-  readonly raw: string
+  readonly raw: unknown
+  readonly sourceRelativePath: string
+  readonly isSubagent: boolean
 }
 
-const providerFor = (model?: string): string | undefined =>
-  model?.startsWith("claude-") ? "anthropic" : undefined
-
-const flatten = (records: ReadonlyArray<ParsedRecord>): ReadonlyArray<FlatMessage> =>
+const flatten = (
+  records: ReadonlyArray<ParsedRecord>,
+  sourceRelativePath: string,
+  isSubagent: boolean,
+): ReadonlyArray<FlatMessage> =>
   records.flatMap((record) =>
     record.messages.map((message) => ({
-      ...message,
+      message,
       lineUuid: record.lineUuid,
       lineNumber: record.lineNumber,
       raw: record.raw,
+      sourceRelativePath,
+      isSubagent,
     })),
   )
 
-const toMessageRow = (sessionId: string, message: FlatMessage): MessageRow => ({
-  sessionId,
-  lineUuid: message.lineUuid,
-  subIndex: message.subIndex,
-  parentUuid: message.parentUuid,
-  msgType: message.msgType,
-  role: message.role,
-  timestamp: message.timestamp ? new Date(message.timestamp) : undefined,
-  lineNumber: message.lineNumber,
-  model: message.model,
-  provider: message.provider ?? providerFor(message.model),
-  content: message.content,
-  thinking: message.thinking,
-  raw: message.raw,
-  sourceSchemaVersion: message.sourceSchemaVersion,
-  isSubagent: message.agentId !== undefined,
-  agentId: message.agentId,
-  gitBranch: message.gitBranch,
-  gitCommit: message.gitCommit,
-})
+const toMessageRow = (flat: FlatMessage): MessageRow => {
+  const { message } = flat
+  return {
+    sessionId: message.sessionId,
+    lineUuid: flat.lineUuid,
+    subIndex: message.subIndex,
+    parentUuid: message.parentUuid,
+    msgType: message.msgType,
+    subType:
+      message.msgType === "custom" || message.msgType === "systemEvent"
+        ? message.subType
+        : undefined,
+    role: message.msgType === "message" ? message.role : undefined,
+    timestamp: message.timestamp ? new Date(message.timestamp) : null,
+    lineNumber: flat.lineNumber,
+    source: message.source,
+    sourceRelativePath: flat.sourceRelativePath,
+    trackId: message.trackId,
+    model: message.model,
+    provider: message.provider,
+    content: message.msgType === "message" ? message.content : undefined,
+    details:
+      message.msgType === "custom" || message.msgType === "systemEvent"
+        ? undefined
+        : message.details,
+    raw: flat.raw,
+    sourceSchemaVersion: message.sourceSchemaVersion,
+    isSubagent: flat.isSubagent,
+    agentId: message.agentId,
+    gitBranch: message.gitBranch,
+    gitCommit: message.gitCommit,
+  }
+}
 
 const deriveToolRows = async (
   tx: Querier,
-  messages: ReadonlyArray<FlatMessage>,
+  flatMessages: ReadonlyArray<FlatMessage>,
   idByKey: ReadonlyMap<messagesRepo.MessageKey, string>,
 ): Promise<void> => {
-  const withTools = messages.filter((m) => m.toolCall || m.toolResult)
-  for (const message of withTools) {
-    const messageId = idByKey.get(messagesRepo.keyOf(message.lineUuid, message.subIndex))
+  for (const flat of flatMessages) {
+    const { message } = flat
+    if (message.msgType !== "toolCall" && message.msgType !== "toolResult") continue
+    const messageId = idByKey.get(messagesRepo.keyOf(flat.lineUuid, message.subIndex))
     if (!messageId) continue
     await toolRowsRepo.replaceForMessage(tx, messageId, {
-      call: message.toolCall,
-      result: message.toolResult,
+      call: message.msgType === "toolCall" ? message.details : undefined,
+      result: message.msgType === "toolResult" ? message.details : undefined,
     })
   }
 }
 
+const tokensFor = (message: NormalizedMessage): TokenUsage | undefined => {
+  if (message.msgType === "usage") {
+    return message.details.type === "tokens" ? message.details.tokens : undefined
+  }
+  return message.tokens
+}
+
 const storeTokens = async (
   tx: Querier,
-  messages: ReadonlyArray<FlatMessage>,
+  flatMessages: ReadonlyArray<FlatMessage>,
   idByKey: ReadonlyMap<messagesRepo.MessageKey, string>,
 ): Promise<void> => {
-  const withTokens = messages.filter((m) => m.tokens)
-  for (const message of withTokens) {
-    const messageId = idByKey.get(messagesRepo.keyOf(message.lineUuid, message.subIndex))
-    if (!messageId || !message.tokens) continue
-    await tokenUsageRepo.upsert(tx, messageId, message.tokens)
+  for (const flat of flatMessages) {
+    const tokens = tokensFor(flat.message)
+    if (!tokens) continue
+    const messageId = idByKey.get(messagesRepo.keyOf(flat.lineUuid, flat.message.subIndex))
+    if (messageId) await tokenUsageRepo.upsert(tx, messageId, tokens)
   }
 }
 
 const SESSION_NOT_FOUND = Symbol("sessionNotFound")
 
-export type Ctx = {
-  readonly db: Db
-  readonly log: pino.Logger
-  readonly userId: string
-}
+export type Ctx = { readonly db: Db; readonly log: pino.Logger; readonly userId: string }
 
 export const ingest = async (ctx: Ctx, payload: IngestPayload): Promise<IngestResponse> => {
   const { db, log, userId } = ctx
-  const flat = flatten(payload.records)
+  const flat = flatten(payload.records, payload.sourceRelativePath, payload.type === "subagent")
+
   try {
     return await db.transaction(async (tx) => {
       const projectId = await projectsRepo.upsert(tx, {
@@ -106,46 +135,26 @@ export const ingest = async (ctx: Ctx, payload: IngestPayload): Promise<IngestRe
           projectId,
           fields: { title: payload.title },
         })
-        log.info({ sessionId: payload.sessionId }, "Session created or updated")
       } else {
-        if (!(await sessionsRepo.exists(tx, payload.sessionId))) {
-          log.warn(
-            { sessionId: payload.sessionId },
-            `No ingest session found with id: ${payload.sessionId}`,
-          )
-          throw SESSION_NOT_FOUND
-        }
+        if (!(await sessionsRepo.exists(tx, payload.sessionId))) throw SESSION_NOT_FOUND
         await subagentsRepo.upsert(tx, {
           sessionId: payload.sessionId,
           sourceRelativePath: payload.sourceRelativePath,
           agent: payload.agent,
         })
-        log.info(
-          { sessionId: payload.sessionId, agentId: payload.agent.agentId },
-          "Subagent upserted",
-        )
       }
 
-      const rows = flat.map((m) => toMessageRow(payload.sessionId, m))
+      const rows = flat.map(toMessageRow)
       const { ingested, deduped, idByKey } = await messagesRepo.insertManyIgnoreConflicts(
         tx,
         payload.sessionId,
         rows,
       )
-      log.info({ sessionId: payload.sessionId, inserted: ingested, deduped }, "Messages inserted")
-
       await deriveToolRows(tx, flat, idByKey)
       await storeTokens(tx, flat, idByKey)
       await subagentsRepo.resolveParentAgentIds(tx, payload.sessionId)
-      log.debug({ sessionId: payload.sessionId }, "Tool rows and token usage stored")
-
       log.info(
-        {
-          sessionId: payload.sessionId,
-          accepted: ingested,
-          duplicates: deduped,
-          eventCount: flat.length,
-        },
+        { sessionId: payload.sessionId, accepted: ingested, duplicates: deduped },
         "Ingestion completed",
       )
       return { ingested, deduped }

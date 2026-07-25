@@ -7,12 +7,27 @@ const gitReturning =
     byArgs[args.join(" ")] ?? null
 
 describe("resolveProject", () => {
-  test("parses an ssh github remote into name + slug", async () => {
-    const runGit = gitReturning({
-      "config --get remote.origin.url": "git@github.com:refrens/andromeda.git",
-    })
-    const project = await resolveProject("/work/app", { runGit })
+  test("resolves remote identity from the canonical root of a linked worktree", async () => {
+    const calls: Array<{ readonly args: ReadonlyArray<string>; readonly cwd: string }> = []
+    const runGit: GitRunner = async (args, cwd) => {
+      calls.push({ args, cwd })
+      if (args.join(" ") === "rev-parse --path-format=absolute --git-common-dir") {
+        return "/work/app/.git"
+      }
+      if (args.join(" ") === "config --get remote.origin.url") {
+        return "git@github.com:refrens/andromeda.git"
+      }
+      return null
+    }
+    const project = await resolveProject("/work/app/.worktrees/feature", { runGit })
     expect(project).toEqual({ name: "andromeda", slug: "refrens-andromeda" })
+    expect(calls).toEqual([
+      {
+        args: ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        cwd: "/work/app/.worktrees/feature",
+      },
+      { args: ["config", "--get", "remote.origin.url"], cwd: "/work/app" },
+    ])
   })
 
   test("parses an https github remote", async () => {

@@ -12,6 +12,7 @@
     "test:server": "turbo run test --filter=@samskara/server",
     "test:cli": "turbo run test --filter=@samskara/cli",
     "test:web": "turbo run test --filter=@samskara/web",
+    "test:claude-session": "bun run scripts/claude-session-coverage.ts",
     "typecheck": "turbo run typecheck",
     "lint": "biome check .",
     "format": "biome format --write .",

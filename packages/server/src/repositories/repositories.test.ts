@@ -189,16 +189,16 @@ describe.skipIf(!dockerAvailable())("ingest repositories", () => {
     const rows = [
       {
         sessionId: "sess-msg",
-        lineUuid: "l1",
+        lineUuid: "0191d942-3ba5-7dba-9a7d-22d65b3025b7",
         subIndex: 0,
-        msgType: "assistant",
+        msgType: "message",
         lineNumber: 1,
         sourceSchemaVersion: 1,
         raw: {},
       },
       {
         sessionId: "sess-msg",
-        lineUuid: "l1",
+        lineUuid: "0191d942-3ba5-7dba-9a7d-22d65b3025b7",
         subIndex: 1,
         msgType: "toolCall",
         lineNumber: 1,
@@ -214,8 +214,8 @@ describe.skipIf(!dockerAvailable())("ingest repositories", () => {
     const second = await messagesRepo.insertManyIgnoreConflicts(db, "sess-msg", [...rows])
     expect(second.ingested).toBe(0)
     expect(second.deduped).toBe(2)
-    expect(second.idByKey.get(messagesRepo.keyOf("l1", 0))).toBe(
-      first.idByKey.get(messagesRepo.keyOf("l1", 0)),
+    expect(second.idByKey.get(messagesRepo.keyOf("0191d942-3ba5-7dba-9a7d-22d65b3025b7", 0))).toBe(
+      first.idByKey.get(messagesRepo.keyOf("0191d942-3ba5-7dba-9a7d-22d65b3025b7", 0)),
     )
   })
 
@@ -224,7 +224,7 @@ describe.skipIf(!dockerAvailable())("ingest repositories", () => {
     const { idByKey } = await messagesRepo.insertManyIgnoreConflicts(db, "sess-tool", [
       {
         sessionId: "sess-tool",
-        lineUuid: "tl",
+        lineUuid: "0191d942-3ba5-7dba-9a7d-22d65b3025b8",
         subIndex: 0,
         msgType: "toolCall",
         lineNumber: 1,
@@ -232,14 +232,14 @@ describe.skipIf(!dockerAvailable())("ingest repositories", () => {
         raw: {},
       },
     ])
-    const messageId = idByKey.get(messagesRepo.keyOf("tl", 0))
+    const messageId = idByKey.get(messagesRepo.keyOf("0191d942-3ba5-7dba-9a7d-22d65b3025b8", 0))
     if (!messageId) throw new Error("no message id")
 
     await toolRowsRepo.replaceForMessage(db, messageId, {
-      call: { id: "toolu_1", name: "Read", input: { path: "a" } },
+      call: { callId: "toolu_1", name: "Read", input: { path: "a" } },
     })
     await toolRowsRepo.replaceForMessage(db, messageId, {
-      call: { id: "toolu_1", name: "Read", input: { path: "b" } },
+      call: { callId: "toolu_1", name: "Read", input: { path: "b" } },
     })
     const calls = await db.select().from(toolCall).where(eq(toolCall.messageId, messageId))
     expect(calls).toHaveLength(1)

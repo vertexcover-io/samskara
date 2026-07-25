@@ -1,13 +1,16 @@
 import { execFileSync } from "node:child_process"
+import { mkdir, mkdtemp, readFile, rename, stat, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { fileURLToPath } from "node:url"
-import type { IngestPayload } from "@samskara/core"
-import { createLogger } from "@samskara/core"
+import type { CheckpointStore, FileSystem, IngestPayload } from "@samskara/core"
+import { createClaudePlugin, createLogger } from "@samskara/core"
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql"
 import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
 import { buildApp } from "../app.js"
 import { type Db, createDb } from "../db/client.js"
-import { messages, users } from "../db/schema.js"
+import { messages, sessions, subagents, tokenUsage, toolCall, users } from "../db/schema.js"
 import type { Env } from "../lib/env.js"
 import { signToken } from "../lib/jwt.js"
 
@@ -33,6 +36,31 @@ const env: Env = {
 }
 
 const project = { name: "widget", slug: "acme-widget" } as const
+const nodeFs: FileSystem = {
+  readFile: (path) => readFile(path, "utf8"),
+  writeFile: (path, data) => writeFile(path, data, "utf8"),
+  rename,
+  stat: async (path) => {
+    const value = await stat(path)
+    return { size: value.size, mtimeMs: value.mtimeMs }
+  },
+}
+
+type CoverageTrack = {
+  readonly sourceRelativePath: string
+  readonly sourceLineCount: number
+  readonly parsedRecordCount: number
+}
+
+const isCoverageTrack = (value: unknown): value is CoverageTrack =>
+  typeof value === "object" &&
+  value !== null &&
+  "sourceRelativePath" in value &&
+  typeof value.sourceRelativePath === "string" &&
+  "sourceLineCount" in value &&
+  typeof value.sourceLineCount === "number" &&
+  "parsedRecordCount" in value &&
+  typeof value.parsedRecordCount === "number"
 
 const mainPayload = (sessionId: string): IngestPayload => ({
   type: "main",
@@ -42,18 +70,20 @@ const mainPayload = (sessionId: string): IngestPayload => ({
   title: "hello",
   records: [
     {
-      lineUuid: "l1",
+      lineUuid: "0191d942-3ba5-7dba-9a7d-22d65b30258c",
       lineNumber: 1,
-      raw: "{}",
+      raw: {},
       messages: [
         {
           subIndex: 0,
           sessionId,
           source: "claude_code",
           sourceSchemaVersion: 1,
-          msgType: "assistant",
+          trackId: "main",
+          msgType: "message",
+          role: "assistant",
           timestamp: "2026-07-23T00:00:00.000Z",
-          content: "hi",
+          content: { type: "text", value: "hi" },
         },
       ],
     },
@@ -146,16 +176,18 @@ describe.skipIf(!dockerAvailable())("ingest route", () => {
       agent: { agentId: "agent-z" },
       records: [
         {
-          lineUuid: "z1",
+          lineUuid: "0191d942-3ba5-7dba-9a7d-22d65b30258d",
           lineNumber: 1,
-          raw: "{}",
+          raw: {},
           messages: [
             {
               subIndex: 0,
               sessionId: "no-session",
               source: "claude_code",
               sourceSchemaVersion: 1,
-              msgType: "assistant",
+              trackId: "agent:agent-z",
+              msgType: "custom",
+              subType: "fixture",
               timestamp: "2026-07-23T00:00:00.000Z",
               agentId: "agent-z",
             },
@@ -173,5 +205,306 @@ describe.skipIf(!dockerAvailable())("ingest route", () => {
     const res = await post(app, mainPayload("sess-dupe"), cliToken)
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ ingested: 0, deduped: 1 })
+  })
+
+  test("S7: strict ingest accepts all 13 arms and rejects contradictory envelope fields", async () => {
+    const base = {
+      sessionId: "sess-arms",
+      source: "claude_code" as const,
+      sourceSchemaVersion: 1,
+      trackId: "main",
+    }
+    const messages: IngestPayload["records"][number]["messages"] = [
+      {
+        ...base,
+        subIndex: 0,
+        msgType: "message",
+        role: "assistant",
+        content: { type: "text", value: "hi" },
+      },
+      {
+        ...base,
+        subIndex: 1,
+        msgType: "toolCall",
+        details: { callId: "c1", name: "Read", input: {} },
+      },
+      {
+        ...base,
+        subIndex: 2,
+        msgType: "toolResult",
+        details: { callId: "c1", output: {}, status: "success" },
+      },
+      { ...base, subIndex: 3, msgType: "progress", details: { progressType: "bash" } },
+      {
+        ...base,
+        subIndex: 4,
+        msgType: "hookCall",
+        details: { phase: "progress", type: "hook_progress" },
+      },
+      { ...base, subIndex: 5, msgType: "queueOperation", details: { operation: "enqueue" } },
+      {
+        ...base,
+        subIndex: 6,
+        msgType: "turnEvent",
+        details: { type: "duration", status: "completed" },
+      },
+      { ...base, subIndex: 7, msgType: "compaction", details: { type: "boundary" } },
+      { ...base, subIndex: 8, msgType: "localCommand", details: { command: "/help" } },
+      { ...base, subIndex: 9, msgType: "fileEvent", details: { type: "edited", path: "a.ts" } },
+      {
+        ...base,
+        subIndex: 10,
+        msgType: "usage",
+        details: { type: "tokens", tokens: { input: 1, output: 2, cached: 0, thinking: 0 } },
+      },
+      { ...base, subIndex: 11, msgType: "systemEvent", subType: "runtime_error" },
+      { ...base, subIndex: 12, msgType: "custom", subType: "future" },
+    ]
+    const payload: IngestPayload = {
+      type: "main",
+      sessionId: "sess-arms",
+      sourceRelativePath: "sess-arms.jsonl",
+      project,
+      records: [
+        {
+          lineUuid: "0191d942-3ba5-7dba-9a7d-22d65b302590",
+          lineNumber: 1,
+          raw: { safe: true },
+          messages,
+        },
+      ],
+    }
+
+    expect((await post(app, payload, cliToken)).status).toBe(200)
+    const contradictory = {
+      ...payload,
+      records: [
+        {
+          ...payload.records[0],
+          messages: [{ ...payload.records[0]?.messages[0], trackId: "agent:wrong" }],
+        },
+      ],
+    }
+    expect((await post(app, contradictory, cliToken)).status).toBe(400)
+  })
+
+  test("S9: a basic transcript reaches authenticated storage and checkpoints without loss", async () => {
+    const root = await mkdtemp(join(tmpdir(), "samskara-e2e-"))
+    const dir = join(root, ".claude", "projects", "bucket")
+    await mkdir(dir, { recursive: true })
+    const transcript = join(dir, "sess-e2e.jsonl")
+    const unknown = { type: "future_record", cwd: "/work/app", token: "secret-value" }
+    const assistant = {
+      type: "assistant",
+      sessionId: "sess-e2e",
+      cwd: "/work/app",
+      uuid: "0191d942-3ba5-7dba-9a7d-22d65b302599",
+      message: {
+        role: "assistant",
+        usage: { input_tokens: 2, output_tokens: 1 },
+        content: [
+          { type: "text", text: "hello" },
+          { type: "tool_use", id: "call-e2e", name: "Read", input: { path: "a.ts" } },
+        ],
+      },
+    }
+    await writeFile(
+      transcript,
+      `\n${JSON.stringify(unknown)}\n${JSON.stringify(assistant)}\n`,
+      "utf8",
+    )
+
+    const plugin = createClaudePlugin(nodeFs)
+    const log = createLogger({ service: "e2e" }, { level: "silent" })
+    const empty: CheckpointStore = { checkpoints: {} }
+    const batches = await plugin.collect(empty, {
+      fs: nodeFs,
+      glob: async () => [transcript],
+      resolveProject: async () => project,
+      log,
+    })
+    const track = batches[0]?.tracks[0]
+    if (!track) throw new Error("expected ingest track")
+    const { checkpointKey: _key, checkpointAt, lastLineProcessed: _last, ...payload } = track
+
+    const response = await post(app, payload, cliToken)
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ ingested: 3, deduped: 0 })
+
+    const rows = await db
+      .select()
+      .from(messages)
+      .where(eq(messages.sessionId, "sess-e2e"))
+      .orderBy(messages.lineNumber, messages.subIndex)
+    expect(rows.map((row) => row.msgType)).toEqual(["custom", "message", "toolCall"])
+    expect(JSON.stringify(rows)).not.toContain("secret-value")
+    expect(rows[0]?.raw).toMatchObject({ token: "[Redacted]" })
+    expect(await db.select().from(toolCall).where(eq(toolCall.toolId, "call-e2e"))).toHaveLength(1)
+    expect(await db.select().from(tokenUsage)).toContainEqual(
+      expect.objectContaining({ inputTokens: 2, outputTokens: 1 }),
+    )
+
+    const body = checkpointAt(4)
+    const checkpointed: CheckpointStore = {
+      checkpoints: {
+        [transcript]: {
+          ...body,
+          filePath: transcript,
+          lastUpdatedAt: "2026-07-25T00:00:00.000Z",
+        },
+      },
+    }
+    expect(
+      await plugin.collect(checkpointed, {
+        fs: nodeFs,
+        glob: async () => [transcript],
+        resolveProject: async () => project,
+        log,
+      }),
+    ).toEqual([])
+  })
+
+  test("S17: a selected session and persisted fixture have no missing source lines", async () => {
+    const projectsRoot = await mkdtemp(join(tmpdir(), "samskara-session-coverage-"))
+    const root = join(projectsRoot, ".claude", "projects")
+    const bucket = join(root, "encoded-project")
+    const main = join(bucket, "sess-semantic.jsonl")
+    const agentA = join(bucket, "sess-semantic", "subagents", "agent-a.jsonl")
+    const agentB = join(bucket, "sess-semantic", "subagents", "workflows", "wf-1", "agent-b.jsonl")
+    const journal = join(bucket, "sess-semantic", "subagents", "workflows", "wf-1", "journal.jsonl")
+    await mkdir(join(agentB, ".."), { recursive: true })
+    await mkdir(join(agentA, ".."), { recursive: true })
+    const mainLines = [
+      {
+        type: "assistant",
+        cwd: "/work/app",
+        uuid: "0191d942-3ba5-7dba-9a7d-22d65b302600",
+        message: {
+          role: "assistant",
+          usage: { input_tokens: 3, output_tokens: 2 },
+          content: [
+            { type: "text", text: "hello" },
+            { type: "tool_use", id: "call-semantic", name: "Task", input: { agent: "a" } },
+          ],
+        },
+      },
+      { type: "ai-title", cwd: "/work/app", title: "Private title" },
+    ]
+    const agentALine = {
+      type: "attachment",
+      cwd: "/work/app",
+      attachment: { type: "hook_success", hookId: "hook-a", toolUseID: "call-semantic" },
+    }
+    const agentBLine = {
+      type: "attachment",
+      cwd: "/work/app",
+      attachment: { type: "queued_command", prompt: "continue", origin: { kind: "human" } },
+    }
+    await writeFile(main, `${mainLines.map((line) => JSON.stringify(line)).join("\n")}\n`, "utf8")
+    await writeFile(agentA, `${JSON.stringify(agentALine)}\n`, "utf8")
+    await writeFile(agentB, `${JSON.stringify(agentBLine)}\n`, "utf8")
+    await writeFile(journal, `${JSON.stringify({ type: "started" })}\n`, "utf8")
+    await writeFile(
+      agentA.replace(/\.jsonl$/, ".meta.json"),
+      JSON.stringify({ agentId: "a", spawnToolUseId: "call-semantic", spawnDepth: 1 }),
+      "utf8",
+    )
+    await writeFile(
+      agentB.replace(/\.jsonl$/, ".meta.json"),
+      JSON.stringify({ agentId: "b", spawnDepth: 1 }),
+      "utf8",
+    )
+
+    const coverageOutput = execFileSync(
+      "bun",
+      ["run", "test:claude-session", "sess-semantic", root],
+      { cwd: join(packageDir, "../.."), encoding: "utf8" },
+    )
+    const coverage: unknown = JSON.parse(coverageOutput)
+    expect(coverage).toMatchObject({
+      sessionId: "sess-semantic",
+      mainTranscriptCount: 1,
+      agentTranscriptCount: 2,
+      totals: { sourceLineCount: 4, parsedRecordCount: 4, normalizedMessageCount: 5 },
+    })
+    if (
+      typeof coverage !== "object" ||
+      coverage === null ||
+      !("tracks" in coverage) ||
+      !Array.isArray(coverage.tracks) ||
+      !coverage.tracks.every(isCoverageTrack)
+    ) {
+      throw new Error("expected coverage tracks")
+    }
+    expect(coverage.tracks.map((track) => track.sourceRelativePath)).toEqual([
+      "sess-semantic.jsonl",
+      "sess-semantic/subagents/agent-a.jsonl",
+      "sess-semantic/subagents/workflows/wf-1/agent-b.jsonl",
+    ])
+    expect(
+      coverage.tracks.every((track) => track.sourceLineCount === track.parsedRecordCount),
+    ).toBe(true)
+
+    const plugin = createClaudePlugin(nodeFs)
+    const batches = await plugin.collect(
+      { checkpoints: {} },
+      {
+        fs: nodeFs,
+        glob: async () => [journal, agentB, agentA, main],
+        resolveProject: async () => project,
+        log: createLogger({ service: "semantic-e2e" }, { level: "silent" }),
+      },
+    )
+    const tracks = batches[0]?.tracks ?? []
+    const expectedKeys = tracks.flatMap((track) =>
+      track.records.flatMap((record) =>
+        record.messages.map(
+          (message) => `${track.sessionId}:${record.lineUuid}:${message.subIndex}`,
+        ),
+      ),
+    )
+    for (const track of tracks) {
+      const {
+        checkpointKey: _checkpointKey,
+        checkpointAt: _checkpointAt,
+        lastLineProcessed: _lastLineProcessed,
+        ...payload
+      } = track
+      const response = await post(app, payload, cliToken)
+      expect(response.status).toBe(200)
+    }
+
+    const stored = await db
+      .select()
+      .from(messages)
+      .where(eq(messages.sessionId, "sess-semantic"))
+      .orderBy(messages.lineNumber, messages.subIndex)
+    const storedKeys = stored.map(
+      (message) => `${message.sessionId}:${message.lineUuid}:${message.subIndex}`,
+    )
+    expect([...storedKeys].sort()).toEqual([...expectedKeys].sort())
+    expect(stored.map((message) => message.msgType).sort()).toEqual([
+      "custom",
+      "hookCall",
+      "message",
+      "message",
+      "toolCall",
+    ])
+    expect(stored.find((message) => message.subType === "ai-title")?.details).toBeNull()
+    expect(
+      await db
+        .select({ title: sessions.title })
+        .from(sessions)
+        .where(eq(sessions.id, "sess-semantic")),
+    ).toEqual([{ title: null }])
+    expect(
+      await db.select().from(toolCall).where(eq(toolCall.toolId, "call-semantic")),
+    ).toHaveLength(1)
+    expect(await db.select().from(tokenUsage)).toContainEqual(
+      expect.objectContaining({ inputTokens: 3, outputTokens: 2 }),
+    )
+    expect(
+      await db.select().from(subagents).where(eq(subagents.sessionId, "sess-semantic")),
+    ).toHaveLength(2)
   })
 })

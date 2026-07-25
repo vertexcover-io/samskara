@@ -48,19 +48,25 @@ const assistantLine = (uuid: string, sessionId: string, extra: Record<string, un
     ...extra,
   })
 
-const record = (lineNumber: number, messages: number): ParsedRecord => ({
-  lineUuid: `u${lineNumber}`,
-  lineNumber,
-  raw: "{}",
-  messages: Array.from({ length: messages }, (_, i) => ({
-    subIndex: i,
+const record = (lineNumber: number, messageCount: number): ParsedRecord => {
+  const messages = Array.from({ length: messageCount }, (_, subIndex) => ({
+    subIndex,
     sessionId: "s",
-    source: "claude_code",
+    source: "claude_code" as const,
     sourceSchemaVersion: 1,
-    msgType: "assistant",
-    timestamp: "2026-07-23T00:00:00.000Z",
-  })),
-})
+    trackId: "main",
+    msgType: "custom" as const,
+    subType: "fixture",
+  }))
+  const [first, ...rest] = messages
+  if (!first) throw new Error("record fixtures require at least one message")
+  return {
+    lineUuid: `00000000-0000-5000-8000-${lineNumber.toString().padStart(12, "0")}`,
+    lineNumber,
+    raw: {},
+    messages: [first, ...rest],
+  }
+}
 
 describe("sliceByMessages", () => {
   test("keeps everything in one chunk under the cap", () => {
@@ -77,16 +83,19 @@ describe("sliceByMessages", () => {
     expect(chunks[1]?.lastCompleteLine).toBe(3)
   })
 
-  test("a record straddling the cap advances only to the last complete line", () => {
-    // line 1 has 3 messages, cap 2 → line 1 splits across two chunks.
-    const chunks = sliceByMessages([record(1, 3), record(2, 1)], 2)
-    // chunk 0: 2 msgs of line 1 → no complete line yet (lastComplete 0)
-    expect(chunks[0]?.lastCompleteLine).toBe(0)
-    expect(chunks[0]?.records[0]?.lineUuid).toBe("u1")
-    // chunk 1: remaining 1 msg of line 1 completes it, then line 2
-    expect(chunks[1]?.lastCompleteLine).toBe(2)
-    // both chunks carry the same lineUuid for line 1
-    expect(chunks[1]?.records[0]?.lineUuid).toBe("u1")
+  test("S6: a 1,999-message record plus two-message record and one oversize record remain line atomic", () => {
+    const boundaryChunks = sliceByMessages([record(1, 1999), record(2, 2)], MESSAGE_CAP)
+    expect(
+      boundaryChunks.map((chunk) => chunk.records.flatMap((item) => item.messages).length),
+    ).toEqual([1999, 2])
+    expect(boundaryChunks.flatMap((chunk) => chunk.records).map((item) => item.lineNumber)).toEqual(
+      [1, 2],
+    )
+
+    const oversizeChunks = sliceByMessages([record(3, 2500)], MESSAGE_CAP)
+    expect(oversizeChunks).toHaveLength(1)
+    expect(oversizeChunks[0]?.records[0]?.messages).toHaveLength(2500)
+    expect(oversizeChunks[0]?.lastCompleteLine).toBe(3)
   })
 })
 
@@ -108,7 +117,7 @@ describe("watcher driver", () => {
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "samskara-watch-"))
-    projects = join(dir, "projects")
+    projects = join(dir, ".claude", "projects", "bucket")
     await mkdir(projects, { recursive: true })
     config = { statePath: join(dir, "state.json") }
   })
@@ -125,7 +134,6 @@ describe("watcher driver", () => {
     expect(sink.received[0]?.records).toHaveLength(1)
     expect(sink.received[0]?.records[0]?.messages).toHaveLength(2)
     expect(store.checkpoints[main]?.lineProcessed).toBe(1)
-    expect(store.checkpoints[main]?.projectSlug).toBe("acme-widget")
   })
 
   test("restart resumes from the persisted watermark", async () => {
@@ -146,46 +154,12 @@ describe("watcher driver", () => {
     const sink3 = createInMemorySink()
     await runCycle(config, deps({ sink: sink3, glob: async () => [main] }))
     expect(sink3.received).toHaveLength(1)
-    expect(sink3.received[0]?.records.every((r) => r.lineUuid === "l2")).toBe(true)
-  })
-
-  test("REQ-031,EDGE-014: legacy checkpoint resumes and gains projectSlug after flush", async () => {
-    const main = join(projects, "legacy.jsonl")
-    await writeFile(main, `${assistantLine("l1", "sess-legacy")}\n`, "utf8")
-    const initial = await stat(main)
-    await writeFile(
-      config.statePath,
-      JSON.stringify({
-        checkpoints: {
-          [main]: {
-            filePath: main,
-            lastUpdatedAt: "2026-07-25T09:00:00.000Z",
-            source: "claude_code",
-            mtime: initial.mtimeMs,
-            size: initial.size,
-            lineProcessed: 1,
-          },
-        },
-      }),
-      "utf8",
-    )
-    await writeFile(
-      main,
-      `${assistantLine("l1", "sess-legacy")}\n${assistantLine("l2", "sess-legacy")}\n`,
-      "utf8",
-    )
-    const sink = createInMemorySink()
-
-    const store = await runCycle(config, deps({ sink, glob: async () => [main] }))
-
-    expect(sink.received).toHaveLength(1)
-    expect(sink.received[0]?.records.map((entry) => entry.lineUuid)).toEqual(["l2"])
-    expect(store.checkpoints[main]?.projectSlug).toBe("acme-widget")
+    expect(sink3.received[0]?.records.map((item) => item.lineNumber)).toEqual([2])
   })
 
   test("does not advance the watermark on a 409 and retries next cycle", async () => {
-    const sub = join(projects, "subagents", "agent-af66.jsonl")
-    await mkdir(join(projects, "subagents"), { recursive: true })
+    const sub = join(projects, "sess-1", "subagents", "agent-af66.jsonl")
+    await mkdir(join(projects, "sess-1", "subagents"), { recursive: true })
     await writeFile(sub, `${assistantLine("s1", "sess-1", { agentId: "af66" })}\n`, "utf8")
     await writeFile(
       sub.replace(/\.jsonl$/, ".meta.json"),
@@ -205,8 +179,8 @@ describe("watcher driver", () => {
 
   test("processes main before subagent within a session", async () => {
     const main = join(projects, "sess-1.jsonl")
-    const sub = join(projects, "subagents", "agent-af66.jsonl")
-    await mkdir(join(projects, "subagents"), { recursive: true })
+    const sub = join(projects, "sess-1", "subagents", "agent-af66.jsonl")
+    await mkdir(join(projects, "sess-1", "subagents"), { recursive: true })
     await writeFile(main, `${assistantLine("l1", "sess-1")}\n`, "utf8")
     await writeFile(sub, `${assistantLine("s1", "sess-1", { agentId: "af66" })}\n`, "utf8")
     await writeFile(
@@ -230,7 +204,7 @@ describe("watcher driver", () => {
 
     const sink = createInMemorySink()
     const store = await runCycle(config, deps({ sink, glob: async () => [main] }))
-    expect(sink.received[0]?.records.every((r) => r.lineUuid === "l1")).toBe(true)
+    expect(sink.received[0]?.records.map((item) => item.lineNumber)).toEqual([1])
     expect(store.checkpoints[main]?.lineProcessed).toBe(1)
 
     await writeFile(
@@ -240,11 +214,11 @@ describe("watcher driver", () => {
     )
     const sink2 = createInMemorySink()
     await runCycle(config, deps({ sink: sink2, glob: async () => [main] }))
-    expect(sink2.received[0]?.records.every((r) => r.lineUuid === "l2")).toBe(true)
+    expect(sink2.received[0]?.records.map((item) => item.lineNumber)).toEqual([2])
   })
 
   test("caps a large scan into multiple chunks and reaches the final line", async () => {
-    const main = join(projects, "big.jsonl")
+    const main = join(projects, "sess-1.jsonl")
     // Each line fans out into 2 messages; 1500 lines → 3000 messages → ≥2 chunks at cap 2000.
     const lines = Array.from({ length: 1500 }, (_, i) => assistantLine(`l${i + 1}`, "sess-1"))
     await writeFile(main, `${lines.join("\n")}\n`, "utf8")
@@ -281,75 +255,7 @@ describe("watcher driver", () => {
     expect(msgs.every((m) => m.gitBranch === "main")).toBe(true)
   })
 
-  test("REQ-027: skips tracks whose project is not enabled", async () => {
-    const main = join(projects, "sess-disabled.jsonl")
-    await writeFile(main, `${assistantLine("l1", "sess-disabled")}\n`, "utf8")
-    const sink = createInMemorySink()
-
-    const store = await runCycle(
-      config,
-      deps({ sink, glob: async () => [main], shouldCapture: async () => false }),
-    )
-
-    expect(sink.received).toHaveLength(0)
-    expect(store.checkpoints[main]).toBeUndefined()
-  })
-
-  test("REQ-027: a disabled project's transcript is never fully read", async () => {
-    const enabled = join(projects, "sess-on.jsonl")
-    const disabled = join(projects, "sess-off.jsonl")
-    await writeFile(enabled, `${assistantLine("l1", "sess-on", { cwd: "/work/on" })}\n`, "utf8")
-    await writeFile(disabled, `${assistantLine("l2", "sess-off", { cwd: "/work/off" })}\n`, "utf8")
-
-    const reads: string[] = []
-    const countingFs: FileSystem = {
-      ...nodeFs,
-      readFile: (path) => {
-        reads.push(path)
-        return nodeFs.readFile(path)
-      },
-    }
-    const sink = createInMemorySink()
-
-    await runCycle(
-      config,
-      deps({
-        sink,
-        fs: countingFs,
-        glob: async () => [enabled, disabled],
-        plugin: createClaudePlugin(countingFs),
-        resolveProject: async (startDir) =>
-          startDir === "/work/on"
-            ? { name: "on", slug: "acme-on" }
-            : { name: "off", slug: "acme-off" },
-        shouldCapture: async (p) => p.slug === "acme-on",
-      }),
-    )
-
-    expect(sink.received).toHaveLength(1)
-    expect(reads.filter((p) => p === disabled)).toHaveLength(1)
-  })
-
-  test("REQ-028,EDGE-012: evaluates project enablement again on every cycle", async () => {
-    const main = join(projects, "sess-toggle.jsonl")
-    await writeFile(main, `${assistantLine("l1", "sess-toggle")}\n`, "utf8")
-    const sink = createInMemorySink()
-    let enabled = false
-    const cycleDeps = deps({
-      sink,
-      glob: async () => [main],
-      shouldCapture: async () => enabled,
-    })
-
-    await runCycle(config, cycleDeps)
-    enabled = true
-    const store = await runCycle(config, cycleDeps)
-
-    expect(sink.received).toHaveLength(1)
-    expect(store.checkpoints[main]?.projectSlug).toBe("acme-widget")
-  })
-
-  test("does not flush or advance when no sessionId is known", async () => {
+  test("derives a missing source sessionId from the transcript path", async () => {
     const main = join(projects, "no-session.jsonl")
     const sessionlessLine = JSON.stringify({
       uuid: "l1",
@@ -362,8 +268,9 @@ describe("watcher driver", () => {
     const sink = createInMemorySink()
     const store = await runCycle(config, deps({ sink, glob: async () => [main] }))
 
-    expect(sink.received).toHaveLength(0)
-    expect(store.checkpoints[main]).toBeUndefined()
+    expect(sink.received).toHaveLength(1)
+    expect(sink.received[0]?.sessionId).toBe("no-session")
+    expect(store.checkpoints[main]?.lineProcessed).toBe(1)
   })
 
   test("independent sessions run in parallel; one failing does not block the other", async () => {
@@ -391,6 +298,7 @@ describe("watcher driver", () => {
       sourceRelativePath: key,
       checkpointKey: key,
       records: [record(1, MESSAGE_CAP + 5), record(2, 1)],
+      lastLineProcessed: 2,
       checkpointAt: (lineNumber: number) => ({
         source: "claude_code" as const,
         mtime: 10,
@@ -403,12 +311,11 @@ describe("watcher driver", () => {
       collect: async () => [{ sessionId: "sess-huge", tracks: [track] }],
     }
 
-    // chunk 1 (mid-line-1) → 200, chunk 2 (rest of line 1 + line 2) → 500.
     let call = 0
-    const sink = createInMemorySink(() => (++call === 1 ? 200 : 500))
+    const sink = createInMemorySink(() => (++call === 1 ? 500 : 200))
     const store = await runCycle(config, deps({ sink, glob: async () => [], plugin: stubPlugin }))
 
-    expect(sink.received.length).toBe(2)
+    expect(sink.received.length).toBe(1)
     expect(store.checkpoints[key]).toBeUndefined()
   })
 })

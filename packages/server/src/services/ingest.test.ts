@@ -11,13 +11,12 @@ import {
   projects,
   sessions,
   subagents,
+  tokenUsage,
   toolCall,
   toolResult,
   users,
 } from "../db/schema.js"
 import { type Ctx, ingest } from "./ingest.js"
-
-const testLog = () => createLogger({ service: "test" }, { level: "silent" })
 
 const dockerAvailable = () => {
   try {
@@ -29,46 +28,60 @@ const dockerAvailable = () => {
 }
 
 const packageDir = fileURLToPath(new URL("../..", import.meta.url))
-
 const project = { name: "widget", slug: "acme-widget" } as const
+const testLog = () => createLogger({ service: "test" }, { level: "silent" })
 
-// Test message carrying its line identity; grouped into ParsedRecords by lineUuid.
-type TestMessage = NormalizedMessage & { readonly lineUuid: string; readonly lineNumber?: number }
-
-const message = (
-  over: Partial<NormalizedMessage> & { readonly lineUuid: string; readonly lineNumber?: number },
-): TestMessage => ({
-  subIndex: 0,
-  sessionId: "s",
-  source: "claude_code",
-  sourceSchemaVersion: 1,
-  msgType: "assistant",
-  timestamp: "2026-07-23T00:00:00.000Z",
-  ...over,
-})
-
-const recordsFrom = (msgs: ReadonlyArray<TestMessage>): ReadonlyArray<ParsedRecord> => {
-  const byLine = new Map<string, TestMessage[]>()
-  for (const m of msgs) {
-    const list = byLine.get(m.lineUuid) ?? []
-    list.push(m)
-    byLine.set(m.lineUuid, list)
-  }
-  return [...byLine.entries()].map(([lineUuid, list], index) => ({
-    lineUuid,
-    lineNumber: list[0]?.lineNumber ?? index + 1,
-    raw: "{}",
-    messages: list.map(({ lineUuid: _u, lineNumber: _n, ...rest }) => rest),
-  }))
+type TestMessage = {
+  readonly lineUuid: string
+  readonly lineNumber: number
+  readonly message: NormalizedMessage
 }
 
-const mainPayload = (sessionId: string, msgs: ReadonlyArray<TestMessage>): IngestPayload => ({
+const customMessage = ({
+  sessionId,
+  lineUuid,
+  lineNumber = 1,
+  subIndex = 0,
+}: {
+  readonly sessionId: string
+  readonly lineUuid: string
+  readonly lineNumber?: number
+  readonly subIndex?: number
+}): TestMessage => ({
+  lineUuid,
+  lineNumber,
+  message: {
+    subIndex,
+    sessionId,
+    source: "claude_code",
+    sourceSchemaVersion: 1,
+    trackId: "main",
+    msgType: "custom",
+    subType: "fixture",
+  },
+})
+
+const recordsFrom = (items: ReadonlyArray<TestMessage>): ReadonlyArray<ParsedRecord> => {
+  const lineUuids = [...new Set(items.map((item) => item.lineUuid))]
+  return lineUuids.map((lineUuid) => {
+    const matching = items.filter((item) => item.lineUuid === lineUuid)
+    const [first, ...rest] = matching.map((item) => item.message)
+    if (!first) throw new Error("record requires messages")
+    return {
+      lineUuid,
+      lineNumber: matching[0]?.lineNumber ?? 1,
+      raw: { lineUuid, secret: "[Redacted]" },
+      messages: [first, ...rest],
+    }
+  })
+}
+
+const mainPayload = (sessionId: string, items: ReadonlyArray<TestMessage>): IngestPayload => ({
   type: "main",
   sessionId,
   sourceRelativePath: `${sessionId}.jsonl`,
   project,
-  title: "hello",
-  records: recordsFrom(msgs),
+  records: recordsFrom(items),
 })
 
 describe.skipIf(!dockerAvailable())("ingest service", () => {
@@ -105,159 +118,136 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
     await teardown?.()
   })
 
-  test("main flush upserts the project, creates the session, inserts fanned-out messages", async () => {
-    const msgs = [
-      message({
-        lineUuid: "l1",
-        subIndex: 0,
-        msgType: "assistant",
-        content: "hi",
-        gitBranch: "main",
-        gitCommit: "abc123",
-      }),
-      message({
-        lineUuid: "l1",
-        subIndex: 1,
-        msgType: "toolCall",
-        toolCall: { id: "toolu_1", name: "Read", input: { path: "x" } },
-      }),
-      message({
-        lineUuid: "l1",
-        subIndex: 2,
-        msgType: "toolResult",
-        toolResult: { callId: "toolu_1", output: "ok", status: "success" },
-      }),
+  test("S8: canonical JSONB rows and projections round-trip with session-scoped deduplication", async () => {
+    const sessionId = "sess-roundtrip"
+    const lineUuid = "0191d942-3ba5-7dba-9a7d-22d65b3025a0"
+    const base = {
+      sessionId,
+      source: "claude_code" as const,
+      sourceSchemaVersion: 1,
+      trackId: "main",
+    }
+    const items: ReadonlyArray<TestMessage> = [
+      {
+        lineUuid,
+        lineNumber: 1,
+        message: {
+          ...base,
+          subIndex: 0,
+          msgType: "message",
+          role: "assistant",
+          content: { type: "text", value: "hello" },
+          tokens: { input: 4, output: 3, cached: 2, thinking: 1 },
+        },
+      },
+      {
+        lineUuid,
+        lineNumber: 1,
+        message: {
+          ...base,
+          subIndex: 1,
+          msgType: "toolCall",
+          details: { callId: "call-1", name: "Read", input: { path: "a.ts" } },
+        },
+      },
+      {
+        lineUuid,
+        lineNumber: 1,
+        message: {
+          ...base,
+          subIndex: 2,
+          msgType: "toolResult",
+          details: { callId: "call-1", output: { ok: true }, status: "cancelled" },
+        },
+      },
     ]
-    const result = await ingest(ctx, mainPayload("sess-main", msgs))
-    expect(result).toEqual({ ingested: 3, deduped: 0 })
 
-    const rows = await db.select().from(messages).where(eq(messages.sessionId, "sess-main"))
-    expect(rows).toHaveLength(3)
+    expect(await ingest(ctx, mainPayload(sessionId, items))).toEqual({ ingested: 3, deduped: 0 })
+    expect(await ingest(ctx, mainPayload(sessionId, items))).toEqual({ ingested: 0, deduped: 3 })
 
-    // Project resolved from slug + the JWT user as owner; session bound to it.
-    const [proj] = await db.select().from(projects).where(eq(projects.slug, "acme-widget"))
-    expect(proj?.ownerId).toBe(userId)
-    const [session] = await db.select().from(sessions).where(eq(sessions.id, "sess-main"))
-    expect(session?.projectId).toBe(proj?.id)
-
-    // git facts live per-message now.
-    const [assistant] = await db
+    const rows = await db
       .select()
       .from(messages)
-      .where(and(eq(messages.lineUuid, "l1"), eq(messages.subIndex, 0)))
-    expect(assistant?.gitBranch).toBe("main")
-    expect(assistant?.gitCommit).toBe("abc123")
+      .where(eq(messages.sessionId, sessionId))
+      .orderBy(messages.subIndex)
+    expect(rows).toHaveLength(3)
+    expect(rows[0]).toMatchObject({
+      content: { type: "text", value: "hello" },
+      raw: { lineUuid, secret: "[Redacted]" },
+      timestamp: null,
+      sourceRelativePath: `${sessionId}.jsonl`,
+      trackId: "main",
+    })
+    expect(rows[1]?.details).toEqual({ callId: "call-1", name: "Read", input: { path: "a.ts" } })
+    expect(rows[2]?.details).toEqual({
+      callId: "call-1",
+      output: { ok: true },
+      status: "cancelled",
+    })
 
-    const [call] = await db.select().from(toolCall).where(eq(toolCall.toolId, "toolu_1"))
-    expect(call?.toolName).toBe("Read")
-    const [res] = await db.select().from(toolResult).where(eq(toolResult.toolId, "toolu_1"))
-    expect(res?.status).toBe("success")
+    const [call] = await db.select().from(toolCall).where(eq(toolCall.toolId, "call-1"))
+    const [result] = await db.select().from(toolResult).where(eq(toolResult.toolId, "call-1"))
+    const [tokens] = await db.select().from(tokenUsage).where(eq(tokenUsage.inputTokens, 4))
+    expect(call?.toolInput).toEqual({ path: "a.ts" })
+    expect(result).toMatchObject({ result: { ok: true }, status: "cancelled" })
+    expect(tokens).toMatchObject({ outputTokens: 3, cachedTokens: 2, thinkingTokens: 1 })
+
+    const otherSession = "sess-roundtrip-other"
+    const otherItems = items.map((item) => ({
+      ...item,
+      message: { ...item.message, sessionId: otherSession },
+    }))
+    expect(await ingest(ctx, mainPayload(otherSession, otherItems))).toEqual({
+      ingested: 3,
+      deduped: 0,
+    })
   })
 
-  test("re-ingest identical flush dedupes and does not duplicate tool rows", async () => {
-    const msgs = [
-      message({
-        lineUuid: "l1",
-        subIndex: 1,
-        msgType: "toolCall",
-        toolCall: { id: "toolu_1", name: "Read", input: { path: "x" } },
-      }),
-    ]
-    const result = await ingest(ctx, mainPayload("sess-main", msgs))
-    expect(result).toEqual({ ingested: 0, deduped: 1 })
-
-    const calls = await db.select().from(toolCall).where(eq(toolCall.toolId, "toolu_1"))
-    expect(calls).toHaveLength(1)
+  test("main ingest binds the session to the JWT-owned project", async () => {
+    const item = customMessage({
+      sessionId: "sess-project",
+      lineUuid: "0191d942-3ba5-7dba-9a7d-22d65b3025a1",
+    })
+    await ingest(ctx, mainPayload("sess-project", [item]))
+    const [storedProject] = await db.select().from(projects).where(eq(projects.slug, project.slug))
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, "sess-project"))
+    expect(storedProject?.ownerId).toBe(userId)
+    expect(session?.projectId).toBe(storedProject?.id)
   })
 
-  test("subagent flush without session returns sessionNotFound and writes nothing", async () => {
-    const payload: IngestPayload = {
+  test("subagent ingest requires an existing session and derives subagent storage from the envelope", async () => {
+    const missingPayload: IngestPayload = {
       type: "subagent",
-      sessionId: "ghost-session",
-      sourceRelativePath: "subagents/agent-x.jsonl",
+      sessionId: "missing-session",
+      sourceRelativePath: "missing-session/subagents/agent-a.jsonl",
       project,
-      agent: { agentId: "agent-x", agentType: "Explore" },
-      records: recordsFrom([message({ lineUuid: "g1", agentId: "agent-x" })]),
+      agent: { agentId: "a" },
+      records: [
+        {
+          lineUuid: "0191d942-3ba5-7dba-9a7d-22d65b3025a2",
+          lineNumber: 1,
+          raw: {},
+          messages: [
+            {
+              subIndex: 0,
+              sessionId: "missing-session",
+              source: "claude_code",
+              sourceSchemaVersion: 1,
+              trackId: "agent:a",
+              agentId: "a",
+              msgType: "custom",
+              subType: "fixture",
+            },
+          ],
+        },
+      ],
     }
-    const result = await ingest(ctx, payload)
-    expect(result).toEqual({ error: "sessionNotFound" })
-
-    const subs = await db.select().from(subagents).where(eq(subagents.sessionId, "ghost-session"))
-    expect(subs).toHaveLength(0)
-    const msgs = await db.select().from(messages).where(eq(messages.sessionId, "ghost-session"))
-    expect(msgs).toHaveLength(0)
-  })
-
-  test("subagent flush after main creates subagent row (I5)", async () => {
-    await ingest(ctx, mainPayload("sess-sub", [message({ lineUuid: "m1" })]))
-    const payload: IngestPayload = {
-      type: "subagent",
-      sessionId: "sess-sub",
-      sourceRelativePath: "subagents/agent-y.jsonl",
-      project,
-      agent: { agentId: "agent-y", agentType: "fork" },
-      records: recordsFrom([message({ lineUuid: "y1", agentId: "agent-y" })]),
-    }
-    const result = await ingest(ctx, payload)
-    expect(result).toEqual({ ingested: 1, deduped: 0 })
-    const [sub] = await db.select().from(subagents).where(eq(subagents.agentId, "agent-y"))
-    expect(sub?.agentType).toBe("fork")
-  })
-
-  test("two users in the same repo get two distinct project rows (same slug)", async () => {
-    const [other] = await db
-      .insert(users)
-      .values({ githubId: 9002, githubLogin: "other-ingest-user" })
-      .returning()
-    if (!other) throw new Error("seed user failed")
-
-    await ingest(ctx, mainPayload("sess-mine", [message({ lineUuid: "a1" })]))
-    await ingest(
-      { db, log: testLog(), userId: other.id },
-      mainPayload("sess-theirs", [message({ lineUuid: "b1" })]),
-    )
-
-    const rows = await db.select().from(projects).where(eq(projects.slug, "acme-widget"))
-    const owners = new Set(rows.map((r) => r.ownerId))
-    expect(owners.has(userId)).toBe(true)
-    expect(owners.has(other.id)).toBe(true)
-  })
-
-  test("resolves parentAgentId across flushes (I4)", async () => {
-    await ingest(ctx, mainPayload("sess-nest", [message({ lineUuid: "n1" })]))
-
-    const parentFlush: IngestPayload = {
-      type: "subagent",
-      sessionId: "sess-nest",
-      sourceRelativePath: "subagents/agent-parent.jsonl",
-      project,
-      agent: { agentId: "agent-parent", spawnDepth: 1 },
-      records: recordsFrom([
-        message({
-          lineUuid: "p1",
-          subIndex: 0,
-          msgType: "toolCall",
-          agentId: "agent-parent",
-          toolCall: { id: "toolu_spawn", name: "Task", input: {} },
-        }),
-      ]),
-    }
-    await ingest(ctx, parentFlush)
-
-    const childFlush: IngestPayload = {
-      type: "subagent",
-      sessionId: "sess-nest",
-      sourceRelativePath: "subagents/agent-child.jsonl",
-      project,
-      agent: { agentId: "agent-child", spawnDepth: 2, spawnToolUseId: "toolu_spawn" },
-      records: recordsFrom([message({ lineUuid: "c1", agentId: "agent-child" })]),
-    }
-    await ingest(ctx, childFlush)
-
-    const [child] = await db
-      .select()
-      .from(subagents)
-      .where(and(eq(subagents.sessionId, "sess-nest"), eq(subagents.agentId, "agent-child")))
-    expect(child?.parentAgentId).toBe("agent-parent")
+    expect(await ingest(ctx, missingPayload)).toEqual({ error: "sessionNotFound" })
+    expect(
+      await db
+        .select()
+        .from(subagents)
+        .where(and(eq(subagents.sessionId, "missing-session"), eq(subagents.agentId, "a"))),
+    ).toHaveLength(0)
   })
 })

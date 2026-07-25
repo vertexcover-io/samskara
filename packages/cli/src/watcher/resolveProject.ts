@@ -1,3 +1,4 @@
+import { dirname, resolve, win32 } from "node:path"
 import type { ProjectIdentity } from "@samskara/core"
 
 export type GitRunner = (args: ReadonlyArray<string>, cwd: string) => Promise<string | null>
@@ -23,11 +24,24 @@ const basename = (dir: string): string => {
   return segments[segments.length - 1] ?? dir
 }
 
+const isWindowsPath = (path: string): boolean => /^[A-Za-z]:[\\/]/.test(path)
+const normalizedAbsolutePath = (path: string): string =>
+  isWindowsPath(path) ? win32.normalize(path) : resolve(path)
+const parentDirectory = (path: string): string =>
+  isWindowsPath(path) ? win32.dirname(path) : dirname(path)
+
 export const resolveProject = async (
   startDir: string,
   { runGit }: ResolveProjectDeps,
 ): Promise<ProjectIdentity> => {
-  const remote = await runGit(["config", "--get", "remote.origin.url"], startDir)
+  const commonDir = await runGit(
+    ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    startDir,
+  )
+  const projectRoot = commonDir
+    ? parentDirectory(normalizedAbsolutePath(commonDir))
+    : normalizedAbsolutePath(startDir)
+  const remote = await runGit(["config", "--get", "remote.origin.url"], projectRoot)
   const parsed = remote ? parseRemote(remote) : null
   if (parsed) {
     return {
@@ -37,7 +51,7 @@ export const resolveProject = async (
   }
 
   return {
-    name: basename(startDir),
-    slug: slugFromDir(startDir),
+    name: basename(projectRoot),
+    slug: slugFromDir(projectRoot),
   }
 }
