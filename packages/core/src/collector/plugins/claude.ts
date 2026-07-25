@@ -137,6 +137,8 @@ export const classifyClaudePath = (
       ? absoluteParts.slice(absoluteSubagentsIndex - 1)
       : rootParts
   const sourceRelativePath = relativeParts.join("/")
+  const filename = relativeParts.at(-1) ?? basename(normalized)
+  if (!filename.endsWith(".jsonl")) return null
 
   if (/\/subagents\/workflows\/[^/]+\/journal\.jsonl$/.test(`/${sourceRelativePath}`)) {
     return null
@@ -146,15 +148,13 @@ export const classifyClaudePath = (
   if (subagentsIndex >= 1) {
     const sessionId = relativeParts[subagentsIndex - 1]
     if (!sessionId) return null
-    const filename = relativeParts.at(-1) ?? ""
     const agentMatch = /^agent-(.+)\.jsonl$/.exec(filename)
     const agentId =
       agentMatch?.[1] ?? `path-${createHash("sha256").update(sourceRelativePath).digest("hex")}`
     return { sessionId, trackId: `agent:${agentId}`, agentId, sourceRelativePath }
   }
 
-  const filename = relativeParts.at(-1) ?? basename(normalized)
-  if (!filename.endsWith(".jsonl")) return null
+  if (discoveryRoot && rootParts.length !== 2) return null
   return {
     sessionId: filename.slice(0, -".jsonl".length),
     trackId: "main",

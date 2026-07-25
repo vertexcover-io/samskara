@@ -173,6 +173,8 @@ describe("normalizeClaude", () => {
     expect(
       classifyClaudePath(`${root}/bucket/sess-1/subagents/workflows/wf/journal.jsonl`, root),
     ).toBeNull()
+    expect(classifyClaudePath(`${root}/bucket/sess-1/unrelated.jsonl`, root)).toBeNull()
+    expect(classifyClaudePath(`${root}/bucket/sess-1/subagents/agent-a.meta.json`, root)).toBeNull()
     const future = classifyClaudePath(`${root}/bucket/sess-1/subagents/future/trace.jsonl`, root)
     expect(future).toMatchObject({
       sessionId: "sess-1",

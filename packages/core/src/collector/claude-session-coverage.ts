@@ -1,6 +1,6 @@
 import { readFile, readdir } from "node:fs/promises"
-import { basename, dirname, join, relative } from "node:path"
-import { normalizeClaude } from "./plugins/claude.js"
+import { dirname, join, relative } from "node:path"
+import { classifyClaudePath, normalizeClaude } from "./plugins/claude.js"
 
 type TrackCoverage = {
   readonly sourceRelativePath: string
@@ -71,12 +71,16 @@ const cwdFromTranscript = async (path: string, bucket: string): Promise<string |
 
 const trackCoverage = async (
   path: string,
-  bucket: string,
+  context: {
+    readonly trackId: string
+    readonly agentId?: string
+    readonly sourceRelativePath: string
+  },
   sessionId: string,
   mainCwd: string | undefined,
 ): Promise<TrackCoverage> => {
   const lines = await transcriptLines(path)
-  const sourceRelativePath = relative(bucket, path).replaceAll("\\", "/")
+  const { sourceRelativePath } = context
   const values = lines.map((line) => ({ line, value: objectFromLine(line, sourceRelativePath) }))
   const cwd =
     values
@@ -89,10 +93,6 @@ const trackCoverage = async (
       `${sourceRelativePath}:${values[0]?.line.lineNumber ?? 1}: unresolved attribution`,
     )
   }
-  const trackId =
-    basename(path) === `${sessionId}.jsonl`
-      ? "main"
-      : `agent:${basename(path).slice("agent-".length, -".jsonl".length)}`
   const messageCounts = values.map(({ line, value }) => {
     const embeddedSessionId =
       typeof value.sessionId === "string"
@@ -105,9 +105,9 @@ const trackCoverage = async (
     }
     const messages = normalizeClaude(value, {
       sessionId,
-      trackId,
+      trackId: context.trackId,
       lineNumber: line.lineNumber,
-      ...(trackId === "main" ? {} : { agentId: trackId.slice("agent:".length) }),
+      ...(context.agentId === undefined ? {} : { agentId: context.agentId }),
     })
     if (messages.length === 0) {
       throw new Error(`${sourceRelativePath}:${line.lineNumber}: normalized to zero messages`)
@@ -139,20 +139,23 @@ export const buildClaudeSessionCoverage = async ({
   const mainTranscript = mainTranscripts[0]
   if (!mainTranscript) throw new Error(`Main transcript disappeared for ${sessionId}`)
   const bucket = dirname(mainTranscript)
+  const discoveryRootForBucket = dirname(bucket)
   const sessionDirectory = join(bucket, sessionId)
-  const agentTranscripts = files.filter(
-    (path) =>
-      path.startsWith(`${sessionDirectory}/`) &&
-      path.includes(`${join(sessionId, "subagents")}/`) &&
-      /^agent-.+\.jsonl$/.test(basename(path)),
-  )
-  const trackPaths = [
-    mainTranscript,
-    ...agentTranscripts.sort((left, right) => left.localeCompare(right)),
-  ]
+  const mainContext = classifyClaudePath(mainTranscript, discoveryRootForBucket)
+  if (!mainContext || mainContext.trackId !== "main") {
+    throw new Error(`Could not classify main transcript for ${sessionId}`)
+  }
+  const agentTranscripts = files
+    .flatMap((path) => {
+      if (!path.startsWith(`${sessionDirectory}/`)) return []
+      const context = classifyClaudePath(path, discoveryRootForBucket)
+      return context?.sessionId === sessionId && context.agentId ? [{ path, context }] : []
+    })
+    .sort((left, right) => left.path.localeCompare(right.path))
+  const trackPaths = [{ path: mainTranscript, context: mainContext }, ...agentTranscripts]
   const mainCwd = await cwdFromTranscript(mainTranscript, bucket)
   const tracks = await Promise.all(
-    trackPaths.map((path) => trackCoverage(path, bucket, sessionId, mainCwd)),
+    trackPaths.map(({ path, context }) => trackCoverage(path, context, sessionId, mainCwd)),
   )
   return {
     sessionId,
