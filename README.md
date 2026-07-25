@@ -12,7 +12,7 @@ package builds, typechecks, lints, and passes its tests.
 | Package             | Purpose                                                        |
 | ------------------- | -------------------------------------------------------------- |
 | `@samskara/core`    | Shared types, the collector framework (`SourceAdapter` + Claude plugin), ingest types, and the `createLogger` logging factory. |
-| `@samskara/cli`     | `samskara` binary. `--version`, `--verbose`, `login` (CLI pairing), `watch` (capture daemon). |
+| `@samskara/cli`     | `samskara` binary. Pairing, per-folder capture opt-in, status, and a hook-revived background watcher. |
 | `@samskara/server`  | Hono API on Node. Drizzle + postgres-js + pgvector. Auth + `/health` + `/api/ingest`. |
 | `@samskara/web`     | Vite 6 + React 18 + Tailwind v4 UI. GitHub login entry.        |
 
@@ -65,8 +65,30 @@ Ports: backend `:3000`, web `:8000`
 
 Tokens are audience-scoped (`aud: web | cli`) and checked per route by `requireAuth(aud)`.
 `samskara login` pairs the CLI: it redeems a code for an `aud:cli` token stored at
-`~/.samskara/token` (`0600`). `samskara watch` runs the capture daemon: it polls for Claude Code
-session files, resolves the owning project, and POSTs flushes to `/api/ingest`.
+`~/.samskara/token` (`0600`).
+
+## CLI capture lifecycle
+
+```sh
+samskara init                 # login if needed, install hook, start watcher
+samskara enable [path]        # enable one folder (cwd by default)
+samskara disable [path]       # stop capturing it locally; cloud data is retained
+samskara status               # projects, last-sync timestamps, watcher PID/log
+samskara logout               # stop watcher and remove the CLI token
+```
+
+Capture is local-only and opt-in. Enabled folders live in `~/.samskara/projects.json`; each entry is
+keyed by project slug and stores `{ name, path, enabled, enabledAt }`. Git remotes provide stable
+project identities when available, while non-git folders use a path-derived identity. Override all
+local state paths with `SAMSKARA_HOME`.
+
+`init` installs a managed Claude Code `SessionStart` hook. The hook runs the hidden `ensure` command,
+which revives the detached singleton watcher and tells the agent when authentication or project
+enablement is missing. Watcher output is appended to `~/.samskara/watch.log`; its PID is stored in
+`~/.samskara/watch.pid` (`0600`). `install-hooks` and `uninstall-hooks` manage the hook explicitly.
+The foreground `samskara watch` command remains available for debugging. It polls Claude Code session
+files, resolves the owning project, captures only enabled project slugs, and POSTs flushes to
+`/api/ingest`. Explicit `watch --project-name ... --project-slug ...` overrides bypass the registry.
 
 ## Logging
 

@@ -29,6 +29,7 @@ export type WatcherDeps = {
   readonly glob: (pattern: string) => Promise<ReadonlyArray<string>>
   readonly plugin: AgentPlugin
   readonly resolveProject: (startDir: string) => Promise<ProjectIdentity>
+  readonly shouldCapture?: (project: ProjectIdentity) => Promise<boolean>
   readonly log: pino.Logger
 }
 
@@ -89,6 +90,7 @@ const wrap = (track: SessionTrack, base: Clock, body: CheckpointBody): Checkpoin
   ...body,
   filePath: track.checkpointKey,
   lastUpdatedAt: new Date(base.now()).toISOString(),
+  projectSlug: track.project.slug,
 })
 
 const payloadFor = (track: SessionTrack, records: ReadonlyArray<ParsedRecord>): IngestPayload => {
@@ -147,9 +149,22 @@ export const runCycle = async (
     glob: deps.glob,
     resolveProject: deps.resolveProject,
   }
-  const batches = await deps.plugin.collect(prev, collectDeps)
+  const collected = await deps.plugin.collect(prev, collectDeps)
+  const batches = await Promise.all(
+    collected.map(async (batch): Promise<SessionBatch> => {
+      const shouldCapture = deps.shouldCapture
+      if (!shouldCapture) return batch
+      const decisions = await Promise.all(batch.tracks.map((track) => shouldCapture(track.project)))
+      const tracks = batch.tracks.filter((_track, index) => decisions[index] === true)
+      return { ...batch, tracks }
+    }),
+  )
 
-  const results = await Promise.all(batches.map((batch) => syncSession(batch, prev, deps)))
+  const results = await Promise.all(
+    batches
+      .filter((batch) => batch.tracks.length > 0)
+      .map((batch) => syncSession(batch, prev, deps)),
+  )
 
   // Sessions touch disjoint tracks, so the maps never collide.
   const checkpoints = { ...prev.checkpoints }

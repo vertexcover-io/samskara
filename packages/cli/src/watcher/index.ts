@@ -1,17 +1,16 @@
-import { execFile } from "node:child_process"
-import { glob as nodeGlob, readFile, rename, stat, writeFile } from "node:fs/promises"
+import { glob as nodeGlob, readFile, readdir, rename, stat, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
-import { promisify } from "node:util"
 import { type FileSystem, type ProjectIdentity, createClaudePlugin } from "@samskara/core"
 import type pino from "pino"
 import { apiBase } from "../config.js"
+import { statePath, tokenPath } from "../config/paths.js"
+import { isProjectEnabled } from "../config/projects.js"
+import { resolveLocalProject } from "../project-resolver.js"
 import { type WatcherConfig, type WatcherDeps, runCycle } from "./driver.js"
-import { type GitRunner, resolveProject } from "./resolveProject.js"
 import { createHttpSink } from "./sink.js"
 
 const CYCLE_MS = 10_000
-const execFileAsync = promisify(execFile)
 
 const expandHome = (pattern: string): string =>
   pattern.startsWith("~/") ? join(homedir(), pattern.slice(2)) : pattern
@@ -26,24 +25,35 @@ const nodeFs: FileSystem = {
   },
 }
 
-const globAll = async (pattern: string): Promise<ReadonlyArray<string>> => {
-  const matches: string[] = []
-  for await (const entry of nodeGlob(expandHome(pattern))) matches.push(entry)
-  return matches
-}
-
-const runGit: GitRunner = async (args, cwd) => {
+const listJsonl = async (dir: string): Promise<ReadonlyArray<string>> => {
   try {
-    const { stdout } = await execFileAsync("git", [...args], { cwd })
-    return stdout.trim()
+    const entries = await readdir(dir, { withFileTypes: true })
+    const nested = await Promise.all(
+      entries.map((entry): Promise<ReadonlyArray<string>> => {
+        const path = join(dir, entry.name)
+        if (entry.isDirectory()) return listJsonl(path)
+        return Promise.resolve(entry.isFile() && entry.name.endsWith(".jsonl") ? [path] : [])
+      }),
+    )
+    return nested.flat()
   } catch {
-    return null
+    return []
   }
 }
 
+export const globAll = async (pattern: string): Promise<ReadonlyArray<string>> => {
+  const expanded = expandHome(pattern)
+  const recursiveJsonl = expanded.match(/^(.*)[\\/]\*\*[\\/]\*\.jsonl$/)
+  const root = recursiveJsonl?.[1]
+  if (root) return listJsonl(root)
+
+  const matches: string[] = []
+  for await (const entry of nodeGlob(expanded)) matches.push(entry)
+  return matches
+}
+
 const readToken = async (): Promise<string> => {
-  const path = join(homedir(), ".samskara", "token")
-  const token = (await readFile(path, "utf8")).trim()
+  const token = (await readFile(tokenPath(), "utf8")).trim()
   if (!token) throw new Error("no token found; run `samskara login` first")
   return token
 }
@@ -55,21 +65,26 @@ export type WatchOptions = {
   readonly log: pino.Logger
 }
 
+type CaptureFilter = (project: ProjectIdentity) => Promise<boolean>
+
+export const captureFilterFor = (
+  projectOverride: ProjectIdentity | undefined,
+): CaptureFilter | undefined =>
+  projectOverride ? undefined : (project) => isProjectEnabled(project.slug)
+
 export const watch = async (options: WatchOptions): Promise<void> => {
   const { log, projectOverride } = options
   const token = await readToken()
-  const config: WatcherConfig = {
-    statePath: join(homedir(), ".samskara", "state.json"),
-  }
+  const config: WatcherConfig = { statePath: statePath() }
+  const shouldCapture = captureFilterFor(projectOverride)
   const deps: WatcherDeps = {
     fs: nodeFs,
     clock: { now: () => Date.now() },
     sink: createHttpSink({ apiBase, token, fetch: globalThis.fetch }),
     glob: globAll,
     plugin: createClaudePlugin(nodeFs),
-    resolveProject: projectOverride
-      ? async () => projectOverride
-      : (startDir) => resolveProject(startDir, { runGit }),
+    resolveProject: projectOverride ? async () => projectOverride : resolveLocalProject,
+    ...(shouldCapture ? { shouldCapture } : {}),
     log,
   }
 

@@ -23,7 +23,7 @@ describe("resolveProject", () => {
     expect(project).toEqual({ name: "widget", slug: "acme-widget" })
   })
 
-  test("falls back to cwd basename + separator-replaced slug when not a git repo", async () => {
+  test("REQ-007: falls back to cwd basename + separator-replaced slug when not a git repo", async () => {
     const runGit: GitRunner = async () => null
     const project = await resolveProject("/Users/vc/work/myapp", { runGit })
     expect(project).toEqual({ name: "myapp", slug: "-Users-vc-work-myapp" })

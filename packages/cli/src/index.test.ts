@@ -11,6 +11,25 @@ test("samskara --version prints the version and exits 0", () => {
   expect(out.trim()).toBe("0.0.0")
 })
 
+test("capture lifecycle commands are exposed while ensure remains hidden", () => {
+  const out = execFileSync("bun", [entry, "--help"], { encoding: "utf8" })
+
+  for (const command of [
+    "init",
+    "login",
+    "logout",
+    "enable",
+    "disable",
+    "status",
+    "watch",
+    "install-hooks",
+    "uninstall-hooks",
+  ]) {
+    expect(out).toContain(command)
+  }
+  expect(out).not.toContain("ensure [options]")
+})
+
 test("S22: cliLogger(true) resolves level debug regardless of env", () => {
   expect(cliLogger(true).level).toBe("debug")
 })

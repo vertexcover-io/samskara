@@ -6,6 +6,7 @@ import type { FileSystem } from "./fs.js"
 export const checkpointBaseSchema = z.object({
   filePath: z.string(),
   lastUpdatedAt: z.string(),
+  projectSlug: z.string().optional(),
 })
 
 export const claudeCheckpointSchema = checkpointBaseSchema.extend({

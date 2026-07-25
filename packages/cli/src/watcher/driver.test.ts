@@ -125,6 +125,7 @@ describe("watcher driver", () => {
     expect(sink.received[0]?.records).toHaveLength(1)
     expect(sink.received[0]?.records[0]?.messages).toHaveLength(2)
     expect(store.checkpoints[main]?.lineProcessed).toBe(1)
+    expect(store.checkpoints[main]?.projectSlug).toBe("acme-widget")
   })
 
   test("restart resumes from the persisted watermark", async () => {
@@ -146,6 +147,40 @@ describe("watcher driver", () => {
     await runCycle(config, deps({ sink: sink3, glob: async () => [main] }))
     expect(sink3.received).toHaveLength(1)
     expect(sink3.received[0]?.records.every((r) => r.lineUuid === "l2")).toBe(true)
+  })
+
+  test("REQ-031,EDGE-014: legacy checkpoint resumes and gains projectSlug after flush", async () => {
+    const main = join(projects, "legacy.jsonl")
+    await writeFile(main, `${assistantLine("l1", "sess-legacy")}\n`, "utf8")
+    const initial = await stat(main)
+    await writeFile(
+      config.statePath,
+      JSON.stringify({
+        checkpoints: {
+          [main]: {
+            filePath: main,
+            lastUpdatedAt: "2026-07-25T09:00:00.000Z",
+            source: "claude_code",
+            mtime: initial.mtimeMs,
+            size: initial.size,
+            lineProcessed: 1,
+          },
+        },
+      }),
+      "utf8",
+    )
+    await writeFile(
+      main,
+      `${assistantLine("l1", "sess-legacy")}\n${assistantLine("l2", "sess-legacy")}\n`,
+      "utf8",
+    )
+    const sink = createInMemorySink()
+
+    const store = await runCycle(config, deps({ sink, glob: async () => [main] }))
+
+    expect(sink.received).toHaveLength(1)
+    expect(sink.received[0]?.records.map((entry) => entry.lineUuid)).toEqual(["l2"])
+    expect(store.checkpoints[main]?.projectSlug).toBe("acme-widget")
   })
 
   test("does not advance the watermark on a 409 and retries next cycle", async () => {
@@ -244,6 +279,39 @@ describe("watcher driver", () => {
     expect(sink.received[0]?.project).toEqual(resolved)
     const msgs = sink.received[0]?.records.flatMap((r) => r.messages) ?? []
     expect(msgs.every((m) => m.gitBranch === "main")).toBe(true)
+  })
+
+  test("REQ-027: skips tracks whose project is not enabled", async () => {
+    const main = join(projects, "sess-disabled.jsonl")
+    await writeFile(main, `${assistantLine("l1", "sess-disabled")}\n`, "utf8")
+    const sink = createInMemorySink()
+
+    const store = await runCycle(
+      config,
+      deps({ sink, glob: async () => [main], shouldCapture: async () => false }),
+    )
+
+    expect(sink.received).toHaveLength(0)
+    expect(store.checkpoints[main]).toBeUndefined()
+  })
+
+  test("REQ-028,EDGE-012: evaluates project enablement again on every cycle", async () => {
+    const main = join(projects, "sess-toggle.jsonl")
+    await writeFile(main, `${assistantLine("l1", "sess-toggle")}\n`, "utf8")
+    const sink = createInMemorySink()
+    let enabled = false
+    const cycleDeps = deps({
+      sink,
+      glob: async () => [main],
+      shouldCapture: async () => enabled,
+    })
+
+    await runCycle(config, cycleDeps)
+    enabled = true
+    const store = await runCycle(config, cycleDeps)
+
+    expect(sink.received).toHaveLength(1)
+    expect(store.checkpoints[main]?.projectSlug).toBe("acme-widget")
   })
 
   test("does not flush or advance when no sessionId is known", async () => {
