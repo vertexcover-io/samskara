@@ -27,7 +27,7 @@ Samskara is a process-provenance layer for AI-assisted software development. Its
 - Sessions may include main-agent messages, subagents, tool calls, tool results, and planning or design material.
 - Users need to revisit context during code review, collaboration, handoff, debugging, and future maintenance.
 - GitHub identity and organization membership are part of the current access model.
-- The repository currently contains the capture CLI, server ingest API, database model, and an early web login surface. Search, review workflows, artifact presentation, and richer product surfaces remain areas of development.
+- The repository currently contains the capture CLI, server ingest API, database model, a read-only web API, and a web application for browsing captured work: projects, a filtered sessions index, and a session detail viewer with conversation, timeline, tool calls, and artifacts. Search, review workflows, and richer artifact rendering remain areas of development.
 
 ## Capabilities and Constraints
 
@@ -37,7 +37,9 @@ Confirmed capabilities:
 - Structured persistence of sessions, messages, raw source records, tool calls, tool results, and subagents.
 - Authenticated server ingest using an audience-scoped CLI token.
 - GitHub OAuth web authentication with organization gating.
-- A web UI and API foundation for future session search and review experiences.
+- Browsing captured work in the web UI: projects, a sessions index filtered by project, author, and date range with shareable URLs, and a session detail view presenting conversation, timeline, tool calls, and artifacts including subagent branches.
+- CLI pairing and logout from the web account menu.
+- A read-only web API (`/api/projects`, `/api/sessions`, `/api/sessions/:id`) scoped to the projects each user may read.
 
 Product requirements from the team:
 
@@ -67,7 +69,11 @@ Recommended constraints to confirm before production rollout:
 - Product overview and architecture: `README.md`.
 - Capture and ingest design: `.harness/features/watch-daemon-ingest/design.md`.
 - Functional verification evidence: `.harness/features/watch-daemon-ingest/verification/proof-report.md`.
-- Current web entry surface: `packages/web/src/App.tsx` and `packages/web/src/index.css`.
+- Web application surface: `packages/web/src/App.tsx` defines the routes (`/login`, `/projects`,
+  `/sessions`, `/sessions/:sessionId`) behind an auth guard; `packages/web/src/auth/` holds the
+  session boundary, `packages/web/src/shell/` the app shell and account menu,
+  `packages/web/src/session/` the session detail viewer, and `packages/web/src/index.css` the
+  Tailwind v4 design tokens.
 - Current implementation supports Claude Code first; additional agent adapters, summarization, search, embeddings, MCP, and artifact storage are not yet established as shipped capabilities.
 
 ## Product Principles

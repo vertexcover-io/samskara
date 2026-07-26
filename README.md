@@ -3,9 +3,10 @@
 Capture platform for AI coding-agent session logs (Claude Code first, generic by design).
 Summarizes sessions and serves a web UI + API/MCP for search.
 
-The identity mesh (users/orgs/repos/sessions) and the **auth system** (GitHub OAuth web
-login, org-allowlist gate, session/CLI JWTs, browserless CLI pairing) are in place. Every
-package builds, typechecks, lints, and passes its tests.
+The identity mesh (users/orgs/repos/sessions), the **auth system** (GitHub OAuth web
+login, org-allowlist gate, session/CLI JWTs, browserless CLI pairing), and the **application
+UI** (projects, filtered sessions index, session detail viewer, CLI pairing and logout) are in
+place. Every package builds, typechecks, lints, and passes its tests.
 
 ## Packages
 
@@ -14,7 +15,7 @@ package builds, typechecks, lints, and passes its tests.
 | `@samskara/core`    | Shared types, the collector framework (`SourceAdapter` + Claude plugin), ingest types, and the `createLogger` logging factory. |
 | `@samskara/cli`     | `samskara` binary. Pairing, per-folder capture opt-in, status, and a hook-revived background watcher. |
 | `@samskara/server`  | Hono API on Node. Drizzle + postgres-js + pgvector. Auth + `/health` + `/api/ingest`. |
-| `@samskara/web`     | Vite 6 + React 18 + Tailwind v4 UI. GitHub login entry.        |
+| `@samskara/web`     | Vite 6 + React 18 + Tailwind v4 UI. React Router routes, auth guard, projects, sessions index, and the session detail viewer. |
 
 ## Requirements
 
@@ -34,9 +35,11 @@ cp .env.example .env
 ```sh
 bun run dev         # turbo run dev across packages
 bun run build       # build all packages
-bun run typecheck   # typecheck all packages
+bun run typecheck   # typecheck all packages, plus the e2e project
 bun run lint        # biome check .
 bun run test        # run all package tests
+bun run e2e         # Playwright end-to-end suite (boots server + web, seeds the DB)
+bun run e2e:ui      # the same suite in Playwright's UI mode
 bun run format      # biome format --write .
 
 bun run stack:up    # docker compose up -d (Postgres/pgvector on :5433)
@@ -61,6 +64,9 @@ Ports: backend `:3000`, web `:8000`
 | POST | `/api/auth/logout`          | web      | Clear session cookie |
 | POST | `/api/auth/cli-code`        | web      | Mint a CLI pairing code |
 | POST | `/api/auth/cli-exchange`    | none     | Redeem a code → `aud:cli` JWT |
+| GET  | `/api/projects`             | web      | Projects the user can read, with session counts and last activity |
+| GET  | `/api/sessions`             | web      | Readable sessions, newest first; optional `project`, `user`, `range` filters |
+| GET  | `/api/sessions/:id`         | web      | One session with its messages, tool calls, subagents, and token usage |
 | POST | `/api/ingest`               | cli      | Flush a captured session (messages, tool calls, subagents) |
 
 Tokens are audience-scoped (`aud: web | cli`) and checked per route by `requireAuth(aud)`.
@@ -116,14 +122,47 @@ Every package logs structured NDJSON via `createLogger(base, opts?)` from `@sams
 packages/server/src/
   db/            client.ts (postgres-js + drizzle), customTypes.ts (vector), schema.ts
   repositories/  drizzle queries per model (users/orgs/projects/sessions)
-  routes/        auth.ts (OAuth + session + CLI pairing), ingest.ts (session flush)
+  routes/        auth.ts (OAuth + session + CLI pairing), ingest.ts (session flush),
+                 projects.ts + sessions.ts (read-only web API behind requireAuth("web"))
   services/      github.ts (GithubClient seam), auth.ts (gate + upsert), pairing.ts, ingest.ts
   lib/           env.ts (zod config), jwt.ts (jose), cookies.ts, require-auth.ts,
                  logging-middleware.ts (reqId + request child logger)
   scripts/       seed-org.ts
   app.ts         buildApp(db, env, deps) — Hono app, /health + /api/auth + /api/ingest
+                 + /api/projects + /api/sessions
   index.ts       Node server entry — logs "server listening" via the root logger
 ```
+
+## Web UI
+
+React Router routes, all but `/login` behind `RequireAuth` (which renders a loading shell while
+`/api/auth/me` resolves, so protected data never flashes before the check settles):
+
+| Route | Screen |
+|---|---|
+| `/login` | GitHub sign-in; redirects to `/projects` when already authenticated |
+| `/projects` | Project cards — name, slug, session count, last activity, last session title |
+| `/sessions` | Session index. Project, User, and Date Range filters read from and write to the query string, so any filtered view is a shareable link and Back/Forward restore it |
+| `/sessions/:sessionId` | Session detail — Conversation, Timeline, Tool Calls, and Artifacts tabs, plus expandable subagent branches |
+
+Unmatched paths redirect to `/projects`. The app shell carries an account menu with CLI pairing and
+logout.
+
+```
+packages/web/src/
+  api/        typed fetch adapters (client.ts, parse.ts, types.ts, account.ts)
+  auth/       AuthProvider.tsx, RequireAuth.tsx, SessionExpired.tsx
+  routes/     Login.tsx, Projects.tsx, Sessions.tsx, SessionDetail.tsx
+  shell/      AppShell.tsx, AccountMenu.tsx, LoadingShell.tsx
+  session/    detail viewer — Tabs, RecordStream, ToolCallsView, ArtifactsView, SubagentAnnex
+  components/ ProjectCard.tsx, SessionRow.tsx, FilterBar.tsx
+  sessions/   filters.ts (query-string ⇄ filter state)
+  index.css   Tailwind v4 tokens in an @theme block (no tailwind.config file)
+```
+
+End-to-end tests live in `e2e/` and run against a real browser. `e2e/playwright.config.ts` boots
+both the API server and Vite and seeds Postgres; `e2e/fixtures/auth.ts` mints an HS256 session
+cookie directly, so the suite authenticates without a GitHub round trip.
 
 ## Database
 
