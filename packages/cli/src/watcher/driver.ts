@@ -69,6 +69,7 @@ export const sliceByMessages = (
 const wrap = (track: SessionTrack, clock: Clock, body: CheckpointBody): Checkpoint => ({
   ...body,
   filePath: track.checkpointKey,
+  projectSlug: track.project.slug,
   lastUpdatedAt: new Date(clock.now()).toISOString(),
 })
 

@@ -134,6 +134,8 @@ describe("watcher driver", () => {
     expect(sink.received[0]?.records).toHaveLength(1)
     expect(sink.received[0]?.records[0]?.messages).toHaveLength(2)
     expect(store.checkpoints[main]?.lineProcessed).toBe(1)
+    // `samskara status` groups sync times by slug, so every checkpoint must carry one.
+    expect(store.checkpoints[main]?.projectSlug).toBe(project.slug)
   })
 
   test("restart resumes from the persisted watermark", async () => {
