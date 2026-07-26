@@ -20,8 +20,6 @@ const marker = "samskara:ensure"
 
 export type HookCommandOptions = {
   readonly settingsPath?: string
-  readonly cliEntry?: string
-  readonly nodeBin?: string
   readonly stdout?: Writer
   readonly stderr?: Writer
 }
@@ -65,11 +63,8 @@ const hooksRecordFrom = (value: unknown, path: string): z.infer<typeof recordSch
   return parsed.data
 }
 
-const managedCommand = (options: HookCommandOptions): string => {
-  const nodeBin = options.nodeBin ?? process.execPath
-  const cliEntry = options.cliEntry ?? resolveCliEntry()
-  return `${JSON.stringify(nodeBin)} ${JSON.stringify(cliEntry)} ensure # ${marker}`
-}
+const managedCommand = (): string =>
+  `${JSON.stringify(process.execPath)} ${JSON.stringify(resolveCliEntry())} ensure # ${marker}`
 
 const hasManagedHook = (matchers: ReadonlyArray<z.infer<typeof hookMatcherSchema>>): boolean =>
   matchers.some((matcher) =>
@@ -120,7 +115,7 @@ export const installHooksCommand = (options: HookCommandOptions = {}): number =>
       ...current.hooks,
       SessionStart: [
         ...current.sessionStart,
-        { hooks: [{ type: "command", command: managedCommand(options) }] },
+        { hooks: [{ type: "command", command: managedCommand() }] },
       ],
     },
   })

@@ -1,22 +1,18 @@
 #!/usr/bin/env node
 import { fileURLToPath } from "node:url"
-import { createLogger } from "@samskara/core"
 import { Command } from "commander"
-import type pino from "pino"
 import { disableCommand } from "./commands/disable.js"
 import { enableCommand } from "./commands/enable.js"
 import { ensureCommand } from "./commands/ensure.js"
 import { initCommand } from "./commands/init.js"
 import { installHooksCommand, uninstallHooksCommand } from "./commands/install-hooks.js"
 import { logoutCommand } from "./commands/logout.js"
+import { logsCommand } from "./commands/logs.js"
 import { statusCommand } from "./commands/status.js"
+import { watchCommand } from "./commands/watch.js"
 import { login } from "./login.js"
-import { watch } from "./watcher/index.js"
 
 const isMain = process.argv[1] === fileURLToPath(import.meta.url)
-
-export const cliLogger = (verbose: boolean): pino.Logger =>
-  createLogger({ service: "samskara-cli" }, verbose ? { level: "debug" } : {})
 
 const program = new Command()
 
@@ -71,15 +67,31 @@ program
 
 program
   .command("watch")
-  .description("Run the capture daemon: discover and ingest Claude session files")
+  .description("Start the capture daemon in the background (logs to watch.log)")
+  .option("--foreground", "run the capture loop in this process instead of detaching")
   .option("--project-name <name>", "override project name (default: resolved from the session dir)")
   .option("--project-slug <slug>", "override project slug (default: resolved from the session dir)")
-  .action((options: { projectName?: string; projectSlug?: string }) => {
+  .action(async (options: { foreground?: boolean; projectName?: string; projectSlug?: string }) => {
     const { projectName, projectSlug } = options
     const projectOverride =
       projectName && projectSlug ? { name: projectName, slug: projectSlug } : undefined
-    const log = cliLogger(Boolean(program.opts<{ verbose?: boolean }>().verbose))
-    return watch({ projectOverride, log })
+    process.exitCode = await watchCommand({
+      foreground: Boolean(options.foreground),
+      verbose: Boolean(program.opts<{ verbose?: boolean }>().verbose),
+      ...(projectOverride ? { projectOverride } : {}),
+    })
+  })
+
+program
+  .command("logs")
+  .description("Pretty-print the watcher log (use -f to stream new lines)")
+  .option("-f, --follow", "keep streaming as new lines are written")
+  .option("--no-color", "disable colored output")
+  .action(async (options: { follow?: boolean; color?: boolean }) => {
+    process.exitCode = await logsCommand({
+      follow: Boolean(options.follow),
+      colorize: options.color !== false,
+    })
   })
 
 program

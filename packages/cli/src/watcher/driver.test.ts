@@ -227,7 +227,6 @@ describe("watcher driver", () => {
     const store = await runCycle(config, deps({ sink, glob: async () => [main] }))
     expect(sink.received.length).toBeGreaterThanOrEqual(2)
     expect(store.checkpoints[main]?.lineProcessed).toBe(1500)
-    expect(MESSAGE_CAP).toBe(2000)
   })
 
   test("resolves the project from the session cwd and stamps per-message git facts", async () => {

@@ -1,11 +1,7 @@
-import type { ProjectIdentity } from "@samskara/core"
-import { readToken as readStoredToken } from "../config/credentials.js"
-import {
-  watcherPid as readWatcherPid,
-  reviveWatcher as reviveStoredWatcher,
-} from "../config/daemon.js"
-import { watchLogPath } from "../config/paths.js"
-import { isProjectEnabled as readProjectEnabled } from "../config/projects.js"
+import { readToken } from "../config/credentials.js"
+import { reviveWatcher, watcherPid } from "../config/daemon.js"
+import { watchLogDir } from "../config/paths.js"
+import { isProjectEnabled } from "../config/projects.js"
 import { resolveLocalProject } from "../project-resolver.js"
 
 interface Writer {
@@ -14,11 +10,6 @@ interface Writer {
 
 export type EnsureOptions = {
   readonly cwd?: string
-  readonly readToken?: () => Promise<string | null>
-  readonly watcherPid?: () => number | null
-  readonly reviveWatcher?: () => number | null
-  readonly resolveProject?: (path: string) => Promise<ProjectIdentity>
-  readonly isProjectEnabled?: (slug: string) => Promise<boolean>
   readonly stdout?: Writer
   readonly stderr?: Writer
 }
@@ -39,7 +30,7 @@ export const ensureCommand = async (options: EnsureOptions = {}): Promise<number
   const stdout = options.stdout ?? process.stdout
   const stderr = options.stderr ?? process.stderr
   try {
-    const token = await (options.readToken ?? readStoredToken)()
+    const token = await readToken()
     if (!token) {
       emitContext(stdout, [
         "Samskara capture is OFF because the CLI is not authenticated. Tell the user to run `samskara login`.",
@@ -47,22 +38,18 @@ export const ensureCommand = async (options: EnsureOptions = {}): Promise<number
       return 0
     }
 
-    const watcherPid = options.watcherPid ?? (() => readWatcherPid())
-    const reviveWatcher = options.reviveWatcher ?? (() => reviveStoredWatcher())
     const context: string[] = []
     if (watcherPid() === null) {
-      reviveWatcher()
+      await reviveWatcher()
       if (watcherPid() === null) {
         context.push(
-          `Samskara capture may be OFF because the watcher did not stay running. Tell the user to check ${watchLogPath()}.`,
+          `Samskara capture may be OFF because the watcher did not stay running. Tell the user to check ${watchLogDir()}.`,
         )
       }
     }
 
-    const cwd = options.cwd ?? process.cwd()
-    const project = await (options.resolveProject ?? resolveLocalProject)(cwd)
-    const enabled = await (options.isProjectEnabled ?? readProjectEnabled)(project.slug)
-    if (!enabled) {
+    const project = await resolveLocalProject(options.cwd ?? process.cwd())
+    if (!(await isProjectEnabled(project.slug))) {
       context.push(
         `This project (${project.slug}) is not enabled for Samskara capture. Ask the user whether to enable it; if they agree, run \`samskara enable\`.`,
       )

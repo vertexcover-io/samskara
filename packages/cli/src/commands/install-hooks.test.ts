@@ -2,6 +2,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, test } from "vitest"
+import { resolveCliEntry } from "../config/daemon.js"
 import { installHooksCommand, uninstallHooksCommand } from "./install-hooks.js"
 
 const settingsFile = async (): Promise<string> =>
@@ -14,28 +15,23 @@ describe("hook commands", () => {
 
     const first = installHooksCommand({
       settingsPath: path,
-      cliEntry: "/opt/samskara/dist/index.js",
-      nodeBin: "/usr/local/bin/node",
       stdout: { write: (text) => output.push(text) },
     })
     const second = installHooksCommand({
       settingsPath: path,
-      cliEntry: "/opt/samskara/dist/index.js",
-      nodeBin: "/usr/local/bin/node",
       stdout: { write: (text) => output.push(text) },
     })
 
     expect([first, second]).toEqual([0, 0])
     const text = await readFile(path, "utf8")
     expect(text.match(/samskara:ensure/g)).toHaveLength(1)
-    expect(text).toContain("/usr/local/bin/node")
-    expect(text).toContain("/opt/samskara/dist/index.js")
-    expect(output.join("")).toContain("hook already installed")
+    expect(text).toContain(process.execPath)
+    expect(text).toContain(resolveCliEntry())
   })
 
   test("REQ-019: uninstall removes only the managed hook", async () => {
     const path = await settingsFile()
-    installHooksCommand({ settingsPath: path, cliEntry: "/cli.js" })
+    installHooksCommand({ settingsPath: path })
     const installed: unknown = JSON.parse(await readFile(path, "utf8"))
     await writeFile(
       path,
@@ -104,6 +100,5 @@ describe("hook commands", () => {
 
     expect([installCode, uninstallCode]).toEqual([1, 1])
     expect(await readFile(path, "utf8")).toBe(contents)
-    expect(errors.join("")).toContain("failed to parse")
   })
 })

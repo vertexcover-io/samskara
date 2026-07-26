@@ -65,18 +65,14 @@ export type WatchOptions = {
   readonly log: pino.Logger
 }
 
-type CaptureFilter = (project: ProjectIdentity) => Promise<boolean>
-
-export const captureFilterFor = (
-  projectOverride: ProjectIdentity | undefined,
-): CaptureFilter | undefined =>
-  projectOverride ? undefined : (project) => isProjectEnabled(project.slug)
-
 export const watch = async (options: WatchOptions): Promise<void> => {
   const { log, projectOverride } = options
   const token = await readToken()
   const config: WatcherConfig = { statePath: statePath() }
-  const shouldCapture = captureFilterFor(projectOverride)
+  // An explicit override captures unconditionally; otherwise only enabled projects.
+  const shouldCapture = projectOverride
+    ? undefined
+    : (project: ProjectIdentity) => isProjectEnabled(project.slug)
   const deps: WatcherDeps = {
     fs: nodeFs,
     clock: { now: () => Date.now() },
