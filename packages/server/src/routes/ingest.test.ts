@@ -10,7 +10,15 @@ import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
 import { buildApp } from "../app.js"
 import { type Db, createDb } from "../db/client.js"
-import { messages, sessions, subagents, tokenUsage, toolCall, users } from "../db/schema.js"
+import {
+  messages,
+  sessions,
+  subagents,
+  tokenUsage,
+  toolCall,
+  toolResult,
+  users,
+} from "../db/schema.js"
 import type { Env } from "../lib/env.js"
 import { signToken } from "../lib/jwt.js"
 
@@ -24,6 +32,8 @@ const dockerAvailable = () => {
 }
 
 const packageDir = fileURLToPath(new URL("../..", import.meta.url))
+
+const fixturePath = fileURLToPath(new URL("./__fixtures__/real-session.jsonl", import.meta.url))
 
 const env: Env = {
   githubClientId: "id",
@@ -506,5 +516,124 @@ describe.skipIf(!dockerAvailable())("ingest route", () => {
     expect(
       await db.select().from(subagents).where(eq(subagents.sessionId, "sess-semantic")),
     ).toHaveLength(2)
+  })
+
+  test("a recorded Claude session persists every message family it contains, with its tool pair joined", async () => {
+    const root = await mkdtemp(join(tmpdir(), "samskara-real-"))
+    const dir = join(root, ".claude", "projects", "bucket")
+    await mkdir(dir, { recursive: true })
+    const transcript = join(dir, "sess-real.jsonl")
+    await writeFile(transcript, await readFile(fixturePath, "utf8"), "utf8")
+
+    const batches = await createClaudePlugin(nodeFs).collect(
+      { checkpoints: {} },
+      {
+        fs: nodeFs,
+        glob: async () => [transcript],
+        resolveProject: async () => project,
+        log: createLogger({ service: "real" }, { level: "silent" }),
+      },
+    )
+    const track = batches[0]?.tracks[0]
+    if (!track) throw new Error("expected an ingest track")
+    const { checkpointKey: _k, checkpointAt: _a, lastLineProcessed: _l, ...payload } = track
+    const sessionId = payload.sessionId
+
+    const response = await post(app, payload, cliToken)
+    expect(response.status).toBe(200)
+    const { ingested } = (await response.json()) as { ingested: number }
+
+    const stored = await db.select().from(messages).where(eq(messages.sessionId, sessionId))
+    expect(stored).toHaveLength(ingested)
+
+    const familiesInPayload = new Set(
+      payload.records.flatMap((r) => r.messages.map((m) => m.msgType)),
+    )
+    expect(new Set(stored.map((row) => row.msgType))).toEqual(familiesInPayload)
+    expect([...familiesInPayload].sort()).toEqual([
+      "compaction",
+      "custom",
+      "fileEvent",
+      "hookCall",
+      "localCommand",
+      "message",
+      "queueOperation",
+      "systemEvent",
+      "toolCall",
+      "toolResult",
+      "turnEvent",
+      "usage",
+    ])
+
+    const subTypesFor = (family: string) =>
+      [...new Set(stored.filter((r) => r.msgType === family).map((r) => r.subType))].sort()
+    expect(subTypesFor("systemEvent")).toEqual([
+      "away_summary",
+      "bridge_status",
+      "informational",
+      "model_refusal_fallback",
+      "scheduled_task_fire",
+    ])
+    expect(subTypesFor("custom")).toEqual([
+      "ai-title",
+      "bridge-session",
+      "file-history-delta",
+      "last-prompt",
+      "mode",
+      "permission-mode",
+    ])
+
+    const ownedMessageIds = new Set(stored.map((row) => row.id))
+    const calls = (await db.select().from(toolCall)).filter((row) =>
+      ownedMessageIds.has(row.messageId),
+    )
+    const results = (await db.select().from(toolResult)).filter((row) =>
+      ownedMessageIds.has(row.messageId),
+    )
+    expect(calls.length).toBeGreaterThan(0)
+    expect(results.map((r) => r.toolId).sort()).toEqual(calls.map((c) => c.toolId).sort())
+
+    const usage = (await db.select().from(tokenUsage)).filter((row) =>
+      ownedMessageIds.has(row.messageId),
+    )
+    expect(usage.length).toBeGreaterThan(0)
+    expect(usage.every((u) => u.inputTokens >= 0 && u.outputTokens >= 0)).toBe(true)
+
+    expect(stored.every((row) => row.lineNumber > 0)).toBe(true)
+    expect(JSON.stringify(stored)).not.toContain("/Users/")
+  })
+
+  test("re-ingesting the same recorded session stores nothing new", async () => {
+    const root = await mkdtemp(join(tmpdir(), "samskara-real-again-"))
+    const dir = join(root, ".claude", "projects", "bucket")
+    await mkdir(dir, { recursive: true })
+    const transcript = join(dir, "sess-real-again.jsonl")
+    await writeFile(transcript, await readFile(fixturePath, "utf8"), "utf8")
+
+    const collect = async () => {
+      const batches = await createClaudePlugin(nodeFs).collect(
+        { checkpoints: {} },
+        {
+          fs: nodeFs,
+          glob: async () => [transcript],
+          resolveProject: async () => project,
+          log: createLogger({ service: "real" }, { level: "silent" }),
+        },
+      )
+      const track = batches[0]?.tracks[0]
+      if (!track) throw new Error("expected an ingest track")
+      const { checkpointKey: _k, checkpointAt: _a, lastLineProcessed: _l, ...payload } = track
+      return payload
+    }
+
+    const payload = await collect()
+    const first = (await (await post(app, payload, cliToken)).json()) as { ingested: number }
+    const second = (await (await post(app, payload, cliToken)).json()) as {
+      ingested: number
+      deduped: number
+    }
+
+    expect(first.ingested).toBeGreaterThan(0)
+    expect(second).toEqual({ ingested: 0, deduped: first.ingested })
   })
 })
