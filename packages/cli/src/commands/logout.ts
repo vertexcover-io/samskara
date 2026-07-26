@@ -6,14 +6,15 @@ interface Writer {
 }
 
 export type LogoutOptions = {
-  readonly stopWatcher?: () => Promise<boolean>
   readonly stdout?: Writer
 }
 
 export const logoutCommand = async (options: LogoutOptions = {}): Promise<number> => {
-  await (options.stopWatcher ?? (() => stopWatcherDaemon()))()
+  await stopWatcherDaemon()
   await deleteToken()
   const stdout = options.stdout ?? process.stdout
-  stdout.write("logged out; watcher stopped.\n")
+  stdout.write(
+    "Logged out. The stored access token was removed and the capture watcher was stopped.\n",
+  )
   return 0
 }

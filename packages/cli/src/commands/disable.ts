@@ -18,8 +18,14 @@ export const disableCommand = async (options: DisableOptions = {}): Promise<numb
   const cwd = options.cwd ?? process.cwd()
   const path = resolve(cwd, options.path ?? cwd)
   const project = await (options.resolveProject ?? resolveLocalProject)(path)
-  await setProjectEnabled(project.slug, false)
+  const updated = await setProjectEnabled(project.slug, false)
   const stdout = options.stdout ?? process.stdout
-  stdout.write(`disabled: ${project.slug}\n`)
+  if (updated === null) {
+    stdout.write(
+      `Capture was never enabled for "${project.slug}", so there is nothing to disable.\n`,
+    )
+    return 0
+  }
+  stdout.write(`Capture disabled for "${project.slug}". Existing captured sessions are kept.\n`)
   return 0
 }

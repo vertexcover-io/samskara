@@ -2,7 +2,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, test } from "vitest"
-import { listProjects, setProjectEnabled, upsertProject } from "./projects.js"
+import { isProjectEnabled, listProjects, setProjectEnabled, upsertProject } from "./projects.js"
 
 const originalHome = process.env.SAMSKARA_HOME
 
@@ -59,6 +59,29 @@ describe("project registry", () => {
 
     await writeFile(join(home, "projects.json"), JSON.stringify({ version: 2 }), "utf8")
     await expect(listProjects()).resolves.toEqual([])
+  })
+
+  test("REQ-026,REQ-027,EDGE-011: only enabled slugs report as capture-eligible", async () => {
+    const home = await useTempHome()
+    await upsertProject("acme-on", {
+      name: "on",
+      path: "/work/on",
+      enabled: true,
+      enabledAt: "2026-07-25T10:00:00.000Z",
+    })
+    await upsertProject("acme-off", {
+      name: "off",
+      path: "/work/off",
+      enabled: false,
+      enabledAt: "2026-07-25T10:00:00.000Z",
+    })
+
+    await expect(isProjectEnabled("acme-on")).resolves.toBe(true)
+    await expect(isProjectEnabled("acme-off")).resolves.toBe(false)
+    await expect(isProjectEnabled("acme-missing")).resolves.toBe(false)
+
+    await writeFile(join(home, "projects.json"), "broken", "utf8")
+    await expect(isProjectEnabled("acme-on")).resolves.toBe(false)
   })
 
   test("REQ-009,EDGE-004: concurrent writes preserve unrelated entries", async () => {

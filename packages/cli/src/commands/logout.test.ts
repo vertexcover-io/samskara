@@ -1,10 +1,18 @@
 import { mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, describe, expect, test } from "vitest"
+import { afterEach, describe, expect, test, vi } from "vitest"
 import { storeToken } from "../config/credentials.js"
 import { upsertProject } from "../config/projects.js"
 import { logoutCommand } from "./logout.js"
+
+let watcherRunning = false
+vi.mock("../config/daemon.js", () => ({
+  stopWatcherDaemon: vi.fn(async () => {
+    watcherRunning = false
+    return true
+  }),
+}))
 
 const originalHome = process.env.SAMSKARA_HOME
 
@@ -24,22 +32,15 @@ describe("logout command", () => {
       enabledAt: "2026-07-25T10:00:00.000Z",
     })
     const projectsBefore = await readFile(join(home, "projects.json"), "utf8")
-    let stopped = false
     const output: string[] = []
+    watcherRunning = true
 
-    const code = await logoutCommand({
-      stopWatcher: async () => {
-        stopped = true
-        return true
-      },
-      stdout: { write: (text) => output.push(text) },
-    })
+    const code = await logoutCommand({ stdout: { write: (text) => output.push(text) } })
 
     expect(code).toBe(0)
-    expect(stopped).toBe(true)
+    expect(watcherRunning).toBe(false)
     await expect(readFile(join(home, "token"), "utf8")).rejects.toMatchObject({ code: "ENOENT" })
     expect(await readFile(join(home, "projects.json"), "utf8")).toBe(projectsBefore)
-    expect(output.join("")).toContain("logged out; watcher stopped")
   })
 
   test("EDGE-010: succeeds when no watcher or token exists", async () => {
@@ -47,7 +48,7 @@ describe("logout command", () => {
     process.env.SAMSKARA_HOME = home
     await writeFile(join(home, "projects.json"), '{"version":1,"projects":{}}', "utf8")
 
-    const code = await logoutCommand({ stopWatcher: async () => false })
+    const code = await logoutCommand()
 
     expect(code).toBe(0)
     expect(await readFile(join(home, "projects.json"), "utf8")).toBe('{"version":1,"projects":{}}')
