@@ -1,0 +1,737 @@
+import { execFileSync } from "node:child_process"
+import { fileURLToPath } from "node:url"
+import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql"
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
+import { buildApp } from "../app.js"
+import { type Db, createDb } from "../db/client.js"
+import {
+  messages,
+  projects,
+  sessions,
+  subagents,
+  tokenUsage,
+  toolCall,
+  toolResult,
+  userProjectGrant,
+  users,
+} from "../db/schema.js"
+import type { Env } from "../lib/env.js"
+import { signToken } from "../lib/jwt.js"
+import * as projectsRepo from "../repositories/projects.repo.js"
+
+const dockerAvailable = () => {
+  try {
+    execFileSync("docker", ["info"], { stdio: "ignore" })
+    return true
+  } catch {
+    return false
+  }
+}
+
+const packageDir = fileURLToPath(new URL("../..", import.meta.url))
+
+const env: Env = {
+  githubClientId: "Ov23linvZE00y7VZSI4Y",
+  githubClientSecret: "secret",
+  publicBaseUrl: "http://localhost:3000",
+  webBaseUrl: "http://localhost:8000",
+  cookieSecure: false,
+  jwtSecret: "test-secret-value",
+  jwtExpiresIn: "7d",
+}
+
+type SessionSummary = {
+  readonly id: string
+  readonly title: string | null
+  readonly projectName: string
+  readonly projectSlug: string
+  readonly userLogin: string
+  readonly model: string | null
+  readonly durationMs: number | null
+  readonly tokensTotal: number
+  readonly status: string
+  readonly lastActiveAt: string
+}
+
+const seedUser = (db: Db, githubId: number, login: string): Promise<string> =>
+  db
+    .insert(users)
+    .values({ githubId, githubLogin: login })
+    .returning({ id: users.id })
+    .then(([row]) => {
+      if (!row) throw new Error("no seeded user")
+      return row.id
+    })
+
+const seedSession = (
+  db: Db,
+  input: {
+    id: string
+    userId: string
+    projectId: string
+    title: string
+    updatedAt: Date
+  },
+) =>
+  db.insert(sessions).values({
+    id: input.id,
+    source: "claude_code",
+    userId: input.userId,
+    projectId: input.projectId,
+    title: input.title,
+    updatedAt: input.updatedAt,
+  })
+
+const seedMessage = async (
+  db: Db,
+  input: { sessionId: string; lineNumber: number; timestamp: Date; tokens?: number },
+): Promise<void> => {
+  const [row] = await db
+    .insert(messages)
+    .values({
+      sessionId: input.sessionId,
+      lineUuid: crypto.randomUUID(),
+      subIndex: 0,
+      msgType: "message",
+      role: "assistant",
+      timestamp: input.timestamp,
+      lineNumber: input.lineNumber,
+      raw: {},
+      sourceSchemaVersion: 1,
+    })
+    .returning({ id: messages.id })
+  if (!row) throw new Error("no seeded message")
+  if (input.tokens === undefined) return
+  await db.insert(tokenUsage).values({
+    messageId: row.id,
+    inputTokens: input.tokens,
+    outputTokens: 0,
+    cachedTokens: 0,
+    thinkingTokens: 0,
+  })
+}
+
+const request = async (db: Db, userId: string, query: string): Promise<Response> => {
+  const token = await signToken(env, { sub: userId, aud: "web" })
+  return buildApp(db, env).request(`/api/sessions${query}`, {
+    headers: { cookie: `session=${token}` },
+  })
+}
+
+const listAs = async (
+  db: Db,
+  userId: string,
+  query = "",
+): Promise<ReadonlyArray<SessionSummary>> => {
+  const res = await request(db, userId, query)
+  expect(res.status).toBe(200)
+  const body = (await res.json()) as { sessions: ReadonlyArray<SessionSummary> }
+  return body.sessions
+}
+
+const idsOf = (rows: ReadonlyArray<SessionSummary>): ReadonlyArray<string> => rows.map((r) => r.id)
+
+const sortedIdsOf = (rows: ReadonlyArray<SessionSummary>): ReadonlyArray<string> =>
+  [...idsOf(rows)].sort()
+
+describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
+  let container: StartedPostgreSqlContainer
+  let teardown: () => Promise<void>
+  let db: Db
+
+  beforeAll(async () => {
+    container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start()
+    const url = container.getConnectionUri()
+    execFileSync("bun", ["run", "db:migrate"], {
+      cwd: packageDir,
+      env: { ...process.env, DATABASE_URL: url },
+      stdio: "inherit",
+    })
+    const created = createDb(url)
+    db = created.db
+    teardown = async () => {
+      await created.client.end()
+      await container.stop()
+    }
+  }, 120_000)
+
+  afterAll(async () => {
+    await teardown?.()
+  })
+
+  beforeEach(async () => {
+    await db.delete(sessions)
+    await db.delete(userProjectGrant)
+    await db.delete(projects)
+    await db.delete(users)
+  })
+
+  test("S20: project, user, and range each narrow the list on their own - an unfiltered request returns all four sessions", async () => {
+    const owner = await seedUser(db, 1001, "owner")
+    const maya = await seedUser(db, 1002, "maya")
+    const alpha = await projectsRepo.upsert(db, {
+      identity: { name: "Alpha", slug: "alpha" },
+      ownerId: owner,
+    })
+    const beta = await projectsRepo.upsert(db, {
+      identity: { name: "Beta", slug: "beta" },
+      ownerId: owner,
+    })
+
+    const old = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000)
+    const now = new Date()
+
+    await seedSession(db, {
+      id: "alpha-owner-old",
+      userId: owner,
+      projectId: alpha,
+      title: "A",
+      updatedAt: old,
+    })
+    await seedSession(db, {
+      id: "alpha-maya-now",
+      userId: maya,
+      projectId: alpha,
+      title: "B",
+      updatedAt: now,
+    })
+    await seedSession(db, {
+      id: "beta-owner-now",
+      userId: owner,
+      projectId: beta,
+      title: "C",
+      updatedAt: now,
+    })
+    await seedSession(db, {
+      id: "beta-maya-old",
+      userId: maya,
+      projectId: beta,
+      title: "D",
+      updatedAt: old,
+    })
+
+    expect(sortedIdsOf(await listAs(db, owner))).toEqual([
+      "alpha-maya-now",
+      "alpha-owner-old",
+      "beta-maya-old",
+      "beta-owner-now",
+    ])
+
+    expect(sortedIdsOf(await listAs(db, owner, "?project=alpha"))).toEqual([
+      "alpha-maya-now",
+      "alpha-owner-old",
+    ])
+
+    expect(sortedIdsOf(await listAs(db, owner, "?user=maya"))).toEqual([
+      "alpha-maya-now",
+      "beta-maya-old",
+    ])
+
+    expect(sortedIdsOf(await listAs(db, owner, "?range=today"))).toEqual([
+      "alpha-maya-now",
+      "beta-owner-now",
+    ])
+
+    expect(idsOf(await listAs(db, owner, "?project=alpha&user=maya"))).toEqual(["alpha-maya-now"])
+  })
+
+  test("S20: sessions in projects the user cannot see are excluded even with no filters set", async () => {
+    const ownerA = await seedUser(db, 1101, "owner-a")
+    const outsiderB = await seedUser(db, 1102, "outsider-b")
+    const projectA = await projectsRepo.upsert(db, {
+      identity: { name: "Private", slug: "private" },
+      ownerId: ownerA,
+    })
+    const projectB = await projectsRepo.upsert(db, {
+      identity: { name: "Public", slug: "public" },
+      ownerId: outsiderB,
+    })
+    await seedSession(db, {
+      id: "hidden",
+      userId: ownerA,
+      projectId: projectA,
+      title: "Hidden",
+      updatedAt: new Date(),
+    })
+    await seedSession(db, {
+      id: "visible",
+      userId: outsiderB,
+      projectId: projectB,
+      title: "Visible",
+      updatedAt: new Date(),
+    })
+
+    expect(idsOf(await listAs(db, outsiderB))).toEqual(["visible"])
+  })
+
+  test("S21: three sessions come back newest-updated first - not in insertion order", async () => {
+    const owner = await seedUser(db, 1201, "ordering-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Ordered", slug: "ordered" },
+      ownerId: owner,
+    })
+
+    await seedSession(db, {
+      id: "middle",
+      userId: owner,
+      projectId,
+      title: "Middle",
+      updatedAt: new Date("2026-02-02T00:00:00Z"),
+    })
+    await seedSession(db, {
+      id: "oldest",
+      userId: owner,
+      projectId,
+      title: "Oldest",
+      updatedAt: new Date("2026-02-01T00:00:00Z"),
+    })
+    await seedSession(db, {
+      id: "newest",
+      userId: owner,
+      projectId,
+      title: "Newest",
+      updatedAt: new Date("2026-02-03T00:00:00Z"),
+    })
+
+    expect(idsOf(await listAs(db, owner))).toEqual(["newest", "middle", "oldest"])
+  })
+
+  test("S20: a summary carries the project name, login, summed tokens, and a duration spanning the message timestamps - with model null because ingest never writes it", async () => {
+    const owner = await seedUser(db, 1301, "shape-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Shape", slug: "shape" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "shaped",
+      userId: owner,
+      projectId,
+      title: "Shaped session",
+      updatedAt: new Date("2026-02-05T12:00:00Z"),
+    })
+    await seedMessage(db, {
+      sessionId: "shaped",
+      lineNumber: 1,
+      timestamp: new Date("2026-02-05T10:00:00Z"),
+      tokens: 100,
+    })
+    await seedMessage(db, {
+      sessionId: "shaped",
+      lineNumber: 2,
+      timestamp: new Date("2026-02-05T11:30:00Z"),
+      tokens: 250,
+    })
+
+    const [summary] = await listAs(db, owner)
+
+    expect(summary).toEqual({
+      id: "shaped",
+      title: "Shaped session",
+      projectName: "Shape",
+      projectSlug: "shape",
+      userLogin: "shape-owner",
+      model: null,
+      durationMs: 5_400_000,
+      tokensTotal: 350,
+      status: "complete",
+      lastActiveAt: new Date("2026-02-05T12:00:00Z").toISOString(),
+    })
+  })
+
+  test("S20: a session with no messages reports a null duration and zero tokens with status empty - not a zero duration", async () => {
+    const owner = await seedUser(db, 1401, "bare-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Bare", slug: "bare" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "bare",
+      userId: owner,
+      projectId,
+      title: "Bare",
+      updatedAt: new Date("2026-02-06T00:00:00Z"),
+    })
+
+    const [summary] = await listAs(db, owner)
+
+    expect(summary?.durationMs).toBeNull()
+    expect(summary?.tokensTotal).toBe(0)
+    expect(summary?.status).toBe("empty")
+  })
+
+  test("S22: filtering by a project owned by someone else with no grant is 404 projectNotFound - not a 200 with an empty list", async () => {
+    const ownerA = await seedUser(db, 1501, "denied-owner")
+    const userB = await seedUser(db, 1502, "denied-b")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Locked", slug: "locked" },
+      ownerId: ownerA,
+    })
+    await seedSession(db, {
+      id: "locked-session",
+      userId: ownerA,
+      projectId,
+      title: "Locked",
+      updatedAt: new Date(),
+    })
+
+    const res = await request(db, userB, "?project=locked")
+
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: "projectNotFound" })
+  })
+
+  test("S22: a project slug that exists for nobody is also 404, and a viewer grant turns the same slug into a 200", async () => {
+    const ownerA = await seedUser(db, 1601, "grant-owner")
+    const granteeB = await seedUser(db, 1602, "grant-b")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Granted", slug: "granted" },
+      ownerId: ownerA,
+    })
+    await seedSession(db, {
+      id: "granted-session",
+      userId: ownerA,
+      projectId,
+      title: "Granted",
+      updatedAt: new Date(),
+    })
+
+    const missing = await request(db, granteeB, "?project=does-not-exist")
+    expect(missing.status).toBe(404)
+
+    const beforeGrant = await request(db, granteeB, "?project=granted")
+    expect(beforeGrant.status).toBe(404)
+
+    await projectsRepo.grant(db, granteeB, projectId, "viewer")
+
+    expect(idsOf(await listAs(db, granteeB, "?project=granted"))).toEqual(["granted-session"])
+  })
+
+  test("S22: no cookie and a cli-audience token are both 401 unauthorized on the sessions read endpoint", async () => {
+    const owner = await seedUser(db, 1701, "guard-owner")
+    const app = buildApp(db, env)
+
+    const anonymous = await app.request("/api/sessions")
+    expect(anonymous.status).toBe(401)
+    expect(await anonymous.json()).toEqual({ error: "unauthorized" })
+
+    const cliToken = await signToken(env, { sub: owner, aud: "cli" })
+    const cli = await app.request("/api/sessions", { headers: { cookie: `session=${cliToken}` } })
+    expect(cli.status).toBe(401)
+    expect(await cli.json()).toEqual({ error: "unauthorized" })
+  })
+
+  test("S20: an unrecognized range is rejected by validation rather than silently widening the result", async () => {
+    const owner = await seedUser(db, 1801, "range-owner")
+
+    const res = await request(db, owner, "?range=banana")
+
+    expect(res.status).toBe(400)
+  })
+})
+
+type DetailMessage = {
+  readonly id: string
+  readonly msgType: string
+  readonly role: string | null
+  readonly lineNumber: number
+  readonly timestamp: string | null
+  readonly agentId: string | null
+  readonly content: unknown
+  readonly details: unknown
+}
+
+type DetailToolCall = {
+  readonly toolId: string
+  readonly messageId: string
+  readonly toolName: string
+  readonly toolInput: unknown
+  readonly result: unknown
+  readonly status: string | null
+}
+
+type DetailSubagent = {
+  readonly agentId: string
+  readonly agentType: string | null
+  readonly description: string | null
+  readonly parentAgentId: string | null
+}
+
+type SessionDetailBody = {
+  readonly session: {
+    readonly id: string
+    readonly title: string | null
+    readonly projectName: string
+    readonly projectSlug: string
+    readonly userLogin: string
+    readonly model: string | null
+    readonly durationMs: number | null
+    readonly messageCount: number
+    readonly toolCallCount: number
+    readonly subagentCount: number
+    readonly lastActiveAt: string
+  }
+  readonly messages: ReadonlyArray<DetailMessage>
+  readonly toolCalls: ReadonlyArray<DetailToolCall>
+  readonly subagents: ReadonlyArray<DetailSubagent>
+  readonly tokenUsage: {
+    readonly inputTokens: number
+    readonly outputTokens: number
+    readonly cachedTokens: number
+    readonly thinkingTokens: number
+  }
+}
+
+const insertMessage = async (
+  db: Db,
+  input: {
+    sessionId: string
+    lineNumber: number
+    msgType: string
+    role?: string
+    timestamp?: Date
+    agentId?: string
+    isSubagent?: boolean
+    content?: unknown
+    details?: unknown
+  },
+): Promise<string> => {
+  const [row] = await db
+    .insert(messages)
+    .values({
+      sessionId: input.sessionId,
+      lineUuid: crypto.randomUUID(),
+      subIndex: 0,
+      msgType: input.msgType,
+      role: input.role,
+      timestamp: input.timestamp,
+      lineNumber: input.lineNumber,
+      agentId: input.agentId,
+      isSubagent: input.isSubagent ?? false,
+      content: input.content,
+      details: input.details,
+      raw: {},
+      sourceSchemaVersion: 1,
+    })
+    .returning({ id: messages.id })
+  if (!row) throw new Error("no seeded message")
+  return row.id
+}
+
+const detailRequest = async (db: Db, userId: string, sessionId: string): Promise<Response> => {
+  const token = await signToken(env, { sub: userId, aud: "web" })
+  return buildApp(db, env).request(`/api/sessions/${sessionId}`, {
+    headers: { cookie: `session=${token}` },
+  })
+}
+
+describe.skipIf(!dockerAvailable())("GET /api/sessions/:id", () => {
+  let container: StartedPostgreSqlContainer
+  let teardown: () => Promise<void>
+  let db: Db
+
+  beforeAll(async () => {
+    container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start()
+    const url = container.getConnectionUri()
+    execFileSync("bun", ["run", "db:migrate"], {
+      cwd: packageDir,
+      env: { ...process.env, DATABASE_URL: url },
+      stdio: "inherit",
+    })
+    const created = createDb(url)
+    db = created.db
+    teardown = async () => {
+      await created.client.end()
+      await container.stop()
+    }
+  }, 120_000)
+
+  afterAll(async () => {
+    await teardown?.()
+  })
+
+  beforeEach(async () => {
+    await db.delete(sessions)
+    await db.delete(userProjectGrant)
+    await db.delete(projects)
+    await db.delete(users)
+  })
+
+  test("S39: a session with messages, a tool call pair, a subagent and token usage returns all five sections - messages ordered by lineNumber, not insertion order", async () => {
+    const owner = await seedUser(db, 2001, "detail-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Detail", slug: "detail" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "detailed",
+      userId: owner,
+      projectId,
+      title: "Detailed session",
+      updatedAt: new Date("2026-03-01T12:00:00Z"),
+    })
+
+    const second = await insertMessage(db, {
+      sessionId: "detailed",
+      lineNumber: 2,
+      msgType: "toolCall",
+      role: "assistant",
+      timestamp: new Date("2026-03-01T10:05:00Z"),
+    })
+    const first = await insertMessage(db, {
+      sessionId: "detailed",
+      lineNumber: 1,
+      msgType: "message",
+      role: "user",
+      timestamp: new Date("2026-03-01T10:00:00Z"),
+      content: { text: "Make ingest idempotent" },
+    })
+
+    await db.insert(toolCall).values({
+      toolId: "tool-1",
+      messageId: second,
+      toolName: "Grep",
+      toolInput: { pattern: "INSERT INTO" },
+    })
+    await db.insert(toolResult).values({
+      toolId: "tool-1",
+      messageId: second,
+      result: { matches: 3 },
+      status: "success",
+    })
+    await db.insert(subagents).values({
+      sessionId: "detailed",
+      agentId: "agent-audit",
+      agentType: "db-schema-auditor",
+      description: "Audit unique constraints",
+      sourceRelativePath: "sub/agent-audit.jsonl",
+    })
+    await db.insert(tokenUsage).values({
+      messageId: first,
+      inputTokens: 120,
+      outputTokens: 40,
+      cachedTokens: 10,
+      thinkingTokens: 5,
+    })
+
+    const res = await detailRequest(db, owner, "detailed")
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as SessionDetailBody
+
+    expect(body.session).toMatchObject({
+      id: "detailed",
+      title: "Detailed session",
+      projectName: "Detail",
+      projectSlug: "detail",
+      userLogin: "detail-owner",
+      messageCount: 2,
+      toolCallCount: 1,
+      subagentCount: 1,
+      durationMs: 300_000,
+    })
+    expect(body.messages.map((m) => m.lineNumber)).toEqual([1, 2])
+    expect(body.messages[0]?.content).toEqual({ text: "Make ingest idempotent" })
+    expect(body.toolCalls).toEqual([
+      {
+        toolId: "tool-1",
+        messageId: second,
+        toolName: "Grep",
+        toolInput: { pattern: "INSERT INTO" },
+        result: { matches: 3 },
+        status: "success",
+      },
+    ])
+    expect(body.subagents).toEqual([
+      {
+        agentId: "agent-audit",
+        agentType: "db-schema-auditor",
+        description: "Audit unique constraints",
+        parentAgentId: null,
+      },
+    ])
+    expect(body.tokenUsage).toEqual({
+      inputTokens: 120,
+      outputTokens: 40,
+      cachedTokens: 10,
+      thinkingTokens: 5,
+    })
+  })
+
+  test("S39: a tool call whose result never arrived still appears with a null status - the call is evidence even without its outcome", async () => {
+    const owner = await seedUser(db, 2101, "pending-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Pending", slug: "pending" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "pending",
+      userId: owner,
+      projectId,
+      title: "Pending",
+      updatedAt: new Date(),
+    })
+    const messageId = await insertMessage(db, {
+      sessionId: "pending",
+      lineNumber: 1,
+      msgType: "toolCall",
+    })
+    await db
+      .insert(toolCall)
+      .values({ toolId: "orphan", messageId, toolName: "Bash", toolInput: { cmd: "ls" } })
+
+    const res = await detailRequest(db, owner, "pending")
+    const body = (await res.json()) as SessionDetailBody
+
+    expect(body.toolCalls).toEqual([
+      {
+        toolId: "orphan",
+        messageId,
+        toolName: "Bash",
+        toolInput: { cmd: "ls" },
+        result: null,
+        status: null,
+      },
+    ])
+  })
+
+  test("EDGE-008 S40: an id that exists for nobody is 404 sessionNotFound - not 200 with an empty payload", async () => {
+    const owner = await seedUser(db, 2201, "missing-owner")
+
+    const res = await detailRequest(db, owner, "does-not-exist")
+
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: "sessionNotFound" })
+  })
+
+  test("S41: user B reading a session in user A's ungranted project gets 404 sessionNotFound - not 403, which would confirm the session exists", async () => {
+    const ownerA = await seedUser(db, 2301, "private-owner")
+    const userB = await seedUser(db, 2302, "outsider")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Sealed", slug: "sealed" },
+      ownerId: ownerA,
+    })
+    await seedSession(db, {
+      id: "sealed-session",
+      userId: ownerA,
+      projectId,
+      title: "Sealed",
+      updatedAt: new Date(),
+    })
+    await insertMessage(db, { sessionId: "sealed-session", lineNumber: 1, msgType: "message" })
+
+    const denied = await detailRequest(db, userB, "sealed-session")
+
+    expect(denied.status).toBe(404)
+    expect(await denied.json()).toEqual({ error: "sessionNotFound" })
+
+    await projectsRepo.grant(db, userB, projectId, "viewer")
+    const granted = await detailRequest(db, userB, "sealed-session")
+    expect(granted.status).toBe(200)
+  })
+
+  test("S41: a detail read with no cookie is 401 unauthorized before any lookup happens", async () => {
+    const res = await buildApp(db, env).request("/api/sessions/anything")
+
+    expect(res.status).toBe(401)
+    expect(await res.json()).toEqual({ error: "unauthorized" })
+  })
+})

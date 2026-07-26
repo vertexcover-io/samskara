@@ -6,6 +6,8 @@ import type { Env } from "./lib/env.js"
 import { loggingMiddleware } from "./lib/logging-middleware.js"
 import { authRoutes } from "./routes/auth.js"
 import { ingestRoutes } from "./routes/ingest.js"
+import { projectsRoutes } from "./routes/projects.js"
+import { sessionsRoutes } from "./routes/sessions.js"
 import { type GithubClient, createGithubClient } from "./services/github.js"
 import { type PairingStore, createPairingStore } from "./services/pairing.js"
 
@@ -28,6 +30,8 @@ export const buildApp = (db: Db, env: Env, deps: Deps = {}): Hono<{ Variables: V
   app.get("/health", (c) => c.json({ status: "ok" }))
   app.route("/api/auth", authRoutes({ db, env, githubClient, pairingStore }))
   app.route("/api/ingest", ingestRoutes({ db, env }))
+  app.route("/api/projects", projectsRoutes({ db, env }))
+  app.route("/api/sessions", sessionsRoutes({ db, env }))
 
   app.onError((err, c) => {
     ;(c.get("log") ?? rootLog).error({ err }, "server error")

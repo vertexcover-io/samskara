@@ -1,15 +1,13 @@
 import type { ProjectIdentity } from "@samskara/core"
-import { and, eq, sql } from "drizzle-orm"
+import { and, desc, eq, exists, or, sql } from "drizzle-orm"
 import type { Querier } from "../db/client.js"
-import { projects, userProjectGrant } from "../db/schema.js"
+import { projects, sessions, userProjectGrant } from "../db/schema.js"
 
 export type UpsertProjectInput = {
   readonly identity: ProjectIdentity
   readonly ownerId: string
 }
 
-// Scopes are strictly ordered: viewer < editor < admin. A higher tier implies
-// the lower ones (editor can view; admin can edit + view).
 export type Scope = "viewer" | "editor" | "admin"
 
 const SCOPE_RANK: Readonly<Record<Scope, number>> = { viewer: 0, editor: 1, admin: 2 }
@@ -46,9 +44,6 @@ export const grant = async (
     })
 }
 
-// Owner-or-grant authorization (P9). The owner is admin by derivation and has
-// no grant row; grants only elevate OTHER users. Returns the effective scope, or
-// null when the project is not visible to the user at all.
 export const authorityFor = async (
   db: Querier,
   userId: string,
@@ -80,3 +75,53 @@ export const canWrite = async (
   const scope = await authorityFor(db, userId, projectId)
   return scope !== null && meetsScope(scope, "editor")
 }
+
+export type ProjectSummaryRow = {
+  readonly id: string
+  readonly name: string
+  readonly slug: string
+  readonly sessionCount: number
+  readonly lastActiveAt: string | null
+  readonly lastSessionTitle: string | null
+}
+
+const visibleToUser = (db: Querier, userId: string) =>
+  or(
+    eq(projects.ownerId, userId),
+    exists(
+      db
+        .select({ one: sql`1` })
+        .from(userProjectGrant)
+        .where(
+          and(eq(userProjectGrant.projectId, projects.id), eq(userProjectGrant.userId, userId)),
+        ),
+    ),
+  )
+
+const ownSessions = sql`"sessions" where "sessions"."projectId" = "projects"."id"`
+
+const sessionCount = sql<number>`(select count(*)::int from ${ownSessions})`
+
+const lastActiveAt = sql<string | null>`(select max("sessions"."updatedAt") from ${ownSessions})`
+
+const lastSessionTitle = sql<string | null>`(
+  select "sessions"."title" from ${ownSessions}
+  order by "sessions"."updatedAt" desc limit 1
+)`
+
+export const listAccessibleSummaries = (
+  db: Querier,
+  userId: string,
+): Promise<ReadonlyArray<ProjectSummaryRow>> =>
+  db
+    .select({
+      id: projects.id,
+      name: projects.name,
+      slug: projects.slug,
+      sessionCount,
+      lastActiveAt,
+      lastSessionTitle,
+    })
+    .from(projects)
+    .where(visibleToUser(db, userId))
+    .orderBy(sql`${lastActiveAt} desc nulls last`, desc(projects.createdAt))
