@@ -10,3 +10,8 @@ dist
 .pi-subagents
 packages/web/prototype
 packages/web/.impeccable/
+
+test-results/
+playwright-report/
+blob-report/
+.playwright/
