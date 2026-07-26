@@ -19,10 +19,13 @@ export const signToken = (env: Env, claims: { sub: string; aud: Audience }): Pro
 export const verifyToken = async (
   env: Env,
   token: string,
-  aud: Audience,
+  accepted: readonly [Audience, ...Audience[]],
 ): Promise<{ sub: string } | null> => {
   try {
-    const { payload } = await jwtVerify(token, secretKey(env), { issuer: ISSUER, audience: aud })
+    const { payload } = await jwtVerify(token, secretKey(env), {
+      issuer: ISSUER,
+      audience: [...accepted],
+    })
     if (!payload.sub) return null
     return { sub: payload.sub }
   } catch {

@@ -21,7 +21,7 @@ const serialize = (row: ProjectSummaryRow) => ({
 export const projectsRoutes = ({ db, env }: Deps): Hono<{ Variables: AuthVariables }> => {
   const app = new Hono<{ Variables: AuthVariables }>()
 
-  app.get("/", requireAuth({ db, env }, "web"), async (c) => {
+  app.get("/", requireAuth({ db, env }, ["web"]), async (c) => {
     const rows = await listAccessibleSummaries(db, c.get("user").id)
     return c.json({ projects: rows.map(serialize) })
   })

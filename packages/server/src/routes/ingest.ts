@@ -13,7 +13,7 @@ export const ingestRoutes = ({ db, env }: Deps): Hono<{ Variables: AuthVariables
 
   app.post(
     "/",
-    requireAuth({ db, env }, "cli"),
+    requireAuth({ db, env }, ["cli"]),
     zValidator("json", ingestPayloadSchema),
     async (context) => {
       const payload = context.req.valid("json")

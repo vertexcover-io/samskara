@@ -94,7 +94,7 @@ describe.skipIf(!dockerAvailable())("cli login round-trip", () => {
 
       const tokenFile = join(home, ".samskara", "token")
       const stored = readFileSync(tokenFile, "utf8")
-      expect(await verifyToken(env, stored, "cli")).toEqual({ sub: user.id })
+      expect(await verifyToken(env, stored, ["cli"])).toEqual({ sub: user.id })
       expect(statSync(tokenFile).mode & 0o777).toBe(0o600)
     } finally {
       server.close()

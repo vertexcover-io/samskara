@@ -28,12 +28,15 @@ const resolveToken = (c: Context): string | null => {
 }
 
 export const requireAuth =
-  ({ db, env }: RequireAuthDeps, aud: Audience): MiddlewareHandler<{ Variables: AuthVariables }> =>
+  (
+    { db, env }: RequireAuthDeps,
+    accepted: readonly [Audience, ...Audience[]],
+  ): MiddlewareHandler<{ Variables: AuthVariables }> =>
   async (c, next) => {
     const token = resolveToken(c)
     if (!token) return c.json({ error: "unauthorized" }, 401)
 
-    const verified = await verifyToken(env, token, aud)
+    const verified = await verifyToken(env, token, accepted)
     if (!verified) return c.json({ error: "unauthorized" }, 401)
 
     const user = await getUserById(db, verified.sub)

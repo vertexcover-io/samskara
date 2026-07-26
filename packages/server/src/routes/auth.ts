@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto"
 import { zValidator } from "@hono/zod-validator"
+import { type PublicUser, publicUserSchema } from "@samskara/core"
 import { Hono } from "hono"
 import { z } from "zod"
 import type { Db } from "../db/client.js"
@@ -49,13 +50,14 @@ const callbackQuerySchema = z.object({
 
 const cliExchangeSchema = z.object({ code: z.string().min(1) })
 
-const publicUser = (user: User) => ({
-  id: user.id,
-  githubLogin: user.githubLogin,
-  email: user.email,
-  name: user.name,
-  avatarUrl: user.avatarUrl,
-})
+const publicUser = (user: User): PublicUser =>
+  publicUserSchema.parse({
+    id: user.id,
+    githubLogin: user.githubLogin,
+    email: user.email,
+    name: user.name,
+    avatarUrl: user.avatarUrl,
+  })
 
 export const authRoutes = ({
   db,
@@ -104,14 +106,14 @@ export const authRoutes = ({
     return c.redirect(webUrl(env, "/"))
   })
 
-  app.get("/me", requireAuth({ db, env }, "web"), (c) => c.json(publicUser(c.get("user"))))
+  app.get("/me", requireAuth({ db, env }, ["web", "cli"]), (c) => c.json(publicUser(c.get("user"))))
 
-  app.post("/logout", requireAuth({ db, env }, "web"), (c) => {
+  app.post("/logout", requireAuth({ db, env }, ["web"]), (c) => {
     clearSessionCookie(c)
     return c.json({ ok: true })
   })
 
-  app.post("/cli-code", requireAuth({ db, env }, "web"), (c) =>
+  app.post("/cli-code", requireAuth({ db, env }, ["web"]), (c) =>
     c.json({ code: pairingStore.mint(c.get("user").id) }),
   )
 

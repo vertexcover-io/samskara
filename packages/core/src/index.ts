@@ -1,3 +1,4 @@
+export * from "./auth/types.js"
 export * from "./ingest/types.js"
 export * from "./logging.js"
 export * from "./collector/types.js"

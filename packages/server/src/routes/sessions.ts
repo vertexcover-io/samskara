@@ -71,7 +71,7 @@ const serializeDetail = (detail: SessionDetailRow) => ({
 export const sessionsRoutes = ({ db, env }: Deps): Hono<{ Variables: AuthVariables }> => {
   const app = new Hono<{ Variables: AuthVariables }>()
 
-  app.get("/", requireAuth({ db, env }, "web"), zValidator("query", querySchema), async (c) => {
+  app.get("/", requireAuth({ db, env }, ["web"]), zValidator("query", querySchema), async (c) => {
     const { project, user, range } = c.req.valid("query")
     const userId = c.get("user").id
 
@@ -88,7 +88,7 @@ export const sessionsRoutes = ({ db, env }: Deps): Hono<{ Variables: AuthVariabl
     return c.json({ sessions: rows.map(serialize) })
   })
 
-  app.get("/:id", requireAuth({ db, env }, "web"), async (c) => {
+  app.get("/:id", requireAuth({ db, env }, ["web"]), async (c) => {
     const detail = await getDetail(db, c.get("user").id, c.req.param("id"))
 
     if (detail === null) return c.json({ error: "sessionNotFound" }, 404)
