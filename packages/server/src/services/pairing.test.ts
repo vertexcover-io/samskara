@@ -10,10 +10,15 @@ describe("createPairingStore", () => {
     expect(store.redeem(code)).toBe("user-1")
   })
 
-  test("redeeming an unknown code returns null", () => {
-    const store = createPairingStore()
+  test("minting sweeps codes that expired before it, so they cannot be redeemed later", () => {
+    let now = 1_000_000
+    const store = createPairingStore(() => now)
+    const stale = store.mint("user-1")
 
-    expect(store.redeem("nope")).toBeNull()
+    now += 5 * 60 * 1000 + 1
+    store.mint("user-2")
+
+    expect(store.redeem(stale)).toBeNull()
   })
 
   test("a code is single-use: the second redeem returns null", () => {

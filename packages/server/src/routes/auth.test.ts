@@ -107,7 +107,7 @@ describe.skipIf(!dockerAvailable())("auth routes (callback + start)", () => {
     const [user] = await db.select().from(users).where(eq(users.githubId, 4242))
     expect(user).toBeDefined()
     if (!user) throw new Error("no user")
-    expect(await verifyToken(env, token as string, "web")).toEqual({ sub: user.id })
+    expect(await verifyToken(env, token as string, ["web"])).toEqual({ sub: user.id })
 
     const memberships = await db.select().from(userOrgs).where(eq(userOrgs.userId, user.id))
     expect(memberships).toHaveLength(1)
@@ -335,19 +335,6 @@ describe.skipIf(!dockerAvailable())("auth routes (me + logout)", () => {
     expect(after.status).toBe(401)
   })
 
-  test("S12: /me accepts a valid web token via Authorization: Bearer with no cookie", async () => {
-    const user = await seedUser(db)
-    const token = await signToken(env, { sub: user.id, aud: "web" })
-    const app = buildApp(db, env, { githubClient: noopClient })
-
-    const res = await app.request("/api/auth/me", {
-      headers: { authorization: `Bearer ${token}` },
-    })
-
-    expect(res.status).toBe(200)
-    expect(await res.json()).toMatchObject({ id: user.id, githubLogin: "authed-user" })
-  })
-
   test("S13: session round-trip - callback sets a session, /me returns the user, logout then /me is 401", async () => {
     await seedOrg(db, "vertexcover-io")
     const app = buildApp(db, env, {
@@ -439,7 +426,7 @@ describe.skipIf(!dockerAvailable())("auth routes (cli pairing)", () => {
     expect(exchanged.status).toBe(200)
     const { token } = (await exchanged.json()) as { token: string }
 
-    expect(await verifyToken(env, token, "cli")).toEqual({ sub: user.id })
+    expect(await verifyToken(env, token, ["cli"])).toEqual({ sub: user.id })
   })
 
   test("S15: a pairing code is single-use - second exchange is 401", async () => {
@@ -493,18 +480,43 @@ describe.skipIf(!dockerAvailable())("auth routes (cli pairing)", () => {
     expect(empty.status).toBe(400)
   })
 
-  test("S18: an aud:cli token on /me is 401, and a web token fails cli audience verification", async () => {
+  test("S18: verifyToken holds one audience to itself", async () => {
     const user = await seedUser(db)
     const cliToken = await signToken(env, { sub: user.id, aud: "cli" })
+    const webToken = await signToken(env, { sub: user.id, aud: "web" })
+
+    expect(await verifyToken(env, webToken, ["cli"])).toBeNull()
+    expect(await verifyToken(env, cliToken, ["web"])).toBeNull()
+  })
+
+  test("S18b: /me identifies the bearer of either a web or a cli token", async () => {
+    const user = await seedUser(db)
     const app = buildApp(db, env, { githubClient: noopClient })
 
-    const me = await app.request("/api/auth/me", {
-      headers: { authorization: `Bearer ${cliToken}` },
-    })
-    expect(me.status).toBe(401)
+    for (const aud of ["web", "cli"] as const) {
+      const token = await signToken(env, { sub: user.id, aud })
+      const res = await app.request("/api/auth/me", {
+        headers: { authorization: `Bearer ${token}` },
+      })
+      expect(res.status).toBe(200)
+      expect(await res.json()).toMatchObject({ id: user.id, githubLogin: user.githubLogin })
+    }
+  })
 
-    const webToken = await signToken(env, { sub: user.id, aud: "web" })
-    expect(await verifyToken(env, webToken, "cli")).toBeNull()
-    expect(await verifyToken(env, cliToken, "web")).toBeNull()
+  test("S18c: /me still rejects a token signed by a different secret", async () => {
+    const user = await seedUser(db)
+    const foreign = await signToken(
+      { ...env, jwtSecret: "not-the-real-secret" },
+      {
+        sub: user.id,
+        aud: "cli",
+      },
+    )
+    const app = buildApp(db, env, { githubClient: noopClient })
+
+    const res = await app.request("/api/auth/me", {
+      headers: { authorization: `Bearer ${foreign}` },
+    })
+    expect(res.status).toBe(401)
   })
 })

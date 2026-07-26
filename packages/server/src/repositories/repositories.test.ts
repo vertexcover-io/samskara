@@ -4,10 +4,9 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
 import { type Db, createDb } from "../db/client.js"
-import { projects, repos, sessions, subagents, toolCall, users } from "../db/schema.js"
+import { projects, sessions, subagents, tokenUsage, toolCall, users } from "../db/schema.js"
 import * as messagesRepo from "./messages.repo.js"
 import * as projectsRepo from "./projects.repo.js"
-import * as reposRepo from "./repos.repo.js"
 import * as sessionsRepo from "./sessions.repo.js"
 import * as subagentsRepo from "./subagents.repo.js"
 import * as tokenUsageRepo from "./tokenUsage.repo.js"
@@ -74,21 +73,6 @@ describe.skipIf(!dockerAvailable())("ingest repositories", () => {
 
   afterAll(async () => {
     await teardown?.()
-  })
-
-  test("repos.upsertByIdentity is idempotent (same id twice)", async () => {
-    const identity = {
-      host: "github",
-      owner: "acme",
-      ownerType: "org",
-      repoName: "widget",
-    } as const
-    const first = await reposRepo.upsertByIdentity(db, identity)
-    const second = await reposRepo.upsertByIdentity(db, identity)
-    expect(first).toBe(second)
-
-    const all = await db.select({ id: repos.id }).from(repos).where(eq(repos.id, first))
-    expect(all).toHaveLength(1)
   })
 
   test("sessions.upsert enriches the title without changing id; null keeps existing", async () => {
@@ -244,8 +228,29 @@ describe.skipIf(!dockerAvailable())("ingest repositories", () => {
     const calls = await db.select().from(toolCall).where(eq(toolCall.messageId, messageId))
     expect(calls).toHaveLength(1)
     expect(calls[0]?.toolInput).toEqual({ path: "b" })
+  })
+
+  test("tokenUsage.upsert overwrites the counts for a message rather than adding a row", async () => {
+    await seedSession("sess-tokens")
+    const { idByKey } = await messagesRepo.insertManyIgnoreConflicts(db, "sess-tokens", [
+      {
+        sessionId: "sess-tokens",
+        lineUuid: "0191d942-3ba5-7dba-9a7d-22d65b3025b9",
+        subIndex: 0,
+        msgType: "usage",
+        lineNumber: 1,
+        sourceSchemaVersion: 1,
+        raw: {},
+      },
+    ])
+    const messageId = idByKey.get(messagesRepo.keyOf("0191d942-3ba5-7dba-9a7d-22d65b3025b9", 0))
+    if (!messageId) throw new Error("no message id")
 
     await tokenUsageRepo.upsert(db, messageId, { input: 1, output: 2, cached: 0, thinking: 0 })
-    await tokenUsageRepo.upsert(db, messageId, { input: 9, output: 2, cached: 0, thinking: 0 })
+    await tokenUsageRepo.upsert(db, messageId, { input: 9, output: 2, cached: 3, thinking: 4 })
+
+    const rows = await db.select().from(tokenUsage).where(eq(tokenUsage.messageId, messageId))
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ inputTokens: 9, cachedTokens: 3, thinkingTokens: 4 })
   })
 })

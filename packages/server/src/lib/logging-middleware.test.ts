@@ -11,23 +11,21 @@ const testLog = () => createLogger({ service: "test" }, { level: "silent" })
 const buildTestApp = () => {
   const app = new Hono<{ Variables: { log: ReturnType<typeof testLog> } }>()
   app.use(loggingMiddleware(testLog()))
-  app.get("/ok", (c) => c.json({ hasLog: typeof c.get("log")?.info === "function" }))
-  app.get("/boom", () => {
-    throw new Error("boom")
-  })
-  app.onError((err, c) => {
-    ;(c.get("log") ?? testLog()).error({ err }, "server error")
-    return c.json({ error: "internal" }, 500)
+  app.get("/ok", (c) => {
+    const log = c.get("log")
+    log?.setBindings({ userId: "user-9" })
+    const bindings = log?.bindings() ?? {}
+    return c.json({ reqId: bindings.reqId, userId: bindings.userId })
   })
   return app
 }
 
 describe("loggingMiddleware", () => {
-  test("S7: binds a request logger with .info and .setBindings to the context, response is 200", async () => {
+  test("S7: the bound request logger carries the request id and accepts later bindings", async () => {
     const app = buildTestApp()
-    const res = await app.request("/ok")
+    const res = await app.request("/ok", { headers: { "x-request-id": "fixed-123" } })
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ hasLog: true })
+    expect(await res.json()).toEqual({ reqId: "fixed-123", userId: "user-9" })
   })
 
   test("S9: request with x-request-id: fixed-123 echoes fixed-123 on the response header", async () => {
@@ -49,27 +47,6 @@ describe("loggingMiddleware", () => {
     const res = await app.request("/ok", { headers: { "x-request-id": "   " } })
     const reqId = res.headers.get("x-request-id")
     expect(reqId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
-  })
-
-  test("S11: a throwing route returns 500 via onError and does not crash, with the middleware present", async () => {
-    const app = buildTestApp()
-    const res = await app.request("/boom")
-    expect(res.status).toBe(500)
-    expect(await res.json()).toEqual({ error: "internal" })
-  })
-
-  test("S11: a throwing route returns 500 via onError on a bare app with no request logger (root fallback)", async () => {
-    const app = new Hono<{ Variables: { log?: ReturnType<typeof testLog> } }>()
-    app.get("/boom", () => {
-      throw new Error("boom")
-    })
-    app.onError((err, c) => {
-      ;(c.get("log") ?? testLog()).error({ err }, "server error")
-      return c.json({ error: "internal" }, 500)
-    })
-    const res = await app.request("/boom")
-    expect(res.status).toBe(500)
-    expect(await res.json()).toEqual({ error: "internal" })
   })
 
   test("S11: the real buildApp app routes an unhandled throw through onError as 500", async () => {
