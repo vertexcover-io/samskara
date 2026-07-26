@@ -42,28 +42,30 @@
   --radius-pill: 999px;
 }
 
+/* Type is rem-based, so scaling the root lifts the whole system proportionally
+   on roomier viewports instead of drifting each token out of relation. */
+html {
+  font-size: 100%;
+}
+
+@media (min-width: 1280px) {
+  html {
+    font-size: 107.5%;
+  }
+}
+
+@media (min-width: 1680px) {
+  html {
+    font-size: 115%;
+  }
+}
+
 body {
   background-color: var(--color-paper);
   color: var(--color-ink);
   font-family: var(--font-sans);
   font-size: var(--text-body);
   line-height: 1.5;
-}
-
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 0;
-  background-image: repeating-linear-gradient(
-    to bottom,
-    transparent 0,
-    transparent 27px,
-    var(--color-rule-soft) 27px,
-    var(--color-rule-soft) 28px
-  );
-  opacity: 0.5;
 }
 
 :focus-visible {

@@ -32,6 +32,7 @@ export type SessionFacts = {
   readonly toolCallCount: number
   readonly subagentCount: number
   readonly lastActiveAt: string
+  readonly createdAt: string | null
 }
 
 export type RawMessage = {

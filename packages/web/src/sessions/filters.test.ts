@@ -6,12 +6,30 @@ const roundTrip = (filters: SessionFilters): SessionFilters =>
 
 describe("S16: filters survive a serialize/parse round trip and cleared filters leave no query noise", () => {
   const cases: ReadonlyArray<readonly [string, SessionFilters]> = [
-    ["fully cleared", { project: null, user: null, range: "all" }],
-    ["project only", { project: "samskara", user: null, range: "all" }],
-    ["user only", { project: null, user: "maya", range: "all" }],
-    ["range only", { project: null, user: null, range: "week" }],
-    ["all three set", { project: "samskara", user: "maya", range: "month" }],
-    ["slug needing encoding", { project: "a b/c", user: "o'brien", range: "today" }],
+    [
+      "fully cleared",
+      { project: null, user: null, range: "all", from: null, to: null, sort: "recent" },
+    ],
+    [
+      "project only",
+      { project: "samskara", user: null, range: "all", from: null, to: null, sort: "recent" },
+    ],
+    [
+      "user only",
+      { project: null, user: "maya", range: "all", from: null, to: null, sort: "recent" },
+    ],
+    [
+      "range only",
+      { project: null, user: null, range: "week", from: null, to: null, sort: "recent" },
+    ],
+    [
+      "all three set",
+      { project: "samskara", user: "maya", range: "month", from: null, to: null, sort: "recent" },
+    ],
+    [
+      "slug needing encoding",
+      { project: "a b/c", user: "o'brien", range: "today", from: null, to: null, sort: "recent" },
+    ],
   ]
 
   test.each(cases)("%s deep-equals itself after a round trip", (_label, filters) => {
@@ -19,11 +37,27 @@ describe("S16: filters survive a serialize/parse round trip and cleared filters 
   })
 
   test("a fully cleared filter set serializes to an empty query string - not project=&user=&range=all", () => {
-    expect(serializeFilters({ project: null, user: null, range: "all" }).toString()).toBe("")
+    expect(
+      serializeFilters({
+        project: null,
+        user: null,
+        range: "all",
+        from: null,
+        to: null,
+        sort: "recent",
+      }).toString(),
+    ).toBe("")
   })
 
   test("only the non-default fields appear in the query string", () => {
-    const params = serializeFilters({ project: "samskara", user: null, range: "week" })
+    const params = serializeFilters({
+      project: "samskara",
+      user: null,
+      range: "week",
+      from: null,
+      to: null,
+      sort: "recent",
+    })
     expect(params.toString()).toBe("project=samskara&range=week")
   })
 })
@@ -49,6 +83,13 @@ describe("S17: unrecognized and blank query values fall back to their defaults",
 
   test("surrounding whitespace is trimmed off project and user", () => {
     const filters = parseFilters(new URLSearchParams("project=%20samskara%20&user=%20maya"))
-    expect(filters).toEqual({ project: "samskara", user: "maya", range: "all" })
+    expect(filters).toEqual({
+      project: "samskara",
+      user: "maya",
+      range: "all",
+      from: null,
+      to: null,
+      sort: "recent",
+    })
   })
 })

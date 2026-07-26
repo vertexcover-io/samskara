@@ -32,7 +32,7 @@ const branchRecords = () => {
   return detail.branches.get("a1") ?? []
 }
 
-test("S42: activating Open annex reveals the branch conversation and flips the trigger to aria-expanded true", async () => {
+test("S42: activating Open branch reveals the branch conversation and flips the trigger to aria-expanded true", async () => {
   const user = userEvent.setup()
   const onOpen = vi.fn()
 
@@ -46,7 +46,7 @@ test("S42: activating Open annex reveals the branch conversation and flips the t
     />,
   )
 
-  const trigger = screen.getByRole("button", { name: /open annex/i })
+  const trigger = screen.getByRole("button", { name: /open branch/i })
   expect(trigger).toHaveAttribute("aria-expanded", "false")
   expect(screen.queryByText(/No unique constraints on the three tables/)).not.toBeInTheDocument()
 
@@ -63,13 +63,13 @@ test("S42: activating Open annex reveals the branch conversation and flips the t
     />,
   )
 
-  const expanded = screen.getByRole("button", { name: /branch open/i })
+  const expanded = screen.getByRole("button", { name: /close branch/i })
   expect(expanded).toHaveAttribute("aria-expanded", "true")
   const branch = screen.getByRole("region", { name: /db-schema-auditor conversation/i })
   expect(within(branch).getByText(/No unique constraints on the three tables/)).toBeInTheDocument()
 })
 
-test("S42b: an open annex trigger reads 'Branch open' so its label matches the action it performs - not a stale 'Open annex'", () => {
+test("S42b: an open annex trigger reads 'Close branch' so its label matches the action it performs", () => {
   render(
     <SubagentAnnex
       agent={AGENT}
@@ -80,9 +80,9 @@ test("S42b: an open annex trigger reads 'Branch open' so its label matches the a
     />,
   )
 
-  const trigger = screen.getByRole("button", { name: /branch open/i })
+  const trigger = screen.getByRole("button", { name: /close branch/i })
   expect(trigger).toHaveAttribute("aria-expanded", "true")
-  expect(screen.queryByRole("button", { name: /open annex/i })).not.toBeInTheDocument()
+  expect(screen.queryByRole("button", { name: /open branch/i })).not.toBeInTheDocument()
 })
 
 test("S42: an annex names its agent type and task so the branch stays traceable to what spawned it", () => {
@@ -100,7 +100,7 @@ test("S42: an annex names its agent type and task so the branch stays traceable 
   expect(screen.getByText(/Audit unique constraints/)).toBeInTheDocument()
 })
 
-test("S42: an open annex offers a return control that exits the branch without needing the keyboard", async () => {
+test("S42: the annex trigger exits the branch when it is already open, without needing the keyboard", async () => {
   const user = userEvent.setup()
   const onExit = vi.fn()
 
@@ -114,7 +114,7 @@ test("S42: an open annex offers a return control that exits the branch without n
     />,
   )
 
-  await user.click(screen.getByRole("button", { name: /return to the main record/i }))
+  await user.click(screen.getByRole("button", { name: /close branch/i }))
 
   expect(onExit).toHaveBeenCalledTimes(1)
 })

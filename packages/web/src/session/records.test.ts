@@ -12,7 +12,7 @@ describe("toDetail", () => {
       messages: [
         message({ lineNumber: 1, msgType: "message", role: "user" }),
         message({ lineNumber: 2, msgType: "message", role: "assistant" }),
-        message({ lineNumber: 3, msgType: "toolCall" }),
+        message({ id: "tool-msg", lineNumber: 3, msgType: "toolCall" }),
         message({
           lineNumber: 4,
           msgType: "fileEvent",
@@ -20,9 +20,40 @@ describe("toDetail", () => {
         }),
         message({ lineNumber: 5, msgType: "systemEvent" }),
       ],
+      toolCalls: [
+        {
+          toolId: "t-1",
+          messageId: "tool-msg",
+          toolName: "Grep",
+          toolInput: { pattern: "x" },
+          result: null,
+          status: "success",
+        },
+      ],
     })
 
     expect(kindsOf(payload)).toEqual(["prompt", "assistant", "tool", "artifact", "event"])
+  })
+
+  test("a toolResult message carrying no calls of its own is dropped, not rendered as an empty tool box", () => {
+    const payload = buildPayload({
+      messages: [
+        message({ id: "call-msg", lineNumber: 1, msgType: "toolCall" }),
+        message({ id: "result-msg", lineNumber: 2, msgType: "toolResult" }),
+      ],
+      toolCalls: [
+        {
+          toolId: "t-1",
+          messageId: "call-msg",
+          toolName: "Grep",
+          toolInput: { pattern: "x" },
+          result: { matches: 1 },
+          status: "success",
+        },
+      ],
+    })
+
+    expect(kindsOf(payload)).toEqual(["tool"])
   })
 
   test("S38: a subagent's spawn and return produce agentSpawn and agentReturn records, not two identical events", () => {

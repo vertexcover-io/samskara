@@ -147,6 +147,7 @@ const parseFacts = (value: unknown): SessionFacts | null => {
     toolCallCount: numOr(fields.toolCallCount, 0),
     subagentCount: numOr(fields.subagentCount, 0),
     lastActiveAt,
+    createdAt: nullableStr(fields.createdAt) ?? null,
   }
 }
 

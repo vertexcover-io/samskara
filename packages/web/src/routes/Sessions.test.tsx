@@ -76,7 +76,7 @@ test("S23: loading /sessions?project=p&user=u&range=week shows all three control
 
   expect(control(/project/i).value).toBe("samskara")
   expect(control(/user/i).value).toBe("maya")
-  expect(control(/date range/i).value).toBe("week")
+  expect(control(/last active/i).value).toBe("week")
 })
 
 test("S23: the request sent to the server carries the same filters the URL declared", async () => {
@@ -126,7 +126,7 @@ test("S25: an empty result keeps the filter values and offers a clear-filters ac
   expect(await screen.findByText(/no sessions match/i)).toBeInTheDocument()
   expect(control(/project/i).value).toBe("samskara")
   expect(control(/user/i).value).toBe("maya")
-  expect(control(/date range/i).value).toBe("week")
+  expect(control(/last active/i).value).toBe("week")
 
   await userEvent.click(screen.getByRole("button", { name: /clear filters/i }))
 

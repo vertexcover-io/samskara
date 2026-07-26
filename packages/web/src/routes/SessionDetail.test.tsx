@@ -91,43 +91,42 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-test("S37: the detail route renders exactly four tabs - Conversation, Timeline, Tool Calls, Artifacts - with Conversation selected on load", async () => {
+test("S37: the detail route renders exactly three tabs - Conversation, Tool Calls, Artifacts - with Conversation selected on load", async () => {
   renderDetail()
 
-  await waitFor(() => expect(tabs()).toHaveLength(4))
+  await waitFor(() => expect(tabs()).toHaveLength(3))
 
   expect(tabs().map((tab) => tab.textContent)).toEqual([
     expect.stringContaining("Conversation"),
-    expect.stringContaining("Timeline"),
     expect.stringContaining("Tool Calls"),
     expect.stringContaining("Artifacts"),
   ])
   expect(screen.getByRole("tab", { name: /Conversation/ })).toHaveAttribute("aria-selected", "true")
-  expect(screen.getByRole("tab", { name: /Timeline/ })).toHaveAttribute("aria-selected", "false")
+  expect(screen.getByRole("tab", { name: /Tool Calls/ })).toHaveAttribute("aria-selected", "false")
 })
 
-test("S38: Conversation shows prompts and assistant prose but no tool input/output, while Timeline shows the same session's tool call", async () => {
+test("S38: Conversation hides tool payloads until the inline-tools checkbox is ticked", async () => {
   const user = userEvent.setup()
   renderDetail()
 
-  await waitFor(() => expect(tabs()).toHaveLength(4))
+  await waitFor(() => expect(tabs()).toHaveLength(3))
 
   const panel = screen.getByRole("tabpanel")
   expect(within(panel).getByText(/Make it idempotent/)).toBeInTheDocument()
   expect(within(panel).getByText(/Here is the plan for the upsert/)).toBeInTheDocument()
-  expect(within(panel).queryByText(/INSERT INTO/)).not.toBeInTheDocument()
   expect(within(panel).queryByRole("button", { name: /Grep/ })).not.toBeInTheDocument()
 
-  await user.click(screen.getByRole("tab", { name: /Timeline/ }))
+  await user.click(screen.getByRole("checkbox", { name: /show tool calls inline/i }))
 
-  const timeline = screen.getByRole("tabpanel")
-  expect(within(timeline).getByRole("button", { name: /Grep/ })).toBeInTheDocument()
+  expect(
+    within(screen.getByRole("tabpanel")).getByRole("button", { name: /Grep/ }),
+  ).toBeInTheDocument()
 })
 
 test("S37: thinking is present but collapsed on Conversation, so the prose leads and the reasoning is opt-in", async () => {
   renderDetail()
 
-  await waitFor(() => expect(tabs()).toHaveLength(4))
+  await waitFor(() => expect(tabs()).toHaveLength(3))
 
   const summary = screen.getByText(/^Thinking$/)
   const thinking = summary.closest("details")
@@ -140,16 +139,16 @@ test("S37: ArrowRight, End, and Home move the selected tab under a roving tabind
   const user = userEvent.setup()
   renderDetail()
 
-  await waitFor(() => expect(tabs()).toHaveLength(4))
+  await waitFor(() => expect(tabs()).toHaveLength(3))
 
-  const [conversation, timeline, , artifacts] = tabs()
+  const [conversation, toolCalls, artifacts] = tabs()
   conversation?.focus()
 
   await user.keyboard("{ArrowRight}")
-  expect(timeline).toHaveAttribute("aria-selected", "true")
-  expect(document.activeElement).toBe(timeline)
+  expect(toolCalls).toHaveAttribute("aria-selected", "true")
+  expect(document.activeElement).toBe(toolCalls)
   expect(conversation).toHaveAttribute("tabindex", "-1")
-  expect(timeline).toHaveAttribute("tabindex", "0")
+  expect(toolCalls).toHaveAttribute("tabindex", "0")
 
   await user.keyboard("{End}")
   expect(artifacts).toHaveAttribute("aria-selected", "true")
@@ -164,7 +163,7 @@ test("S37: ArrowRight, End, and Home move the selected tab under a roving tabind
 test("S37: the masthead reports all six session facts from the payload", async () => {
   renderDetail()
 
-  await waitFor(() => expect(tabs()).toHaveLength(4))
+  await waitFor(() => expect(tabs()).toHaveLength(3))
 
   const facts = screen.getByRole("group", { name: /session facts/i })
   for (const label of [

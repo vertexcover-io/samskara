@@ -17,12 +17,20 @@ type Deps = {
   readonly env: Env
 }
 
-const RANGES = ["all", "today", "week", "month"] as const
+const RANGES = ["all", "hour", "today", "week", "month", "custom"] as const
+
+const isoDate = z
+  .string()
+  .trim()
+  .regex(/^\d{4}-\d{2}-\d{2}$/)
+  .optional()
 
 const querySchema = z.object({
   project: z.string().trim().min(1).optional(),
   user: z.string().trim().min(1).optional(),
   range: z.enum(RANGES).optional(),
+  from: isoDate,
+  to: isoDate,
 })
 
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -30,12 +38,23 @@ const DAY_MS = 24 * 60 * 60 * 1000
 const startOfUtcDay = (now: Date): Date =>
   new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
 
-const sinceFor = (range: (typeof RANGES)[number] | undefined, now: Date): Date | undefined => {
+type RangeQuery = {
+  readonly range?: (typeof RANGES)[number]
+  readonly from?: string
+  readonly to?: string
+}
+
+const sinceFor = ({ range, from }: RangeQuery, now: Date): Date | undefined => {
+  if (range === "custom") return from === undefined ? undefined : new Date(`${from}T00:00:00.000Z`)
+  if (range === "hour") return new Date(now.getTime() - 60 * 60 * 1000)
   if (range === "today") return startOfUtcDay(now)
   if (range === "week") return new Date(now.getTime() - 7 * DAY_MS)
   if (range === "month") return new Date(now.getTime() - 30 * DAY_MS)
   return undefined
 }
+
+const untilFor = ({ range, to }: RangeQuery): Date | undefined =>
+  range === "custom" && to !== undefined ? new Date(`${to}T23:59:59.999Z`) : undefined
 
 const serialize = (row: SessionSummaryRow) => ({
   id: row.id,
@@ -72,17 +91,19 @@ export const sessionsRoutes = ({ db, env }: Deps): Hono<{ Variables: AuthVariabl
   const app = new Hono<{ Variables: AuthVariables }>()
 
   app.get("/", requireAuth({ db, env }, ["web"]), zValidator("query", querySchema), async (c) => {
-    const { project, user, range } = c.req.valid("query")
+    const { project, user, range, from, to } = c.req.valid("query")
     const userId = c.get("user").id
 
     if (project !== undefined && (await findVisibleProjectBySlug(db, userId, project)) === null) {
       return c.json({ error: "projectNotFound" }, 404)
     }
 
+    const window = { range, from, to }
     const rows = await listAccessible(db, userId, {
       projectSlug: project,
       userLogin: user,
-      since: sinceFor(range, new Date()),
+      since: sinceFor(window, new Date()),
+      until: untilFor(window),
     })
 
     return c.json({ sessions: rows.map(serialize) })

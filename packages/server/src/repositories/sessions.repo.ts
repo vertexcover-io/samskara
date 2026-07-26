@@ -1,4 +1,15 @@
-import { type SQL, and, asc, desc, eq, exists as existsSubquery, gte, or, sql } from "drizzle-orm"
+import {
+  type SQL,
+  and,
+  asc,
+  desc,
+  eq,
+  exists as existsSubquery,
+  gte,
+  lte,
+  or,
+  sql,
+} from "drizzle-orm"
 import type { PgColumn } from "drizzle-orm/pg-core"
 import type { Querier } from "../db/client.js"
 import {
@@ -70,6 +81,7 @@ export type SessionListFilter = {
   readonly projectSlug?: string
   readonly userLogin?: string
   readonly since?: Date
+  readonly until?: Date
 }
 
 const visibleToUser = (db: Querier, userId: string) =>
@@ -107,6 +119,25 @@ const tokensTotal = sql<number>`(
 
 const status = sql<string>`case when ${messageCount} = 0 then 'empty' else 'complete' end`
 
+// Capture rarely supplies a title, so fall back to the opening user prompt.
+const derivedTitle = sql<string | null>`coalesce(${sessions.title}, (
+  select left(
+    btrim(split_part(
+      coalesce(m."content"->>'value', m."content"->>'text', m."content"->>'body'),
+      chr(10), 1
+    )),
+    120
+  )
+  from "messages" m
+  where m."sessionId" = ${sessions.id}
+    and m."msgType" = 'message'
+    and m."role" = 'user'
+    and coalesce(m."content"->>'value', m."content"->>'text', m."content"->>'body') is not null
+    and btrim(coalesce(m."content"->>'value', m."content"->>'text', m."content"->>'body')) <> ''
+  order by m."lineNumber" asc
+  limit 1
+))`
+
 export const listAccessible = (
   db: Querier,
   userId: string,
@@ -116,11 +147,12 @@ export const listAccessible = (
   if (filter.projectSlug !== undefined) conditions.push(eq(projects.slug, filter.projectSlug))
   if (filter.userLogin !== undefined) conditions.push(eq(users.githubLogin, filter.userLogin))
   if (filter.since !== undefined) conditions.push(gte(sessions.updatedAt, filter.since))
+  if (filter.until !== undefined) conditions.push(lte(sessions.updatedAt, filter.until))
 
   return db
     .select({
       id: sessions.id,
-      title: sessions.title,
+      title: derivedTitle,
       projectName: projects.name,
       projectSlug: projects.slug,
       userLogin: users.githubLogin,
@@ -161,6 +193,7 @@ export type SessionFactsRow = {
   readonly toolCallCount: number
   readonly subagentCount: number
   readonly lastActiveAt: string
+  readonly createdAt: string
 }
 
 export type MessageRow = {
@@ -227,7 +260,7 @@ const findVisibleSession = async (
   const [row] = await db
     .select({
       id: sessions.id,
-      title: sessions.title,
+      title: derivedTitle,
       projectName: projects.name,
       projectSlug: projects.slug,
       userLogin: users.githubLogin,
@@ -237,6 +270,7 @@ const findVisibleSession = async (
       toolCallCount,
       subagentCount,
       lastActiveAt: sql<string>`${sessions.updatedAt}`,
+      createdAt: sql<string>`${sessions.createdAt}`,
     })
     .from(sessions)
     .innerJoin(projects, eq(projects.id, sessions.projectId))
@@ -289,10 +323,7 @@ export const getDetail = async (
       })
       .from(toolCall)
       .innerJoin(messages, eq(messages.id, toolCall.messageId))
-      .leftJoin(
-        toolResult,
-        and(eq(toolResult.toolId, toolCall.toolId), eq(toolResult.messageId, toolCall.messageId)),
-      )
+      .leftJoin(toolResult, eq(toolResult.toolId, toolCall.toolId))
       .where(eq(messages.sessionId, sessionId))
       .orderBy(asc(messages.lineNumber), asc(toolCall.toolId)),
     db

@@ -1,36 +1,38 @@
-import type { ReactNode } from "react"
 import type { SessionSummary } from "../api/types.js"
 
 const Unavailable = () => (
   <span className="text-faded italic underline decoration-dotted">unavailable</span>
 )
 
-const formatTimestamp = (iso: string): string => {
-  const parsed = new Date(iso)
-  return Number.isNaN(parsed.getTime()) ? iso : parsed.toISOString().replace("T", " ").slice(0, 16)
-}
-
 const formatDuration = (ms: number): string => {
-  const totalMinutes = Math.floor(ms / 60_000)
+  const totalMinutes = Math.round(ms / 60_000)
+  if (totalMinutes < 1) return "under a minute"
   const hours = Math.floor(totalMinutes / 60)
   const minutes = totalMinutes % 60
-  return hours === 0 ? `${minutes}m` : `${hours}h ${minutes}m`
+  if (hours === 0) return `${minutes}m`
+  return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`
 }
 
-const STATUS_MARK: Readonly<Record<string, string>> = {
-  complete: "●",
-  partial: "◐",
-  empty: "○",
-}
+const formatTokens = (total: number): string =>
+  total >= 1000 ? `${(total / 1000).toFixed(1)}k tokens` : `${total} tokens`
 
-const Field = ({ label, children }: { label: string; children: ReactNode }) => (
-  <div className="min-w-0">
-    <p className="text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-ink-soft">
-      {label}
-    </p>
-    <p className="truncate font-mono text-[0.78rem] tabular-nums">{children}</p>
-  </div>
-)
+const MINUTE = 60_000
+const HOUR = 60 * MINUTE
+const DAY = 24 * HOUR
+
+export const relativeTime = (iso: string, now: number = Date.now()): string => {
+  const at = new Date(iso).getTime()
+  if (Number.isNaN(at)) return "unknown"
+
+  const elapsed = now - at
+  if (elapsed < MINUTE) return "just now"
+  if (elapsed < HOUR) return `${Math.floor(elapsed / MINUTE)} min ago`
+  if (elapsed < DAY) return `${Math.floor(elapsed / HOUR)} h ago`
+  if (elapsed < 2 * DAY) return "Yesterday"
+  if (elapsed < 7 * DAY) return `${Math.floor(elapsed / DAY)} d ago`
+  if (elapsed < 30 * DAY) return `${Math.floor(elapsed / (7 * DAY))} wk ago`
+  return new Date(at).toISOString().slice(0, 10)
+}
 
 type Props = {
   readonly session: SessionSummary
@@ -38,34 +40,36 @@ type Props = {
 }
 
 export const SessionRow = ({ session, onOpen }: Props) => {
-  const { title, projectName, userLogin, model, durationMs, tokensTotal, status, lastActiveAt } =
-    session
+  const { title, projectName, userLogin, model, durationMs, tokensTotal, lastActiveAt } = session
 
   return (
     <button
       type="button"
       onClick={() => onOpen(session)}
-      className="flex w-full flex-col gap-3 border border-rule bg-panel-2 p-4 text-left transition-shadow hover:shadow-[0_6px_18px_-8px_rgba(26,28,32,0.35)]"
+      className="grid w-full grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 gap-y-1 border border-rule bg-panel-2 px-4 py-3 text-left transition-colors hover:border-ink-soft min-[900px]:grid-cols-[auto_minmax(0,1fr)_minmax(0,14rem)_auto]"
     >
-      <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-2">
-        <h2 className="min-w-0 truncate text-[0.9375rem] font-semibold">
-          {title ?? <span className="text-faded italic">untitled session</span>}
-        </h2>
-        <output className="shrink-0 text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-custody">
-          {STATUS_MARK[status] ?? "○"} {status}
-        </output>
-      </div>
+      <span
+        aria-hidden="true"
+        className="mt-1.5 size-2 shrink-0 rounded-pill border border-custody bg-paper"
+      />
 
-      <div className="grid grid-cols-2 gap-3 min-[560px]:grid-cols-3">
-        <Field label="Project">{projectName}</Field>
-        <Field label="User">{userLogin}</Field>
-        <Field label="Model">{model ?? <Unavailable />}</Field>
-        <Field label="Duration">
-          {durationMs === null ? <Unavailable /> : formatDuration(durationMs)}
-        </Field>
-        <Field label="Tokens">{tokensTotal.toLocaleString("en-US")}</Field>
-        <Field label="Last active">{formatTimestamp(lastActiveAt)}</Field>
-      </div>
+      <span className="min-w-0">
+        <span className="block truncate text-[0.875rem] font-semibold">
+          {title ?? <span className="text-faded italic">untitled session</span>}
+        </span>
+        <span className="mt-0.5 block truncate font-mono text-[0.72rem] text-ink-soft">
+          {userLogin} · {model ?? <Unavailable />} ·{" "}
+          {durationMs === null ? "--:--" : formatDuration(durationMs)} · {formatTokens(tokensTotal)}
+        </span>
+      </span>
+
+      <span className="col-start-2 truncate font-mono text-[0.72rem] text-faded min-[900px]:col-start-3 min-[900px]:self-center">
+        {projectName}
+      </span>
+
+      <span className="col-start-2 font-mono text-[0.72rem] text-ink-soft min-[900px]:col-start-4 min-[900px]:self-center min-[900px]:text-right">
+        {relativeTime(lastActiveAt)}
+      </span>
     </button>
   )
 }

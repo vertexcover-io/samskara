@@ -11,6 +11,8 @@ import {
   type SessionFilters,
   parseFilters,
   serializeFilters,
+  sortSessions,
+  withinRange,
 } from "../sessions/filters.js"
 import { LoadingShell } from "../shell/LoadingShell.js"
 
@@ -94,7 +96,7 @@ const Result = ({ state, onClear, onOpen }: ResultProps) => {
   if (state.sessions.length === 0) return <NoResults onClear={onClear} />
 
   return (
-    <ul className="grid grid-cols-1 gap-3">
+    <ul className="grid grid-cols-1 gap-1.5">
       {state.sessions.map((session) => (
         <li key={session.id}>
           <SessionRow session={session} onOpen={({ id }) => onOpen(id)} />
@@ -149,8 +151,33 @@ export const Sessions = () => {
 
   const onScreen = state.phase === "ready" ? state.sessions : []
   const sources = [vocabulary, onScreen]
-  const projects = distinct(sources, (session) => session.projectSlug, filters.project)
   const users = distinct(sources, (session) => session.userLogin, filters.user)
+
+  // The slug is the filter value, but the name is what people recognise.
+  const projects = useMemo(() => {
+    const bySlug = new Map<string, string>()
+    for (const session of [...vocabulary, ...onScreen]) {
+      bySlug.set(session.projectSlug, session.projectName)
+    }
+    if (filters.project !== null && !bySlug.has(filters.project)) {
+      bySlug.set(filters.project, filters.project)
+    }
+    return [...bySlug]
+      .map(([value, label]) => ({ value, label }))
+      .sort((a, b) => a.label.localeCompare(b.label))
+  }, [vocabulary, onScreen, filters.project])
+
+  // The server already applies the named ranges it knows; only the custom
+  // window and the sort order are resolved here.
+  const visible = useMemo(() => {
+    const scoped =
+      filters.range === "custom"
+        ? onScreen.filter((session) => withinRange(filters, session.lastActiveAt))
+        : onScreen
+    return sortSessions(scoped, filters.sort)
+  }, [onScreen, filters])
+
+  const shown: State = state.phase === "ready" ? { ...state, sessions: visible } : state
 
   if (state.phase === "failed" && state.error.kind === "unauthorized") {
     return <SessionExpired />
@@ -166,7 +193,7 @@ export const Sessions = () => {
 
       <div className="mt-4">
         <Result
-          state={state}
+          state={shown}
           onClear={() => applyFilters(EMPTY_FILTERS)}
           onOpen={(id) => navigate(`/sessions/${id}`)}
         />
