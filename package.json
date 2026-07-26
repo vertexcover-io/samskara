@@ -13,6 +13,7 @@
     "test:cli": "turbo run test --filter=@samskara/cli",
     "test:web": "turbo run test --filter=@samskara/web",
     "test:claude-session": "bun run scripts/claude-session-coverage.ts",
+    "cli": "bun packages/cli/src/index.ts",
     "e2e": "playwright test -c e2e/playwright.config.ts",
     "e2e:ui": "playwright test -c e2e/playwright.config.ts --ui",
     "typecheck": "turbo run typecheck && tsc -p e2e/tsconfig.json",
