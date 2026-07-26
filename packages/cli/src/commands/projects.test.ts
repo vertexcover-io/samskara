@@ -66,9 +66,118 @@ describe("enable command", () => {
         path: "/work/widget",
         enabled: true,
         enabledAt: expectedEnabledAt,
+        syncFrom: expectedEnabledAt,
       })
     },
   )
+
+  test("REQ-034: enabling defaults the cutoff to now, so sessions recorded before opting in are not captured", async () => {
+    const { output } = await setup()
+
+    const code = await enableCommand({
+      cwd: "/work/widget",
+      now: () => new Date("2026-07-26T18:30:00.000Z"),
+      stdout: { write: (text) => output.push(text) },
+    })
+
+    expect(code).toBe(0)
+    expect((await getProject("acme-widget"))?.syncFrom).toBe("2026-07-26T18:30:00.000Z")
+  })
+
+  test("REQ-035: --all leaves the cutoff unset, so previously recorded sessions are captured too", async () => {
+    const { output } = await setup()
+
+    const code = await enableCommand({
+      cwd: "/work/widget",
+      all: true,
+      now: () => new Date("2026-07-26T18:30:00.000Z"),
+      stdout: { write: (text) => output.push(text) },
+    })
+
+    expect(code).toBe(0)
+    expect(await getProject("acme-widget")).toMatchObject({ enabled: true })
+    expect((await getProject("acme-widget"))?.syncFrom).toBeUndefined()
+  })
+
+  test("REQ-036: --sync-from pins an explicit cutoff rather than now", async () => {
+    const { output } = await setup()
+
+    const code = await enableCommand({
+      cwd: "/work/widget",
+      syncFrom: "2026-07-01T00:00:00.000Z",
+      now: () => new Date("2026-07-26T18:30:00.000Z"),
+      stdout: { write: (text) => output.push(text) },
+    })
+
+    expect(code).toBe(0)
+    expect((await getProject("acme-widget"))?.syncFrom).toBe("2026-07-01T00:00:00.000Z")
+  })
+
+  test("REQ-037: re-enabling an already-enabled project keeps its original cutoff", async () => {
+    const { output } = await setup()
+    const stdout = { write: (text: string) => output.push(text) }
+    await enableCommand({
+      cwd: "/work/widget",
+      now: () => new Date("2026-07-25T10:00:00.000Z"),
+      stdout,
+    })
+
+    const code = await enableCommand({
+      cwd: "/work/widget",
+      syncFrom: "2026-07-01T00:00:00.000Z",
+      now: () => new Date("2026-07-26T18:30:00.000Z"),
+      stdout,
+    })
+
+    expect(code).toBe(0)
+    expect(await getProject("acme-widget")).toMatchObject({
+      enabledAt: "2026-07-25T10:00:00.000Z",
+      syncFrom: "2026-07-25T10:00:00.000Z",
+    })
+  })
+
+  test("EDGE-013: an unparseable --sync-from exits 1 and registers nothing", async () => {
+    const { output } = await setup()
+    const errors: string[] = []
+
+    const code = await enableCommand({
+      cwd: "/work/widget",
+      syncFrom: "not-a-date",
+      now: () => new Date("2026-07-26T18:30:00.000Z"),
+      stdout: { write: (text) => output.push(text) },
+      stderr: { write: (text) => errors.push(text) },
+    })
+
+    expect(code).toBe(1)
+    expect(await getProject("acme-widget")).toBeNull()
+    expect(errors.join("")).toContain("not-a-date")
+  })
+
+  test("EDGE-017: an unparseable --sync-from is rejected even when the project is already enabled, rather than being silently ignored", async () => {
+    const { output } = await setup()
+    const errors: string[] = []
+    const stdout = { write: (text: string) => output.push(text) }
+    await enableCommand({
+      cwd: "/work/widget",
+      now: () => new Date("2026-07-25T10:00:00.000Z"),
+      stdout,
+    })
+
+    // The already-enabled path reports "nothing to change" -- but the user asked for a
+    // cutoff. Accepting a date we cannot read would silently ignore that request.
+    const code = await enableCommand({
+      cwd: "/work/widget",
+      syncFrom: "not-a-date",
+      now: () => new Date("2026-07-26T18:30:00.000Z"),
+      stdout,
+      stderr: { write: (text: string) => errors.push(text) },
+    })
+
+    expect(code).toBe(1)
+    expect(errors.join("")).toContain("not-a-date")
+    // The original cutoff is untouched -- a rejected flag changes nothing.
+    expect((await getProject("acme-widget"))?.syncFrom).toBe("2026-07-25T10:00:00.000Z")
+  })
 
   test("EDGE-003: normalizes a relative non-git path before resolving", async () => {
     const { output } = await setup()

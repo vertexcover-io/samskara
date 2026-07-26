@@ -916,6 +916,64 @@ const isChanged = (
 const fromLineFor = (prev: CheckpointStore, path: string): number =>
   prev.checkpoints[path]?.lineProcessed ?? 0
 
+const firstTimestampIn = async (fs: FileSystem, path: string): Promise<string | undefined> => {
+  try {
+    const lines = parseJsonLines(completeLines(await fs.readFile(path)))
+    return lines.map(({ data }) => sourceTimestamp(data.timestamp)).find((at) => at !== undefined)
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * A session starts when the first line of its MAIN transcript does. Judging per session rather than
+ * per file keeps a subagent sidecar tied to its parent's fate, and an undatable session is kept —
+ * losing data is worse than capturing slightly more than asked.
+ */
+const startsBefore = async (
+  fs: FileSystem,
+  files: ReadonlyArray<LocatedFile>,
+  cutoff: string,
+): Promise<boolean> => {
+  const startedAt = await firstTimestampIn(fs, mainTranscriptPath(files))
+  if (startedAt === undefined) return false
+  return Date.parse(startedAt) < Date.parse(cutoff)
+}
+
+/**
+ * The main transcript decides a session's age, but it is absent from a cycle that changed only a
+ * sidecar. Its path is derived from any track's, so an old session cannot leak a subagent by
+ * having already been checkpointed.
+ */
+const mainTranscriptPath = (files: ReadonlyArray<LocatedFile>): string => {
+  const main = files.find(({ location }) => location.agentId === undefined)
+  if (main) return main.path
+  const [{ path, location }] = files as readonly [LocatedFile, ...LocatedFile[]]
+  const suffix = `/${location.sourceRelativePath}`
+  const dir = normalizePath(path).slice(0, -suffix.length)
+  return `${dir}/${location.sessionId}.jsonl`
+}
+
+/** Drops every file of a session that started before the cutoff — never part of one. */
+const withinCutoff = async (
+  fs: FileSystem,
+  files: ReadonlyArray<LocatedFile>,
+  cutoff: string,
+): Promise<ReadonlyArray<LocatedFile>> => {
+  const bySession = new Map<string, LocatedFile[]>()
+  for (const file of files) {
+    const { sessionId } = file.location
+    bySession.set(sessionId, [...(bySession.get(sessionId) ?? []), file])
+  }
+
+  const kept = await Promise.all(
+    [...bySession.values()].map(async (sessionFiles) =>
+      (await startsBefore(fs, sessionFiles, cutoff)) ? [] : sessionFiles,
+    ),
+  )
+  return kept.flat()
+}
+
 const groupBySession = (tracks: ReadonlyArray<SessionTrack>): ReadonlyArray<SessionBatch> => {
   const grouped = new Map<string, ReadonlyArray<SessionTrack>>()
   for (const track of tracks) {
@@ -1062,8 +1120,11 @@ export const createClaudePlugin = (fs: FileSystem): AgentPlugin => {
           }
           if (deps.shouldCapture && !(await deps.shouldCapture(project))) return []
 
+          const cutoff = await deps.syncFromFor?.(project)
+          const eligible = cutoff === undefined ? files : await withinCutoff(fs, files, cutoff)
+
           return Promise.all(
-            files.map(async ({ path, location }) => {
+            eligible.map(async ({ path, location }) => {
               try {
                 return await collectTrack(
                   fs,

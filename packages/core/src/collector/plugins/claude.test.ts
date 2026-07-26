@@ -875,6 +875,152 @@ describe("collect", () => {
     expect(batches[0]?.tracks[0]?.records).toHaveLength(1)
   })
 
+  test("skips a session that started before the project's syncFrom cutoff", async () => {
+    const dir = await mkTranscriptDir()
+    const path = join(dir, "sess-old.jsonl")
+    const old = { ...assistantLine, sessionId: "sess-old", timestamp: "2026-07-01T00:00:00.000Z" }
+    await writeFile(path, `${JSON.stringify(old)}\n`, "utf8")
+
+    const plugin = createClaudePlugin(nodeFs)
+    const batches = await plugin.collect(
+      empty,
+      collectDeps([path], { syncFromFor: async () => "2026-07-23T00:00:00.000Z" }),
+    )
+
+    expect(batches).toHaveLength(0)
+  })
+
+  test("keeps a session that started at or after the cutoff", async () => {
+    const dir = await mkTranscriptDir()
+    const path = join(dir, "sess-1.jsonl")
+    await writeFile(path, `${JSON.stringify(assistantLine)}\n`, "utf8")
+
+    const plugin = createClaudePlugin(nodeFs)
+    const batches = await plugin.collect(
+      empty,
+      collectDeps([path], { syncFromFor: async () => "2026-07-23T00:00:00.000Z" }),
+    )
+
+    expect(batches[0]?.tracks[0]?.records).toHaveLength(1)
+  })
+
+  test("a session is judged by its first line, so later lines do not drag an old session past the cutoff", async () => {
+    const dir = await mkTranscriptDir()
+    const path = join(dir, "sess-old.jsonl")
+    const first = { ...assistantLine, sessionId: "sess-old", timestamp: "2026-07-01T00:00:00.000Z" }
+    const later = { ...assistantLine, sessionId: "sess-old", timestamp: "2026-07-30T00:00:00.000Z" }
+    await writeFile(path, `${JSON.stringify(first)}\n${JSON.stringify(later)}\n`, "utf8")
+
+    const plugin = createClaudePlugin(nodeFs)
+    const batches = await plugin.collect(
+      empty,
+      collectDeps([path], { syncFromFor: async () => "2026-07-23T00:00:00.000Z" }),
+    )
+
+    // The whole session is skipped -- capturing only the later line would produce a
+    // session missing the context that explains it.
+    expect(batches).toHaveLength(0)
+  })
+
+  test("without a cutoff every session is captured, so an upgraded CLI keeps its old behaviour", async () => {
+    const dir = await mkTranscriptDir()
+    const path = join(dir, "sess-old.jsonl")
+    const old = { ...assistantLine, sessionId: "sess-old", timestamp: "2026-07-01T00:00:00.000Z" }
+    await writeFile(path, `${JSON.stringify(old)}\n`, "utf8")
+
+    const plugin = createClaudePlugin(nodeFs)
+    const batches = await plugin.collect(
+      empty,
+      collectDeps([path], { syncFromFor: async () => undefined }),
+    )
+
+    expect(batches[0]?.tracks[0]?.records).toHaveLength(1)
+  })
+
+  test("a session with no usable timestamp is captured rather than silently dropped", async () => {
+    const dir = await mkTranscriptDir()
+    const path = join(dir, "sess-undated.jsonl")
+    const { timestamp: _drop, ...undated } = assistantLine
+    await writeFile(path, `${JSON.stringify({ ...undated, sessionId: "sess-undated" })}\n`, "utf8")
+
+    const plugin = createClaudePlugin(nodeFs)
+    const batches = await plugin.collect(
+      empty,
+      collectDeps([path], { syncFromFor: async () => "2026-07-23T00:00:00.000Z" }),
+    )
+
+    // Losing data is worse than capturing a little extra, so an undatable session is kept.
+    expect(batches[0]?.tracks[0]?.records).toHaveLength(1)
+  })
+
+  test("a subagent sidecar follows its parent session's fate rather than its own first line", async () => {
+    const dir = await mkTranscriptDir()
+    const main = join(dir, "sess-old.jsonl")
+    const subDir = join(dir, "sess-old", "subagents")
+    await mkdir(subDir, { recursive: true })
+    const sub = join(subDir, "agent-a.jsonl")
+
+    const old = { ...assistantLine, sessionId: "sess-old", timestamp: "2026-07-01T00:00:00.000Z" }
+    // The sidecar's own line is recent, but its parent session predates the cutoff.
+    const recent = {
+      ...assistantLine,
+      sessionId: "sess-old",
+      timestamp: "2026-07-30T00:00:00.000Z",
+    }
+    await writeFile(main, `${JSON.stringify(old)}\n`, "utf8")
+    await writeFile(sub, `${JSON.stringify(recent)}\n`, "utf8")
+
+    const plugin = createClaudePlugin(nodeFs)
+    const batches = await plugin.collect(
+      empty,
+      collectDeps([main, sub], { syncFromFor: async () => "2026-07-23T00:00:00.000Z" }),
+    )
+
+    expect(batches).toHaveLength(0)
+  })
+
+  test("an old session's subagent is still skipped when only the sidecar changed this cycle", async () => {
+    const dir = await mkTranscriptDir()
+    const main = join(dir, "sess-old.jsonl")
+    const subDir = join(dir, "sess-old", "subagents")
+    await mkdir(subDir, { recursive: true })
+    const sub = join(subDir, "agent-a.jsonl")
+
+    const old = { ...assistantLine, sessionId: "sess-old", timestamp: "2026-07-01T00:00:00.000Z" }
+    const recent = {
+      ...assistantLine,
+      sessionId: "sess-old",
+      timestamp: "2026-07-30T00:00:00.000Z",
+    }
+    await writeFile(main, `${JSON.stringify(old)}\n`, "utf8")
+    await writeFile(sub, `${JSON.stringify(recent)}\n`, "utf8")
+
+    // The main transcript is unchanged, so it is filtered out before the cutoff is applied and
+    // only the sidecar reaches it. The session's age must still be read from the main file on
+    // disk, or a pre-cutoff session leaks its subagent as an orphan.
+    const s = await stat(main)
+    const prev: CheckpointStore = {
+      checkpoints: {
+        [main]: {
+          filePath: main,
+          lastUpdatedAt: "2026-07-24T00:00:00.000Z",
+          source: "claude_code",
+          mtime: s.mtimeMs,
+          size: s.size,
+          lineProcessed: 1,
+        },
+      },
+    }
+
+    const plugin = createClaudePlugin(nodeFs)
+    const batches = await plugin.collect(
+      prev,
+      collectDeps([main, sub], { syncFromFor: async () => "2026-07-23T00:00:00.000Z" }),
+    )
+
+    expect(batches).toHaveLength(0)
+  })
+
   test("resolves each distinct cwd once across the files of a cycle", async () => {
     const dir = await mkTranscriptDir()
     const a = join(dir, "sess-a.jsonl")

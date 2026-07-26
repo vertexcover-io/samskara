@@ -47,8 +47,14 @@ program
 program
   .command("enable [path]")
   .description("Enable capture for a folder (defaults to cwd)")
-  .action(async (path?: string) => {
-    process.exitCode = await enableCommand(path === undefined ? {} : { path })
+  .option("--all", "Also capture sessions recorded before enabling")
+  .option("--sync-from <date>", "Only capture sessions started after this date")
+  .action(async (path: string | undefined, flags: { all?: boolean; syncFrom?: string }) => {
+    process.exitCode = await enableCommand({
+      ...(path === undefined ? {} : { path }),
+      ...(flags.all === true ? { all: true } : {}),
+      ...(flags.syncFrom === undefined ? {} : { syncFrom: flags.syncFrom }),
+    })
   })
 
 program

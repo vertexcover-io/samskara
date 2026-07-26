@@ -35,6 +35,9 @@ export type CollectDeps = {
   // A plugin MUST drop tracks this rejects — the driver does not filter again. Consult it as early
   // as a file's project is known, so an unenabled project costs no parsing.
   readonly shouldCapture?: (project: ProjectIdentity) => Promise<boolean>
+  // The project's cutoff, or undefined for no cutoff. A session whose first line predates it is
+  // skipped whole, so a captured session always carries the context that explains it.
+  readonly syncFromFor?: (project: ProjectIdentity) => Promise<string | undefined>
 }
 
 export type SessionTrack = IngestPayload & {

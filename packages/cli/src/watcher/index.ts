@@ -5,7 +5,7 @@ import { type FileSystem, type ProjectIdentity, createClaudePlugin } from "@sams
 import type pino from "pino"
 import { apiBase } from "../config.js"
 import { statePath, tokenPath } from "../config/paths.js"
-import { isProjectEnabled } from "../config/projects.js"
+import { isProjectEnabled, syncFromFor } from "../config/projects.js"
 import { resolveLocalProject } from "../project-resolver.js"
 import { type WatcherConfig, type WatcherDeps, runCycle } from "./driver.js"
 import { createHttpSink } from "./sink.js"
@@ -69,10 +69,14 @@ export const watch = async (options: WatchOptions): Promise<void> => {
   const { log, projectOverride } = options
   const token = await readToken()
   const config: WatcherConfig = { statePath: statePath() }
-  // An explicit override captures unconditionally; otherwise only enabled projects.
+  // An explicit override captures unconditionally; otherwise only enabled projects, and only
+  // sessions started after the project's cutoff.
   const shouldCapture = projectOverride
     ? undefined
     : (project: ProjectIdentity) => isProjectEnabled(project.slug)
+  const cutoffFor = projectOverride
+    ? undefined
+    : (project: ProjectIdentity) => syncFromFor(project.slug)
   const deps: WatcherDeps = {
     fs: nodeFs,
     clock: { now: () => Date.now() },
@@ -81,6 +85,7 @@ export const watch = async (options: WatchOptions): Promise<void> => {
     plugin: createClaudePlugin(nodeFs),
     resolveProject: projectOverride ? async () => projectOverride : resolveLocalProject,
     ...(shouldCapture ? { shouldCapture } : {}),
+    ...(cutoffFor ? { syncFromFor: cutoffFor } : {}),
     log,
   }
 

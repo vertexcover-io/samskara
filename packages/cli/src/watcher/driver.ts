@@ -27,6 +27,7 @@ export type WatcherDeps = {
   readonly resolveProject: (startDir: string) => Promise<ProjectIdentity>
   readonly log: pino.Logger
   readonly shouldCapture?: (project: ProjectIdentity) => Promise<boolean>
+  readonly syncFromFor?: (project: ProjectIdentity) => Promise<string | undefined>
 }
 
 export type Chunk = {
@@ -130,6 +131,7 @@ export const runCycle = async (
     resolveProject: deps.resolveProject,
     log: deps.log,
     ...(deps.shouldCapture ? { shouldCapture: deps.shouldCapture } : {}),
+    ...(deps.syncFromFor ? { syncFromFor: deps.syncFromFor } : {}),
   }
   const batches = await deps.plugin.collect(prev, collectDeps)
   const results = await Promise.all(batches.map((batch) => syncSession(batch, deps)))

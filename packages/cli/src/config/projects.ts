@@ -8,6 +8,7 @@ const projectEntrySchema = z
     path: z.string().min(1),
     enabled: z.boolean(),
     enabledAt: z.string().datetime(),
+    syncFrom: z.string().datetime().optional(),
   })
   .strict()
   .readonly()
@@ -46,6 +47,9 @@ export const getProject = async (slug: string): Promise<ProjectEntry | null> => 
 
 export const isProjectEnabled = async (slug: string): Promise<boolean> =>
   (await getProject(slug))?.enabled === true
+
+export const syncFromFor = async (slug: string): Promise<string | undefined> =>
+  (await getProject(slug))?.syncFrom
 
 export const upsertProject = async (slug: string, entry: ProjectEntry): Promise<ProjectEntry> =>
   withFileLock(projectsPath(), async () => {

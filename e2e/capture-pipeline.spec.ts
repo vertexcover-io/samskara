@@ -90,6 +90,8 @@ type HarnessOptions = {
   readonly projectOverride?: boolean
   /** What `projects.json` records for this project; omit the entry entirely with `null`. */
   readonly enabled?: boolean | null
+  /** The cutoff `samskara enable` would have stored; omitted means capture everything. */
+  readonly syncFrom?: string
 }
 
 /**
@@ -98,7 +100,7 @@ type HarnessOptions = {
  * glob and its real state file are exercised — no test seam substitutes for either.
  */
 const startHarness = async (options: HarnessOptions = {}): Promise<Harness> => {
-  const { projectOverride = true, enabled = true } = options
+  const { projectOverride = true, enabled = true, syncFrom } = options
   const home = await mkdtemp(join(tmpdir(), "samskara-e2e-"))
   const samskaraHome = join(home, ".samskara")
   const cwd = join(home, "work", PROJECT_NAME)
@@ -126,6 +128,7 @@ const startHarness = async (options: HarnessOptions = {}): Promise<Harness> => {
                 path: cwd,
                 enabled,
                 enabledAt: new Date(Date.UTC(2026, 5, 1, 11)).toISOString(),
+                ...(syncFrom === undefined ? {} : { syncFrom }),
               },
             },
     }),
@@ -595,5 +598,58 @@ test.describe("capture pipeline", () => {
 
     // Clean up the sibling, which uses a different id than clearPipelineRows removes.
     await sql`delete from sessions where id = ${siblingId}`
+  })
+
+  test("P10: a syncFrom cutoff in projects.json keeps a session started after it and skips one started before, so enabling a project never retroactively uploads its history", async () => {
+    // The writer stamps every line at 2026-06-01T12:00Z, so this cutoff sits after the
+    // old session's first line and before the new one's.
+    const CUTOFF = new Date(Date.UTC(2026, 5, 1, 12, 30)).toISOString()
+    const { sql, home, cwd, samskaraHome } = await useHarness({
+      projectOverride: false,
+      enabled: true,
+      syncFrom: CUTOFF,
+    })
+
+    const oldId = "1a1a1a1a-2b2b-4c3c-8d4d-5e5e5e5e5e5e"
+    const newId = "9f9f9f9f-8e8e-4d7d-8c6c-5b5b5b5b5b5b"
+
+    // Started at 12:00 -- before the cutoff.
+    const older = createTranscriptWriter({ home, cwd, sessionId: oldId })
+    await older.append([
+      userLine("Recorded before capture was enabled.", 0),
+      assistantLine("This history was never opted into.", 1),
+    ])
+
+    // Started at 12:40 -- after the cutoff.
+    const newer = createTranscriptWriter({ home, cwd, sessionId: newId })
+    await newer.append([
+      userLine("Started after enabling.", 40),
+      assistantLine("This one is captured.", 41),
+    ])
+
+    const kept = await pollUntil(
+      () => sql<{ count: string }[]>`
+        select count(*)::text as count from messages where "sessionId" = ${newId}
+      `,
+      (r) => Number(r[0]?.count ?? 0) >= 2,
+      (r) => `${r[0]?.count ?? 0} rows for the new session`,
+    )
+    expect(Number(kept[0]?.count)).toBe(2)
+
+    // The pre-cutoff session is skipped WHOLE: not one line of it reaches the server.
+    const skipped = await sql<{ count: string }[]>`
+      select count(*)::text as count from messages where "sessionId" = ${oldId}
+    `
+    expect(Number(skipped[0]?.count)).toBe(0)
+    const oldSessions = await sql<{ id: string }[]>`select id from sessions where id = ${oldId}`
+    expect(oldSessions).toHaveLength(0)
+
+    // Skipped, not merely deferred: it is never checkpointed either, so raising the
+    // cutoff later would still let it through.
+    const state = await readState(samskaraHome)
+    expect(state?.checkpoints[older.mainPath]).toBeUndefined()
+    expect(state?.checkpoints[newer.mainPath]).toBeDefined()
+
+    await sql`delete from sessions where id in (${oldId}, ${newId})`
   })
 })

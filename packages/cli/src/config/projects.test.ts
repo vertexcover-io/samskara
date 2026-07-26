@@ -41,6 +41,43 @@ describe("project registry", () => {
     })
   })
 
+  test("REQ-033: syncFrom round-trips, and a registry written before the field existed reads back without one", async () => {
+    const home = await useTempHome()
+
+    await upsertProject("acme-widget", {
+      name: "widget",
+      path: "/work/widget",
+      enabled: true,
+      enabledAt: "2026-07-25T10:00:00.000Z",
+      syncFrom: "2026-07-25T10:00:00.000Z",
+    })
+
+    const [stored] = await listProjects()
+    expect(stored?.entry.syncFrom).toBe("2026-07-25T10:00:00.000Z")
+
+    // Registries written by an older CLI have no syncFrom; they must still parse, with
+    // an absent field meaning "no cutoff" rather than failing the whole file.
+    await writeFile(
+      join(home, "projects.json"),
+      JSON.stringify({
+        version: 1,
+        projects: {
+          legacy: {
+            name: "legacy",
+            path: "/work/legacy",
+            enabled: true,
+            enabledAt: "2026-07-25T10:00:00.000Z",
+          },
+        },
+      }),
+      "utf8",
+    )
+
+    const [legacy] = await listProjects()
+    expect(legacy?.entry.syncFrom).toBeUndefined()
+    await expect(isProjectEnabled("legacy")).resolves.toBe(true)
+  })
+
   test("REQ-011: disabling an absent project is idempotent", async () => {
     await useTempHome()
 
