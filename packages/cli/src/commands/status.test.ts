@@ -69,17 +69,23 @@ describe("status command", () => {
 
     vi.mocked(watcherPid).mockReturnValue(123)
 
-    const code = await statusCommand({ stdout: { write: (text) => output.push(text) } })
+    const code = await statusCommand({
+      stdout: { write: (text) => output.push(text) },
+      now: () => new Date("2026-07-25T13:00:00.000Z"),
+    })
     const text = output.join("")
 
     expect(code).toBe(0)
-    expect(text).toContain("acme-widget")
-    expect(text).toContain("/work/widget")
-    expect(text).toContain("2026-07-25T11:00:00.000Z")
-    expect(text).toContain("acme-off")
-    expect(text).toMatch(/acme-off.*disabled.*-/)
-    expect(text).toContain("Watcher: running as process 123")
+    expect(text).toContain("running (pid 123)")
     expect(text).toContain(join(home, "logs"))
+    // Each project reports its own capture state and the newest checkpoint for its slug.
+    expect(text).toMatch(/● widget {2}\(acme-widget\)/)
+    expect(text).toContain("/work/widget")
+    expect(text).toMatch(/capture {2}enabled since 4h ago/)
+    expect(text).toMatch(/synced {3}2h ago/)
+    expect(text).toMatch(/○ off {2}\(acme-off\)/)
+    expect(text).toMatch(/capture {2}disabled since/)
+    expect(text).toMatch(/synced {3}never/)
   })
 
   test("REQ-012,REQ-014: empty registry reports an empty state and stopped watcher", async () => {
@@ -89,8 +95,8 @@ describe("status command", () => {
     const code = await statusCommand({ stdout: { write: (text) => output.push(text) } })
 
     expect(code).toBe(0)
-    expect(output.join("")).toContain("No projects are registered yet")
-    expect(output.join("")).toContain("Watcher: not running")
+    expect(output.join("")).toContain("No projects registered yet")
+    expect(output.join("")).toContain("not running")
   })
 
   test("reports an unpaired CLI without calling the server", async () => {
@@ -102,7 +108,7 @@ describe("status command", () => {
 
     expect(code).toBe(0)
     expect(globalThis.fetch).not.toHaveBeenCalled()
-    expect(output.join("")).toContain("not paired with an account yet")
+    expect(output.join("")).toContain("not paired")
   })
 
   test("names the paired identity when the token is accepted", async () => {
@@ -142,7 +148,7 @@ describe("status command", () => {
     const code = await statusCommand({ stdout: { write: (text) => output.push(text) } })
 
     expect(code).toBe(0)
-    expect(output.join("")).toContain("no longer accepted")
+    expect(output.join("")).toContain("token rejected")
     expect(output.join("")).toContain("samskara login")
   })
 })

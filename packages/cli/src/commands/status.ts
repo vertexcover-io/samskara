@@ -1,3 +1,4 @@
+import { homedir } from "node:os"
 import { checkpointStoreSchema } from "@samskara/core"
 import { readJson } from "../config/atomic.js"
 import { readToken } from "../config/credentials.js"
@@ -12,19 +13,33 @@ interface Writer {
 
 export type StatusOptions = {
   readonly stdout?: Writer
+  readonly now?: () => Date
+}
+
+const MINUTE = 60_000
+const HOUR = 60 * MINUTE
+const DAY = 24 * HOUR
+
+const shortenPath = (path: string): string =>
+  path.startsWith(homedir()) ? `~${path.slice(homedir().length)}` : path
+
+const relativeTime = (iso: string, now: Date): string => {
+  const elapsed = now.getTime() - new Date(iso).getTime()
+  if (Number.isNaN(elapsed)) return iso
+  if (elapsed < MINUTE) return "just now"
+  if (elapsed < HOUR) return `${Math.floor(elapsed / MINUTE)}m ago`
+  if (elapsed < DAY) return `${Math.floor(elapsed / HOUR)}h ago`
+  if (elapsed < 30 * DAY) return `${Math.floor(elapsed / DAY)}d ago`
+  return iso.slice(0, 10)
 }
 
 const authLine = async (): Promise<string> => {
   const token = await readToken()
-  if (!token) {
-    return "Account: this CLI is not paired with an account yet. Run `samskara login` to pair it."
-  }
+  if (!token) return "not paired -- run `samskara login` to pair this CLI"
   try {
-    const identity = await verifyToken(token)
-    return `Account: paired as ${identity.githubLogin}.`
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error)
-    return `Account: the saved token is no longer accepted, so captured sessions cannot be uploaded. ${reason} Run \`samskara login\` to pair again.`
+    return `paired as ${(await verifyToken(token)).githubLogin}`
+  } catch {
+    return "token rejected -- sessions cannot be uploaded\n           re-pair with `samskara login`"
   }
 }
 
@@ -44,28 +59,36 @@ const latestSyncBySlug = async (): Promise<ReadonlyMap<string, string>> => {
 
 export const statusCommand = async (options: StatusOptions = {}): Promise<number> => {
   const stdout = options.stdout ?? process.stdout
+  const now = (options.now ?? (() => new Date()))()
   const projects = [...(await listProjects())].sort((a, b) => a.slug.localeCompare(b.slug))
   const lastSync = await latestSyncBySlug()
-  if (projects.length === 0) {
-    stdout.write(
-      "No projects are registered yet. Run `samskara enable` inside a project folder to start capturing its sessions.\n",
-    )
-  } else {
-    stdout.write("SLUG\tNAME\tPATH\tSTATUS\tENABLED AT\tLAST SYNC\n")
-    for (const { slug, entry } of projects) {
-      const status = entry.enabled ? "enabled" : "disabled"
-      stdout.write(
-        `${slug}\t${entry.name}\t${entry.path}\t${status}\t${entry.enabledAt}\t${lastSync.get(slug) ?? "-"}\n`,
-      )
-    }
-  }
-  stdout.write(`${await authLine()}\n`)
+
   const pid = watcherPid()
   stdout.write(
     pid === null
-      ? "Watcher: not running, so new sessions are not being captured. Run `samskara enable` to start it.\n"
-      : `Watcher: running as process ${pid}.\n`,
+      ? "Watcher    not running -- new sessions are not being captured\n           start it with `samskara enable`\n"
+      : `Watcher    running (pid ${pid})\n`,
   )
-  stdout.write(`Watcher logs: ${watchLogDir()}\n`)
+  stdout.write(`Account    ${await authLine()}\n`)
+  stdout.write(`Logs       ${shortenPath(watchLogDir())}\n\n`)
+
+  if (projects.length === 0) {
+    stdout.write("No projects registered yet.\n")
+    stdout.write("Run `samskara enable` inside a project folder to start capturing its sessions.\n")
+    return 0
+  }
+
+  stdout.write(`Projects (${projects.length})\n`)
+  for (const { slug, entry } of projects) {
+    const synced = lastSync.get(slug)
+    stdout.write(`\n  ${entry.enabled ? "●" : "○"} ${entry.name}  (${slug})\n`)
+    stdout.write(`      path     ${shortenPath(entry.path)}\n`)
+    stdout.write(
+      `      capture  ${entry.enabled ? "enabled" : "disabled"} since ${relativeTime(entry.enabledAt, now)}\n`,
+    )
+    stdout.write(
+      `      synced   ${synced ? relativeTime(synced, now) : "never -- no sessions uploaded yet"}\n`,
+    )
+  }
   return 0
 }
