@@ -1,14 +1,15 @@
 import { execFileSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
-import type { IngestPayload, NormalizedMessage, ParsedRecord } from "@samskara/core"
+import type { IngestPayload, NormalizedMessage, ParsedRecord, RepoIdentity } from "@samskara/core"
 import { createLogger } from "@samskara/core"
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql"
-import { and, eq } from "drizzle-orm"
+import { and, eq, inArray } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
 import { type Db, createDb } from "../db/client.js"
 import {
   messages,
   projects,
+  repos,
   sessions,
   subagents,
   tokenUsage,
@@ -76,12 +77,19 @@ const recordsFrom = (items: ReadonlyArray<TestMessage>): ReadonlyArray<ParsedRec
   })
 }
 
-const mainPayload = (sessionId: string, items: ReadonlyArray<TestMessage>): IngestPayload => ({
+type SessionOrigin = { readonly startCwd?: string; readonly startCommit?: string }
+
+const mainPayload = (
+  sessionId: string,
+  items: ReadonlyArray<TestMessage>,
+  origin: SessionOrigin = {},
+): IngestPayload => ({
   type: "main",
   sessionId,
   sourceRelativePath: `${sessionId}.jsonl`,
   project,
   records: recordsFrom(items),
+  ...origin,
 })
 
 const subagentPayload = (
@@ -257,5 +265,124 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
     expect(
       await db.select().from(messages).where(eq(messages.sessionId, victimSession)),
     ).toHaveLength(0)
+  })
+
+  test("S6: a session whose messages span two repos records two distinct repoIds, and a message with no repo records none", async () => {
+    const sessionId = "sess-two-repos"
+    const serana: RepoIdentity = {
+      host: "github.com",
+      owner: "refrens",
+      ownerType: "org",
+      repoName: "serana",
+    }
+    const andromeda: RepoIdentity = { ...serana, repoName: "andromeda" }
+
+    const withRepo = (lineUuid: string, lineNumber: number, repo?: RepoIdentity): TestMessage => {
+      const base = customMessage({ sessionId, lineUuid, lineNumber })
+      return { ...base, message: { ...base.message, ...(repo ? { repo } : {}) } }
+    }
+
+    expect(
+      await ingest(
+        ctx,
+        mainPayload(sessionId, [
+          withRepo("0191d942-3ba5-7dba-9a7d-0000000000a1", 1, serana),
+          withRepo("0191d942-3ba5-7dba-9a7d-0000000000a2", 2, andromeda),
+          withRepo("0191d942-3ba5-7dba-9a7d-0000000000a3", 3),
+        ]),
+      ),
+    ).toEqual({ ingested: 3, deduped: 0 })
+
+    const rows = await db
+      .select({ lineNumber: messages.lineNumber, repoId: messages.repoId })
+      .from(messages)
+      .where(eq(messages.sessionId, sessionId))
+      .orderBy(messages.lineNumber)
+
+    const [first, second, third] = rows
+    expect(first?.repoId).toBeTruthy()
+    expect(second?.repoId).toBeTruthy()
+    // Two repos, not one: a session that moves between checkouts is the whole point.
+    expect(first?.repoId).not.toBe(second?.repoId)
+    expect(third?.repoId).toBeNull()
+
+    const repoRows = await db
+      .select({ id: repos.id, repoName: repos.repoName })
+      .from(repos)
+      .where(inArray(repos.repoName, ["serana", "andromeda"]))
+    expect(new Set(repoRows.map((r) => r.repoName))).toEqual(new Set(["serana", "andromeda"]))
+    expect(new Set(repoRows.map((r) => r.id))).toEqual(new Set([first?.repoId, second?.repoId]))
+  })
+
+  test("S7: a payload whose messages carry no repo ingests with the same counts as before, and still stores gitBranch", async () => {
+    const sessionId = "sess-no-repo"
+    const base = customMessage({
+      sessionId,
+      lineUuid: "0191d942-3ba5-7dba-9a7d-0000000000b1",
+    })
+    const items: ReadonlyArray<TestMessage> = [
+      { ...base, message: { ...base.message, gitBranch: "feat/capture" } },
+    ]
+
+    expect(await ingest(ctx, mainPayload(sessionId, items))).toEqual({ ingested: 1, deduped: 0 })
+    expect(await ingest(ctx, mainPayload(sessionId, items))).toEqual({ ingested: 0, deduped: 1 })
+
+    const [row] = await db
+      .select({ gitBranch: messages.gitBranch, repoId: messages.repoId })
+      .from(messages)
+      .where(eq(messages.sessionId, sessionId))
+    expect(row).toEqual({ gitBranch: "feat/capture", repoId: null })
+  })
+
+  test("S21: a session stores the cwd and sha it started at, and a later flush carrying neither leaves both unchanged", async () => {
+    const sessionId = "sess-origin"
+    const startCommit = "37f31013b7ac0a2e6f4c9d1e5a8b2c7d0e3f4a5b"
+
+    await ingest(
+      ctx,
+      mainPayload(
+        sessionId,
+        [customMessage({ sessionId, lineUuid: "0191d942-3ba5-7dba-9a7d-000000000001" })],
+        { startCwd: "/work/serana", startCommit },
+      ),
+    )
+
+    const [created] = await db.select().from(sessions).where(eq(sessions.id, sessionId))
+    expect(created).toMatchObject({ cwd: "/work/serana", startCommit })
+
+    // A later flush of the same session sends no origin -- the sha it began at must survive it,
+    // or every long session ends up recording only its most recent flush.
+    await ingest(
+      ctx,
+      mainPayload(sessionId, [
+        customMessage({
+          sessionId,
+          lineUuid: "0191d942-3ba5-7dba-9a7d-000000000002",
+          lineNumber: 2,
+        }),
+      ]),
+    )
+
+    const [after] = await db.select().from(sessions).where(eq(sessions.id, sessionId))
+    expect(after).toMatchObject({ cwd: "/work/serana", startCommit })
+  })
+
+  test("S22: a session started outside a git repo ingests with a startCwd but a null starting sha", async () => {
+    const sessionId = "sess-origin-nongit"
+
+    expect(
+      await ingest(
+        ctx,
+        mainPayload(
+          sessionId,
+          [customMessage({ sessionId, lineUuid: "0191d942-3ba5-7dba-9a7d-000000000003" })],
+          { startCwd: "/private/tmp/scratch" },
+        ),
+      ),
+    ).toEqual({ ingested: 1, deduped: 0 })
+
+    const [row] = await db.select().from(sessions).where(eq(sessions.id, sessionId))
+    expect(row?.cwd).toBe("/private/tmp/scratch")
+    expect(row?.startCommit).toBeNull()
   })
 })

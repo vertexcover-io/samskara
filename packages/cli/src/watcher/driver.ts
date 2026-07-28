@@ -18,6 +18,7 @@ import { atomicWriteJson, readJson } from "../config/atomic.js"
 import { collectArtifacts } from "./artifact-extract.js"
 import { type QueueEntry, enqueue } from "./artifact-queue.js"
 import { isCapturable } from "./containment.js"
+import type { ResolvedRepo } from "./resolveRepo.js"
 
 export const MESSAGE_CAP = 2000
 
@@ -47,6 +48,8 @@ export type WatcherDeps = {
   readonly shouldCapture?: (project: ProjectIdentity) => Promise<boolean>
   readonly syncFromFor?: (project: ProjectIdentity) => Promise<string | undefined>
   readonly artifacts?: ArtifactCycleDeps
+  readonly resolveRepo?: (cwd: string) => Promise<ResolvedRepo | null>
+  readonly resolveHead?: (cwd: string) => Promise<string | null>
 }
 
 export type Chunk = {
@@ -93,7 +96,11 @@ const wrap = (track: SessionTrack, clock: Clock, body: CheckpointBody): Checkpoi
   lastUpdatedAt: new Date(clock.now()).toISOString(),
 })
 
-const payloadFor = (track: SessionTrack, records: ReadonlyArray<ParsedRecord>): IngestPayload => {
+const payloadFor = (
+  track: SessionTrack,
+  records: ReadonlyArray<ParsedRecord>,
+  origin: SessionOrigin,
+): IngestPayload => {
   const {
     checkpointKey: _key,
     checkpointAt: _at,
@@ -101,16 +108,52 @@ const payloadFor = (track: SessionTrack, records: ReadonlyArray<ParsedRecord>): 
     records: _all,
     ...payload
   } = track
-  return { ...payload, records }
+  if (payload.type === "subagent") return { ...payload, records }
+  return { ...payload, records, ...origin }
 }
+
+/**
+ * Attributes each message to the repo of the cwd it happened in — per message, not per track,
+ * because a track's messages can span checkouts. A cwd that is not a git repo yields no
+ * attribution, which is normal rather than an error.
+ */
+const attributeRepos = async (
+  records: ReadonlyArray<ParsedRecord>,
+  fallbackCwd: string | undefined,
+  resolveRepo: (cwd: string) => Promise<ResolvedRepo | null>,
+): Promise<ReadonlyArray<ParsedRecord>> =>
+  Promise.all(
+    records.map(async (record) => {
+      const messages = await Promise.all(
+        record.messages.map(async (message) => {
+          const cwd = message.cwd ?? fallbackCwd
+          const resolved = cwd ? await resolveRepo(cwd) : null
+          if (!resolved) return message
+          const { root: _root, ...repo } = resolved
+          return { ...message, repo }
+        }),
+      )
+      const [first, ...rest] = messages
+      if (!first) return record
+      return { ...record, messages: [first, ...rest] as const }
+    }),
+  )
+
+/** The launch context a main session is stamped with, captured once when it is first seen. */
+type SessionOrigin = { readonly startCwd?: string; readonly startCommit?: string }
 
 const syncTrack = async (
   track: SessionTrack,
+  origin: SessionOrigin,
   deps: WatcherDeps,
 ): Promise<Checkpoint | undefined> => {
+  const { resolveRepo } = deps
+  const records = resolveRepo
+    ? await attributeRepos(track.records, track.project.root, resolveRepo)
+    : track.records
   let sentThrough = 0
-  for (const request of sliceByMessages(track.records, MESSAGE_CAP)) {
-    const { status } = await deps.sink.send(payloadFor(track, request.records))
+  for (const request of sliceByMessages(records, MESSAGE_CAP)) {
+    const { status } = await deps.sink.send(payloadFor(track, request.records, origin))
     if (status < 200 || status >= 300) {
       deps.log.warn(
         { sessionId: track.sessionId, key: track.checkpointKey, status },
@@ -127,13 +170,34 @@ const syncTrack = async (
   return wrap(track, deps.clock, track.checkpointAt(line))
 }
 
+/**
+ * HEAD is read once, on the flush that first sends a session, and never again: the watcher polls
+ * after the fact, so by a later cycle HEAD has moved to whatever the session has since committed.
+ * A track already in the checkpoint store has been sent before, so its origin is already stored.
+ */
+const originFor = async (
+  track: SessionTrack,
+  prev: CheckpointStore,
+  deps: WatcherDeps,
+): Promise<SessionOrigin> => {
+  if (track.type !== "main") return {}
+  if (prev.checkpoints[track.checkpointKey]) return {}
+  const startCwd = track.records
+    .flatMap((record) => record.messages)
+    .find((message) => message.cwd !== undefined)?.cwd
+  if (!startCwd) return {}
+  const startCommit = await deps.resolveHead?.(startCwd)
+  return { startCwd, ...(startCommit ? { startCommit } : {}) }
+}
+
 const syncSession = async (
   batch: SessionBatch,
+  prev: CheckpointStore,
   deps: WatcherDeps,
 ): Promise<Record<string, Checkpoint>> => {
   const updated: Record<string, Checkpoint> = {}
   for (const track of batch.tracks) {
-    const checkpoint = await syncTrack(track, deps)
+    const checkpoint = await syncTrack(track, await originFor(track, prev, deps), deps)
     if (checkpoint) updated[track.checkpointKey] = checkpoint
   }
   return updated
@@ -210,7 +274,7 @@ export const runCycle = async (
     ...(deps.syncFromFor ? { syncFromFor: deps.syncFromFor } : {}),
   }
   const batches = await deps.plugin.collect(prev, collectDeps)
-  const results = await Promise.all(batches.map((batch) => syncSession(batch, deps)))
+  const results = await Promise.all(batches.map((batch) => syncSession(batch, prev, deps)))
 
   // After the flush, before the checkpoint write: enqueuing earlier would queue artifacts for
   // records that never reached the server, and the worker would 409 on every one.

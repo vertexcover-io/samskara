@@ -3,6 +3,7 @@ import type {
   IngestResponse,
   NormalizedMessage,
   ParsedRecord,
+  RepoIdentity,
   TokenUsage,
 } from "@samskara/core"
 import type pino from "pino"
@@ -10,6 +11,7 @@ import type { Db, Querier } from "../db/client.js"
 import type { MessageRow } from "../repositories/messages.repo.js"
 import * as messagesRepo from "../repositories/messages.repo.js"
 import * as projectsRepo from "../repositories/projects.repo.js"
+import * as reposRepo from "../repositories/repos.repo.js"
 import * as sessionsRepo from "../repositories/sessions.repo.js"
 import * as subagentsRepo from "../repositories/subagents.repo.js"
 import * as tokenUsageRepo from "../repositories/tokenUsage.repo.js"
@@ -40,7 +42,38 @@ const flatten = (
     })),
   )
 
-const toMessageRow = (flat: FlatMessage): MessageRow => {
+type RepoIdKey = string
+
+// A separator no host, owner or repo name can contain, so two different identities can never
+// collapse onto one key.
+const KEY_SEPARATOR = "\n"
+
+const repoKeyOf = (repo: RepoIdentity): RepoIdKey =>
+  [repo.host, repo.owner, repo.ownerType, repo.repoName].join(KEY_SEPARATOR)
+
+/**
+ * Upserts each distinct repo once before the rows are mapped, so `toMessageRow` stays pure and
+ * synchronous -- mirroring how the project is upserted once rather than per row.
+ */
+const resolveRepoIds = async (
+  tx: Querier,
+  flatMessages: ReadonlyArray<FlatMessage>,
+): Promise<ReadonlyMap<RepoIdKey, string>> => {
+  const distinct = new Map<RepoIdKey, RepoIdentity>()
+  for (const { message } of flatMessages) {
+    if (message.repo) distinct.set(repoKeyOf(message.repo), message.repo)
+  }
+  const resolved = new Map<RepoIdKey, string>()
+  for (const [key, identity] of distinct) {
+    resolved.set(key, await reposRepo.upsertByIdentity(tx, identity))
+  }
+  return resolved
+}
+
+const toMessageRow = (
+  flat: FlatMessage,
+  repoIdByKey: ReadonlyMap<RepoIdKey, string>,
+): MessageRow => {
   const { message } = flat
   return {
     sessionId: message.sessionId,
@@ -69,6 +102,7 @@ const toMessageRow = (flat: FlatMessage): MessageRow => {
     sourceSchemaVersion: message.sourceSchemaVersion,
     isSubagent: flat.isSubagent,
     agentId: message.agentId,
+    repoId: message.repo ? repoIdByKey.get(repoKeyOf(message.repo)) : undefined,
     gitBranch: message.gitBranch,
     gitCommit: message.gitCommit,
   }
@@ -133,7 +167,11 @@ export const ingest = async (ctx: Ctx, payload: IngestPayload): Promise<IngestRe
           source: "claude_code",
           userId,
           projectId,
-          fields: { title: payload.title },
+          fields: {
+            title: payload.title,
+            startCwd: payload.startCwd,
+            startCommit: payload.startCommit,
+          },
         })
       } else {
         if (!(await sessionsRepo.existsForUser(tx, payload.sessionId, userId))) {
@@ -146,7 +184,8 @@ export const ingest = async (ctx: Ctx, payload: IngestPayload): Promise<IngestRe
         })
       }
 
-      const rows = flat.map(toMessageRow)
+      const repoIdByKey = await resolveRepoIds(tx, flat)
+      const rows = flat.map((message) => toMessageRow(message, repoIdByKey))
       const { ingested, deduped, idByKey } = await messagesRepo.insertManyIgnoreConflicts(
         tx,
         payload.sessionId,

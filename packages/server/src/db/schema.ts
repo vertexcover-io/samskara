@@ -134,6 +134,7 @@ export const sessions = pgTable(
     provider: text("provider"),
     title: text("title"),
     cwd: text("cwd"),
+    startCommit: text("startCommit"),
     cliVersion: text("cliVersion"),
     permissionMode: text("permissionMode"),
     createdAt: createdAtCamel,
@@ -168,6 +169,7 @@ export const messages = pgTable(
     sourceSchemaVersion: integer("sourceSchemaVersion").notNull(),
     isSubagent: boolean("isSubagent").notNull().default(false),
     agentId: text("agentId"),
+    repoId: uuid("repoId").references(() => repos.id),
     gitBranch: text("gitBranch"),
     gitCommit: text("gitCommit"),
     createdAt: createdAtCamel,
@@ -182,6 +184,7 @@ export const messages = pgTable(
     index("messages_session_line_idx").on(t.sessionId, t.lineNumber),
     index("messages_session_agent_idx").on(t.sessionId, t.agentId),
     index("messages_agent_id_idx").on(t.agentId).where(sql`${t.isSubagent}`),
+    index("messages_repo_id_idx").on(t.repoId),
   ],
 )
 

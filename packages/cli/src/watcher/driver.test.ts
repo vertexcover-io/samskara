@@ -289,6 +289,139 @@ describe("watcher driver", () => {
     expect(store.checkpoints[b]?.lineProcessed).toBe(1)
   })
 
+  describe("repo attribution", () => {
+    const serana = {
+      host: "github.com",
+      owner: "refrens",
+      ownerType: "org",
+      repoName: "serana",
+      root: "/work/serana",
+    } as const
+    const andromeda = { ...serana, repoName: "andromeda", root: "/work/andromeda" }
+
+    const repoDeps = () => {
+      const asked: string[] = []
+      return {
+        asked,
+        resolveRepo: async (cwd: string) => {
+          asked.push(cwd)
+          if (cwd === "/work/serana") return serana
+          if (cwd === "/work/andromeda") return andromeda
+          return null
+        },
+      }
+    }
+
+    test("attributes each message to the repo of its own cwd, so one track spanning two checkouts sends two identities", async () => {
+      const main = join(projects, "sess-1.jsonl")
+      await writeFile(
+        main,
+        [
+          assistantLine("l1", "sess-1", { cwd: "/work/serana" }),
+          assistantLine("l2", "sess-1", { cwd: "/work/andromeda" }),
+          assistantLine("l3", "sess-1", { cwd: "/private/tmp/scratch" }),
+        ]
+          .map((line) => `${line}\n`)
+          .join(""),
+        "utf8",
+      )
+
+      const sink = createInMemorySink()
+      const { resolveRepo } = repoDeps()
+      await runCycle(config, deps({ sink, glob: async () => [main], resolveRepo }))
+
+      const sent = sink.received[0]?.records.flatMap((r) => r.messages) ?? []
+      expect(sent.map((m) => m.repo?.repoName)).toEqual([
+        "serana",
+        "serana",
+        "andromeda",
+        "andromeda",
+        undefined,
+        undefined,
+      ])
+      // The `root` the resolver carries is CLI-side only; the wire identity is the four
+      // fields the repos table is keyed by.
+      expect(sent[0]?.repo).toEqual({
+        host: "github.com",
+        owner: "refrens",
+        ownerType: "org",
+        repoName: "serana",
+      })
+    })
+
+    test("captures the session's starting cwd and HEAD once, on the flush that creates it, and never re-reads HEAD on a later flush", async () => {
+      const main = join(projects, "sess-1.jsonl")
+      await writeFile(main, `${assistantLine("l1", "sess-1", { cwd: "/work/serana" })}\n`, "utf8")
+
+      const heads = [
+        "37f31013b7ac0a2e6f4c9d1e5a8b2c7d0e3f4a5b",
+        "aaaabbbbccccddddeeeeffff0000111122223333",
+      ]
+      let headReads = 0
+      const resolveHead = async () => heads[headReads++] ?? null
+      const { resolveRepo } = repoDeps()
+
+      const sink1 = createInMemorySink()
+      await runCycle(
+        config,
+        deps({ sink: sink1, glob: async () => [main], resolveRepo, resolveHead }),
+      )
+      expect(sink1.received[0]).toMatchObject({
+        startCwd: "/work/serana",
+        startCommit: heads[0],
+      })
+
+      // HEAD moves as the session commits. A second flush must not re-stamp the origin with
+      // whatever HEAD has become -- that is the sha the session ended on, not started on.
+      await writeFile(
+        main,
+        `${assistantLine("l1", "sess-1", { cwd: "/work/serana" })}\n${assistantLine("l2", "sess-1", { cwd: "/work/serana" })}\n`,
+        "utf8",
+      )
+      const sink2 = createInMemorySink()
+      await runCycle(
+        config,
+        deps({ sink: sink2, glob: async () => [main], resolveRepo, resolveHead }),
+      )
+      expect(sink2.received[0]).not.toHaveProperty("startCommit")
+      expect(headReads).toBe(1)
+    })
+
+    test("a subagent flush carries no session origin, so it cannot re-stamp the session it belongs to", async () => {
+      const sub = join(projects, "sess-1", "subagents", "agent-af66.jsonl")
+      await mkdir(join(projects, "sess-1", "subagents"), { recursive: true })
+      await writeFile(
+        sub,
+        `${assistantLine("s1", "sess-1", { agentId: "af66", cwd: "/work/serana" })}\n`,
+        "utf8",
+      )
+      await writeFile(
+        sub.replace(/\.jsonl$/, ".meta.json"),
+        JSON.stringify({ agentId: "af66" }),
+        "utf8",
+      )
+
+      const sink = createInMemorySink()
+      const { resolveRepo } = repoDeps()
+      await runCycle(
+        config,
+        deps({
+          sink,
+          glob: async () => [sub],
+          resolveRepo,
+          resolveHead: async () => "37f31013b7ac0a2e6f4c9d1e5a8b2c7d0e3f4a5b",
+        }),
+      )
+
+      const payload = sink.received[0]
+      expect(payload?.type).toBe("subagent")
+      expect(payload).not.toHaveProperty("startCwd")
+      expect(payload).not.toHaveProperty("startCommit")
+      // Its messages are still attributed -- only the session's origin is main-only.
+      expect(payload?.records[0]?.messages[0]?.repo?.repoName).toBe("serana")
+    })
+  })
+
   describe("artifact enqueue", () => {
     // The transcript's cwd is /work/app, so the project root must contain it for the written
     // file to be judged in scope.

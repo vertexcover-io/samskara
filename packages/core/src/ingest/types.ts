@@ -21,6 +21,19 @@ const nonnegativeInteger = z.number().int().nonnegative()
 const jsonValue = z.unknown()
 const timestamp = z.string().datetime({ offset: true })
 
+/**
+ * `ownerType` cannot be told from a remote URL, so capture always sends "org"; only the GitHub
+ * API distinguishes a user from an org, and that lookup is not part of capture.
+ */
+export const repoIdentitySchema = z
+  .object({
+    host: nonemptyString,
+    owner: nonemptyString,
+    ownerType: z.enum(["user", "org"]),
+    repoName: nonemptyString,
+  })
+  .strict()
+
 export const tokenUsageSchema = z
   .object({
     input: nonnegativeInteger,
@@ -60,6 +73,8 @@ const commonShape = {
   model: nonemptyString.optional(),
   provider: nonemptyString.optional(),
   agentId: nonemptyString.optional(),
+  cwd: nonemptyString.optional(),
+  repo: repoIdentitySchema.optional(),
   gitBranch: nonemptyString.optional(),
   gitCommit: nonemptyString.optional(),
 }
@@ -358,9 +373,18 @@ const ingestBaseShape = {
   records: z.array(parsedRecordSchema).readonly(),
 }
 
+/**
+ * The session's launch context, captured once when the session is first seen. Only a main
+ * payload may carry it: a subagent flush arrives later and must not re-stamp the origin.
+ */
+const sessionOriginShape = {
+  startCwd: nonemptyString.optional(),
+  startCommit: nonemptyString.optional(),
+}
+
 export const ingestPayloadSchema = z
   .discriminatedUnion("type", [
-    z.object({ ...ingestBaseShape, type: z.literal("main") }).strict(),
+    z.object({ ...ingestBaseShape, ...sessionOriginShape, type: z.literal("main") }).strict(),
     z.object({ ...ingestBaseShape, type: z.literal("subagent"), agent: agentInfoSchema }).strict(),
   ])
   .superRefine((payload, ctx) => {
@@ -448,12 +472,7 @@ export type ProjectIdentity = z.infer<typeof projectIdentitySchema>
 export type AgentInfo = z.infer<typeof agentInfoSchema>
 export type IngestPayload = z.infer<typeof ingestPayloadSchema>
 
-export type RepoIdentity = {
-  readonly host: string
-  readonly owner: string
-  readonly ownerType: "user" | "org"
-  readonly repoName: string
-}
+export type RepoIdentity = z.infer<typeof repoIdentitySchema>
 
 export type IngestResponse =
   | { readonly ingested: number; readonly deduped: number }

@@ -20,7 +20,11 @@ import {
   tokenPath,
 } from "../config/paths.js"
 import { isProjectEnabled, syncFromFor } from "../config/projects.js"
-import { resolveLocalProject } from "../project-resolver.js"
+import {
+  createLocalRepoResolver,
+  resolveLocalHeadSha,
+  resolveLocalProject,
+} from "../project-resolver.js"
 import { runArtifactWorkers } from "./artifact-worker.js"
 import { type ArtifactCycleDeps, type WatcherConfig, type WatcherDeps, runCycle } from "./driver.js"
 import { createArtifactSink, createHttpSink } from "./sink.js"
@@ -130,6 +134,9 @@ export const watch = async (options: WatchOptions): Promise<void> => {
     ...(shouldCapture ? { shouldCapture } : {}),
     ...(cutoffFor ? { syncFromFor: cutoffFor } : {}),
     artifacts: artifactDeps(),
+    // One resolver for the daemon's whole life, so its cwd cache outlives a cycle.
+    resolveRepo: createLocalRepoResolver(),
+    resolveHead: resolveLocalHeadSha,
     log,
   }
 

@@ -15,6 +15,8 @@ import { visibleToUser } from "./projects.repo.js"
 
 export type SessionFields = {
   readonly title?: string
+  readonly startCwd?: string
+  readonly startCommit?: string
 }
 
 export type UpsertSessionInput = {
@@ -25,6 +27,11 @@ export type UpsertSessionInput = {
   readonly fields: SessionFields
 }
 
+/**
+ * Last-write-wins unless the incoming value is null, in which case the stored one stands --
+ * note `excluded` comes first. That is what a session's launch context needs: only the first
+ * flush carries it, and every later flush must leave it alone.
+ */
 const keepExisting = (column: PgColumn) =>
   sql`coalesce(${sql.raw(`excluded."${column.name}"`)}, ${column})`
 
@@ -38,11 +45,15 @@ export const upsert = async (db: Querier, input: UpsertSessionInput): Promise<vo
       userId,
       projectId,
       title: fields.title,
+      cwd: fields.startCwd,
+      startCommit: fields.startCommit,
     })
     .onConflictDoUpdate({
       target: sessions.id,
       set: {
         title: keepExisting(sessions.title),
+        cwd: keepExisting(sessions.cwd),
+        startCommit: keepExisting(sessions.startCommit),
         updatedAt: sql`now()`,
       },
     })
