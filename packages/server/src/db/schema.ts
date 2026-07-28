@@ -215,6 +215,48 @@ export const commits = pgTable(
   ],
 )
 
+/**
+ * A pull request, keyed by the repo its URL named and its number. Unlike a commit's facts, a
+ * title is mutable, so this row is upserted rather than frozen at first observation.
+ */
+export const pullRequests = pgTable(
+  "pullRequests",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    repoId: uuid("repoId")
+      .notNull()
+      .references(() => repos.id, { onDelete: "cascade" }),
+    number: integer("number").notNull(),
+    title: text("title"),
+    createdAt: createdAtCamel,
+    updatedAt: updatedAtCamel,
+  },
+  (t) => [unique("pullRequests_repo_number_unique").on(t.repoId, t.number)],
+)
+
+/**
+ * `createdHere` sits on the join rather than on the PR: whether a PR was *opened* is a fact
+ * about one session's relationship to it, and the same PR is referenced by many sessions.
+ */
+export const sessionPullRequests = pgTable(
+  "sessionPullRequests",
+  {
+    sessionId: text("sessionId")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    prId: uuid("prId")
+      .notNull()
+      .references(() => pullRequests.id, { onDelete: "cascade" }),
+    createdHere: boolean("createdHere").notNull().default(false),
+    messageId: uuid("messageId").references(() => messages.id, { onDelete: "set null" }),
+    createdAt: createdAtCamel,
+  },
+  (t) => [
+    primaryKey({ columns: [t.sessionId, t.prId] }),
+    index("sessionPullRequests_prId_idx").on(t.prId),
+  ],
+)
+
 export const toolCall = pgTable(
   "toolCall",
   {

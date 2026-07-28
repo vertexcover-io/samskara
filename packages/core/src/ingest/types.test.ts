@@ -56,3 +56,52 @@ test("S15: the strict project schema still rejects an unknown key", () => {
 test("S15: the project schema rejects an empty root rather than storing a meaningless path", () => {
   expect(projectIdentitySchema.safeParse({ name: "w", slug: "a-w", root: "" }).success).toBe(false)
 })
+
+test("a pull request git event carries its own repo on the ingest wire, and the union still admits commits", () => {
+  const parsed = ingestPayloadSchema.safeParse({
+    ...base,
+    type: "main",
+    gitEvents: [
+      {
+        kind: "pullRequest",
+        host: "github.com",
+        owner: "refrens",
+        repoName: "birds",
+        number: 391,
+        createdHere: true,
+        callId: "call-pr",
+      },
+      { kind: "commit", sha: "37f3101", callId: "call-commit" },
+    ],
+  })
+
+  expect(parsed.success).toBe(true)
+  expect(parsed.success && parsed.data.gitEvents?.map((event) => event.kind)).toEqual([
+    "pullRequest",
+    "commit",
+  ])
+})
+
+// A PR number is the other half of its identity, so a zero or a negative must not reach the DB.
+test("a pull request event with a non-positive number is rejected at the wire boundary", () => {
+  const withNumber = (number: number) =>
+    ingestPayloadSchema.safeParse({
+      ...base,
+      type: "main",
+      gitEvents: [
+        {
+          kind: "pullRequest",
+          host: "github.com",
+          owner: "refrens",
+          repoName: "birds",
+          number,
+          createdHere: false,
+          callId: "call-pr",
+        },
+      ],
+    }).success
+
+  expect(withNumber(391)).toBe(true)
+  expect(withNumber(0)).toBe(false)
+  expect(withNumber(-1)).toBe(false)
+})

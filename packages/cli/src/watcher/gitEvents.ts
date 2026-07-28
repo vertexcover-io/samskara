@@ -1,4 +1,11 @@
-import type { GitEvent, NormalizedMessage, ParsedRecord, RepoIdentity } from "@samskara/core"
+import type {
+  CommitEvent,
+  GitEvent,
+  NormalizedMessage,
+  ParsedRecord,
+  PullRequestEvent,
+  RepoIdentity,
+} from "@samskara/core"
 import type pino from "pino"
 import { z } from "zod"
 
@@ -25,7 +32,7 @@ const textOf = (output: unknown): string =>
 const count = (group: string | undefined, key: string): Record<string, number> =>
   group === undefined ? {} : { [key]: Number(group) }
 
-type CommitFacts = Omit<GitEvent, "kind" | "repo" | "callId">
+type CommitFacts = Omit<CommitEvent, "kind" | "repo" | "callId">
 
 const commitFacts = (output: unknown): CommitFacts | null => {
   const text = textOf(output)
@@ -45,6 +52,68 @@ const commitFacts = (output: unknown): CommitFacts | null => {
     ...count(insertions, "insertions"),
     ...count(deletions, "deletions"),
   }
+}
+
+/**
+ * `-/merge_requests` keeps GitLab working, and the host is captured rather than assumed so the
+ * `repos.host` column stays meaningful. The trailing `\d+` is what rejects a numberless URL.
+ */
+const PR_RE = /https?:\/\/([\w.-]+)\/([^/\s"]+)\/([^/\s"]+)\/(?:pull|-\/merge_requests)\/(\d+)/g
+
+/**
+ * A real invocation, not a substring: a grep whose *pattern* is `gh pr create` printed hundreds
+ * of PR URLs in the captured corpus, and a substring test would have recorded every one of them
+ * as newly opened.
+ */
+const PR_CREATE_RE = /(^|[\s;&|])gh\s+pr\s+create\b/
+
+const prTitleSchema = z.object({ number: z.number().int().positive(), title: z.string().min(1) })
+
+/**
+ * `gh pr list --json` prints an array of PRs; anything else parses to nothing and the URL scan
+ * alone supplies the facts. Titles are opportunistic -- most references carry none.
+ */
+const titlesByNumber = (text: string): ReadonlyMap<number, string> => {
+  const start = text.indexOf("[")
+  if (start === -1) return new Map()
+  try {
+    const parsed: unknown = JSON.parse(text.slice(start, text.lastIndexOf("]") + 1))
+    if (!Array.isArray(parsed)) return new Map()
+    return new Map(
+      parsed.flatMap((entry) => {
+        const pr = prTitleSchema.safeParse(entry)
+        return pr.success ? [[pr.data.number, pr.data.title] as const] : []
+      }),
+    )
+  } catch {
+    return new Map()
+  }
+}
+
+type PullRequestFacts = Omit<PullRequestEvent, "kind" | "createdHere" | "callId">
+
+/**
+ * Scans the result rather than the command, because one call routinely prints PRs in several
+ * different repos -- so each PR's repo comes from its own URL, never from the call's cwd.
+ */
+const pullRequestFacts = (output: unknown): ReadonlyArray<PullRequestFacts> => {
+  const text = textOf(output)
+  const titles = titlesByNumber(text)
+  const byKey = new Map<string, PullRequestFacts>()
+
+  for (const [, host, owner, repoName, digits] of text.matchAll(PR_RE)) {
+    if (!host || !owner || !repoName || !digits) continue
+    const number = Number(digits)
+    const title = titles.get(number)
+    byKey.set(`${host}/${owner}/${repoName}#${number}`, {
+      host,
+      owner,
+      repoName,
+      number,
+      ...(title ? { title } : {}),
+    })
+  }
+  return [...byKey.values()]
 }
 
 /**
@@ -109,6 +178,11 @@ export const collectGitEvents = (
         ...(call.repo ? { repo: call.repo } : {}),
         callId: message.details.callId,
       })
+    }
+
+    const createdHere = PR_CREATE_RE.test(call.command)
+    for (const facts of pullRequestFacts(message.details.output)) {
+      events.push({ kind: "pullRequest", ...facts, createdHere, callId: message.details.callId })
     }
   }
 

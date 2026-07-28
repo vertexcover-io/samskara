@@ -370,7 +370,7 @@ export const agentInfoSchema = z
  * git printed it -- an abbreviated sha cannot be expanded without the repo. `callId` points back
  * at the Bash call, which is how the commit finds the message that created it.
  */
-export const gitEventSchema = z
+export const commitEventSchema = z
   .object({
     kind: z.literal("commit"),
     sha: nonemptyString,
@@ -383,6 +383,29 @@ export const gitEventSchema = z
     callId: nonemptyString,
   })
   .strict()
+
+/**
+ * A pull request the session opened or read. Its repo is spelled out by the URL rather than
+ * carried in a `repo` field like a commit's: one call can print PRs in several repos, so the
+ * cwd the call ran in says nothing about which repo any one of them belongs to.
+ */
+export const pullRequestEventSchema = z
+  .object({
+    kind: z.literal("pullRequest"),
+    host: nonemptyString,
+    owner: nonemptyString,
+    repoName: nonemptyString,
+    number: z.number().int().positive(),
+    title: nonemptyString.optional(),
+    createdHere: z.boolean(),
+    callId: nonemptyString,
+  })
+  .strict()
+
+export const gitEventSchema = z.discriminatedUnion("kind", [
+  commitEventSchema,
+  pullRequestEventSchema,
+])
 
 const ingestBaseShape = {
   sessionId: nonemptyString,
@@ -494,6 +517,8 @@ export type IngestPayload = z.infer<typeof ingestPayloadSchema>
 
 export type RepoIdentity = z.infer<typeof repoIdentitySchema>
 export type GitEvent = z.infer<typeof gitEventSchema>
+export type CommitEvent = z.infer<typeof commitEventSchema>
+export type PullRequestEvent = z.infer<typeof pullRequestEventSchema>
 
 export type IngestResponse =
   | { readonly ingested: number; readonly deduped: number }

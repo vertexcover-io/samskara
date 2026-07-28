@@ -4,6 +4,7 @@ import type {
   IngestResponse,
   NormalizedMessage,
   ParsedRecord,
+  PullRequestEvent,
   RepoIdentity,
   TokenUsage,
 } from "@samskara/core"
@@ -13,6 +14,7 @@ import * as commitsRepo from "../repositories/commits.repo.js"
 import type { MessageRow } from "../repositories/messages.repo.js"
 import * as messagesRepo from "../repositories/messages.repo.js"
 import * as projectsRepo from "../repositories/projects.repo.js"
+import * as pullRequestsRepo from "../repositories/pullRequests.repo.js"
 import * as reposRepo from "../repositories/repos.repo.js"
 import * as sessionsRepo from "../repositories/sessions.repo.js"
 import * as subagentsRepo from "../repositories/subagents.repo.js"
@@ -54,6 +56,20 @@ const repoKeyOf = (repo: RepoIdentity): RepoIdKey =>
   [repo.host, repo.owner, repo.ownerType, repo.repoName].join(KEY_SEPARATOR)
 
 /**
+ * A PR names its repo in its own URL, which carries no owner type -- `org` is the assumption the
+ * URL cannot settle, and it only ever adds a repo the session's cwds did not already reach.
+ */
+const prRepoOf = (event: PullRequestEvent): RepoIdentity => ({
+  host: event.host,
+  owner: event.owner,
+  ownerType: "org",
+  repoName: event.repoName,
+})
+
+const repoOf = (event: GitEvent): RepoIdentity | undefined =>
+  event.kind === "commit" ? event.repo : prRepoOf(event)
+
+/**
  * Upserts each distinct repo once before the rows are mapped, so `toMessageRow` stays pure and
  * synchronous -- mirroring how the project is upserted once rather than per row.
  */
@@ -67,7 +83,8 @@ const resolveRepoIds = async (
     if (message.repo) distinct.set(repoKeyOf(message.repo), message.repo)
   }
   for (const event of gitEvents) {
-    if (event.repo) distinct.set(repoKeyOf(event.repo), event.repo)
+    const repo = repoOf(event)
+    if (repo) distinct.set(repoKeyOf(repo), repo)
   }
   const resolved = new Map<RepoIdKey, string>()
   for (const [key, identity] of distinct) {
@@ -113,25 +130,11 @@ const toMessageRow = (
   }
 }
 
-/**
- * A commit's repo is the one its own Bash call ran in -- never the session's or the project's,
- * because a sub-repo inside a workspace is only identifiable from the calling message's cwd.
- * An event whose repo never resolved is dropped: `commits.repoId` is half its identity.
- */
-const storeCommits = async (
-  tx: Querier,
-  input: {
-    readonly sessionId: string
-    readonly events: ReadonlyArray<GitEvent>
-    readonly flatMessages: ReadonlyArray<FlatMessage>
-    readonly repoIdByKey: ReadonlyMap<RepoIdKey, string>
-    readonly idByKey: ReadonlyMap<messagesRepo.MessageKey, string>
-  },
-): Promise<void> => {
-  const { sessionId, events, flatMessages, repoIdByKey, idByKey } = input
-  if (events.length === 0) return
-
-  const messageIdByCallId = new Map(
+const messageIdsByCallId = (
+  flatMessages: ReadonlyArray<FlatMessage>,
+  idByKey: ReadonlyMap<messagesRepo.MessageKey, string>,
+): ReadonlyMap<string, string> =>
+  new Map(
     flatMessages.flatMap((flat) => {
       const { message } = flat
       if (message.msgType !== "toolCall") return []
@@ -140,7 +143,25 @@ const storeCommits = async (
     }),
   )
 
+type StoreInput = {
+  readonly sessionId: string
+  readonly events: ReadonlyArray<GitEvent>
+  readonly flatMessages: ReadonlyArray<FlatMessage>
+  readonly repoIdByKey: ReadonlyMap<RepoIdKey, string>
+  readonly idByKey: ReadonlyMap<messagesRepo.MessageKey, string>
+}
+
+/**
+ * A commit's repo is the one its own Bash call ran in -- never the session's or the project's,
+ * because a sub-repo inside a workspace is only identifiable from the calling message's cwd.
+ * An event whose repo never resolved is dropped: `commits.repoId` is half its identity.
+ */
+const storeCommits = async (tx: Querier, input: StoreInput): Promise<void> => {
+  const { sessionId, events, flatMessages, repoIdByKey, idByKey } = input
+  const messageIdByCallId = messageIdsByCallId(flatMessages, idByKey)
+
   const rows = events.flatMap((event) => {
+    if (event.kind !== "commit") return []
     const repoId = event.repo ? repoIdByKey.get(repoKeyOf(event.repo)) : undefined
     if (!repoId) return []
     return [
@@ -159,6 +180,33 @@ const storeCommits = async (
   })
 
   await commitsRepo.insertObserved(tx, rows)
+}
+
+/**
+ * Unlike a commit, a PR's repo comes from its own URL rather than the calling message's cwd --
+ * one call routinely prints PRs belonging to several different repos.
+ */
+const storePullRequests = async (tx: Querier, input: StoreInput): Promise<void> => {
+  const { sessionId, events, flatMessages, repoIdByKey, idByKey } = input
+  const messageIdByCallId = messageIdsByCallId(flatMessages, idByKey)
+
+  const rows = events.flatMap((event) => {
+    if (event.kind !== "pullRequest") return []
+    const repoId = repoIdByKey.get(repoKeyOf(prRepoOf(event)))
+    if (!repoId) return []
+    return [
+      {
+        repoId,
+        number: event.number,
+        title: event.title,
+        sessionId,
+        createdHere: event.createdHere,
+        messageId: messageIdByCallId.get(event.callId),
+      },
+    ]
+  })
+
+  await pullRequestsRepo.upsertObserved(tx, rows)
 }
 
 const deriveToolRows = async (
@@ -245,13 +293,15 @@ export const ingest = async (ctx: Ctx, payload: IngestPayload): Promise<IngestRe
         payload.sessionId,
         rows,
       )
-      await storeCommits(tx, {
+      const storeInput = {
         sessionId: payload.sessionId,
         events: gitEvents,
         flatMessages: flat,
         repoIdByKey,
         idByKey,
-      })
+      }
+      await storeCommits(tx, storeInput)
+      await storePullRequests(tx, storeInput)
       await deriveToolRows(tx, flat, idByKey)
       await storeTokens(tx, flat, idByKey)
       await subagentsRepo.resolveParentAgentIds(tx, payload.sessionId)

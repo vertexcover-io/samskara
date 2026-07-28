@@ -36,6 +36,22 @@ const SUB_REPO_REMOTE = "git@github.com:refrens/serana.git"
 
 const execFileAsync = promisify(execFile)
 
+/**
+ * Claude stamps `cwd` on every transcript line, so a session that moves between checkouts writes
+ * both cwds into one file. The shared writer pins one cwd, so the moved-to lines are appended
+ * here directly.
+ */
+const appendWithCwd = (
+  path: string,
+  cwd: string,
+  lines: ReadonlyArray<Record<string, unknown>>,
+): Promise<void> =>
+  writeFile(
+    path,
+    lines.map((line) => `${JSON.stringify({ ...line, sessionId: SESSION_ID, cwd })}\n`).join(""),
+    { flag: "a", encoding: "utf8" },
+  )
+
 type Sql = ReturnType<typeof postgres>
 
 const mintCliToken = (): Promise<string> =>
@@ -68,6 +84,7 @@ const pollUntil = async <T>(
 }
 
 type Harness = {
+  readonly home: string
   readonly cwd: string
   readonly subRepo: string
   readonly sql: Sql
@@ -155,6 +172,7 @@ const startHarness = async (): Promise<Harness> => {
   const sql = postgres(DATABASE_URL)
 
   return {
+    home,
     cwd,
     subRepo,
     sql,
@@ -176,7 +194,7 @@ const clearRows = async (): Promise<void> => {
   try {
     await sql`delete from sessions where id = ${SESSION_ID}`
     await sql`delete from projects where slug = ${PROJECT_SLUG}`
-    await sql`delete from repos where "repo_name" in (${SUB_REPO_NAME}, 'widgets')`
+    await sql`delete from repos where "repo_name" in (${SUB_REPO_NAME}, 'widgets', 'birds')`
   } finally {
     await sql.end()
   }
@@ -289,5 +307,70 @@ test.describe("commit capture", () => {
       select count(*)::text as count from commits where "sessionId" = ${SESSION_ID}
     `
     expect(Number(after[0]?.count)).toBe(1)
+  })
+
+  test("E2/S20: one session opening a PR and committing in two checkouts records the PR against the repo its url named, and each commit against the checkout it ran in", async () => {
+    harness = await startHarness()
+    const { writer, sql, cwd } = harness
+
+    await writer.append([
+      userLine("Open the PR, then commit in both checkouts.", 0),
+      assistantLine("Opening the PR.", 1),
+      toolCallLine("toolu-pr-1", "Bash", { command: "gh pr create --fill" }, 2),
+      // The PR names `refrens/birds` -- a repo no cwd in this session ever pointed at, which is
+      // exactly why a PR's repo must come from its url rather than the call's working directory.
+      toolResultLine("toolu-pr-1", "https://github.com/refrens/birds/pull/391", 3),
+      // A later read of the same PR must not downgrade it from opened to merely referenced.
+      toolCallLine("toolu-pr-2", "Bash", { command: "gh pr view 391" }, 4),
+      toolResultLine("toolu-pr-2", "https://github.com/refrens/birds/pull/391", 5),
+      toolCallLine("toolu-commit-sub", "Bash", { command: "git commit -m 'feat: sub'" }, 6),
+      toolResultLine(
+        "toolu-commit-sub",
+        "[main 5ab1111] feat: sub\n 1 file changed, 2 insertions(+)",
+        7,
+      ),
+    ])
+
+    // The second commit is made in the PROJECT ROOT checkout. Claude writes cwd per line, so the
+    // move shows up as a different cwd on the same transcript -- which is what makes one session
+    // span two repos.
+    await appendWithCwd(writer.mainPath, cwd, [
+      toolCallLine("toolu-commit-root", "Bash", { command: "git commit -m 'feat: root'" }, 8),
+      toolResultLine(
+        "toolu-commit-root",
+        "[main c00d222] feat: root\n 4 files changed, 9 insertions(+)",
+        9,
+      ),
+    ])
+
+    const commitRows = await pollUntil(
+      () => sql<{ sha: string; repoName: string }[]>`
+        select c.sha, r.repo_name as "repoName"
+        from commits c join repos r on r.id = c."repoId"
+        where c."sessionId" = ${SESSION_ID} order by c.sha
+      `,
+      (rows) => rows.length >= 2,
+      (rows) => `${rows.length} commit rows; daemon said: ${harness.logs.join("")}`,
+    )
+
+    // Each commit carries the repo of the checkout it ran in, not one shared attribution.
+    expect(commitRows).toEqual([
+      { sha: "5ab1111", repoName: SUB_REPO_NAME },
+      { sha: "c00d222", repoName: "widgets" },
+    ])
+
+    const prRows = await pollUntil(
+      () => sql<{ number: number; repoName: string; createdHere: boolean }[]>`
+        select p.number, r.repo_name as "repoName", spr."createdHere"
+        from "sessionPullRequests" spr
+        join "pullRequests" p on p.id = spr."prId"
+        join repos r on r.id = p."repoId"
+        where spr."sessionId" = ${SESSION_ID}
+      `,
+      (rows) => rows.length >= 1,
+      (rows) => `${rows.length} pull request rows; daemon said: ${harness.logs.join("")}`,
+    )
+
+    expect(prRows).toEqual([{ number: 391, repoName: "birds", createdHere: true }])
   })
 })

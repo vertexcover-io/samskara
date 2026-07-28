@@ -1,4 +1,11 @@
-import type { GitEvent, NormalizedMessage, ParsedRecord, RepoIdentity } from "@samskara/core"
+import type {
+  CommitEvent,
+  GitEvent,
+  NormalizedMessage,
+  ParsedRecord,
+  PullRequestEvent,
+  RepoIdentity,
+} from "@samskara/core"
 import { createLogger } from "@samskara/core"
 import { describe, expect, test } from "vitest"
 import { collectGitEvents } from "./gitEvents.js"
@@ -55,13 +62,24 @@ const collect = (messages: ReadonlyArray<NormalizedMessage>): ReadonlyArray<GitE
     log,
   )
 
+const commitsIn = (events: ReadonlyArray<GitEvent>): ReadonlyArray<CommitEvent> =>
+  events.flatMap((event) => (event.kind === "commit" ? [event] : []))
+
+const prsIn = (events: ReadonlyArray<GitEvent>): ReadonlyArray<PullRequestEvent> =>
+  events.flatMap((event) => (event.kind === "pullRequest" ? [event] : []))
+
 const commitOf = (
   command: string,
   output: unknown,
   status: ResultStatus = "success",
   repo?: RepoIdentity,
-): GitEvent | undefined =>
-  collect([bashCall(0, "call-1", command, repo), bashResult(1, "call-1", output, status)])[0]
+): CommitEvent | undefined =>
+  commitsIn(
+    collect([bashCall(0, "call-1", command, repo), bashResult(1, "call-1", output, status)]),
+  )[0]
+
+const prsOf = (command: string, output: unknown): ReadonlyArray<PullRequestEvent> =>
+  prsIn(collect([bashCall(0, "call-pr", command), bashResult(1, "call-pr", output)]))
 
 describe("collectGitEvents", () => {
   test("S8: a commit's sha, branch, subject and stats come out of real git output", () => {
@@ -200,10 +218,112 @@ describe("collectGitEvents", () => {
       bashResult(3, "call-b", "[main bbb2222] two\n 1 file changed, 1 insertion(+)"),
     ])
 
-    expect(events.map((event) => [event.sha, event.repo?.repoName])).toEqual([
+    expect(commitsIn(events).map((event) => [event.sha, event.repo?.repoName])).toEqual([
       ["aaa1111", "serana"],
       ["bbb2222", "andromeda"],
     ])
+  })
+
+  test("S15: a bare PR url printed by gh pr create is recorded as opened, against the repo the url names", () => {
+    expect(
+      prsOf("gh pr create --fill", "https://github.com/vertexcover-io/harness-engineering/pull/59"),
+    ).toEqual([
+      {
+        kind: "pullRequest",
+        host: "github.com",
+        owner: "vertexcover-io",
+        repoName: "harness-engineering",
+        number: 59,
+        createdHere: true,
+        callId: "call-pr",
+      },
+    ])
+  })
+
+  test("S16: one call printing PR urls for five repos records four PRs, each against the repo in its own url, and drops the numberless one", () => {
+    const prs = prsOf(
+      "gh pr create --fill",
+      [
+        "=== PR: birds ===",
+        "https://github.com/refrens/birds/pull/391",
+        "=== PR: talos ===",
+        "https://github.com/refrens/talos/pull/835",
+        "=== PR: disco ===",
+        "https://github.com/refrens/disco/pull/1034",
+        "=== PR: mudra ===",
+        "https://github.com/refrens/mudra/pull/24",
+        "=== PR: jupiter ===",
+        "https://github.com/refrens/jupiter/pull/",
+      ].join("\n"),
+    )
+
+    expect(prs.map((pr) => [pr.repoName, pr.number])).toEqual([
+      ["birds", 391],
+      ["talos", 835],
+      ["disco", 1034],
+      ["mudra", 24],
+    ])
+  })
+
+  test("S17: the same PR url seen through gh pr view is recorded but not marked as opened", () => {
+    const prs = prsOf(
+      "gh pr view 59 --json url",
+      "https://github.com/vertexcover-io/harness-engineering/pull/59",
+    )
+
+    expect(prs).toHaveLength(1)
+    expect(prs[0]).toMatchObject({ number: 59, createdHere: false })
+  })
+
+  test("S18: a grep whose search pattern contains the words gh pr create opens nothing", () => {
+    const prs = prsOf(
+      "grep -rn 'gh pr create' ~/.claude/projects",
+      [
+        "notes.md:4: https://github.com/refrens/birds/pull/391",
+        "notes.md:9: https://github.com/refrens/talos/pull/835",
+      ].join("\n"),
+    )
+
+    expect(prs.map((pr) => pr.createdHere)).toEqual([false, false])
+  })
+
+  test("a gh pr list --json result yields the PR's title, where a bare url carries none", () => {
+    const [withTitle] = prsOf(
+      "gh pr list --json number,title,url",
+      '[{"number":1034,"title":"feat: local source-graph — consume @refrens deps from source in dev","url":"https://github.com/refrens/disco/pull/1034"}]',
+    )
+
+    expect(withTitle).toMatchObject({
+      repoName: "disco",
+      number: 1034,
+      title: "feat: local source-graph — consume @refrens deps from source in dev",
+    })
+
+    const [bare] = prsOf(
+      "gh pr view 59",
+      "https://github.com/vertexcover-io/harness-engineering/pull/59",
+    )
+    expect(bare).not.toHaveProperty("title")
+  })
+
+  test("a GitLab merge request url is captured with its own host, so repos.host is not assumed to be github.com", () => {
+    const [event] = prsOf("glab mr view 12", "https://gitlab.com/acme/serana/-/merge_requests/12")
+
+    expect(event).toMatchObject({
+      host: "gitlab.com",
+      owner: "acme",
+      repoName: "serana",
+      number: 12,
+    })
+  })
+
+  test("the same PR url printed twice by one call records one PR, not two", () => {
+    expect(
+      prsOf(
+        "gh pr view 59",
+        "https://github.com/refrens/birds/pull/391\nhttps://github.com/refrens/birds/pull/391",
+      ),
+    ).toHaveLength(1)
   })
 
   test("a result with no matching Bash call, and a non-Bash tool, both record nothing", () => {

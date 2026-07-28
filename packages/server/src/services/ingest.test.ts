@@ -10,7 +10,9 @@ import {
   commits,
   messages,
   projects,
+  pullRequests,
   repos,
+  sessionPullRequests,
   sessions,
   subagents,
   tokenUsage,
@@ -495,5 +497,213 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
 
     expect(after).toHaveLength(1)
     expect(after).toEqual(before)
+  })
+
+  const prPayload = (
+    sessionId: string,
+    event: {
+      readonly number: number
+      readonly createdHere: boolean
+      readonly repoName?: string
+      readonly title?: string
+      readonly lineUuid: string
+    },
+  ): IngestPayload => {
+    const call = customMessage({ sessionId, lineUuid: event.lineUuid, lineNumber: 1 })
+    return {
+      ...mainPayload(sessionId, [
+        {
+          ...call,
+          message: {
+            ...call.message,
+            msgType: "toolCall",
+            details: { callId: "call-pr", name: "Bash", input: { command: "gh pr create" } },
+          } as NormalizedMessage,
+        },
+      ]),
+      gitEvents: [
+        {
+          kind: "pullRequest",
+          host: "github.com",
+          owner: "vertexcover-io",
+          repoName: event.repoName ?? "harness-engineering",
+          number: event.number,
+          ...(event.title ? { title: event.title } : {}),
+          createdHere: event.createdHere,
+          callId: "call-pr",
+        },
+      ],
+    }
+  }
+
+  const prRowsFor = (sessionId: string) =>
+    db
+      .select({
+        number: pullRequests.number,
+        title: pullRequests.title,
+        repoName: repos.repoName,
+        host: repos.host,
+        owner: repos.owner,
+        createdHere: sessionPullRequests.createdHere,
+        messageId: sessionPullRequests.messageId,
+      })
+      .from(sessionPullRequests)
+      .innerJoin(pullRequests, eq(pullRequests.id, sessionPullRequests.prId))
+      .innerJoin(repos, eq(repos.id, pullRequests.repoId))
+      .where(eq(sessionPullRequests.sessionId, sessionId))
+
+  test("S15b: a PR opened by the session lands against the repo its own url named, linked to the message that opened it", async () => {
+    const sessionId = "sess-pr-created"
+    await ingest(
+      ctx,
+      prPayload(sessionId, {
+        number: 59,
+        createdHere: true,
+        lineUuid: "0191d942-3ba5-7dba-9a7d-0000000000d1",
+      }),
+    )
+
+    const rows = await prRowsFor(sessionId)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({
+      number: 59,
+      host: "github.com",
+      owner: "vertexcover-io",
+      repoName: "harness-engineering",
+      createdHere: true,
+    })
+
+    const [caller] = await db
+      .select({ id: messages.id })
+      .from(messages)
+      .where(and(eq(messages.sessionId, sessionId), eq(messages.msgType, "toolCall")))
+    expect(rows[0]?.messageId).toBe(caller?.id)
+  })
+
+  test("S19: a session that opens a PR then re-reads it keeps one row still marked as opened", async () => {
+    const sessionId = "sess-pr-created-then-viewed"
+    await ingest(
+      ctx,
+      prPayload(sessionId, {
+        number: 77,
+        createdHere: true,
+        lineUuid: "0191d942-3ba5-7dba-9a7d-0000000000d2",
+      }),
+    )
+    await ingest(
+      ctx,
+      prPayload(sessionId, {
+        number: 77,
+        createdHere: false,
+        title: "feat: capture pull requests",
+        lineUuid: "0191d942-3ba5-7dba-9a7d-0000000000d3",
+      }),
+    )
+
+    const rows = await prRowsFor(sessionId)
+    expect(rows).toHaveLength(1)
+    // The later reference updates the mutable title but must never downgrade authorship.
+    expect(rows[0]).toMatchObject({
+      number: 77,
+      createdHere: true,
+      title: "feat: capture pull requests",
+    })
+  })
+
+  test("S20: a session working across two repos attributes each of its commits to the checkout it was made in, and lists both repos as touched", async () => {
+    const sessionId = "sess-two-repo-acceptance"
+    const birds: RepoIdentity = {
+      host: "github.com",
+      owner: "refrens",
+      ownerType: "org",
+      repoName: "birds",
+    }
+    const talos: RepoIdentity = { ...birds, repoName: "talos" }
+
+    const inRepo = (
+      lineUuid: string,
+      lineNumber: number,
+      callId: string,
+      repo: RepoIdentity,
+    ): TestMessage => {
+      const base = customMessage({ sessionId, lineUuid, lineNumber })
+      return {
+        ...base,
+        message: {
+          ...base.message,
+          msgType: "toolCall",
+          details: { callId, name: "Bash", input: { command: "git commit" } },
+          repo,
+        } as NormalizedMessage,
+      }
+    }
+
+    await ingest(ctx, {
+      ...mainPayload(sessionId, [
+        inRepo("0191d942-3ba5-7dba-9a7d-0000000000e1", 1, "call-birds", birds),
+        inRepo("0191d942-3ba5-7dba-9a7d-0000000000e2", 2, "call-talos", talos),
+      ]),
+      gitEvents: [
+        {
+          kind: "commit",
+          sha: "b1rd5aa",
+          branch: "feat/birds",
+          subject: "feat: birds work",
+          repo: birds,
+          callId: "call-birds",
+        },
+        {
+          kind: "commit",
+          sha: "ta105bb",
+          branch: "feat/talos",
+          subject: "feat: talos work",
+          repo: talos,
+          callId: "call-talos",
+        },
+      ],
+    })
+
+    const rows = await db
+      .select({ sha: commits.sha, repoName: repos.repoName, repoId: commits.repoId })
+      .from(commits)
+      .innerJoin(repos, eq(repos.id, commits.repoId))
+      .where(eq(commits.sessionId, sessionId))
+
+    expect(rows).toHaveLength(2)
+    expect(new Set(rows.map((row) => `${row.sha}:${row.repoName}`))).toEqual(
+      new Set(["b1rd5aa:birds", "ta105bb:talos"]),
+    )
+    // Two distinct repos, not one shared attribution.
+    expect(new Set(rows.map((row) => row.repoId)).size).toBe(2)
+
+    const touched = await db
+      .selectDistinct({ repoName: repos.repoName })
+      .from(messages)
+      .innerJoin(repos, eq(repos.id, messages.repoId))
+      .where(eq(messages.sessionId, sessionId))
+    expect(new Set(touched.map((row) => row.repoName))).toEqual(new Set(["birds", "talos"]))
+  })
+
+  test("a PR naming a repo the session never had a cwd in still creates that repo", async () => {
+    const sessionId = "sess-pr-unvisited-repo"
+    await ingest(
+      ctx,
+      prPayload(sessionId, {
+        number: 391,
+        createdHere: false,
+        repoName: "birds",
+        lineUuid: "0191d942-3ba5-7dba-9a7d-0000000000d4",
+      }),
+    )
+
+    const rows = await prRowsFor(sessionId)
+    expect(rows[0]).toMatchObject({ repoName: "birds", number: 391, createdHere: false })
+
+    const [row] = await db
+      .select({ repoId: messages.repoId })
+      .from(messages)
+      .where(eq(messages.sessionId, sessionId))
+    // No message carried a repo, so the repo exists only because the PR's URL named it.
+    expect(row?.repoId).toBeNull()
   })
 })

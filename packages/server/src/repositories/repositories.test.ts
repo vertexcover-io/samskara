@@ -7,6 +7,8 @@ import { type Db, createDb } from "../db/client.js"
 import {
   commits,
   projects,
+  pullRequests,
+  sessionPullRequests,
   sessions,
   subagents,
   tokenUsage,
@@ -16,6 +18,7 @@ import {
 import * as commitsRepo from "./commits.repo.js"
 import * as messagesRepo from "./messages.repo.js"
 import * as projectsRepo from "./projects.repo.js"
+import * as pullRequestsRepo from "./pullRequests.repo.js"
 import * as reposRepo from "./repos.repo.js"
 import * as sessionsRepo from "./sessions.repo.js"
 import * as subagentsRepo from "./subagents.repo.js"
@@ -436,6 +439,69 @@ describe.skipIf(!dockerAvailable())("ingest repositories", () => {
       expect(at(5)).toBeNull()
       expect(at(6)).toBe("eee5555")
       expect(at(8)).toBe("eee5555")
+    })
+
+    const linkOf = async (sessionId: string, repoId: string) => {
+      const [row] = await db
+        .select({
+          createdHere: sessionPullRequests.createdHere,
+          title: pullRequests.title,
+          number: pullRequests.number,
+        })
+        .from(sessionPullRequests)
+        .innerJoin(pullRequests, eq(pullRequests.id, sessionPullRequests.prId))
+        .where(eq(pullRequests.repoId, repoId))
+      return row
+    }
+
+    test("a PR opened then merely referenced again stays marked as opened, while its mutable title updates", async () => {
+      const sessionId = "sess-pr-or"
+      await startSessionAt(sessionId)
+      const repoId = await seedRepo("pr-or-repo")
+
+      await pullRequestsRepo.upsertObserved(db, [
+        { repoId, number: 59, sessionId, createdHere: true },
+      ])
+      await pullRequestsRepo.upsertObserved(db, [
+        { repoId, number: 59, sessionId, createdHere: false, title: "feat: capture PRs" },
+      ])
+
+      // createdHere is OR-ed, never overwritten: authorship cannot be downgraded by a later read.
+      expect(await linkOf(sessionId, repoId)).toEqual({
+        createdHere: true,
+        title: "feat: capture PRs",
+        number: 59,
+      })
+    })
+
+    test("a PR first seen as a reference and only later opened is promoted to opened", async () => {
+      const sessionId = "sess-pr-promote"
+      await startSessionAt(sessionId)
+      const repoId = await seedRepo("pr-promote-repo")
+
+      await pullRequestsRepo.upsertObserved(db, [
+        { repoId, number: 77, sessionId, createdHere: false },
+      ])
+      await pullRequestsRepo.upsertObserved(db, [
+        { repoId, number: 77, sessionId, createdHere: true },
+      ])
+
+      expect((await linkOf(sessionId, repoId))?.createdHere).toBe(true)
+    })
+
+    test("a re-observation carrying no title leaves the title already recorded intact", async () => {
+      const sessionId = "sess-pr-title"
+      await startSessionAt(sessionId)
+      const repoId = await seedRepo("pr-title-repo")
+
+      await pullRequestsRepo.upsertObserved(db, [
+        { repoId, number: 12, sessionId, createdHere: false, title: "feat: first title" },
+      ])
+      await pullRequestsRepo.upsertObserved(db, [
+        { repoId, number: 12, sessionId, createdHere: false },
+      ])
+
+      expect((await linkOf(sessionId, repoId))?.title).toBe("feat: first title")
     })
   })
 })
