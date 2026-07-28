@@ -420,6 +420,79 @@ describe("watcher driver", () => {
       // Its messages are still attributed -- only the session's origin is main-only.
       expect(payload?.records[0]?.messages[0]?.repo?.repoName).toBe("serana")
     })
+
+    test("S13c: a git commit run in a sub-repo rides out on the payload carrying that sub-repo's identity", async () => {
+      const main = join(projects, "sess-1.jsonl")
+      const bashCall = JSON.stringify({
+        uuid: "c1",
+        sessionId: "sess-1",
+        cwd: "/work/serana",
+        timestamp: "2026-07-23T00:00:00.000Z",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu_commit",
+              name: "Bash",
+              input: { command: "git commit -m 'feat: sub-repo work'" },
+            },
+          ],
+        },
+      })
+      const bashResult = JSON.stringify({
+        uuid: "c2",
+        sessionId: "sess-1",
+        cwd: "/work/serana",
+        timestamp: "2026-07-23T00:00:01.000Z",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_commit",
+              content:
+                "[feat/local-source-graph 2314a2e44] feat: sub-repo work\n 3 files changed, 8 insertions(+), 2 deletions(-)",
+            },
+          ],
+        },
+      })
+      await writeFile(main, `${bashCall}\n${bashResult}\n`, "utf8")
+
+      const sink = createInMemorySink()
+      const { resolveRepo } = repoDeps()
+      await runCycle(config, deps({ sink, glob: async () => [main], resolveRepo }))
+
+      expect(sink.received[0]?.gitEvents).toEqual([
+        {
+          kind: "commit",
+          sha: "2314a2e44",
+          branch: "feat/local-source-graph",
+          subject: "feat: sub-repo work",
+          filesChanged: 3,
+          insertions: 8,
+          deletions: 2,
+          repo: {
+            host: "github.com",
+            owner: "refrens",
+            ownerType: "org",
+            repoName: "serana",
+          },
+          callId: "toolu_commit",
+        },
+      ])
+    })
+
+    test("a flush with no git commit in it carries no gitEvents at all", async () => {
+      const main = join(projects, "sess-1.jsonl")
+      await writeFile(main, `${assistantLine("l1", "sess-1", { cwd: "/work/serana" })}\n`, "utf8")
+
+      const sink = createInMemorySink()
+      const { resolveRepo } = repoDeps()
+      await runCycle(config, deps({ sink, glob: async () => [main], resolveRepo }))
+
+      expect(sink.received[0]).not.toHaveProperty("gitEvents")
+    })
   })
 
   describe("artifact enqueue", () => {

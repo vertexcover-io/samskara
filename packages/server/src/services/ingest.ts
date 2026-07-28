@@ -1,4 +1,5 @@
 import type {
+  GitEvent,
   IngestPayload,
   IngestResponse,
   NormalizedMessage,
@@ -8,6 +9,7 @@ import type {
 } from "@samskara/core"
 import type pino from "pino"
 import type { Db, Querier } from "../db/client.js"
+import * as commitsRepo from "../repositories/commits.repo.js"
 import type { MessageRow } from "../repositories/messages.repo.js"
 import * as messagesRepo from "../repositories/messages.repo.js"
 import * as projectsRepo from "../repositories/projects.repo.js"
@@ -58,10 +60,14 @@ const repoKeyOf = (repo: RepoIdentity): RepoIdKey =>
 const resolveRepoIds = async (
   tx: Querier,
   flatMessages: ReadonlyArray<FlatMessage>,
+  gitEvents: ReadonlyArray<GitEvent>,
 ): Promise<ReadonlyMap<RepoIdKey, string>> => {
   const distinct = new Map<RepoIdKey, RepoIdentity>()
   for (const { message } of flatMessages) {
     if (message.repo) distinct.set(repoKeyOf(message.repo), message.repo)
+  }
+  for (const event of gitEvents) {
+    if (event.repo) distinct.set(repoKeyOf(event.repo), event.repo)
   }
   const resolved = new Map<RepoIdKey, string>()
   for (const [key, identity] of distinct) {
@@ -104,8 +110,55 @@ const toMessageRow = (
     agentId: message.agentId,
     repoId: message.repo ? repoIdByKey.get(repoKeyOf(message.repo)) : undefined,
     gitBranch: message.gitBranch,
-    gitCommit: message.gitCommit,
   }
+}
+
+/**
+ * A commit's repo is the one its own Bash call ran in -- never the session's or the project's,
+ * because a sub-repo inside a workspace is only identifiable from the calling message's cwd.
+ * An event whose repo never resolved is dropped: `commits.repoId` is half its identity.
+ */
+const storeCommits = async (
+  tx: Querier,
+  input: {
+    readonly sessionId: string
+    readonly events: ReadonlyArray<GitEvent>
+    readonly flatMessages: ReadonlyArray<FlatMessage>
+    readonly repoIdByKey: ReadonlyMap<RepoIdKey, string>
+    readonly idByKey: ReadonlyMap<messagesRepo.MessageKey, string>
+  },
+): Promise<void> => {
+  const { sessionId, events, flatMessages, repoIdByKey, idByKey } = input
+  if (events.length === 0) return
+
+  const messageIdByCallId = new Map(
+    flatMessages.flatMap((flat) => {
+      const { message } = flat
+      if (message.msgType !== "toolCall") return []
+      const id = idByKey.get(messagesRepo.keyOf(flat.lineUuid, message.subIndex))
+      return id ? [[message.details.callId, id] as const] : []
+    }),
+  )
+
+  const rows = events.flatMap((event) => {
+    const repoId = event.repo ? repoIdByKey.get(repoKeyOf(event.repo)) : undefined
+    if (!repoId) return []
+    return [
+      {
+        repoId,
+        sha: event.sha,
+        branch: event.branch,
+        subject: event.subject,
+        filesChanged: event.filesChanged,
+        insertions: event.insertions,
+        deletions: event.deletions,
+        sessionId,
+        messageId: messageIdByCallId.get(event.callId),
+      },
+    ]
+  })
+
+  await commitsRepo.insertObserved(tx, rows)
 }
 
 const deriveToolRows = async (
@@ -184,13 +237,21 @@ export const ingest = async (ctx: Ctx, payload: IngestPayload): Promise<IngestRe
         })
       }
 
-      const repoIdByKey = await resolveRepoIds(tx, flat)
+      const gitEvents = payload.gitEvents ?? []
+      const repoIdByKey = await resolveRepoIds(tx, flat, gitEvents)
       const rows = flat.map((message) => toMessageRow(message, repoIdByKey))
       const { ingested, deduped, idByKey } = await messagesRepo.insertManyIgnoreConflicts(
         tx,
         payload.sessionId,
         rows,
       )
+      await storeCommits(tx, {
+        sessionId: payload.sessionId,
+        events: gitEvents,
+        flatMessages: flat,
+        repoIdByKey,
+        idByKey,
+      })
       await deriveToolRows(tx, flat, idByKey)
       await storeTokens(tx, flat, idByKey)
       await subagentsRepo.resolveParentAgentIds(tx, payload.sessionId)

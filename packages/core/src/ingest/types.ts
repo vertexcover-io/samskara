@@ -365,12 +365,32 @@ export const agentInfoSchema = z
   })
   .strict()
 
+/**
+ * A commit the session made, parsed from the tool output that produced it. `sha` is stored as
+ * git printed it -- an abbreviated sha cannot be expanded without the repo. `callId` points back
+ * at the Bash call, which is how the commit finds the message that created it.
+ */
+export const gitEventSchema = z
+  .object({
+    kind: z.literal("commit"),
+    sha: nonemptyString,
+    branch: nonemptyString.optional(),
+    subject: z.string().optional(),
+    filesChanged: nonnegativeInteger.optional(),
+    insertions: nonnegativeInteger.optional(),
+    deletions: nonnegativeInteger.optional(),
+    repo: repoIdentitySchema.optional(),
+    callId: nonemptyString,
+  })
+  .strict()
+
 const ingestBaseShape = {
   sessionId: nonemptyString,
   project: projectIdentitySchema,
   sourceRelativePath: nonemptyString,
   title: z.string().optional(),
   records: z.array(parsedRecordSchema).readonly(),
+  gitEvents: z.array(gitEventSchema).readonly().optional(),
 }
 
 /**
@@ -473,6 +493,7 @@ export type AgentInfo = z.infer<typeof agentInfoSchema>
 export type IngestPayload = z.infer<typeof ingestPayloadSchema>
 
 export type RepoIdentity = z.infer<typeof repoIdentitySchema>
+export type GitEvent = z.infer<typeof gitEventSchema>
 
 export type IngestResponse =
   | { readonly ingested: number; readonly deduped: number }

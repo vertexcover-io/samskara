@@ -4,9 +4,19 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
 import { type Db, createDb } from "../db/client.js"
-import { projects, sessions, subagents, tokenUsage, toolCall, users } from "../db/schema.js"
+import {
+  commits,
+  projects,
+  sessions,
+  subagents,
+  tokenUsage,
+  toolCall,
+  users,
+} from "../db/schema.js"
+import * as commitsRepo from "./commits.repo.js"
 import * as messagesRepo from "./messages.repo.js"
 import * as projectsRepo from "./projects.repo.js"
+import * as reposRepo from "./repos.repo.js"
 import * as sessionsRepo from "./sessions.repo.js"
 import * as subagentsRepo from "./subagents.repo.js"
 import * as tokenUsageRepo from "./tokenUsage.repo.js"
@@ -256,5 +266,176 @@ describe.skipIf(!dockerAvailable())("ingest repositories", () => {
     const rows = await db.select().from(tokenUsage).where(eq(tokenUsage.messageId, messageId))
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({ inputTokens: 9, cachedTokens: 3, thinkingTokens: 4 })
+  })
+
+  describe("commits", () => {
+    const lineUuidFor = (index: number) =>
+      `0191d942-3ba5-7dba-9a7d-22d65b30${String(3100 + index).padStart(4, "0")}`
+
+    /** Seeds `count` messages at lines 1..count and returns their ids keyed by line number. */
+    const seedMessages = async (
+      sessionId: string,
+      count: number,
+    ): Promise<ReadonlyMap<number, string>> => {
+      const { idByKey } = await messagesRepo.insertManyIgnoreConflicts(
+        db,
+        sessionId,
+        Array.from({ length: count }, (_unused, index) => ({
+          sessionId,
+          lineUuid: lineUuidFor(index),
+          subIndex: 0,
+          msgType: "message" as const,
+          lineNumber: index + 1,
+          sourceSchemaVersion: 1,
+          raw: {},
+        })),
+      )
+      return new Map(
+        Array.from({ length: count }, (_unused, index) => {
+          const id = idByKey.get(messagesRepo.keyOf(lineUuidFor(index), 0))
+          if (!id) throw new Error(`no message id for line ${index + 1}`)
+          return [index + 1, id] as const
+        }),
+      )
+    }
+
+    const seedRepo = (repoName: string) =>
+      reposRepo.upsertByIdentity(db, {
+        host: "github.com",
+        owner: "acme",
+        ownerType: "org",
+        repoName,
+      })
+
+    const startSessionAt = async (sessionId: string, startCommit?: string) => {
+      const { userId, projectId } = await seedSession(sessionId)
+      await sessionsRepo.upsert(db, {
+        id: sessionId,
+        source: "claude_code",
+        userId,
+        projectId,
+        fields: startCommit === undefined ? {} : { startCommit },
+      })
+    }
+
+    test("S14: a re-observed (repoId, sha) keeps the first observation's facts", async () => {
+      const sessionId = "sess-commit-dedup"
+      await startSessionAt(sessionId)
+      const repoId = await seedRepo("dedup-repo")
+
+      const first = {
+        repoId,
+        sha: "37f3101",
+        branch: "master",
+        subject: "docs: enrich clients",
+        filesChanged: 51,
+        insertions: 1993,
+        deletions: 417,
+        sessionId,
+      }
+      await commitsRepo.insertObserved(db, [first])
+      // A re-parse offering different facts for the same sha must not win: a sha's facts
+      // never change, so the first observation is authoritative.
+      await commitsRepo.insertObserved(db, [
+        { ...first, branch: "rewritten", subject: "clobbered", filesChanged: 1 },
+      ])
+
+      const rows = await db.select().from(commits).where(eq(commits.repoId, repoId))
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toMatchObject(first)
+    })
+
+    test("the same sha observed in two different repos is two rows", async () => {
+      const sessionId = "sess-commit-two-repos"
+      await startSessionAt(sessionId)
+      const serana = await seedRepo("serana-commits")
+      const andromeda = await seedRepo("andromeda-commits")
+
+      await commitsRepo.insertObserved(db, [
+        { repoId: serana, sha: "deadbee", sessionId },
+        { repoId: andromeda, sha: "deadbee", sessionId },
+      ])
+
+      const rows = await db.select().from(commits).where(eq(commits.sha, "deadbee"))
+      expect(rows).toHaveLength(2)
+      expect(new Set(rows.map((row) => row.repoId))).toEqual(new Set([serana, andromeda]))
+    })
+
+    test("S23: each message reports the commit it was running on, not the one it produced", async () => {
+      const sessionId = "sess-head-at"
+      await startSessionAt(sessionId, "aaa1111")
+      const repoId = await seedRepo("head-at-repo")
+      const byLine = await seedMessages(sessionId, 40)
+
+      await commitsRepo.insertObserved(db, [
+        { repoId, sha: "bbb2222", sessionId, messageId: byLine.get(10) },
+        { repoId, sha: "ccc3333", sessionId, messageId: byLine.get(30) },
+      ])
+
+      const head = await commitsRepo.headAtMessages(db, sessionId)
+      const at = (line: number) => head.get(byLine.get(line) ?? "")
+
+      expect(at(1)).toBe("aaa1111")
+      expect(at(9)).toBe("aaa1111")
+      // The commit's own message ran against the previous head; the head advances after it.
+      expect(at(10)).toBe("aaa1111")
+      expect(at(11)).toBe("bbb2222")
+      expect(at(29)).toBe("bbb2222")
+      expect(at(30)).toBe("bbb2222")
+      expect(at(31)).toBe("ccc3333")
+      expect(at(40)).toBe("ccc3333")
+    })
+
+    test("S23b: different starting shas and commit positions move the boundaries with them", async () => {
+      const sessionId = "sess-head-at-varied"
+      await startSessionAt(sessionId, "0f0f0f0")
+      const repoId = await seedRepo("head-at-varied-repo")
+      const byLine = await seedMessages(sessionId, 12)
+
+      await commitsRepo.insertObserved(db, [
+        { repoId, sha: "1a1a1a1", sessionId, messageId: byLine.get(3) },
+        { repoId, sha: "2b2b2b2", sessionId, messageId: byLine.get(8) },
+      ])
+
+      const head = await commitsRepo.headAtMessages(db, sessionId)
+      const shaByLine = [...byLine.entries()]
+        .sort(([a], [b]) => a - b)
+        .map(([, id]) => head.get(id))
+
+      expect(shaByLine).toEqual([
+        "0f0f0f0",
+        "0f0f0f0",
+        "0f0f0f0",
+        "1a1a1a1",
+        "1a1a1a1",
+        "1a1a1a1",
+        "1a1a1a1",
+        "1a1a1a1",
+        "2b2b2b2",
+        "2b2b2b2",
+        "2b2b2b2",
+        "2b2b2b2",
+      ])
+    })
+
+    test("S24: a session with no starting sha reports null until its first commit", async () => {
+      const sessionId = "sess-head-at-null"
+      await startSessionAt(sessionId)
+      const repoId = await seedRepo("head-at-null-repo")
+      const byLine = await seedMessages(sessionId, 8)
+
+      await commitsRepo.insertObserved(db, [
+        { repoId, sha: "eee5555", sessionId, messageId: byLine.get(5) },
+      ])
+
+      const head = await commitsRepo.headAtMessages(db, sessionId)
+      const at = (line: number) => head.get(byLine.get(line) ?? "")
+
+      expect(at(1)).toBeNull()
+      expect(at(4)).toBeNull()
+      expect(at(5)).toBeNull()
+      expect(at(6)).toBe("eee5555")
+      expect(at(8)).toBe("eee5555")
+    })
   })
 })

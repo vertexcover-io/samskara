@@ -188,6 +188,33 @@ export const messages = pgTable(
   ],
 )
 
+/**
+ * A commit the session made. `messageId` is SET NULL rather than CASCADE: a commit is a
+ * historical fact that outlives the message row it was parsed from.
+ */
+export const commits = pgTable(
+  "commits",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    repoId: uuid("repoId")
+      .notNull()
+      .references(() => repos.id, { onDelete: "cascade" }),
+    sha: text("sha").notNull(),
+    branch: text("branch"),
+    subject: text("subject"),
+    filesChanged: integer("filesChanged"),
+    insertions: integer("insertions"),
+    deletions: integer("deletions"),
+    sessionId: text("sessionId").references(() => sessions.id, { onDelete: "cascade" }),
+    messageId: uuid("messageId").references(() => messages.id, { onDelete: "set null" }),
+    createdAt: createdAtCamel,
+  },
+  (t) => [
+    unique("commits_repo_sha_unique").on(t.repoId, t.sha),
+    index("commits_sessionId_idx").on(t.sessionId),
+  ],
+)
+
 export const toolCall = pgTable(
   "toolCall",
   {

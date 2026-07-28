@@ -6,6 +6,7 @@ import type {
   CheckpointStore,
   CollectDeps,
   FileSystem,
+  GitEvent,
   IngestPayload,
   ParsedRecord,
   ProjectIdentity,
@@ -18,6 +19,7 @@ import { atomicWriteJson, readJson } from "../config/atomic.js"
 import { collectArtifacts } from "./artifact-extract.js"
 import { type QueueEntry, enqueue } from "./artifact-queue.js"
 import { isCapturable } from "./containment.js"
+import { collectGitEvents } from "./gitEvents.js"
 import type { ResolvedRepo } from "./resolveRepo.js"
 
 export const MESSAGE_CAP = 2000
@@ -100,6 +102,7 @@ const payloadFor = (
   track: SessionTrack,
   records: ReadonlyArray<ParsedRecord>,
   origin: SessionOrigin,
+  gitEvents: ReadonlyArray<GitEvent>,
 ): IngestPayload => {
   const {
     checkpointKey: _key,
@@ -108,8 +111,9 @@ const payloadFor = (
     records: _all,
     ...payload
   } = track
-  if (payload.type === "subagent") return { ...payload, records }
-  return { ...payload, records, ...origin }
+  const events = gitEvents.length === 0 ? {} : { gitEvents }
+  if (payload.type === "subagent") return { ...payload, records, ...events }
+  return { ...payload, records, ...origin, ...events }
 }
 
 /**
@@ -153,7 +157,11 @@ const syncTrack = async (
     : track.records
   let sentThrough = 0
   for (const request of sliceByMessages(records, MESSAGE_CAP)) {
-    const { status } = await deps.sink.send(payloadFor(track, request.records, origin))
+    // Per chunk rather than per track: a commit's `callId` is resolved to a message id by the
+    // server, so it must travel with the same payload as the toolCall it names. The cost is
+    // that a call and its result split across the message cap yield no commit.
+    const events = collectGitEvents(request.records, deps.log)
+    const { status } = await deps.sink.send(payloadFor(track, request.records, origin, events))
     if (status < 200 || status >= 300) {
       deps.log.warn(
         { sessionId: track.sessionId, key: track.checkpointKey, status },

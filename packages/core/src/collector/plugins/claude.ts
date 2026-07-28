@@ -211,7 +211,6 @@ const parseCommonFields = (data: Record<string, unknown>, context: ClaudeLineCon
     agentId: context.agentId,
     cwd: stringValue(data.cwd),
     gitBranch: stringValue(data.gitBranch),
-    gitCommit: stringValue(data.gitSha) ?? stringValue(data.gitCommit),
   }
 }
 
