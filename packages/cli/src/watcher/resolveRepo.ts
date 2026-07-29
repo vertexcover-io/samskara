@@ -16,8 +16,10 @@ const identityFor = async (cwd: string, runGit: GitRunner): Promise<ResolvedRepo
   if (root === null) return null
   const remote = await runGit(["config", "--get", "remote.origin.url"], root)
   const parsed = remote ? parseRemote(remote) : null
-  if (parsed) return { ...parsed, ownerType: "org", root }
-  return { host: LOCAL_HOST, owner: root, ownerType: "org", repoName: basename(root), root }
+  // `ownerType` is deliberately absent: a remote URL cannot tell a user repo from an org one, and
+  // it is not part of the repo's identity, so leaving it unknown never splits one repo in two.
+  if (parsed) return { ...parsed, root }
+  return { host: LOCAL_HOST, owner: root, repoName: basename(root), root }
 }
 
 /**

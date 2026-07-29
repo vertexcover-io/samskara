@@ -16,10 +16,11 @@ describe("resolveRepoIdentity", () => {
       }),
     })
 
+    // No `ownerType`: a remote URL cannot tell a user repo from an org one, so it is left
+    // unknown rather than guessed.
     expect(await resolve("/work/serana")).toEqual({
       host: "github.com",
       owner: "refrens",
-      ownerType: "org",
       repoName: "serana",
       root: "/work/serana",
     })
@@ -67,7 +68,6 @@ describe("resolveRepoIdentity", () => {
     expect(resolved).toEqual({
       host: "github.com",
       owner: "refrens",
-      ownerType: "org",
       repoName: "serana",
       root: "/work/serana",
     })

@@ -60,15 +60,20 @@ export const repos = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     host: text("host").notNull(),
     owner: text("owner").notNull(),
-    ownerType: text("owner_type").notNull(),
+    // Nullable and unconstrained: a remote URL cannot tell a user repo from an org repo, and a
+    // PR-derived repo may never have been a cwd. Guessing 'org' asserted a fact we do not have.
+    // Out of the identity key for the same reason -- an unknown must not split one repo in two.
+    ownerType: text("owner_type"),
     repoName: text("repo_name").notNull(),
+    userId: uuid("userId")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
     createdAt,
     updatedAt,
   },
-  (t) => [
-    unique("repos_identity_unique").on(t.host, t.owner, t.ownerType, t.repoName),
-    check("repos_owner_type_check", sql`${t.ownerType} in ('user', 'org')`),
-  ],
+  // Repos are personal, mirroring projects' UNIQUE (slug, ownerId): the same repo seen by two
+  // users is two rows. `host` is out of the key -- one repo reached over ssh and https is one repo.
+  (t) => [unique("repos_identity_unique").on(t.owner, t.repoName, t.userId)],
 )
 
 export const userOrgs = pgTable(

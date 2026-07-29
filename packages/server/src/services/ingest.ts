@@ -48,21 +48,23 @@ const flatten = (
 
 type RepoIdKey = string
 
-// A separator no host, owner or repo name can contain, so two different identities can never
+// A separator no owner or repo name can contain, so two different identities can never
 // collapse onto one key.
 const KEY_SEPARATOR = "\n"
 
-const repoKeyOf = (repo: RepoIdentity): RepoIdKey =>
-  [repo.host, repo.owner, repo.ownerType, repo.repoName].join(KEY_SEPARATOR)
+// Mirrors the (owner, repoName) half of repos' identity -- `userId` is constant across one ingest,
+// and `host` is excluded so one repo reached over ssh and https stays one repo.
+const repoKeyOf = (repo: RepoIdentity): RepoIdKey => [repo.owner, repo.repoName].join(KEY_SEPARATOR)
 
 /**
- * A PR names its repo in its own URL, which carries no owner type -- `org` is the assumption the
- * URL cannot settle, and it only ever adds a repo the session's cwds did not already reach.
+ * A PR names its repo in its own URL, which carries no owner type. It is left undefined rather
+ * than guessed: the repo may never have been a cwd, and an invented `org` would assert a fact we
+ * do not have. Since `ownerType` is out of the identity key, a PR-derived repo still collapses
+ * onto the same row as the cwd-derived one when the session did reach it.
  */
 const prRepoOf = (event: PullRequestEvent): RepoIdentity => ({
   host: event.host,
   owner: event.owner,
-  ownerType: "org",
   repoName: event.repoName,
 })
 
@@ -77,6 +79,7 @@ const resolveRepoIds = async (
   tx: Querier,
   flatMessages: ReadonlyArray<FlatMessage>,
   gitEvents: ReadonlyArray<GitEvent>,
+  userId: string,
 ): Promise<ReadonlyMap<RepoIdKey, string>> => {
   const distinct = new Map<RepoIdKey, RepoIdentity>()
   for (const { message } of flatMessages) {
@@ -88,7 +91,7 @@ const resolveRepoIds = async (
   }
   const resolved = new Map<RepoIdKey, string>()
   for (const [key, identity] of distinct) {
-    resolved.set(key, await reposRepo.upsertByIdentity(tx, identity))
+    resolved.set(key, await reposRepo.upsertByIdentity(tx, identity, userId))
   }
   return resolved
 }
@@ -286,7 +289,7 @@ export const ingest = async (ctx: Ctx, payload: IngestPayload): Promise<IngestRe
       }
 
       const gitEvents = payload.gitEvents ?? []
-      const repoIdByKey = await resolveRepoIds(tx, flat, gitEvents)
+      const repoIdByKey = await resolveRepoIds(tx, flat, gitEvents, userId)
       const rows = flat.map((message) => toMessageRow(message, repoIdByKey))
       const { ingested, deduped, idByKey } = await messagesRepo.insertManyIgnoreConflicts(
         tx,

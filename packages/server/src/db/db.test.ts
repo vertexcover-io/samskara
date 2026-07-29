@@ -75,9 +75,15 @@ describe.skipIf(!dockerAvailable())("identity mesh schema", () => {
   })
 
   test("updated_at trigger advances the timestamp on UPDATE", async () => {
+    const [owner] = await db
+      .insert(users)
+      .values({ githubId: 13, githubLogin: "repo-owner" })
+      .returning()
+    if (!owner) throw new Error("insert returned no row")
+
     const [repo] = await db
       .insert(repos)
-      .values({ host: "github", owner: "acme", ownerType: "org", repoName: "trigger-probe" })
+      .values({ host: "github", owner: "acme", repoName: "trigger-probe", userId: owner.id })
       .returning()
 
     if (!repo) throw new Error("insert returned no row")

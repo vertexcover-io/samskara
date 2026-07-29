@@ -302,13 +302,16 @@ describe.skipIf(!dockerAvailable())("ingest repositories", () => {
       )
     }
 
-    const seedRepo = (repoName: string) =>
-      reposRepo.upsertByIdentity(db, {
-        host: "github.com",
-        owner: "acme",
-        ownerType: "org",
-        repoName,
-      })
+    // Each repo gets its own owner: identity is (owner, repoName, userId), so the same repo seen
+    // by two users is deliberately two rows.
+    const seedRepo = async (repoName: string) => {
+      const owner = await seedUser()
+      return reposRepo.upsertByIdentity(
+        db,
+        { host: "github.com", owner: "acme", ownerType: "org", repoName },
+        owner.id,
+      )
+    }
 
     const startSessionAt = async (sessionId: string, startCommit?: string) => {
       const { userId, projectId } = await seedSession(sessionId)
