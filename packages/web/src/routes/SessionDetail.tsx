@@ -1,15 +1,21 @@
 import { useEffect, useMemo, useState } from "react"
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
+import { fetchSessionArtifacts } from "../api/artifacts.js"
 import { getJson } from "../api/client.js"
 import { parseSessionDetail } from "../api/parse.js"
-import type { ApiError, SessionDetailPayload, SessionFacts, TokenTotals } from "../api/types.js"
+import type {
+  ApiError,
+  CapturedArtifact,
+  SessionDetailPayload,
+  SessionFacts,
+  TokenTotals,
+} from "../api/types.js"
 import { SessionExpired } from "../auth/SessionExpired.js"
 import { AgentRail, agentEntries } from "../session/AgentRail.js"
 import { ArtifactsView } from "../session/ArtifactsView.js"
 import { RecordStream } from "../session/RecordStream.js"
 import { type Tab, type TabId, Tabs } from "../session/Tabs.js"
 import { ToolCallsView } from "../session/ToolCallsView.js"
-import { DEMO_ARTIFACTS } from "../session/demo-artifacts.js"
 import { useFocusMode } from "../session/focus.js"
 import {
   type SessionDetail as Detail,
@@ -145,12 +151,24 @@ const ErrorState = ({ error }: { error: ApiError }) => (
   </section>
 )
 
-// Ingest does not yet emit artifact file events, so the explorer falls back to
-// representative fixtures until it does.
-const artifactsFor = (detail: Detail) => {
-  const filed = artifactsOf(detail.records)
-  return filed.length === 0 ? DEMO_ARTIFACTS : filed
-}
+type CapturedState =
+  | { readonly phase: "loading" }
+  | { readonly phase: "ready"; readonly rows: ReadonlyArray<CapturedArtifact> }
+  | { readonly phase: "failed"; readonly error: ApiError }
+
+const capturedRows = (state: CapturedState): ReadonlyArray<CapturedArtifact> =>
+  state.phase === "ready" ? state.rows : []
+
+const Notice = ({ children }: { children: React.ReactNode }) => (
+  <p className="mb-4 border border-dashed border-err/50 bg-panel p-4 text-ink-soft">{children}</p>
+)
+
+// Captured files and transcript frame-links are two independent signals shown in one browser;
+// captured files lead because they are the session's own work product.
+const artifactsFor = (detail: Detail, captured: ReadonlyArray<CapturedArtifact>) => [
+  ...captured,
+  ...artifactsOf(detail.records),
+]
 
 // A branch's tool calls sit in the same list as the main record's, so name the
 // agent that made each one.
@@ -267,16 +285,26 @@ const Conversation = ({ detail, inlineTools }: { detail: Detail; inlineTools: bo
   )
 }
 
+// A failed fetch degrades rather than blanks: the notice names the loss, and whatever the
+// transcript itself filed still renders beneath it.
+const ArtifactsPanel = ({ detail, captured }: { detail: Detail; captured: CapturedState }) => (
+  <div>
+    {captured.phase === "failed" ? (
+      <Notice>The captured artifacts could not be retrieved. {captured.error.message}</Notice>
+    ) : null}
+    <ArtifactsView artifacts={artifactsFor(detail, capturedRows(captured))} />
+  </div>
+)
+
 const Panel = ({
   detail,
   tab,
   inlineTools,
-}: { detail: Detail; tab: TabId; inlineTools: boolean }) => {
-  const artifacts = useMemo(() => artifactsFor(detail), [detail])
-
+  captured,
+}: { detail: Detail; tab: TabId; inlineTools: boolean; captured: CapturedState }) => {
   if (tab === "tools")
     return <ToolCallsView calls={detail.toolCalls} agentOf={agentLabelOf(detail)} />
-  if (tab === "artifacts") return <ArtifactsView artifacts={artifacts} />
+  if (tab === "artifacts") return <ArtifactsPanel detail={detail} captured={captured} />
 
   return <Conversation detail={detail} inlineTools={inlineTools} />
 }
@@ -285,6 +313,30 @@ const TAB_IDS: ReadonlyArray<TabId> = ["conversation", "tools", "artifacts"]
 
 const isTabId = (value: string | null): value is TabId =>
   value !== null && TAB_IDS.includes(value as TabId)
+
+const useCapturedArtifacts = (sessionId: string): CapturedState => {
+  const [state, setState] = useState<CapturedState>({ phase: "loading" })
+
+  useEffect(() => {
+    let active = true
+    setState({ phase: "loading" })
+
+    fetchSessionArtifacts(sessionId).then((result) => {
+      if (!active) return
+      setState(
+        result.ok
+          ? { phase: "ready", rows: result.data }
+          : { phase: "failed", error: result.error },
+      )
+    })
+
+    return () => {
+      active = false
+    }
+  }, [sessionId])
+
+  return state
+}
 
 const Ready = ({ payload }: { payload: SessionDetailPayload }) => {
   // Tab and tool visibility live in the URL so back/forward restore the view.
@@ -307,7 +359,14 @@ const Ready = ({ payload }: { payload: SessionDetailPayload }) => {
   }
 
   const detail = useMemo(() => toDetail(payload), [payload])
-  const artifactCount = useMemo(() => artifactsFor(detail).length, [detail])
+  const captured = useCapturedArtifacts(payload.session.id)
+  const artifactCount = artifactsFor(detail, capturedRows(captured)).length
+
+  // The session itself loaded, so a 401 here is a cookie that expired mid-view. Clearing the
+  // cached identity is what stops /login bouncing straight back.
+  if (captured.phase === "failed" && captured.error.kind === "unauthorized") {
+    return <SessionExpired />
+  }
 
   return (
     <section>
@@ -326,7 +385,7 @@ const Ready = ({ payload }: { payload: SessionDetailPayload }) => {
       ) : null}
 
       <div role="tabpanel" id={`panel-${tab}`} aria-labelledby={`tab-${tab}`} className="pt-4">
-        <Panel key={tab} detail={detail} tab={tab} inlineTools={inlineTools} />
+        <Panel key={tab} detail={detail} tab={tab} inlineTools={inlineTools} captured={captured} />
       </div>
     </section>
   )

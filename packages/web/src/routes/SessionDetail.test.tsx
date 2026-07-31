@@ -61,9 +61,21 @@ const PAYLOAD: SessionDetailPayload = buildPayload({
   ],
 })
 
-const renderDetail = (payload: SessionDetailPayload = PAYLOAD) => {
+type ArtifactsReply = { readonly status: number; readonly body: unknown }
+
+const OK_EMPTY: ArtifactsReply = { status: 200, body: { artifacts: [] } }
+
+const renderDetail = (
+  payload: SessionDetailPayload = PAYLOAD,
+  artifacts: ArtifactsReply = OK_EMPTY,
+) => {
   vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
     const url = typeof input === "string" ? input : String(input)
+    if (url.includes("/artifacts")) {
+      return Promise.resolve(
+        new Response(JSON.stringify(artifacts.body), { status: artifacts.status }),
+      )
+    }
     if (url.includes("/api/sessions/")) {
       return Promise.resolve(new Response(JSON.stringify(payload), { status: 200 }))
     }
@@ -178,6 +190,108 @@ test("S37: the masthead reports all six session facts from the payload", async (
   }
   expect(within(facts).getByText("214,600")).toBeInTheDocument()
   expect(within(facts).getByText("18,200")).toBeInTheDocument()
+})
+
+const CAPTURED = {
+  id: "cap-1",
+  path: "/work/acme/docs/notes.md",
+  relativePath: "docs/notes.md",
+  mimeType: "text/markdown",
+  isBinary: false,
+  changeKind: "edited",
+  diff: "@@ -1,3 +1,3 @@\n-The original line.\n+The replacement line.\n",
+  editCount: 1,
+  byteSize: 42,
+  hasBase: true,
+  firstSeenAt: "2026-07-01T10:00:00.000Z",
+  lastSeenAt: "2026-07-01T10:05:00.000Z",
+}
+
+test("S48: the artifacts tab lists the session's captured files by relative path and shows the selected one's diff", async () => {
+  const user = userEvent.setup()
+  renderDetail(PAYLOAD, {
+    status: 200,
+    body: {
+      artifacts: [
+        CAPTURED,
+        { ...CAPTURED, id: "cap-2", relativePath: "src/ingest.ts", diff: null },
+      ],
+    },
+  })
+
+  await waitFor(() => expect(tabs()).toHaveLength(3))
+  await user.click(screen.getByRole("tab", { name: /Artifacts/ }))
+
+  const list = await screen.findByRole("list", { name: /filed artifacts/i })
+  expect(within(list).getByRole("button", { name: /docs\/notes\.md/ })).toBeInTheDocument()
+  expect(within(list).getByRole("button", { name: /src\/ingest\.ts/ })).toBeInTheDocument()
+
+  const viewer = screen.getByRole("region", { name: /artifact viewer/i })
+  expect(within(viewer).getByText("-The original line.")).toBeInTheDocument()
+  expect(within(viewer).getByText("+The replacement line.")).toBeInTheDocument()
+})
+
+test("S49: a session with no captured artifacts reads empty rather than showing demo fixtures", async () => {
+  const user = userEvent.setup()
+  renderDetail(buildPayload({ messages: [message({ lineNumber: 1, msgType: "message" })] }))
+
+  await waitFor(() => expect(tabs()).toHaveLength(3))
+  await user.click(screen.getByRole("tab", { name: /Artifacts/ }))
+
+  expect(await screen.findByText(/no artifacts were filed/i)).toBeInTheDocument()
+
+  for (const fixture of ["architecture.svg", "walkthrough.mp4", "idempotent-ingest.md"]) {
+    expect(document.body.textContent).not.toContain(fixture)
+  }
+  expect(screen.getByRole("tab", { name: /Artifacts/ })).toHaveTextContent("0")
+})
+
+test("S53: a transcript frame-link artifact still renders when the captured-artifact list is empty", async () => {
+  const user = userEvent.setup()
+  renderDetail()
+
+  await waitFor(() => expect(tabs()).toHaveLength(3))
+  await user.click(screen.getByRole("tab", { name: /Artifacts/ }))
+
+  const list = await screen.findByRole("list", { name: /filed artifacts/i })
+  expect(within(list).getByRole("button", { name: /0007\.sql/ })).toBeInTheDocument()
+
+  const viewer = screen.getByRole("region", { name: /artifact viewer/i })
+  expect(within(viewer).getByText("migrations/0007.sql")).toBeInTheDocument()
+})
+
+test("S54: a failed artifact fetch leaves the other tabs working and shows a failure notice, not a blank pane", async () => {
+  const user = userEvent.setup()
+  renderDetail(PAYLOAD, { status: 500, body: { error: "boom" } })
+
+  await waitFor(() => expect(tabs()).toHaveLength(3))
+
+  expect(within(panelOf()).getByText(/Make it idempotent/)).toBeInTheDocument()
+
+  await user.click(screen.getByRole("tab", { name: /Tool Calls/ }))
+  expect(within(panelOf()).getAllByRole("button", { name: /Grep/ }).length).toBeGreaterThan(0)
+
+  await user.click(screen.getByRole("tab", { name: /Artifacts/ }))
+  const notice = await screen.findByText(/captured artifacts could not be retrieved/i)
+  expect(notice).toBeInTheDocument()
+})
+
+test("S54: a 200 whose artifact rows are malformed is refused at the parse boundary rather than rendered as partial data", async () => {
+  const user = userEvent.setup()
+  // A row missing `relativePath` and `mimeType` -- the shape a schema drift would produce.
+  renderDetail(PAYLOAD, {
+    status: 200,
+    body: { artifacts: [{ id: "cap-1", path: "/work/acme/docs/notes.md" }] },
+  })
+
+  await waitFor(() => expect(tabs()).toHaveLength(3))
+  await user.click(screen.getByRole("tab", { name: /Artifacts/ }))
+
+  expect(await screen.findByText(/captured artifacts could not be retrieved/i)).toBeInTheDocument()
+  // Nothing from the malformed payload leaks through; the transcript's own frame-link is
+  // unaffected, so the count reflects it alone.
+  expect(screen.queryByText("docs/notes.md")).not.toBeInTheDocument()
+  expect(screen.getByRole("tab", { name: /Artifacts/ })).toHaveTextContent("1")
 })
 
 test("EDGE-008: a 404 from the detail endpoint renders a not-found state with a way back, not a blank panel", async () => {

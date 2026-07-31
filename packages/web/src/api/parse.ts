@@ -1,4 +1,5 @@
 import type {
+  CapturedArtifact,
   CurrentUser,
   ProjectSummary,
   RawMessage,
@@ -234,4 +235,41 @@ export const parseSessionDetail = (body: unknown): SessionDetailPayload | null =
   if (session === null || messages === null || toolCalls === null || subagents === null) return null
 
   return { session, messages, toolCalls, subagents, tokenUsage: parseTokens(fields.tokenUsage) }
+}
+
+const parseCapturedArtifact = (value: unknown): CapturedArtifact | null => {
+  const fields = asFields(value)
+  if (!fields) return null
+
+  const id = str(fields.id)
+  const path = str(fields.path)
+  const relativePath = str(fields.relativePath)
+  const mimeType = str(fields.mimeType)
+  const changeKind = str(fields.changeKind)
+  const firstSeenAt = str(fields.firstSeenAt)
+  const lastSeenAt = str(fields.lastSeenAt)
+  if (id === null || path === null || relativePath === null || mimeType === null) return null
+  if (changeKind === null || firstSeenAt === null || lastSeenAt === null) return null
+
+  return {
+    id,
+    path,
+    relativePath,
+    mimeType,
+    isBinary: bool(fields.isBinary),
+    changeKind,
+    // The list route omits both; the detail route supplies them.
+    diff: nullableStr(fields.diff) ?? null,
+    oldFragment: nullableStr(fields.oldFragment) ?? null,
+    editCount: numOr(fields.editCount, 0),
+    firstSeenAt,
+    lastSeenAt,
+  }
+}
+
+export const parseSessionArtifacts = (body: unknown): ReadonlyArray<CapturedArtifact> | null => {
+  const fields = asFields(body)
+  if (!fields || !Array.isArray(fields.artifacts)) return null
+
+  return allParsed(fields.artifacts.map(parseCapturedArtifact))
 }

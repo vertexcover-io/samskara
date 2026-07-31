@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react"
+import { rawArtifactUrl } from "../api/artifacts.js"
+import type { CapturedArtifact } from "../api/types.js"
 import { Markdown } from "./Markdown.js"
 import type { Artifact } from "./records.js"
 
@@ -24,20 +26,86 @@ const EXTENSION_MEDIA: Readonly<Record<string, Medium>> = {
   webm: "video",
 }
 
-const extensionOf = (artifact: Artifact): string => {
-  const source = artifact.path ?? artifact.url ?? ""
-  const name = source.split("/").pop() ?? ""
+/**
+ * Both sources render through the same browser. A captured file carries `relativePath`, which is
+ * also what tells the two apart on screen.
+ */
+type Exhibit = {
+  readonly id: string
+  readonly label: string | null
+  readonly title: string | null
+  readonly timestamp: string | null
+  readonly mimeType: string | null
+  readonly agent: string | null
+  readonly access: "granted" | "denied"
+  readonly content: string | null
+  readonly mediaUrl: string | null
+  /** Set for captured text artifacts, whose body the list route withholds; fetched on demand. */
+  readonly textUrl: string | null
+  readonly relativePath: string | null
+  readonly diff: string | null
+  readonly oldFragment: string | null
+  readonly changeKind: string | null
+  readonly editCount: number | null
+}
+
+const isCaptured = (value: Artifact | CapturedArtifact): value is CapturedArtifact =>
+  "relativePath" in value
+
+const fromFrameLink = (artifact: Artifact): Exhibit => ({
+  id: artifact.id,
+  label: artifact.path ?? artifact.url,
+  title: artifact.title,
+  timestamp: artifact.timestamp,
+  mimeType: artifact.mimeType ?? null,
+  agent: artifact.agent ?? null,
+  access: artifact.access ?? "granted",
+  content: artifact.content ?? null,
+  mediaUrl: artifact.url,
+  textUrl: null,
+  relativePath: null,
+  diff: null,
+  oldFragment: null,
+  changeKind: null,
+  editCount: null,
+})
+
+const fromCaptured = (artifact: CapturedArtifact): Exhibit => ({
+  id: artifact.id,
+  label: artifact.relativePath,
+  title: null,
+  timestamp: artifact.lastSeenAt,
+  mimeType: artifact.mimeType,
+  agent: null,
+  access: "granted",
+  // The list route withholds text bodies; the diff and the fragment are what it does send. A
+  // created file has neither, so its body is fetched from the raw route on demand.
+  content: null,
+  mediaUrl: artifact.isBinary ? rawArtifactUrl(artifact.id) : null,
+  textUrl: artifact.isBinary ? null : rawArtifactUrl(artifact.id),
+  relativePath: artifact.relativePath,
+  diff: artifact.diff,
+  oldFragment: artifact.oldFragment,
+  changeKind: artifact.changeKind,
+  editCount: artifact.editCount,
+})
+
+const toExhibit = (artifact: Artifact | CapturedArtifact): Exhibit =>
+  isCaptured(artifact) ? fromCaptured(artifact) : fromFrameLink(artifact)
+
+const extensionOf = (exhibit: Exhibit): string => {
+  const name = (exhibit.label ?? "").split("/").pop() ?? ""
   return name.includes(".") ? (name.split(".").pop() ?? "").toLowerCase() : ""
 }
 
-const mediumOf = (artifact: Artifact): Medium => {
-  const mime = artifact.mimeType ?? ""
+const mediumOf = (exhibit: Exhibit): Medium => {
+  const mime = exhibit.mimeType ?? ""
   if (mime.startsWith("image/")) return "image"
   if (mime.startsWith("video/")) return "video"
   if (mime === "text/x-diff") return "diff"
   if (mime === "text/markdown") return "markdown"
 
-  const extension = extensionOf(artifact)
+  const extension = extensionOf(exhibit)
   const byExtension = EXTENSION_MEDIA[extension]
   if (byExtension) return byExtension
   return extension === "" ? "unknown" : "code"
@@ -52,18 +120,28 @@ const MEDIUM_LABEL: Readonly<Record<Medium, string>> = {
   unknown: "Unknown",
 }
 
-const nameOf = (artifact: Artifact): string => {
-  const source = artifact.path ?? artifact.url
-  if (source === null) return artifact.title ?? "unavailable exhibit"
-  return source.split("/").pop() ?? source
+const CHANGE_LABEL: Readonly<Record<string, string>> = {
+  created: "Created",
+  edited: "Edited",
+  editedUnknownBase: "Edited",
+  deleted: "Deleted",
 }
 
-const kindOf = (artifact: Artifact): string => {
-  if (artifact.access === "denied") return "Permission denied"
-  const medium = mediumOf(artifact)
+const nameOf = (exhibit: Exhibit): string => {
+  if (exhibit.label === null) return exhibit.title ?? "unavailable exhibit"
+  // A captured file is listed by its full relative path -- that is what identifies it in the repo.
+  if (exhibit.relativePath !== null) return exhibit.relativePath
+  return exhibit.label.split("/").pop() ?? exhibit.label
+}
+
+const kindOf = (exhibit: Exhibit): string => {
+  if (exhibit.access === "denied") return "Permission denied"
+  const medium = mediumOf(exhibit)
   if (medium === "unknown") return "Metadata unavailable"
-  const extension = extensionOf(artifact)
-  return extension === "" ? MEDIUM_LABEL[medium] : `${MEDIUM_LABEL[medium]} · ${extension}`
+  const extension = extensionOf(exhibit)
+  const media = extension === "" ? MEDIUM_LABEL[medium] : `${MEDIUM_LABEL[medium]} · ${extension}`
+  const change = exhibit.changeKind === null ? null : CHANGE_LABEL[exhibit.changeKind]
+  return change === null || change === undefined ? media : `${change} · ${media}`
 }
 
 const exhibitNo = (index: number): string => `E-${String(index + 1).padStart(2, "0")}`
@@ -98,15 +176,71 @@ const DiffBody = ({ content }: { content: string }) => (
       return (
         // biome-ignore lint/suspicious/noArrayIndexKey: diff lines have no stable identity
         <div key={index} className={`whitespace-pre-wrap break-words ${tone}`}>
-          {line === "" ? " " : line}
+          {line === "" ? " " : line}
         </div>
       )
     })}
   </pre>
 )
 
-const Body = ({ artifact }: { artifact: Artifact }) => {
-  if (artifact.access === "denied") {
+/**
+ * About one in five edited files resolves no base, so this is an ordinary outcome and reads as
+ * one -- the excerpt is what the edit replaced, not a diff and not a failure.
+ */
+const ReplacedExcerpt = ({ fragment }: { fragment: string }) => (
+  <section>
+    <h4 className="text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-ink-soft">
+      Replaced excerpt
+    </h4>
+    <p className="mt-1 text-[0.72rem] text-faded">
+      No pre-session copy of this file was found, so this is the text the edit replaced rather than
+      a diff.
+    </p>
+    <pre className="mt-2 overflow-x-auto border border-rule bg-panel p-3 font-mono text-[0.72rem] leading-relaxed">
+      {fragment}
+    </pre>
+  </section>
+)
+
+type FetchState =
+  | { readonly status: "loading" }
+  | { readonly status: "ready"; readonly text: string }
+  | { readonly status: "failed" }
+
+/**
+ * A created file has no diff and no replaced excerpt -- its body is the only thing there is to
+ * show, and the list route deliberately withholds it so a session's worth of metadata costs no
+ * blobs. The raw route already serves text as `text/plain` with `nosniff`, so it is fetched here
+ * rather than adding a second detail-fetch path that would return the same bytes.
+ */
+const FetchedText = ({ url, render }: { url: string; render: (text: string) => JSX.Element }) => {
+  const [state, setState] = useState<FetchState>({ status: "loading" })
+
+  useEffect(() => {
+    let live = true
+    setState({ status: "loading" })
+    fetch(url, { credentials: "same-origin" })
+      .then((response) => (response.ok ? response.text() : Promise.reject(new Error("unreadable"))))
+      .then((text) => live && setState({ status: "ready", text }))
+      .catch(() => live && setState({ status: "failed" }))
+    return () => {
+      live = false
+    }
+  }, [url])
+
+  if (state.status === "loading") return <output className="block text-faded">Loading…</output>
+  if (state.status === "failed") {
+    return (
+      <Notice tone="faded" title="Contents unavailable">
+        This artifact's contents could not be read back. Its provenance is recorded above.
+      </Notice>
+    )
+  }
+  return render(state.text)
+}
+
+const Body = ({ exhibit }: { exhibit: Exhibit }) => {
+  if (exhibit.access === "denied") {
     return (
       <Notice tone="err" title="Permission denied">
         This artifact was filed but its contents were withheld. Provenance is recorded above.
@@ -114,9 +248,11 @@ const Body = ({ artifact }: { artifact: Artifact }) => {
     )
   }
 
-  const medium = mediumOf(artifact)
+  if (exhibit.diff !== null) return <DiffBody content={exhibit.diff} />
+  if (exhibit.oldFragment !== null) return <ReplacedExcerpt fragment={exhibit.oldFragment} />
 
-  const source = artifact.url ?? undefined
+  const medium = mediumOf(exhibit)
+  const source = exhibit.mediaUrl ?? undefined
 
   if (medium === "image") {
     return source === undefined ? (
@@ -126,7 +262,7 @@ const Body = ({ artifact }: { artifact: Artifact }) => {
     ) : (
       <img
         src={source}
-        alt={artifact.title ?? nameOf(artifact)}
+        alt={exhibit.title ?? nameOf(exhibit)}
         className="max-w-full border border-rule bg-panel"
       />
     )
@@ -143,9 +279,21 @@ const Body = ({ artifact }: { artifact: Artifact }) => {
     )
   }
 
-  const content = artifact.content ?? null
+  const asMedium = (text: string) => {
+    if (medium === "markdown") return <Markdown source={text} />
+    if (medium === "diff") return <DiffBody content={text} />
+    return (
+      <pre className="overflow-x-auto border border-rule bg-panel p-3 font-mono text-[0.72rem] leading-relaxed">
+        {text}
+      </pre>
+    )
+  }
 
-  if (content === null) {
+  if (exhibit.content === null && exhibit.textUrl !== null) {
+    return <FetchedText url={exhibit.textUrl} render={asMedium} />
+  }
+
+  if (exhibit.content === null) {
     return (
       <Notice tone="faded" title="No contents captured">
         The contents of this exhibit were not captured. Its provenance is recorded above.
@@ -153,70 +301,78 @@ const Body = ({ artifact }: { artifact: Artifact }) => {
     )
   }
 
-  if (medium === "markdown") return <Markdown source={content} />
-  if (medium === "diff") return <DiffBody content={content} />
+  if (medium === "markdown") return <Markdown source={exhibit.content} />
+  if (medium === "diff") return <DiffBody content={exhibit.content} />
 
   return (
     <pre className="overflow-x-auto border border-rule bg-panel p-3 font-mono text-[0.72rem] leading-relaxed">
-      {content}
+      {exhibit.content}
     </pre>
   )
 }
 
-const Provenance = ({ artifact }: { artifact: Artifact }) => (
+const Provenance = ({ exhibit }: { exhibit: Exhibit }) => (
   <div className="flex flex-wrap border-b border-rule">
     <span className="border-r border-rule px-3 py-2 font-mono text-[0.6875rem] text-ink-soft">
       <b className="font-semibold text-custody">Filed</b>{" "}
-      {artifact.timestamp === null
+      {exhibit.timestamp === null
         ? "unavailable"
-        : artifact.timestamp.slice(0, 16).replace("T", " ")}
+        : exhibit.timestamp.slice(0, 16).replace("T", " ")}
     </span>
     <span className="border-r border-rule px-3 py-2 font-mono text-[0.6875rem] text-ink-soft">
-      <b className="font-semibold text-custody">By</b> {artifact.agent ?? "Claude"}
+      <b className="font-semibold text-custody">By</b> {exhibit.agent ?? "Claude"}
     </span>
     <span className="border-r border-rule px-3 py-2 font-mono text-[0.6875rem] text-ink-soft">
-      <b className="font-semibold text-custody">Type</b> {artifact.mimeType ?? "unknown"}
+      <b className="font-semibold text-custody">Type</b> {exhibit.mimeType ?? "unknown"}
     </span>
+    {exhibit.editCount === null ? null : (
+      <span className="border-r border-rule px-3 py-2 font-mono text-[0.6875rem] text-ink-soft">
+        <b className="font-semibold text-custody">Edits</b> {exhibit.editCount}
+      </span>
+    )}
   </div>
 )
 
-const Viewer = ({ artifact, index }: { artifact: Artifact; index: number }) => (
+const Viewer = ({ exhibit, index }: { exhibit: Exhibit; index: number }) => (
   <section aria-label="Artifact viewer" className="min-w-0 bg-panel-2">
     <header className="border-b border-rule bg-panel px-4 py-3">
       <p className="text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-ink-soft">
-        {kindOf(artifact)}
+        {kindOf(exhibit)}
       </p>
       <h3 className="mt-1 break-all font-mono text-[0.8125rem] font-semibold">
-        {artifact.path ?? artifact.url ?? <Unavailable />}
+        {exhibit.label ?? <Unavailable />}
       </h3>
       <p className="mt-1 font-mono text-[0.6875rem] text-faded">
-        {exhibitNo(index)} · {artifact.title ?? "no title captured"}
+        {exhibitNo(index)} · {exhibit.title ?? "no title captured"}
       </p>
     </header>
 
-    <Provenance artifact={artifact} />
+    <Provenance exhibit={exhibit} />
 
     <div className="max-h-[70vh] overflow-auto p-4">
-      <Body artifact={artifact} />
+      <Body exhibit={exhibit} />
     </div>
   </section>
 )
 
-export const ArtifactsView = ({ artifacts }: { artifacts: ReadonlyArray<Artifact> }) => {
+export const ArtifactsView = ({
+  artifacts,
+}: { artifacts: ReadonlyArray<Artifact | CapturedArtifact> }) => {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const listRef = useRef<HTMLUListElement | null>(null)
 
+  const exhibits = artifacts.map(toExhibit)
   const selectedIndex = Math.max(
     0,
-    artifacts.findIndex((artifact) => artifact.id === selectedId),
+    exhibits.findIndex((exhibit) => exhibit.id === selectedId),
   )
-  const selected = artifacts[selectedIndex]
+  const selected = exhibits[selectedIndex]
 
   useEffect(() => {
     setSelectedId(null)
   }, [])
 
-  if (artifacts.length === 0) {
+  if (exhibits.length === 0) {
     return (
       <p className="border border-dashed border-rule bg-panel p-6 text-center text-ink-soft">
         No artifacts were filed in this session.
@@ -225,11 +381,11 @@ export const ArtifactsView = ({ artifacts }: { artifacts: ReadonlyArray<Artifact
   }
 
   const move = (delta: number): void => {
-    const next = artifacts[(selectedIndex + delta + artifacts.length) % artifacts.length]
+    const next = exhibits[(selectedIndex + delta + exhibits.length) % exhibits.length]
     if (!next) return
     setSelectedId(next.id)
     const buttons = listRef.current?.querySelectorAll("button")
-    buttons?.[artifacts.indexOf(next)]?.focus()
+    buttons?.[exhibits.indexOf(next)]?.focus()
   }
 
   const onKeyDown = (event: React.KeyboardEvent): void => {
@@ -250,7 +406,7 @@ export const ArtifactsView = ({ artifacts }: { artifacts: ReadonlyArray<Artifact
         <div className="border-b border-rule px-3 py-3">
           <h3 className="text-[0.8125rem] font-semibold">Filed exhibits</h3>
           <p className="mt-1 font-mono text-[0.6875rem] text-faded">
-            {artifacts.length} {artifacts.length === 1 ? "exhibit" : "exhibits"}
+            {exhibits.length} {exhibits.length === 1 ? "exhibit" : "exhibits"}
           </p>
           <label className="mt-2 block min-[720px]:hidden">
             <span className="sr-only">Choose an artifact</span>
@@ -259,9 +415,9 @@ export const ArtifactsView = ({ artifacts }: { artifacts: ReadonlyArray<Artifact
               onChange={(event) => setSelectedId(event.target.value)}
               className="w-full rounded-xs border border-rule bg-panel-2 px-2 py-2 font-mono text-[0.75rem]"
             >
-              {artifacts.map((artifact, index) => (
-                <option key={artifact.id} value={artifact.id}>
-                  {exhibitNo(index)} · {nameOf(artifact)}
+              {exhibits.map((exhibit, index) => (
+                <option key={exhibit.id} value={exhibit.id}>
+                  {exhibitNo(index)} · {nameOf(exhibit)}
                 </option>
               ))}
             </select>
@@ -274,14 +430,14 @@ export const ArtifactsView = ({ artifacts }: { artifacts: ReadonlyArray<Artifact
           onKeyDown={onKeyDown}
           className="hidden max-h-[70vh] overflow-auto min-[720px]:block"
         >
-          {artifacts.map((artifact, index) => (
-            <li key={artifact.id}>
+          {exhibits.map((exhibit, index) => (
+            <li key={exhibit.id}>
               <button
                 type="button"
-                aria-current={artifact.id === selected?.id}
-                onClick={() => setSelectedId(artifact.id)}
+                aria-current={exhibit.id === selected?.id}
+                onClick={() => setSelectedId(exhibit.id)}
                 className={`grid w-full grid-cols-[34px_minmax(0,1fr)] gap-2 border-b border-rule-soft px-3 py-3 text-left transition-colors hover:bg-panel-2 ${
-                  artifact.id === selected?.id
+                  exhibit.id === selected?.id
                     ? "bg-panel-2 shadow-[inset_3px_0_0_var(--color-stamp)]"
                     : ""
                 }`}
@@ -291,11 +447,11 @@ export const ArtifactsView = ({ artifacts }: { artifacts: ReadonlyArray<Artifact
                 </span>
                 <span className="min-w-0">
                   <span className="block break-words font-mono text-[0.72rem] font-semibold">
-                    {nameOf(artifact)}
+                    {nameOf(exhibit)}
                   </span>
                   <span className="mt-1 flex flex-wrap items-center gap-1 text-[0.6875rem] text-faded">
-                    {kindOf(artifact)}
-                    {artifact.access === "denied" ? (
+                    {kindOf(exhibit)}
+                    {exhibit.access === "denied" ? (
                       <span className="font-mono font-semibold text-err">· locked</span>
                     ) : null}
                   </span>
@@ -306,7 +462,7 @@ export const ArtifactsView = ({ artifacts }: { artifacts: ReadonlyArray<Artifact
         </ul>
       </aside>
 
-      {selected ? <Viewer artifact={selected} index={selectedIndex} /> : null}
+      {selected ? <Viewer exhibit={selected} index={selectedIndex} /> : null}
     </div>
   )
 }

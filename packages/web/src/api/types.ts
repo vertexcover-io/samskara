@@ -80,6 +80,25 @@ export type SessionDetailPayload = {
   readonly tokenUsage: TokenTotals
 }
 
+/**
+ * A file the daemon captured during a session. Distinct from `session/records.ts — Artifact`,
+ * which models a `frame-link` the agent surfaced mid-transcript: that one has a url and an
+ * access flag, this one has a base, a diff, and an edit count.
+ */
+export type CapturedArtifact = {
+  readonly id: string
+  readonly path: string
+  readonly relativePath: string
+  readonly mimeType: string
+  readonly isBinary: boolean
+  readonly changeKind: string
+  readonly diff: string | null
+  readonly oldFragment: string | null
+  readonly editCount: number
+  readonly firstSeenAt: string
+  readonly lastSeenAt: string
+}
+
 export type CurrentUser = {
   readonly id: string
   readonly githubLogin: string
