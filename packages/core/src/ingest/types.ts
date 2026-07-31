@@ -338,7 +338,7 @@ export const parsedRecordSchema = z
   .strict()
 
 export const projectIdentitySchema = z
-  .object({ name: nonemptyString, slug: nonemptyString })
+  .object({ name: nonemptyString, slug: nonemptyString, root: nonemptyString.optional() })
   .strict()
 export const agentInfoSchema = z
   .object({
@@ -396,6 +396,48 @@ export const ingestPayloadSchema = z
       }
     }
   })
+
+/**
+ * Size caps shared by the CLI (which skips an oversize file rather than truncating it) and the
+ * server (which does not trust that the client skipped).
+ */
+export const MAX_TEXT_BYTES = 5 * 1024 * 1024
+export const MAX_BINARY_BYTES = 50 * 1024 * 1024
+export const MAX_DIFF_BYTES = 1024 * 1024
+
+/**
+ * Lives beside `ingestPayloadSchema` for the same reason: the CLI builds this payload and the
+ * server validates it, so one definition keeps the two from drifting.
+ *
+ * `encoding` is the client's classification of the bytes -- `base64` for binary, `utf8` for text.
+ * The server derives `isBinary` from it rather than re-sniffing, because the client already
+ * classified the file it read and the decoded bytes are what the hash covers.
+ */
+export const artifactUploadSchema = z
+  .object({
+    sessionId: nonemptyString,
+    path: nonemptyString,
+    relativePath: nonemptyString,
+    mimeType: nonemptyString,
+    changeKind: z.enum(["created", "edited", "editedUnknownBase"]),
+    encoding: z.enum(["utf8", "base64"]),
+    currentContent: z.string(),
+    currentHash: nonemptyString,
+    baseContent: z.string().optional(),
+    baseHash: nonemptyString.optional(),
+    diff: z.string().optional(),
+    oldFragment: z.string().optional(),
+    observedAt: timestamp,
+  })
+  .strict()
+
+export type ArtifactUploadPayload = z.infer<typeof artifactUploadSchema>
+
+export type ArtifactUploadResponse =
+  | { readonly artifactId: string; readonly updated: boolean }
+  | { readonly error: "hashMismatch" }
+  | { readonly error: "artifactTooLarge" }
+  | { readonly error: "sessionNotFound" }
 
 export type MsgType = (typeof MSG_TYPES)[number]
 export type TokenUsage = z.infer<typeof tokenUsageSchema>

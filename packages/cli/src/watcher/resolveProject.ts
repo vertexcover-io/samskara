@@ -47,11 +47,13 @@ export const resolveProject = async (
     return {
       name: parsed.repoName,
       slug: `${parsed.owner}-${parsed.repoName}`,
+      root: projectRoot,
     }
   }
 
   return {
     name: basename(projectRoot),
     slug: slugFromDir(projectRoot),
+    root: projectRoot,
   }
 }
