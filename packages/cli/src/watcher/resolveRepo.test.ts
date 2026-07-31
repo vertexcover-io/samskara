@@ -16,8 +16,6 @@ describe("resolveRepoIdentity", () => {
       }),
     })
 
-    // No `ownerType`: a remote URL cannot tell a user repo from an org one, so it is left
-    // unknown rather than guessed.
     expect(await resolve("/work/serana")).toEqual({
       host: "github.com",
       owner: "refrens",
@@ -106,8 +104,6 @@ describe("resolveRepoIdentity", () => {
       resolve("/private/tmp/scratch"),
     ])
     expect(misses).toEqual([null, null, null])
-    // One `rev-parse` for the negative result, then nothing: a scratch directory must not
-    // re-shell on every message it appears on.
     expect(calls - afterHits).toBe(1)
   })
 })

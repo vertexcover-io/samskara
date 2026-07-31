@@ -8,7 +8,7 @@ import {
   createClaudePlugin,
   createLogger,
 } from "@samskara/core"
-import { beforeEach, describe, expect, test } from "vitest"
+import { beforeEach, describe, expect, test, vi } from "vitest"
 import { enqueue } from "./artifact-queue.js"
 import { runArtifactWorkers } from "./artifact-worker.js"
 import {
@@ -18,7 +18,20 @@ import {
   runCycle,
   sliceByMessages,
 } from "./driver.js"
+import type { ResolvedRepo } from "./resolveRepo.js"
 import { createInMemorySink } from "./sink.js"
+
+// The driver binds these at module load, so the mock must replace the module, not a dep.
+const repoMocks = vi.hoisted(() => ({
+  resolveRepo: vi.fn<(cwd: string) => Promise<ResolvedRepo | null>>(async () => null),
+  resolveHead: vi.fn<(cwd: string) => Promise<string | null>>(async () => null),
+}))
+
+vi.mock("../project-resolver.js", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  createLocalRepoResolver: () => repoMocks.resolveRepo,
+  resolveLocalHeadSha: repoMocks.resolveHead,
+}))
 
 const nodeFs: FileSystem = {
   readFile: (path) => readFile(path, "utf8"),
@@ -118,6 +131,8 @@ describe("watcher driver", () => {
   })
 
   beforeEach(async () => {
+    repoMocks.resolveRepo.mockReset()
+    repoMocks.resolveHead.mockReset()
     dir = await mkdtemp(join(tmpdir(), "samskara-watch-"))
     projects = join(dir, ".claude", "projects", "bucket")
     await mkdir(projects, { recursive: true })
@@ -299,17 +314,12 @@ describe("watcher driver", () => {
     } as const
     const andromeda = { ...serana, repoName: "andromeda", root: "/work/andromeda" }
 
-    const repoDeps = () => {
-      const asked: string[] = []
-      return {
-        asked,
-        resolveRepo: async (cwd: string) => {
-          asked.push(cwd)
-          if (cwd === "/work/serana") return serana
-          if (cwd === "/work/andromeda") return andromeda
-          return null
-        },
-      }
+    const stubRepoResolver = () => {
+      repoMocks.resolveRepo.mockImplementation(async (cwd) => {
+        if (cwd === "/work/serana") return serana
+        if (cwd === "/work/andromeda") return andromeda
+        return null
+      })
     }
 
     test("attributes each message to the repo of its own cwd, so one track spanning two checkouts sends two identities", async () => {
@@ -327,8 +337,8 @@ describe("watcher driver", () => {
       )
 
       const sink = createInMemorySink()
-      const { resolveRepo } = repoDeps()
-      await runCycle(config, deps({ sink, glob: async () => [main], resolveRepo }))
+      stubRepoResolver()
+      await runCycle(config, deps({ sink, glob: async () => [main] }))
 
       const sent = sink.received[0]?.records.flatMap((r) => r.messages) ?? []
       expect(sent.map((m) => m.repo?.repoName)).toEqual([
@@ -358,14 +368,11 @@ describe("watcher driver", () => {
         "aaaabbbbccccddddeeeeffff0000111122223333",
       ]
       let headReads = 0
-      const resolveHead = async () => heads[headReads++] ?? null
-      const { resolveRepo } = repoDeps()
+      repoMocks.resolveHead.mockImplementation(async () => heads[headReads++] ?? null)
+      stubRepoResolver()
 
       const sink1 = createInMemorySink()
-      await runCycle(
-        config,
-        deps({ sink: sink1, glob: async () => [main], resolveRepo, resolveHead }),
-      )
+      await runCycle(config, deps({ sink: sink1, glob: async () => [main] }))
       expect(sink1.received[0]).toMatchObject({
         startCwd: "/work/serana",
         startCommit: heads[0],
@@ -379,10 +386,7 @@ describe("watcher driver", () => {
         "utf8",
       )
       const sink2 = createInMemorySink()
-      await runCycle(
-        config,
-        deps({ sink: sink2, glob: async () => [main], resolveRepo, resolveHead }),
-      )
+      await runCycle(config, deps({ sink: sink2, glob: async () => [main] }))
       expect(sink2.received[0]).not.toHaveProperty("startCommit")
       expect(headReads).toBe(1)
     })
@@ -402,22 +406,16 @@ describe("watcher driver", () => {
       )
 
       const sink = createInMemorySink()
-      const { resolveRepo } = repoDeps()
-      await runCycle(
-        config,
-        deps({
-          sink,
-          glob: async () => [sub],
-          resolveRepo,
-          resolveHead: async () => "37f31013b7ac0a2e6f4c9d1e5a8b2c7d0e3f4a5b",
-        }),
+      stubRepoResolver()
+      repoMocks.resolveHead.mockImplementation(
+        async () => "37f31013b7ac0a2e6f4c9d1e5a8b2c7d0e3f4a5b",
       )
+      await runCycle(config, deps({ sink, glob: async () => [sub] }))
 
       const payload = sink.received[0]
       expect(payload?.type).toBe("subagent")
       expect(payload).not.toHaveProperty("startCwd")
       expect(payload).not.toHaveProperty("startCommit")
-      // Its messages are still attributed -- only the session's origin is main-only.
       expect(payload?.records[0]?.messages[0]?.repo?.repoName).toBe("serana")
     })
 
@@ -460,8 +458,8 @@ describe("watcher driver", () => {
       await writeFile(main, `${bashCall}\n${bashResult}\n`, "utf8")
 
       const sink = createInMemorySink()
-      const { resolveRepo } = repoDeps()
-      await runCycle(config, deps({ sink, glob: async () => [main], resolveRepo }))
+      stubRepoResolver()
+      await runCycle(config, deps({ sink, glob: async () => [main] }))
 
       expect(sink.received[0]?.gitEvents).toEqual([
         {
@@ -488,8 +486,8 @@ describe("watcher driver", () => {
       await writeFile(main, `${assistantLine("l1", "sess-1", { cwd: "/work/serana" })}\n`, "utf8")
 
       const sink = createInMemorySink()
-      const { resolveRepo } = repoDeps()
-      await runCycle(config, deps({ sink, glob: async () => [main], resolveRepo }))
+      stubRepoResolver()
+      await runCycle(config, deps({ sink, glob: async () => [main] }))
 
       expect(sink.received[0]).not.toHaveProperty("gitEvents")
     })

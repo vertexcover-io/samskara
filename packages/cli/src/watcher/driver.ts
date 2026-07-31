@@ -16,11 +16,11 @@ import type {
 import { readCheckpoints, writeCheckpoints } from "@samskara/core"
 import type pino from "pino"
 import { atomicWriteJson, readJson } from "../config/atomic.js"
+import { createLocalRepoResolver, resolveLocalHeadSha } from "../project-resolver.js"
 import { collectArtifacts } from "./artifact-extract.js"
 import { type QueueEntry, enqueue } from "./artifact-queue.js"
 import { isCapturable } from "./containment.js"
 import { collectGitEvents } from "./gitEvents.js"
-import type { ResolvedRepo } from "./resolveRepo.js"
 
 export const MESSAGE_CAP = 2000
 
@@ -50,8 +50,6 @@ export type WatcherDeps = {
   readonly shouldCapture?: (project: ProjectIdentity) => Promise<boolean>
   readonly syncFromFor?: (project: ProjectIdentity) => Promise<string | undefined>
   readonly artifacts?: ArtifactCycleDeps
-  readonly resolveRepo?: (cwd: string) => Promise<ResolvedRepo | null>
-  readonly resolveHead?: (cwd: string) => Promise<string | null>
 }
 
 export type Chunk = {
@@ -116,6 +114,9 @@ const payloadFor = (
   return { ...payload, records, ...origin, ...events }
 }
 
+// One resolver for the daemon's whole life, so its cwd cache outlives a cycle.
+const resolveRepo = createLocalRepoResolver()
+
 /**
  * Attributes each message to the repo of the cwd it happened in — per message, not per track,
  * because a track's messages can span checkouts. A cwd that is not a git repo yields no
@@ -124,7 +125,6 @@ const payloadFor = (
 const attributeRepos = async (
   records: ReadonlyArray<ParsedRecord>,
   fallbackCwd: string | undefined,
-  resolveRepo: (cwd: string) => Promise<ResolvedRepo | null>,
 ): Promise<ReadonlyArray<ParsedRecord>> =>
   Promise.all(
     records.map(async (record) => {
@@ -151,10 +151,7 @@ const syncTrack = async (
   origin: SessionOrigin,
   deps: WatcherDeps,
 ): Promise<Checkpoint | undefined> => {
-  const { resolveRepo } = deps
-  const records = resolveRepo
-    ? await attributeRepos(track.records, track.project.root, resolveRepo)
-    : track.records
+  const records = await attributeRepos(track.records, track.project.root)
   let sentThrough = 0
   for (const request of sliceByMessages(records, MESSAGE_CAP)) {
     // Per chunk rather than per track: a commit's `callId` is resolved to a message id by the
@@ -183,18 +180,14 @@ const syncTrack = async (
  * after the fact, so by a later cycle HEAD has moved to whatever the session has since committed.
  * A track already in the checkpoint store has been sent before, so its origin is already stored.
  */
-const originFor = async (
-  track: SessionTrack,
-  prev: CheckpointStore,
-  deps: WatcherDeps,
-): Promise<SessionOrigin> => {
+const originFor = async (track: SessionTrack, prev: CheckpointStore): Promise<SessionOrigin> => {
   if (track.type !== "main") return {}
   if (prev.checkpoints[track.checkpointKey]) return {}
   const startCwd = track.records
     .flatMap((record) => record.messages)
     .find((message) => message.cwd !== undefined)?.cwd
   if (!startCwd) return {}
-  const startCommit = await deps.resolveHead?.(startCwd)
+  const startCommit = await resolveLocalHeadSha(startCwd)
   return { startCwd, ...(startCommit ? { startCommit } : {}) }
 }
 
@@ -205,7 +198,7 @@ const syncSession = async (
 ): Promise<Record<string, Checkpoint>> => {
   const updated: Record<string, Checkpoint> = {}
   for (const track of batch.tracks) {
-    const checkpoint = await syncTrack(track, await originFor(track, prev, deps), deps)
+    const checkpoint = await syncTrack(track, await originFor(track, prev), deps)
     if (checkpoint) updated[track.checkpointKey] = checkpoint
   }
   return updated
