@@ -99,12 +99,61 @@ export const toolResultLine = (
   },
 })
 
+/**
+ * A `file-history-delta` line — Claude Code's record of the backup it took before editing a
+ * file. It carries the pointer the daemon needs to resolve an artifact's pre-edit base.
+ */
+export const deltaLine = (
+  path: string,
+  backupFileName: string | null,
+  minute: number,
+): TranscriptLine => ({
+  type: "file-history-delta",
+  uuid: crypto.randomUUID(),
+  timestamp: iso(minute),
+  path,
+  backup: { backupFileName, version: 1 },
+})
+
 /** A `summary` line, which normalizes to a `systemEvent` row with subType `summary`. */
 export const summaryLine = (summary: string, minute: number): TranscriptLine => ({
   type: "summary",
   uuid: crypto.randomUUID(),
   timestamp: iso(minute),
   summary,
+})
+
+/**
+ * A tool call whose input carries credentials, as a real transcript does when an agent
+ * runs an authenticated request. The collector must redact these before upload: the whole
+ * line is persisted to the `raw` jsonb column, so a miss writes secrets to the database.
+ *
+ * Key spellings deliberately vary -- SENSITIVE_KEYS matches case-insensitively and ignores
+ * `_`/`-`, and `note` proves free text is left alone rather than blanket-scrubbed.
+ */
+export const secretBearingLine = (minute: number): TranscriptLine => ({
+  type: "assistant",
+  uuid: crypto.randomUUID(),
+  timestamp: iso(minute),
+  message: {
+    role: "assistant",
+    model: "claude-opus-5",
+    content: [
+      {
+        type: "tool_use",
+        id: "tool-secret-1",
+        name: "Bash",
+        input: {
+          token: "tok-live-DEADBEEF",
+          Authorization: "Bearer AUTH-DEADBEEF",
+          api_key: "key-DEADBEEF",
+          "client-secret": "cs-DEADBEEF",
+          nested: { refreshToken: "rt-DEADBEEF", tokenizer: "keep-me" },
+          note: "the literal word token appears here and must survive",
+        },
+      },
+    ],
+  },
 })
 
 const appendLines = async (

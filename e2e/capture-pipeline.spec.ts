@@ -1,17 +1,19 @@
 import { type ChildProcess, execFile, spawn } from "node:child_process"
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 import { SignJWT } from "jose"
 import postgres from "postgres"
-import { expect, test } from "./fixtures/auth.js"
+import { expect, mintSessionToken, test } from "./fixtures/auth.js"
 import { API_BASE } from "./playwright.config.js"
-import { E2E_USER_ID, seedDatabase } from "./seed.js"
+import { E2E_OTHER_USER_ID, E2E_USER_ID, seedDatabase } from "./seed.js"
 import {
   assistantLine,
   createTranscriptWriter,
+  deltaLine,
+  secretBearingLine,
   summaryLine,
   toolCallLine,
   toolResultLine,
@@ -207,6 +209,9 @@ let harness: Harness
 const clearPipelineRows = async (): Promise<void> => {
   const sql = postgres(DATABASE_URL)
   try {
+    // Artifacts cascade from sessions, but the delete is explicit so a leftover row from a
+    // failed run cannot satisfy the next test's poll instantly.
+    await sql`delete from artifact where "sessionId" = ${SESSION_ID}`
     await sql`delete from sessions where id = ${SESSION_ID}`
     await sql`delete from projects where slug = ${PROJECT_SLUG}`
   } finally {
@@ -651,5 +656,456 @@ test.describe("capture pipeline", () => {
     expect(state?.checkpoints[newer.mainPath]).toBeDefined()
 
     await sql`delete from sessions where id in (${oldId}, ${newId})`
+  })
+
+  test("P12: a file written inside the project root is captured, and one outside it never is", async () => {
+    // No --project-slug override: only the real resolver derives a project root, and without
+    // a root the daemon skips artifact capture entirely.
+    const { writer, sql, cwd } = await useHarness({
+      projectOverride: false,
+      enabled: true,
+    })
+
+    const inScope = join(cwd, "docs", "adr-001.md")
+    const excluded = join(cwd, "node_modules", "pkg", "index.js")
+    const outside = join(cwd, "..", "elsewhere.md")
+    await mkdir(join(cwd, "docs"), { recursive: true })
+    await mkdir(join(cwd, "node_modules", "pkg"), { recursive: true })
+    await writeFile(inScope, "# Decision\n", "utf8")
+    await writeFile(excluded, "module.exports = {}\n", "utf8")
+    await writeFile(outside, "not part of the project\n", "utf8")
+
+    await writer.append([
+      userLine("Write the ADR.", 0),
+      toolCallLine("tool-write-1", "Write", { file_path: inScope }, 1),
+      toolCallLine("tool-write-2", "Write", { file_path: excluded }, 2),
+      toolCallLine("tool-write-3", "Write", { file_path: outside }, 3),
+    ])
+
+    // Anchor on the transcript reaching Postgres, so a queue that never appears is
+    // distinguishable from a daemon that never ran a cycle.
+    await pollUntil(
+      () => sql<{ count: string }[]>`
+        select count(*)::text as count from messages where "sessionId" = ${SESSION_ID}
+      `,
+      (r) => Number(r[0]?.count ?? 0) >= 4,
+      (r) => `${r[0]?.count ?? 0} message rows`,
+    )
+
+    // Exactly the in-scope file reaches Postgres. The dependency directory and the path
+    // outside the root are filtered before the queue, so no upload of either is ever possible.
+    const rows = await pollUntil(
+      () => sql<{ path: string; relativePath: string; changeKind: string }[]>`
+        select path, "relativePath", "changeKind" from artifact where "sessionId" = ${SESSION_ID}
+      `,
+      (r) => r.length > 0,
+      (r) => `${r.length} artifact rows`,
+    )
+
+    expect(rows.map((row) => row.path)).toEqual([await realpath(inScope)])
+    expect(rows[0]?.relativePath).toBe(join("docs", "adr-001.md"))
+    expect(rows[0]?.changeKind).toBe("created")
+
+    await sql`delete from artifact where "sessionId" = ${SESSION_ID}`
+  })
+
+  test("P13: an edited file's backup pointer resolves into a stored base and diff, while an edit whose delta names no backup lands as editedUnknownBase", async () => {
+    const { writer, sql, cwd, home } = await useHarness({
+      projectOverride: false,
+      enabled: true,
+    })
+
+    const resolvable = join(cwd, "docs", "resolvable.md")
+    const unknownBase = join(cwd, "docs", "unknown-base.md")
+    await mkdir(join(cwd, "docs"), { recursive: true })
+    await writeFile(resolvable, "# Notes\n\nChanged line.\n", "utf8")
+    await writeFile(unknownBase, "# Other\n\nAlso changed.\n", "utf8")
+
+    // The real backup Claude took before editing the first file. The second has none, which is
+    // the measured majority case and must still capture -- as editedUnknownBase.
+    const historyDir = join(home, ".claude", "file-history", SESSION_ID)
+    await mkdir(historyDir, { recursive: true })
+    await writeFile(join(historyDir, "3c32b39a@v1"), "# Notes\n\nOriginal line.\n", "utf8")
+
+    // Claude emits the Edit, then the delta recording the backup it took first. Only the
+    // first file's delta names a backup; the second carries null, which is the measured
+    // majority case and must still queue the artifact.
+    await writer.append([
+      userLine("Edit both docs.", 0),
+      toolCallLine(
+        "tool-edit-1",
+        "Edit",
+        { file_path: resolvable, old_string: "Original line." },
+        1,
+      ),
+      deltaLine(resolvable, "3c32b39a@v1", 2),
+      toolCallLine("tool-edit-2", "Edit", { file_path: unknownBase, old_string: "Was here." }, 3),
+      deltaLine(unknownBase, null, 4),
+    ])
+
+    await pollUntil(
+      () => sql<{ count: string }[]>`
+        select count(*)::text as count from messages where "sessionId" = ${SESSION_ID}
+      `,
+      (r) => Number(r[0]?.count ?? 0) >= 3,
+      (r) => `${r[0]?.count ?? 0} message rows`,
+    )
+
+    const rows = await pollUntil(
+      () => sql<
+        {
+          path: string
+          changeKind: string
+          baseContent: Buffer | null
+          diff: string | null
+          oldFragment: string | null
+        }[]
+      >`
+        select path, "changeKind", "baseContent", diff, "oldFragment"
+        from artifact where "sessionId" = ${SESSION_ID}
+      `,
+      (r) => r.length >= 2,
+      (r) => `${r.length} artifact rows`,
+    )
+
+    const byPath = new Map(rows.map((row) => [row.path, row]))
+    const withBackup = byPath.get(await realpath(resolvable))
+    const withoutBackup = byPath.get(await realpath(unknownBase))
+
+    // The pointer carried the pre-edit content all the way from `file-history` into the column.
+    expect(withBackup?.changeKind).toBe("edited")
+    expect(withBackup?.baseContent?.toString("utf8")).toBe("# Notes\n\nOriginal line.\n")
+    expect(withBackup?.diff).toContain("-Original line.")
+    expect(withBackup?.diff).toContain("+Changed line.")
+
+    // No backup: captured anyway, honestly recorded as unrecoverable, keeping the fragment.
+    expect(withoutBackup?.changeKind).toBe("editedUnknownBase")
+    expect(withoutBackup?.baseContent).toBeNull()
+    expect(withoutBackup?.oldFragment).toBe("Was here.")
+
+    await sql`delete from artifact where "sessionId" = ${SESSION_ID}`
+  })
+
+  test("A1: a file the agent edits during a captured session arrives in Postgres with its pre-session content and a diff, without delaying message capture", async () => {
+    // No --project-slug: the override path supplies no project root, so it would enqueue nothing.
+    const { writer, sql, cwd, home } = await useHarness({
+      projectOverride: false,
+      enabled: true,
+    })
+
+    const notes = join(cwd, "docs", "notes.md")
+    const ORIGINAL = "# Notes\n\nThe original line.\n"
+    const CHANGED = "# Notes\n\nThe replacement line.\n"
+    const FINAL = "# Notes\n\nThe third line.\n"
+
+    await mkdir(join(cwd, "docs"), { recursive: true })
+    await writeFile(notes, ORIGINAL, "utf8")
+
+    // The backup Claude Code itself takes before an edit, in its real on-disk layout.
+    const backupHash = "a1f0e9d8"
+    const historyDir = join(home, ".claude", "file-history", SESSION_ID)
+    await mkdir(historyDir, { recursive: true })
+    await writeFile(join(historyDir, `${backupHash}@v1`), ORIGINAL, "utf8")
+
+    await writeFile(notes, CHANGED, "utf8")
+
+    await writer.append([
+      userLine("Rewrite the notes.", 0),
+      toolCallLine(
+        "tool-edit-a1",
+        "Edit",
+        { file_path: notes, old_string: "The original line." },
+        1,
+      ),
+      deltaLine(notes, `${backupHash}@v1`, 2),
+      userLine("Thanks, anything else worth noting?", 3),
+      assistantLine("Nothing further -- the notes now read correctly.", 4),
+    ])
+
+    const resolvedPath = await realpath(notes)
+
+    const [artifact] = await pollUntil(
+      () => sql<
+        {
+          currentContent: Buffer | null
+          baseContent: Buffer | null
+          diff: string | null
+          changeKind: string
+          relativePath: string
+          editCount: number
+        }[]
+      >`
+        select "currentContent", "baseContent", diff, "changeKind", "relativePath", "editCount"
+        from artifact where "sessionId" = ${SESSION_ID} and path = ${resolvedPath}
+      `,
+      (rows) => rows.length === 1 && rows[0]?.baseContent !== null,
+      (rows) =>
+        `${rows.length} artifact rows (base ${rows[0]?.baseContent === null ? "null" : "set"})`,
+    )
+    if (!artifact) throw new Error("no artifact row reached Postgres")
+
+    // Bytes, not strings: base64/utf8 confusion anywhere on the path would show up here.
+    expect(artifact.currentContent?.toString("utf8")).toBe(CHANGED)
+    expect(artifact.baseContent?.toString("utf8")).toBe(ORIGINAL)
+    expect(artifact.changeKind).toBe("edited")
+    expect(artifact.relativePath).toBe(join("docs", "notes.md"))
+    expect(artifact.editCount).toBe(1)
+
+    // A real unified diff, carrying both sides of the change.
+    expect(artifact.diff).toContain("-The original line.")
+    expect(artifact.diff).toContain("+The replacement line.")
+
+    // Artifact work did not stall ingest: the conversational turns landed too.
+    const messageRows = await pollUntil(
+      () => sql<{ count: string }[]>`
+        select count(*)::text as count from messages where "sessionId" = ${SESSION_ID}
+      `,
+      (r) => Number(r[0]?.count ?? 0) >= 4,
+      (r) => `${r[0]?.count ?? 0} message rows`,
+    )
+    expect(Number(messageRows[0]?.count)).toBeGreaterThanOrEqual(4)
+
+    // A further edit: one row still, base frozen, editCount incremented.
+    await writeFile(notes, FINAL, "utf8")
+    await writer.append([
+      toolCallLine(
+        "tool-edit-a1b",
+        "Edit",
+        { file_path: notes, old_string: "The replacement line." },
+        5,
+      ),
+      deltaLine(notes, `${backupHash}@v1`, 6),
+    ])
+
+    const updated = await pollUntil(
+      () => sql<{ currentContent: Buffer | null; baseContent: Buffer | null; editCount: number }[]>`
+        select "currentContent", "baseContent", "editCount"
+        from artifact where "sessionId" = ${SESSION_ID} and path = ${resolvedPath}
+      `,
+      (rows) => rows.length === 1 && (rows[0]?.editCount ?? 0) >= 2,
+      (rows) => `${rows.length} rows, editCount ${rows[0]?.editCount ?? 0}`,
+    )
+    expect(updated).toHaveLength(1)
+    expect(updated[0]?.currentContent?.toString("utf8")).toBe(FINAL)
+    // The base is frozen: a re-derived base would be post-edit content and every later diff wrong.
+    expect(updated[0]?.baseContent?.toString("utf8")).toBe(ORIGINAL)
+    expect(updated[0]?.editCount).toBe(2)
+
+    await sql`delete from artifact where "sessionId" = ${SESSION_ID}`
+  })
+
+  test("A2: artifacts captured by the real daemon read back through the API, and hostile content is served defused -- a claimed type is never echoed, and HTML and SVG land in an opaque origin", async () => {
+    const { writer, sql, cwd } = await useHarness({ projectOverride: false, enabled: true })
+
+    // Everything an agent plausibly writes, including the two shapes that turn a captured file
+    // into stored XSS if the server trusts what the client claimed about it.
+    const REPORT_HTML =
+      "<!doctype html><html><body><script>alert(document.cookie)</script></body></html>"
+    const DIAGRAM_SVG = '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'
+    const SCRIPT_JS = "export const beacon = () => fetch('https://evil.example')\n"
+
+    await mkdir(join(cwd, "docs"), { recursive: true })
+    const report = join(cwd, "docs", "report.html")
+    const diagram = join(cwd, "docs", "diagram.svg")
+    const script = join(cwd, "docs", "beacon.js")
+    await writeFile(report, REPORT_HTML, "utf8")
+    await writeFile(diagram, DIAGRAM_SVG, "utf8")
+    await writeFile(script, SCRIPT_JS, "utf8")
+
+    await writer.append([
+      userLine("Write the report, the diagram, and the helper.", 0),
+      toolCallLine("tool-write-a2a", "Write", { file_path: report }, 1),
+      toolCallLine("tool-write-a2b", "Write", { file_path: diagram }, 2),
+      toolCallLine("tool-write-a2c", "Write", { file_path: script }, 3),
+    ])
+
+    await pollUntil(
+      () => sql<{ count: string }[]>`
+        select count(*)::text as count from artifact where "sessionId" = ${SESSION_ID}
+      `,
+      (r) => Number(r[0]?.count ?? 0) >= 3,
+      (r) => `${r[0]?.count ?? 0} artifact rows`,
+    )
+
+    const token = await mintSessionToken()
+    const read = (path: string) =>
+      fetch(`${API_BASE}${path}`, { headers: { authorization: `Bearer ${token}` } })
+
+    const listed = await read(`/api/sessions/${SESSION_ID}/artifacts`)
+    expect(listed.status).toBe(200)
+    const { artifacts } = (await listed.json()) as {
+      artifacts: { id: string; relativePath: string; byteSize: number }[]
+    }
+
+    const byPath = new Map(artifacts.map((row) => [row.relativePath, row]))
+    const html = byPath.get(join("docs", "report.html"))
+    const svg = byPath.get(join("docs", "diagram.svg"))
+    const js = byPath.get(join("docs", "beacon.js"))
+    if (!html || !svg || !js) throw new Error(`missing artifacts: ${[...byPath.keys()].join(", ")}`)
+    expect(html.byteSize).toBe(Buffer.byteLength(REPORT_HTML))
+
+    // The .js the agent wrote is served as inert text. Were its claimed type echoed, this URL
+    // would be loadable via `<script src>` from our own origin -- stored XSS by upload.
+    const rawJs = await read(`/api/artifacts/${js.id}/raw`)
+    expect(rawJs.status).toBe(200)
+    expect(rawJs.headers.get("content-type")).toBe("text/plain; charset=utf-8")
+    expect(rawJs.headers.get("x-content-type-options")).toBe("nosniff")
+    expect(await rawJs.text()).toBe(SCRIPT_JS)
+
+    // HTML and SVG both render, both in an opaque origin. `allow-same-origin` alongside
+    // `allow-scripts` would cancel the sandbox entirely, so neither may ever carry it.
+    for (const [row, body] of [
+      [html, REPORT_HTML],
+      [svg, DIAGRAM_SVG],
+    ] as const) {
+      const res = await read(`/api/artifacts/${row.id}/raw`)
+      expect(res.status).toBe(200)
+      expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8")
+
+      const csp = res.headers.get("content-security-policy") ?? ""
+      expect(csp).toContain("sandbox allow-scripts")
+      expect(csp).toContain("default-src 'none'")
+      expect(csp).not.toContain("allow-same-origin")
+      expect(res.headers.get("x-content-type-options")).toBe("nosniff")
+
+      // Served unmodified: the protection is the origin, not rewriting the body.
+      expect(await res.text()).toBe(body)
+    }
+
+    // The detail route carries the text content the list route deliberately withheld.
+    const detail = await read(`/api/artifacts/${html.id}`)
+    expect(detail.status).toBe(200)
+    const detailBody = (await detail.json()) as { artifact: { currentContent: string | null } }
+    expect(detailBody.artifact.currentContent).toBe(REPORT_HTML)
+
+    // A real, authenticated user with no grant on this project. Both routes answer 404 rather
+    // than 403, so nothing about the artifact's existence leaks through the refusal.
+    const stranger = await mintSessionToken(E2E_OTHER_USER_ID)
+    const asStranger = (path: string) =>
+      fetch(`${API_BASE}${path}`, { headers: { authorization: `Bearer ${stranger}` } })
+
+    expect((await asStranger(`/api/artifacts/${html.id}`)).status).toBe(404)
+    expect((await asStranger(`/api/artifacts/${html.id}/raw`)).status).toBe(404)
+    expect((await asStranger(`/api/sessions/${SESSION_ID}/artifacts`)).status).toBe(404)
+
+    await sql`delete from artifact where "sessionId" = ${SESSION_ID}`
+  })
+
+  test("A2: a viewer opens a captured session in the browser and reads the real artifact and its diff, with no demo fixture present and no access for a stranger", async ({
+    authedPage: page,
+  }) => {
+    const { writer, sql, cwd, home } = await useHarness({
+      projectOverride: false,
+      enabled: true,
+    })
+
+    // A1's capture, run again so a real edited artifact with a real diff exists to read back.
+    const notes = join(cwd, "docs", "notes.md")
+    const ORIGINAL = "# Notes\n\nThe original line.\n"
+    const CHANGED = "# Notes\n\nThe replacement line.\n"
+
+    await mkdir(join(cwd, "docs"), { recursive: true })
+    await writeFile(notes, ORIGINAL, "utf8")
+
+    const backupHash = "b2c1d0e9"
+    const historyDir = join(home, ".claude", "file-history", SESSION_ID)
+    await mkdir(historyDir, { recursive: true })
+    await writeFile(join(historyDir, `${backupHash}@v1`), ORIGINAL, "utf8")
+
+    await writeFile(notes, CHANGED, "utf8")
+
+    await writer.append([
+      userLine("Rewrite the notes.", 0),
+      toolCallLine(
+        "tool-edit-a2ui",
+        "Edit",
+        { file_path: notes, old_string: "The original line." },
+        1,
+      ),
+      deltaLine(notes, `${backupHash}@v1`, 2),
+    ])
+
+    const resolvedPath = await realpath(notes)
+    await pollUntil(
+      () => sql<{ diff: string | null }[]>`
+        select diff from artifact
+        where "sessionId" = ${SESSION_ID} and path = ${resolvedPath}
+      `,
+      (rows) => rows.length === 1 && rows[0]?.diff !== null,
+      (rows) => `${rows.length} artifact rows (diff ${rows[0]?.diff === null ? "null" : "set"})`,
+    )
+
+    // The owning user opens the session the daemon just captured.
+    await page.goto(`/sessions/${SESSION_ID}`)
+    await page.getByRole("tab", { name: /Artifacts/ }).click()
+
+    const list = page.getByRole("list", { name: /filed artifacts/i })
+    const relative = join("docs", "notes.md")
+    await expect(list.getByRole("button", { name: new RegExp(relative) })).toBeVisible()
+
+    // Selecting it shows the diff the daemon computed, both sides of the change.
+    await list.getByRole("button", { name: new RegExp(relative) }).click()
+    const viewer = page.getByRole("region", { name: /artifact viewer/i })
+    await expect(viewer.getByText("-The original line.")).toBeVisible()
+    await expect(viewer.getByText("+The replacement line.")).toBeVisible()
+
+    // No fixture from the deleted DEMO_ARTIFACTS survives anywhere on the rendered page.
+    const body = (await page.locator("body").textContent()) ?? ""
+    for (const fixture of ["architecture.svg", "walkthrough.mp4", "idempotent-ingest.md"]) {
+      expect(body).not.toContain(fixture)
+    }
+
+    // A real, authenticated user with no grant on this project is refused on both routes.
+    const stranger = await mintSessionToken(E2E_OTHER_USER_ID)
+    const asStranger = (path: string) =>
+      fetch(`${API_BASE}${path}`, { headers: { authorization: `Bearer ${stranger}` } })
+
+    const listed = await asStranger(`/api/sessions/${SESSION_ID}/artifacts`)
+    expect(listed.status).toBe(404)
+
+    const [row] = await sql<{ id: string }[]>`
+      select id from artifact where "sessionId" = ${SESSION_ID} and path = ${resolvedPath}
+    `
+    if (!row) throw new Error("no artifact row to probe the raw route with")
+    expect((await asStranger(`/api/artifacts/${row.id}/raw?which=current`)).status).toBe(404)
+
+    await sql`delete from artifact where "sessionId" = ${SESSION_ID}`
+  })
+
+  test("P11: credentials in a transcript are redacted before upload, so no secret reaches the raw column that stores the whole line", async () => {
+    const { writer, sql } = await useHarness()
+
+    await writer.append([userLine("Call the API with my credentials.", 0), secretBearingLine(1)])
+
+    await pollUntil(
+      () => sql<{ count: string }[]>`
+        select count(*)::text as count from messages where "sessionId" = ${SESSION_ID}
+      `,
+      (r) => Number(r[0]?.count ?? 0) >= 2,
+      (r) => `${r[0]?.count ?? 0} rows`,
+    )
+
+    // Search every persisted column, not just `raw`: the tool input is copied into the
+    // toolCall details too, and a leak in either place is a leak.
+    const [leak] = await sql<{ hits: string }[]>`
+      select count(*)::text as hits from messages m
+      left join "toolCall" t on t."messageId" = m.id
+      where m."sessionId" = ${SESSION_ID}
+        and (m.raw::text like '%DEADBEEF%'
+             or coalesce(m.details::text, '') like '%DEADBEEF%'
+             or coalesce(t."toolInput"::text, '') like '%DEADBEEF%')
+    `
+    expect(Number(leak?.hits)).toBe(0)
+
+    // The redaction ran rather than the line being dropped, and it is surgical:
+    // `tokenizer` and the prose containing "token" are untouched.
+    const [row] = await sql<{ raw: unknown }[]>`
+      select raw from messages
+      where "sessionId" = ${SESSION_ID} and "msgType" = 'toolCall'
+    `
+    const rawText = JSON.stringify(row?.raw)
+    expect(rawText).toContain("[Redacted]")
+    expect(rawText).toContain("keep-me")
+    expect(rawText).toContain("the literal word token appears here")
   })
 })

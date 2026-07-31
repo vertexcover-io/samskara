@@ -72,7 +72,7 @@ test.beforeEach(async () => {
   await seedDatabase(SEED)
 })
 
-test("S44: opening a session from the filtered list shows four tabs with Conversation selected, the annex reveals its branch, Escape restores focus to the trigger, and Artifacts renders its viewer", async ({
+test("S44: opening a session from the filtered list shows three tabs with Conversation selected, the inline-tools toggle reveals tool calls, the annex reveals its branch, Escape restores focus to the trigger, and Artifacts renders its viewer", async ({
   authedPage: page,
 }) => {
   await page.goto("/sessions?project=samskara")
@@ -81,8 +81,8 @@ test("S44: opening a session from the filtered list shows four tabs with Convers
   await expect(page).toHaveURL(/\/sessions\/e2e-detail-1$/)
 
   const tabs = page.getByRole("tab")
-  await expect(tabs).toHaveCount(4)
-  await expect(tabs).toHaveText([/Conversation/, /Timeline/, /Tool Calls/, /Artifacts/])
+  await expect(tabs).toHaveCount(3)
+  await expect(tabs).toHaveText([/Conversation/, /Tool Calls/, /Artifacts/])
   await expect(page.getByRole("tab", { name: /Conversation/ })).toHaveAttribute(
     "aria-selected",
     "true",
@@ -92,21 +92,24 @@ test("S44: opening a session from the filtered list shows four tabs with Convers
   await expect(page.getByText(/Plan: add a unique key/)).toBeVisible()
   await expect(page.getByRole("button", { name: /Grep/ })).toHaveCount(0)
 
-  await page.getByRole("tab", { name: /Timeline/ }).click()
-  await expect(page.getByRole("button", { name: /Grep/ })).toBeVisible()
+  // click(), not check(): the toggle is controlled by the `tools` search param, so the remount
+  // makes check()'s own state assertion race the re-render. The Grep assertion is the proof.
+  await page.getByRole("checkbox", { name: /show tool calls inline/i }).click()
+  await expect(page).toHaveURL(/tools=1/)
+  await expect(page.getByRole("button", { name: /Grep/ }).first()).toBeVisible()
 
-  const collapsed = page.getByRole("button", { name: /open annex/i })
+  const collapsed = page.getByRole("button", { name: /open branch/i })
   await expect(collapsed).toHaveAttribute("aria-expanded", "false")
   await collapsed.click()
 
-  const expanded = page.getByRole("button", { name: /branch open/i })
+  const expanded = page.getByRole("button", { name: /close branch/i })
   await expect(expanded).toHaveAttribute("aria-expanded", "true")
   await expect(collapsed).toHaveCount(0)
   const branch = page.getByRole("region", { name: /db-schema-auditor conversation/i })
   await expect(branch).toBeVisible()
   await expect(branch.getByText(/No unique constraints exist/)).toBeVisible()
 
-  await page.getByRole("tab", { name: /Timeline/ }).focus()
+  await page.getByRole("tab", { name: /Conversation/ }).focus()
   await page.keyboard.press("Escape")
 
   await expect(collapsed).toHaveAttribute("aria-expanded", "false")
@@ -115,6 +118,8 @@ test("S44: opening a session from the filtered list shows four tabs with Convers
 
   await page.getByRole("tab", { name: /Artifacts/ }).click()
 
+  // This seeded session has no captured files, so the sole exhibit is its transcript frame-link --
+  // proof the demo fixtures are gone and that frame-links still render on their own.
   const list = page.getByRole("list", { name: /filed artifacts/i })
   await expect(list.getByRole("button")).toHaveCount(1)
   const viewer = page.getByRole("region", { name: /artifact viewer/i })
