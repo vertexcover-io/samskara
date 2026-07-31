@@ -4,6 +4,7 @@ import { z } from "zod"
 import type { Db } from "../db/client.js"
 import type { Env } from "../lib/env.js"
 import { type AuthVariables, requireAuth } from "../lib/require-auth.js"
+import { listForSession } from "../repositories/artifacts.repo.js"
 import {
   type SessionDetailRow,
   type SessionSummaryRow,
@@ -11,6 +12,7 @@ import {
   getDetail,
   listAccessible,
 } from "../repositories/sessions.repo.js"
+import { serializeArtifact } from "./artifacts.js"
 
 type Deps = {
   readonly db: Db
@@ -115,6 +117,14 @@ export const sessionsRoutes = ({ db, env }: Deps): Hono<{ Variables: AuthVariabl
     if (detail === null) return c.json({ error: "sessionNotFound" }, 404)
 
     return c.json(serializeDetail(detail))
+  })
+
+  app.get("/:id/artifacts", requireAuth({ db, env }, ["web"]), async (c) => {
+    const rows = await listForSession(db, c.get("user").id, c.req.param("id"))
+
+    if (rows === null) return c.json({ error: "sessionNotFound" }, 404)
+
+    return c.json({ artifacts: rows.map(serializeArtifact) })
   })
 
   return app

@@ -4,6 +4,7 @@ import {
   bigint,
   boolean,
   check,
+  customType,
   index,
   integer,
   jsonb,
@@ -14,6 +15,16 @@ import {
   unique,
   uuid,
 } from "drizzle-orm/pg-core"
+
+/**
+ * pg-core has no `bytea`, and drizzle-kit's CJS loader cannot resolve this package's `.js`
+ * import specifiers, so the type is declared here rather than imported from `customTypes.ts`.
+ * `bytea` rather than `text`: artifact content includes real binaries, and base64-in-text would
+ * inflate storage by a third and make `length()` meaningless.
+ */
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType: () => "bytea",
+})
 
 const msgTypeValues = MSG_TYPES.map((t) => `'${t}'`).join(", ")
 
@@ -242,5 +253,45 @@ export const subagents = pgTable(
     primaryKey({ columns: [t.sessionId, t.agentId] }),
     index("subagents_session_id_idx").on(t.sessionId),
     index("subagents_parent_agent_id_idx").on(t.parentAgentId),
+  ],
+)
+
+/**
+ * `relativePath` is stored rather than derived: deriving it needs the session cwd, which lives in
+ * transcript content rather than a column. It also survives cwd changes -- the same repo checked
+ * out at two paths yields different `path` but identical `relativePath`.
+ *
+ * No `byteSize` column: `length(currentContent)` is O(1) on bytea and cannot drift out of sync.
+ */
+export const artifact = pgTable(
+  "artifact",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    sessionId: text("sessionId")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    path: text("path").notNull(),
+    relativePath: text("relativePath").notNull(),
+    mimeType: text("mimeType").notNull(),
+    isBinary: boolean("isBinary").notNull(),
+    baseContent: bytea("baseContent"),
+    baseHash: text("baseHash"),
+    currentContent: bytea("currentContent").notNull(),
+    currentHash: text("currentHash").notNull(),
+    diff: text("diff"),
+    oldFragment: text("oldFragment"),
+    changeKind: text("changeKind").notNull(),
+    editCount: integer("editCount").notNull().default(1),
+    firstSeenAt: timestamp("firstSeenAt", { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp("lastSeenAt", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique("artifact_session_path_uniq").on(t.sessionId, t.path),
+    index("artifact_session_idx").on(t.sessionId),
+    index("artifact_relpath_idx").on(t.relativePath),
+    check(
+      "artifact_changeKind_check",
+      sql`${t.changeKind} in ('created', 'edited', 'editedUnknownBase')`,
+    ),
   ],
 )

@@ -1,7 +1,25 @@
 import type { ProjectIdentity } from "@samskara/core"
-import { and, desc, eq, exists, or, sql } from "drizzle-orm"
+import { type SQL, and, desc, eq, exists, or, sql } from "drizzle-orm"
 import type { Querier } from "../db/client.js"
-import { projects, sessions, userProjectGrant } from "../db/schema.js"
+import { projects, userProjectGrant } from "../db/schema.js"
+
+/**
+ * Owner-or-grant, as a predicate over a query that already has `projects` in scope. One definition
+ * rather than a copy per repository: two divergent copies of an authorization predicate is how one
+ * of them silently stops matching the other.
+ */
+export const visibleToUser = (db: Querier, userId: string): SQL | undefined =>
+  or(
+    eq(projects.ownerId, userId),
+    exists(
+      db
+        .select({ one: sql`1` })
+        .from(userProjectGrant)
+        .where(
+          and(eq(userProjectGrant.projectId, projects.id), eq(userProjectGrant.userId, userId)),
+        ),
+    ),
+  )
 
 export type UpsertProjectInput = {
   readonly identity: ProjectIdentity
@@ -84,19 +102,6 @@ export type ProjectSummaryRow = {
   readonly lastActiveAt: string | null
   readonly lastSessionTitle: string | null
 }
-
-const visibleToUser = (db: Querier, userId: string) =>
-  or(
-    eq(projects.ownerId, userId),
-    exists(
-      db
-        .select({ one: sql`1` })
-        .from(userProjectGrant)
-        .where(
-          and(eq(userProjectGrant.projectId, projects.id), eq(userProjectGrant.userId, userId)),
-        ),
-    ),
-  )
 
 const ownSessions = sql`"sessions" where "sessions"."projectId" = "projects"."id"`
 

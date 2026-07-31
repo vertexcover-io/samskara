@@ -4,6 +4,7 @@ import type pino from "pino"
 import type { Db } from "./db/client.js"
 import type { Env } from "./lib/env.js"
 import { loggingMiddleware } from "./lib/logging-middleware.js"
+import { artifactRoutes } from "./routes/artifacts.js"
 import { authRoutes } from "./routes/auth.js"
 import { ingestRoutes } from "./routes/ingest.js"
 import { projectsRoutes } from "./routes/projects.js"
@@ -30,6 +31,7 @@ export const buildApp = (db: Db, env: Env, deps: Deps = {}): Hono<{ Variables: V
   app.get("/health", (c) => c.json({ status: "ok" }))
   app.route("/api/auth", authRoutes({ db, env, githubClient, pairingStore }))
   app.route("/api/ingest", ingestRoutes({ db, env }))
+  app.route("/api/artifacts", artifactRoutes({ db, env }))
   app.route("/api/projects", projectsRoutes({ db, env }))
   app.route("/api/sessions", sessionsRoutes({ db, env }))
 
