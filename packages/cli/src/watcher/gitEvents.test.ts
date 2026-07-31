@@ -306,6 +306,22 @@ describe("collectGitEvents", () => {
     expect(bare).not.toHaveProperty("title")
   })
 
+  test("a title belongs to the repo its json named, and does not bleed onto another repo's PR of the same number", () => {
+    const prs = prsOf(
+      "gh pr list --json number,title,url",
+      [
+        '[{"number":42,"title":"disco: fix the thing","url":"https://github.com/refrens/disco/pull/42"}]',
+        "cross-referenced in https://github.com/refrens/talos/pull/42",
+      ].join("\n"),
+    )
+
+    expect(prs).toEqual([
+      expect.objectContaining({ repoName: "disco", number: 42, title: "disco: fix the thing" }),
+      expect.objectContaining({ repoName: "talos", number: 42 }),
+    ])
+    expect(prs.find((pr) => pr.repoName === "talos")).not.toHaveProperty("title")
+  })
+
   test("a GitLab merge request url is captured with its own host, so repos.host is not assumed to be github.com", () => {
     const [event] = prsOf("glab mr view 12", "https://gitlab.com/acme/serana/-/merge_requests/12")
 

@@ -67,13 +67,27 @@ const PR_RE = /https?:\/\/([\w.-]+)\/([^/\s"]+)\/([^/\s"]+)\/(?:pull|-\/merge_re
  */
 const PR_CREATE_RE = /(^|[\s;&|])gh\s+pr\s+create\b/
 
-const prTitleSchema = z.object({ number: z.number().int().positive(), title: z.string().min(1) })
+const prTitleSchema = z.object({ url: z.string().min(1), title: z.string().min(1) })
+
+const prKey = (host: string, owner: string, repoName: string, number: number): string =>
+  `${host}/${owner}/${repoName}#${number}`
+
+const keyOfUrl = (url: string): string | null => {
+  const match = new RegExp(PR_RE.source).exec(url)
+  if (!match) return null
+  const [, host, owner, repoName, digits] = match
+  if (!host || !owner || !repoName || !digits) return null
+  return prKey(host, owner, repoName, Number(digits))
+}
 
 /**
  * `gh pr list --json` prints an array of PRs; anything else parses to nothing and the URL scan
  * alone supplies the facts. Titles are opportunistic -- most references carry none.
+ *
+ * Keyed by the repo the entry's own `url` names rather than by number alone: one call routinely
+ * prints PRs from several repos, and two of them sharing a number would otherwise trade titles.
  */
-const titlesByNumber = (text: string): ReadonlyMap<number, string> => {
+const titlesByPr = (text: string): ReadonlyMap<string, string> => {
   const start = text.indexOf("[")
   if (start === -1) return new Map()
   try {
@@ -82,7 +96,9 @@ const titlesByNumber = (text: string): ReadonlyMap<number, string> => {
     return new Map(
       parsed.flatMap((entry) => {
         const pr = prTitleSchema.safeParse(entry)
-        return pr.success ? [[pr.data.number, pr.data.title] as const] : []
+        if (!pr.success) return []
+        const key = keyOfUrl(pr.data.url)
+        return key ? [[key, pr.data.title] as const] : []
       }),
     )
   } catch {
@@ -98,14 +114,15 @@ type PullRequestFacts = Omit<PullRequestEvent, "kind" | "createdHere" | "callId"
  */
 const pullRequestFacts = (output: unknown): ReadonlyArray<PullRequestFacts> => {
   const text = textOf(output)
-  const titles = titlesByNumber(text)
+  const titles = titlesByPr(text)
   const byKey = new Map<string, PullRequestFacts>()
 
   for (const [, host, owner, repoName, digits] of text.matchAll(PR_RE)) {
     if (!host || !owner || !repoName || !digits) continue
     const number = Number(digits)
-    const title = titles.get(number)
-    byKey.set(`${host}/${owner}/${repoName}#${number}`, {
+    const key = prKey(host, owner, repoName, number)
+    const title = titles.get(key)
+    byKey.set(key, {
       host,
       owner,
       repoName,
