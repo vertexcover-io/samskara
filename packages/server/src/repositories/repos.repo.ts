@@ -4,9 +4,10 @@ import type { Querier } from "../db/client.js"
 import { repos } from "../db/schema.js"
 
 /**
- * Identity is (owner, repoName, userId) -- `host` and `ownerType` are stored but not keyed on.
- * `host` because one repo reached over ssh and https is one repo; `ownerType` because a remote
- * URL cannot distinguish a user from an org, and keying on an unknown would split one repo in two.
+ * Identity is (host, owner, repoName, userId). `host` is part of it because github.com/acme/x and
+ * gitlab.com/acme/x are different repos -- and keying on it does not split ssh from https, since
+ * `parseRemote` yields the same host for both forms. `ownerType` is stored but NOT keyed on: a
+ * remote URL cannot distinguish a user from an org, and keying on an unknown would split one repo.
  */
 export const upsertByIdentity = async (
   db: Querier,
@@ -17,7 +18,7 @@ export const upsertByIdentity = async (
     .insert(repos)
     .values({ ...identity, userId })
     .onConflictDoNothing({
-      target: [repos.owner, repos.repoName, repos.userId],
+      target: [repos.host, repos.owner, repos.repoName, repos.userId],
     })
     .returning({ id: repos.id })
   if (inserted) return inserted.id
@@ -27,6 +28,7 @@ export const upsertByIdentity = async (
     .from(repos)
     .where(
       and(
+        eq(repos.host, identity.host),
         eq(repos.owner, identity.owner),
         eq(repos.repoName, identity.repoName),
         eq(repos.userId, userId),

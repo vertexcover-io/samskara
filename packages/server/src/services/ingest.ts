@@ -48,13 +48,15 @@ const flatten = (
 
 type RepoIdKey = string
 
-// A separator no owner or repo name can contain, so two different identities can never
+// A separator no host, owner or repo name can contain, so two different identities can never
 // collapse onto one key.
 const KEY_SEPARATOR = "\n"
 
-// Mirrors the (owner, repoName) half of repos' identity -- `userId` is constant across one ingest,
-// and `host` is excluded so one repo reached over ssh and https stays one repo.
-const repoKeyOf = (repo: RepoIdentity): RepoIdKey => [repo.owner, repo.repoName].join(KEY_SEPARATOR)
+// Mirrors the (host, owner, repoName) part of repos' identity -- `userId` is constant across one
+// ingest. `host` is included so a PR on github.com/acme/x and one on gitlab.com/acme/x resolve to
+// different repos rather than sharing a row and overwriting each other's title.
+const repoKeyOf = (repo: RepoIdentity): RepoIdKey =>
+  [repo.host, repo.owner, repo.repoName].join(KEY_SEPARATOR)
 
 /**
  * A PR names its repo in its own URL, which carries no owner type. It is left undefined rather

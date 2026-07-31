@@ -72,8 +72,10 @@ export const repos = pgTable(
     updatedAt,
   },
   // Repos are personal, mirroring projects' UNIQUE (slug, ownerId): the same repo seen by two
-  // users is two rows. `host` is out of the key -- one repo reached over ssh and https is one repo.
-  (t) => [unique("repos_identity_unique").on(t.owner, t.repoName, t.userId)],
+  // users is two rows. `host` is in the key because github.com/acme/x and gitlab.com/acme/x are
+  // genuinely different repos -- and it does not split ssh from https, since `parseRemote`
+  // yields the same host string for both forms.
+  (t) => [unique("repos_identity_unique").on(t.host, t.owner, t.repoName, t.userId)],
 )
 
 export const userOrgs = pgTable(

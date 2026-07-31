@@ -71,6 +71,13 @@
       "when": 1785261186924,
       "tag": "0009_illegal_hedge_knight",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1785483364103,
+      "tag": "0010_omniscient_stephen_strange",
+      "breakpoints": true
     }
   ]
 }

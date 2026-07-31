@@ -133,6 +133,42 @@ describe.skipIf(!dockerAvailable())("ingest repositories", () => {
     expect(rows[0]?.name).toBe("widget-renamed")
   })
 
+  test("repos.upsertByIdentity keys on (host, owner, repoName, userId): same path on two hosts is two repos, two users is two repos, ssh and https are one", async () => {
+    const owner = await seedUser()
+    const other = await seedUser()
+
+    const gh = await reposRepo.upsertByIdentity(
+      db,
+      { host: "github.com", owner: "acme", repoName: "serana" },
+      owner.id,
+    )
+    // Same owner/name on a different host is a genuinely different repo -- sharing a row would
+    // let one host's PR #42 overwrite the other's title.
+    const gl = await reposRepo.upsertByIdentity(
+      db,
+      { host: "gitlab.com", owner: "acme", repoName: "serana" },
+      owner.id,
+    )
+    expect(gl).not.toBe(gh)
+
+    // Repos are personal: the same repo seen by another user is another row.
+    const theirs = await reposRepo.upsertByIdentity(
+      db,
+      { host: "github.com", owner: "acme", repoName: "serana" },
+      other.id,
+    )
+    expect(theirs).not.toBe(gh)
+
+    // ssh and https are NOT split: parseRemote yields the same host for both forms, so the
+    // second sighting collapses onto the first row rather than duplicating it.
+    const again = await reposRepo.upsertByIdentity(
+      db,
+      { host: "github.com", owner: "acme", repoName: "serana" },
+      owner.id,
+    )
+    expect(again).toBe(gh)
+  })
+
   test("authorization is owner-or-grant with ordered scopes", async () => {
     const owner = await seedUser()
     const editorUser = await seedUser()
