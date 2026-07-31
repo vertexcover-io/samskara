@@ -102,6 +102,9 @@ export const toolResultLine = (
 /**
  * A `file-history-delta` line — Claude Code's record of the backup it took before editing a
  * file. It carries the pointer the daemon needs to resolve an artifact's pre-edit base.
+ *
+ * The edited file is named `trackingPath`, matching the real wire format. A fixture that used
+ * `path` here passed while production silently resolved no bases at all.
  */
 export const deltaLine = (
   path: string,
@@ -111,8 +114,8 @@ export const deltaLine = (
   type: "file-history-delta",
   uuid: crypto.randomUUID(),
   timestamp: iso(minute),
-  path,
-  backup: { backupFileName, version: 1 },
+  trackingPath: path,
+  backup: { backupFileName, version: 1, backupTime: iso(minute) },
 })
 
 /** A `summary` line, which normalizes to a `systemEvent` row with subType `summary`. */

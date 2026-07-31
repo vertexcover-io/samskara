@@ -621,13 +621,21 @@ const snapshotSchema = requiredKey(
   z.object({ snapshot: z.unknown(), messageId: optionalString, isUpdate: z.boolean().optional() }),
   "snapshot",
 )
+/**
+ * Claude Code names the edited file `trackingPath` on a delta line. `path` is accepted too so an
+ * older or renamed shape still parses, and both normalize to `path` for the rest of the pipeline.
+ */
 const deltaSchema = requiredKey(
-  z.object({
-    path: z.string().min(1),
-    backup: z.unknown(),
-    messageId: optionalString,
-    snapshotMessageId: optionalString,
-  }),
+  z
+    .object({
+      trackingPath: z.string().min(1).optional(),
+      path: z.string().min(1).optional(),
+      backup: z.unknown(),
+      messageId: optionalString,
+      snapshotMessageId: optionalString,
+    })
+    .transform(({ trackingPath, path, ...rest }) => ({ ...rest, path: trackingPath ?? path }))
+    .refine((value): value is typeof value & { path: string } => value.path !== undefined),
   "backup",
 )
 const frameLinkSchema = z

@@ -574,14 +574,21 @@ describe.skipIf(!dockerAvailable())("ingest route", () => {
       "model_refusal_fallback",
       "scheduled_task_fire",
     ])
+    // `file-history-delta` is absent here on purpose: it now parses into a fileEvent rather than
+    // falling through to `custom`. Its presence in this list was the recorded symptom of the
+    // delta schema requiring `path` when Claude Code emits `trackingPath`.
     expect(subTypesFor("custom")).toEqual([
       "ai-title",
       "bridge-session",
-      "file-history-delta",
       "last-prompt",
       "mode",
       "permission-mode",
     ])
+    // The delta from the same recorded session lands as a fileEvent carrying its backup pointer.
+    const deltas = stored.filter(
+      (row) => row.msgType === "fileEvent" && (row.details as { type?: string })?.type === "delta",
+    )
+    expect(deltas.length).toBeGreaterThan(0)
 
     const ownedMessageIds = new Set(stored.map((row) => row.id))
     const calls = (await db.select().from(toolCall)).filter((row) =>

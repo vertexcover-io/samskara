@@ -1039,12 +1039,15 @@ test.describe("capture pipeline", () => {
     await page.goto(`/sessions/${SESSION_ID}`)
     await page.getByRole("tab", { name: /Artifacts/ }).click()
 
+    // The browser nests files under folder rows, so the folder carries the path and the leaf
+    // carries the file name.
     const list = page.getByRole("list", { name: /filed artifacts/i })
-    const relative = join("docs", "notes.md")
-    await expect(list.getByRole("button", { name: new RegExp(relative) })).toBeVisible()
+    await expect(list.getByRole("button", { name: /^docs$/ })).toBeVisible()
+    const file = list.getByRole("button", { name: /notes\.md/ })
+    await expect(file).toBeVisible()
 
     // Selecting it shows the diff the daemon computed, both sides of the change.
-    await list.getByRole("button", { name: new RegExp(relative) }).click()
+    await file.click()
     const viewer = page.getByRole("region", { name: /artifact viewer/i })
     await expect(viewer.getByText("-The original line.")).toBeVisible()
     await expect(viewer.getByText("+The replacement line.")).toBeVisible()

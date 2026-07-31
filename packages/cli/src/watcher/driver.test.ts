@@ -364,7 +364,8 @@ describe("watcher driver", () => {
         cwd: "/work/app",
         timestamp: "2026-07-23T00:00:01.000Z",
         type: "file-history-delta",
-        path: "src/a.ts",
+        // `trackingPath` is what Claude Code emits; `path` here silently resolved no bases at all.
+        trackingPath: "src/a.ts",
         backup: { backupFileName: "3c32b39a@v1", version: 1 },
       })
       await writeFile(main, `${writeLine("l1", "sess-1", "src/a.ts")}\n${deltaLine}\n`, "utf8")

@@ -121,7 +121,10 @@ test("S44: opening a session from the filtered list shows three tabs with Conver
   // This seeded session has no captured files, so the sole exhibit is its transcript frame-link --
   // proof the demo fixtures are gone and that frame-links still render on their own.
   const list = page.getByRole("list", { name: /filed artifacts/i })
-  await expect(list.getByRole("button")).toHaveCount(1)
+  // One file, shown as a leaf under its `migrations` folder row -- so two buttons, one of which
+  // is the expandable folder.
+  await expect(list.getByRole("button", { name: /^migrations$/ })).toHaveCount(1)
+  await expect(list.getByRole("button", { name: /0007_add_source_uid\.sql/ })).toHaveCount(1)
   const viewer = page.getByRole("region", { name: /artifact viewer/i })
   await expect(viewer.getByText("migrations/0007_add_source_uid.sql")).toBeVisible()
 })
