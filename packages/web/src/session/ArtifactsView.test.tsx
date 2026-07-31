@@ -2,6 +2,7 @@ import { render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, test, vi } from "vitest"
 import type { CapturedArtifact } from "../api/types.js"
+import { TestRouter } from "../tests/test-router.js"
 import { ArtifactsView } from "./ArtifactsView.js"
 import type { Artifact } from "./records.js"
 
@@ -42,11 +43,20 @@ const ARTIFACTS: ReadonlyArray<Artifact> = [
 ]
 
 test("S37: the artifact list selects the first exhibit on load and the viewer shows that exhibit's path", () => {
-  render(<ArtifactsView artifacts={ARTIFACTS} />)
+  render(
+    <TestRouter initialEntries={["/s/1?tab=artifacts"]}>
+      <ArtifactsView artifacts={ARTIFACTS} />
+    </TestRouter>,
+  )
 
   const list = screen.getByRole("list", { name: /filed artifacts/i })
-  const [first] = within(list).getAllByRole("button")
-  expect(first).toHaveAttribute("aria-current", "true")
+  // Exactly one file is current on load -- the first of the supplied artifacts, wherever the
+  // tree's alphabetical ordering happens to place it.
+  const current = within(list)
+    .getAllByRole("button")
+    .filter((button) => button.getAttribute("aria-current") === "true")
+  expect(current).toHaveLength(1)
+  expect(current[0]?.textContent).toContain("0007_add_source_uid.sql")
 
   const viewer = screen.getByRole("region", { name: /artifact viewer/i })
   expect(within(viewer).getByText("migrations/0007_add_source_uid.sql")).toBeInTheDocument()
@@ -54,7 +64,11 @@ test("S37: the artifact list selects the first exhibit on load and the viewer sh
 
 test("S37: choosing a second exhibit moves the selection and swaps the viewer to that artifact", async () => {
   const user = userEvent.setup()
-  render(<ArtifactsView artifacts={ARTIFACTS} />)
+  render(
+    <TestRouter initialEntries={["/s/1?tab=artifacts"]}>
+      <ArtifactsView artifacts={ARTIFACTS} />
+    </TestRouter>,
+  )
 
   const list = screen.getByRole("list", { name: /filed artifacts/i })
   await user.click(within(list).getByRole("button", { name: /idempotency-design\.md/ }))
@@ -69,7 +83,11 @@ test("S37: choosing a second exhibit moves the selection and swaps the viewer to
 
 test("S37: the narrow-screen selector mirrors the list, so choosing there swaps the viewer too", async () => {
   const user = userEvent.setup()
-  render(<ArtifactsView artifacts={ARTIFACTS} />)
+  render(
+    <TestRouter initialEntries={["/s/1?tab=artifacts"]}>
+      <ArtifactsView artifacts={ARTIFACTS} />
+    </TestRouter>,
+  )
 
   await user.selectOptions(screen.getByRole("combobox", { name: /choose an artifact/i }), "e-2")
 
@@ -79,16 +97,22 @@ test("S37: the narrow-screen selector mirrors the list, so choosing there swaps 
 
 test("S37: an artifact with no path and no url renders as unavailable rather than an empty row", () => {
   render(
-    <ArtifactsView
-      artifacts={[{ id: "e-3", path: null, url: null, title: null, timestamp: null }]}
-    />,
+    <TestRouter initialEntries={["/s/1?tab=artifacts"]}>
+      <ArtifactsView
+        artifacts={[{ id: "e-3", path: null, url: null, title: null, timestamp: null }]}
+      />
+    </TestRouter>,
   )
 
   expect(screen.getAllByText(/unavailable/i).length).toBeGreaterThan(0)
 })
 
 test("EDGE: a session that filed no artifacts explains the absence instead of rendering an empty browser", () => {
-  render(<ArtifactsView artifacts={[]} />)
+  render(
+    <TestRouter initialEntries={["/s/1?tab=artifacts"]}>
+      <ArtifactsView artifacts={[]} />
+    </TestRouter>,
+  )
 
   expect(screen.getByText(/no artifacts were filed/i)).toBeInTheDocument()
   expect(screen.queryByRole("list", { name: /filed artifacts/i })).not.toBeInTheDocument()
@@ -97,19 +121,23 @@ test("EDGE: a session that filed no artifacts explains the absence instead of re
 test("S48: captured artifacts are listed by relative path and selecting one shows it in the viewer", async () => {
   const user = userEvent.setup()
   render(
-    <ArtifactsView
-      artifacts={[
-        captured({ id: "c-1", relativePath: "docs/notes.md" }),
-        captured({ id: "c-2", relativePath: "src/ingest.ts", mimeType: "text/x-typescript" }),
-      ]}
-    />,
+    <TestRouter initialEntries={["/s/1?tab=artifacts"]}>
+      <ArtifactsView
+        artifacts={[
+          captured({ id: "c-1", relativePath: "docs/notes.md" }),
+          captured({ id: "c-2", relativePath: "src/ingest.ts", mimeType: "text/x-typescript" }),
+        ]}
+      />
+    </TestRouter>,
   )
 
   const list = screen.getByRole("list", { name: /filed artifacts/i })
-  expect(within(list).getByRole("button", { name: /docs\/notes\.md/ })).toBeInTheDocument()
-  expect(within(list).getByRole("button", { name: /src\/ingest\.ts/ })).toBeInTheDocument()
+  // A file browser lists leaf names under folder rows, so the folders carry the path.
+  expect(within(list).getByRole("button", { name: /^docs$/ })).toBeInTheDocument()
+  expect(within(list).getByRole("button", { name: /^src$/ })).toBeInTheDocument()
+  expect(within(list).getByRole("button", { name: /notes\.md/ })).toBeInTheDocument()
 
-  await user.click(within(list).getByRole("button", { name: /src\/ingest\.ts/ }))
+  await user.click(within(list).getByRole("button", { name: /ingest\.ts/ }))
 
   const viewer = screen.getByRole("region", { name: /artifact viewer/i })
   expect(within(viewer).getByText("src/ingest.ts")).toBeInTheDocument()
@@ -117,13 +145,15 @@ test("S48: captured artifacts are listed by relative path and selecting one show
 
 test("S50: an edited artifact renders its diff with added and removed lines distinguishable from context", () => {
   render(
-    <ArtifactsView
-      artifacts={[
-        captured({
-          diff: "@@ -1,3 +1,3 @@\n # Notes\n-The original line.\n+The replacement line.\n",
-        }),
-      ]}
-    />,
+    <TestRouter initialEntries={["/s/1?tab=artifacts"]}>
+      <ArtifactsView
+        artifacts={[
+          captured({
+            diff: "@@ -1,3 +1,3 @@\n # Notes\n-The original line.\n+The replacement line.\n",
+          }),
+        ]}
+      />
+    </TestRouter>,
   )
 
   const viewer = screen.getByRole("region", { name: /artifact viewer/i })
@@ -138,15 +168,17 @@ test("S50: an edited artifact renders its diff with added and removed lines dist
 
 test("S51: an artifact with no resolvable base shows its replaced excerpt labelled as an excerpt, not a diff", () => {
   render(
-    <ArtifactsView
-      artifacts={[
-        captured({
-          changeKind: "editedUnknownBase",
-          diff: null,
-          oldFragment: "The original line.",
-        }),
-      ]}
-    />,
+    <TestRouter initialEntries={["/s/1?tab=artifacts"]}>
+      <ArtifactsView
+        artifacts={[
+          captured({
+            changeKind: "editedUnknownBase",
+            diff: null,
+            oldFragment: "The original line.",
+          }),
+        ]}
+      />
+    </TestRouter>,
   )
 
   const viewer = screen.getByRole("region", { name: /artifact viewer/i })
@@ -167,9 +199,13 @@ test("S52: a created artifact shows its content, without offering a diff pane", 
   })
 
   render(
-    <ArtifactsView
-      artifacts={[captured({ changeKind: "created", diff: null, oldFragment: null, editCount: 0 })]}
-    />,
+    <TestRouter initialEntries={["/s/1?tab=artifacts"]}>
+      <ArtifactsView
+        artifacts={[
+          captured({ changeKind: "created", diff: null, oldFragment: null, editCount: 0 }),
+        ]}
+      />
+    </TestRouter>,
   )
 
   const viewer = screen.getByRole("region", { name: /artifact viewer/i })
@@ -179,7 +215,10 @@ test("S52: a created artifact shows its content, without offering a diff pane", 
   // The content itself must reach the screen -- asserting only the path and the changeKind is what
   // let a version ship that rendered "no contents captured" for every created file.
   expect(await within(viewer).findByText(/Written by the agent this session/)).toBeInTheDocument()
-  expect(calls).toEqual(["/api/artifacts/c-1/raw?which=current"])
+  // The router's AuthProvider also calls /api/auth/me; assert on the artifact fetch specifically.
+  expect(calls.filter((url) => url.startsWith("/api/artifacts"))).toEqual([
+    "/api/artifacts/c-1/raw?which=current",
+  ])
 
   expect(within(viewer).queryByText(/replaced excerpt/i)).not.toBeInTheDocument()
   expect(within(viewer).queryByText(/^@@/)).not.toBeInTheDocument()
@@ -189,7 +228,11 @@ test("S52: a created artifact shows its content, without offering a diff pane", 
 test("S52: a created artifact whose body cannot be read degrades to a notice, not a blank pane", async () => {
   vi.stubGlobal("fetch", () => Promise.resolve(new Response("nope", { status: 500 })))
 
-  render(<ArtifactsView artifacts={[captured({ changeKind: "created", editCount: 0 })]} />)
+  render(
+    <TestRouter initialEntries={["/s/1?tab=artifacts"]}>
+      <ArtifactsView artifacts={[captured({ changeKind: "created", editCount: 0 })]} />
+    </TestRouter>,
+  )
 
   const viewer = screen.getByRole("region", { name: /artifact viewer/i })
   expect(await within(viewer).findByText(/contents unavailable/i)).toBeInTheDocument()
@@ -197,36 +240,43 @@ test("S52: a created artifact whose body cannot be read degrades to a notice, no
 
 test("S48: a binary captured artifact points its media at the raw route rather than a data url", () => {
   render(
-    <ArtifactsView
-      artifacts={[
-        captured({
-          id: "c-img",
-          relativePath: "docs/architecture.png",
-          mimeType: "image/png",
-          isBinary: true,
-          changeKind: "created",
-        }),
-      ]}
-    />,
+    <TestRouter initialEntries={["/s/1?tab=artifacts"]}>
+      <ArtifactsView
+        artifacts={[
+          captured({
+            id: "c-img",
+            relativePath: "docs/architecture.png",
+            mimeType: "image/png",
+            isBinary: true,
+            changeKind: "created",
+          }),
+        ]}
+      />
+    </TestRouter>,
   )
 
   const image = screen.getByRole("img", { name: /architecture\.png/ })
   expect(image).toHaveAttribute("src", "/api/artifacts/c-img/raw?which=current")
 })
 
-test("S53: transcript frame-link artifacts and captured files render side by side, captured first", () => {
+test("S53: transcript frame-link artifacts and captured files both appear in the tree", () => {
   render(
-    <ArtifactsView
-      artifacts={[captured({ id: "c-1", relativePath: "docs/notes.md" }), ...ARTIFACTS]}
-    />,
+    <TestRouter initialEntries={["/s/1?tab=artifacts"]}>
+      <ArtifactsView
+        artifacts={[captured({ id: "c-1", relativePath: "docs/notes.md" }), ...ARTIFACTS]}
+      />
+    </TestRouter>,
   )
 
   const list = screen.getByRole("list", { name: /filed artifacts/i })
-  const names = within(list)
+  const rows = within(list)
     .getAllByRole("button")
     .map((button) => button.textContent ?? "")
 
-  expect(names[0]).toContain("docs/notes.md")
-  expect(names[1]).toContain("0007_add_source_uid.sql")
-  expect(names[2]).toContain("idempotency-design.md")
+  // Both sources are in one tree, filed under their own folders rather than in two flat blocks.
+  expect(rows.some((row) => row.includes("notes.md"))).toBe(true)
+  expect(rows.some((row) => row.includes("idempotency-design.md"))).toBe(true)
+  expect(rows.some((row) => row.includes("0007_add_source_uid.sql"))).toBe(true)
+  expect(rows.filter((row) => row === "docs")).toHaveLength(1)
+  expect(rows.some((row) => row === "migrations")).toBe(true)
 })

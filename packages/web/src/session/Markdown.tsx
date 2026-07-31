@@ -1,6 +1,7 @@
 import type { ReactNode } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
+import { Code } from "./Code.js"
 import { Mermaid } from "./Mermaid.js"
 
 const textOf = (node: ReactNode): string => {
@@ -76,7 +77,7 @@ export const Markdown = ({ source }: { source: string }) => (
           const only = Array.isArray(children) ? children[0] : children
           const props =
             typeof only === "object" && only !== null && "props" in only
-              ? (only.props as { className?: string })
+              ? (only.props as { className?: string; children?: ReactNode })
               : {}
           const language = languageOf(props.className)
           if (language === "mermaid") return <>{children}</>
@@ -87,9 +88,13 @@ export const Markdown = ({ source }: { source: string }) => (
                   {language}
                 </p>
               )}
-              <pre className="overflow-x-auto bg-panel p-3 font-mono text-[0.72rem] leading-relaxed">
-                {children}
-              </pre>
+              {language === null ? (
+                <pre className="overflow-x-auto bg-panel p-3 font-mono text-[0.72rem] leading-relaxed">
+                  {children}
+                </pre>
+              ) : (
+                <Code source={textOf(props.children)} language={language} path={null} />
+              )}
             </div>
           )
         },

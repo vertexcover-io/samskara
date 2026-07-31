@@ -207,7 +207,7 @@ const CAPTURED = {
   lastSeenAt: "2026-07-01T10:05:00.000Z",
 }
 
-test("S48: the artifacts tab lists the session's captured files by relative path and shows the selected one's diff", async () => {
+test("S48: the artifacts tab lists the session's captured files as a folder tree and shows the selected one's diff", async () => {
   const user = userEvent.setup()
   renderDetail(PAYLOAD, {
     status: 200,
@@ -223,8 +223,11 @@ test("S48: the artifacts tab lists the session's captured files by relative path
   await user.click(screen.getByRole("tab", { name: /Artifacts/ }))
 
   const list = await screen.findByRole("list", { name: /filed artifacts/i })
-  expect(within(list).getByRole("button", { name: /docs\/notes\.md/ })).toBeInTheDocument()
-  expect(within(list).getByRole("button", { name: /src\/ingest\.ts/ })).toBeInTheDocument()
+  // The browser nests files under folder rows, so the path is carried by the tree, not the leaf.
+  expect(within(list).getByRole("button", { name: /^docs$/ })).toBeInTheDocument()
+  expect(within(list).getByRole("button", { name: /^src$/ })).toBeInTheDocument()
+  expect(within(list).getByRole("button", { name: /notes\.md/ })).toBeInTheDocument()
+  expect(within(list).getByRole("button", { name: /ingest\.ts/ })).toBeInTheDocument()
 
   const viewer = screen.getByRole("region", { name: /artifact viewer/i })
   expect(within(viewer).getByText("-The original line.")).toBeInTheDocument()

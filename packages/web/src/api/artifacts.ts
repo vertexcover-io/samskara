@@ -7,5 +7,5 @@ export const fetchSessionArtifacts = (
 ): Promise<ApiResult<ReadonlyArray<CapturedArtifact>>> =>
   getJson(`/api/sessions/${encodeURIComponent(sessionId)}/artifacts`, parseSessionArtifacts)
 
-export const rawArtifactUrl = (artifactId: string): string =>
-  `/api/artifacts/${encodeURIComponent(artifactId)}/raw?which=current`
+export const rawArtifactUrl = (artifactId: string, which: "base" | "current" = "current"): string =>
+  `/api/artifacts/${encodeURIComponent(artifactId)}/raw?which=${which}`
