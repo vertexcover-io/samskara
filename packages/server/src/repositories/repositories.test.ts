@@ -95,8 +95,12 @@ describe.skipIf(!dockerAvailable())("ingest repositories", () => {
     })
     const [row] = await db.select().from(sessions).where(eq(sessions.id, "sess-repo-enrich"))
     expect(row?.title).toBe("later title")
-    expect(await sessionsRepo.exists(db, "sess-repo-enrich")).toBe(true)
-    expect(await sessionsRepo.exists(db, "nope")).toBe(false)
+    expect(await sessionsRepo.existsForUser(db, "sess-repo-enrich", userId)).toBe(true)
+    expect(await sessionsRepo.existsForUser(db, "nope", userId)).toBe(false)
+    // Existence is not authorization: the same session is invisible to a different user.
+    expect(await sessionsRepo.existsForUser(db, "sess-repo-enrich", crypto.randomUUID())).toBe(
+      false,
+    )
   })
 
   test("projects.upsert is idempotent per (slug, ownerId) and refreshes name", async () => {

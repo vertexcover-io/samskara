@@ -1,15 +1,4 @@
-import {
-  type SQL,
-  and,
-  asc,
-  desc,
-  eq,
-  exists as existsSubquery,
-  gte,
-  lte,
-  or,
-  sql,
-} from "drizzle-orm"
+import { type SQL, and, asc, desc, eq, gte, lte, sql } from "drizzle-orm"
 import type { PgColumn } from "drizzle-orm/pg-core"
 import type { Querier } from "../db/client.js"
 import {
@@ -20,9 +9,9 @@ import {
   tokenUsage,
   toolCall,
   toolResult,
-  userProjectGrant,
   users,
 } from "../db/schema.js"
+import { visibleToUser } from "./projects.repo.js"
 
 export type SessionFields = {
   readonly title?: string
@@ -59,8 +48,16 @@ export const upsert = async (db: Querier, input: UpsertSessionInput): Promise<vo
     })
 }
 
-export const exists = async (db: Querier, id: string): Promise<boolean> => {
-  const [row] = await db.select({ id: sessions.id }).from(sessions).where(eq(sessions.id, id))
+/**
+ * Scoped to the caller: existence alone is not authorization. Used by write paths (artifact
+ * upload) where any valid `aud:cli` token must not be able to attach data to another user's
+ * session just by naming its id.
+ */
+export const existsForUser = async (db: Querier, id: string, userId: string): Promise<boolean> => {
+  const [row] = await db
+    .select({ id: sessions.id })
+    .from(sessions)
+    .where(and(eq(sessions.id, id), eq(sessions.userId, userId)))
   return row !== undefined
 }
 
@@ -83,19 +80,6 @@ export type SessionListFilter = {
   readonly since?: Date
   readonly until?: Date
 }
-
-const visibleToUser = (db: Querier, userId: string) =>
-  or(
-    eq(projects.ownerId, userId),
-    existsSubquery(
-      db
-        .select({ one: sql`1` })
-        .from(userProjectGrant)
-        .where(
-          and(eq(userProjectGrant.projectId, projects.id), eq(userProjectGrant.userId, userId)),
-        ),
-    ),
-  )
 
 const ownMessages = sql`"messages" where "messages"."sessionId" = "sessions"."id"`
 

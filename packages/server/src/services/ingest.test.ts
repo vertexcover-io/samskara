@@ -84,6 +84,19 @@ const mainPayload = (sessionId: string, items: ReadonlyArray<TestMessage>): Inge
   records: recordsFrom(items),
 })
 
+const subagentPayload = (
+  sessionId: string,
+  agentId: string,
+  items: ReadonlyArray<TestMessage>,
+): IngestPayload => ({
+  type: "subagent",
+  sessionId,
+  sourceRelativePath: `${sessionId}/subagents/agent-${agentId}.jsonl`,
+  project,
+  agent: { agentId, agentType: "auditor", description: "fixture subagent" },
+  records: recordsFrom(items),
+})
+
 describe.skipIf(!dockerAvailable())("ingest service", () => {
   let container: StartedPostgreSqlContainer
   let teardown: () => Promise<void>
@@ -201,5 +214,48 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
       ingested: 3,
       deduped: 0,
     })
+  })
+
+  test("a subagent payload naming another user's session is refused, not attached to", async () => {
+    // An aud:cli token is valid for ANY user's CLI installation, so proving a session exists
+    // proves nothing about who may write to it. Without a userId-scoped check, one user's daemon
+    // can inject fabricated subagent and message rows into another user's session by naming its id.
+    const [victim] = await db
+      .insert(users)
+      .values({ githubId: 9002, githubLogin: "ingest-victim" })
+      .returning()
+    if (!victim) throw new Error("seed victim failed")
+    const [victimProject] = await db
+      .insert(projects)
+      .values({ name: "victim", slug: "victim-proj", ownerId: victim.id })
+      .returning()
+    if (!victimProject) throw new Error("seed victim project failed")
+
+    const victimSession = "sess-belongs-to-victim"
+    await db.insert(sessions).values({
+      id: victimSession,
+      source: "claude_code",
+      userId: victim.id,
+      projectId: victimProject.id,
+    })
+
+    // `ctx` authenticates as ingest-user -- a different account from the session's owner.
+    const item = customMessage({
+      sessionId: victimSession,
+      lineUuid: "0191d942-3ba5-7dba-9a7d-22d65b3025ff",
+    })
+    const attack = subagentPayload(victimSession, "evil", [
+      { ...item, message: { ...item.message, agentId: "evil", trackId: "agent:evil" } },
+    ])
+
+    expect(await ingest(ctx, attack)).toEqual({ error: "sessionNotFound" })
+
+    // Refused, not merely reported: nothing may reach the victim's session.
+    expect(
+      await db.select().from(subagents).where(eq(subagents.sessionId, victimSession)),
+    ).toHaveLength(0)
+    expect(
+      await db.select().from(messages).where(eq(messages.sessionId, victimSession)),
+    ).toHaveLength(0)
   })
 })

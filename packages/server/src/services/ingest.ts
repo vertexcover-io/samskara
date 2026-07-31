@@ -136,7 +136,9 @@ export const ingest = async (ctx: Ctx, payload: IngestPayload): Promise<IngestRe
           fields: { title: payload.title },
         })
       } else {
-        if (!(await sessionsRepo.exists(tx, payload.sessionId))) throw SESSION_NOT_FOUND
+        if (!(await sessionsRepo.existsForUser(tx, payload.sessionId, userId))) {
+          throw SESSION_NOT_FOUND
+        }
         await subagentsRepo.upsert(tx, {
           sessionId: payload.sessionId,
           sourceRelativePath: payload.sourceRelativePath,
