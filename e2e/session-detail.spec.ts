@@ -72,7 +72,7 @@ test.beforeEach(async () => {
   await seedDatabase(SEED)
 })
 
-test("S44: opening a session from the filtered list shows three tabs with Conversation selected, the inline-tools toggle reveals tool calls, the annex reveals its branch, Escape restores focus to the trigger, and Artifacts renders its viewer", async ({
+test("S44: opening a session from the filtered list shows its five tabs with Conversation selected, the inline-tools toggle reveals tool calls, the annex reveals its branch, Escape restores focus to the trigger, and Artifacts renders its viewer", async ({
   authedPage: page,
 }) => {
   await page.goto("/sessions?project=samskara")
@@ -81,8 +81,14 @@ test("S44: opening a session from the filtered list shows three tabs with Conver
   await expect(page).toHaveURL(/\/sessions\/e2e-detail-1$/)
 
   const tabs = page.getByRole("tab")
-  await expect(tabs).toHaveCount(3)
-  await expect(tabs).toHaveText([/Conversation/, /Tool Calls/, /Artifacts/])
+  await expect(tabs).toHaveCount(5)
+  await expect(tabs).toHaveText([
+    /Conversation/,
+    /Tool Calls/,
+    /Artifacts/,
+    /Commits/,
+    /Pull Requests/,
+  ])
   await expect(page.getByRole("tab", { name: /Conversation/ })).toHaveAttribute(
     "aria-selected",
     "true",
