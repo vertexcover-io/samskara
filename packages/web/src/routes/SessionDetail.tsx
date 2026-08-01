@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { type Ref, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import { fetchSessionArtifacts } from "../api/artifacts.js"
 import { getJson } from "../api/client.js"
@@ -15,6 +15,7 @@ import type {
 import { SessionExpired } from "../auth/SessionExpired.js"
 import { AgentRail, agentEntries } from "../session/AgentRail.js"
 import { ArtifactsView } from "../session/ArtifactsView.js"
+import { CommitsView, PullRequestsView } from "../session/ChangesView.js"
 import { RecordStream } from "../session/RecordStream.js"
 import { type Tab, type TabId, Tabs } from "../session/Tabs.js"
 import { ToolCallsView } from "../session/ToolCallsView.js"
@@ -81,9 +82,17 @@ const RepoName = ({ repo }: { repo: SessionRepo }) => {
   )
 }
 
-const Masthead = ({ session, tokens }: { session: SessionFacts; tokens: TokenTotals }) => (
-  <header className="border-b-2 border-ink pb-4 pt-2">
-    <nav aria-label="Breadcrumb" className="mb-2 font-mono text-[0.72rem] text-ink-soft">
+/**
+ * Pinned to the top: in a transcript thousands of messages long, which session you are reading
+ * and the way back out are the two things you otherwise lose on the first scroll. A single line
+ * of title keeps the bar's height fixed, which is what the tab bar below measures itself against.
+ */
+const SessionHead = ({
+  session,
+  measure,
+}: { session: SessionFacts; measure: Ref<HTMLElement> }) => (
+  <header ref={measure} className="sticky top-0 z-30 bg-paper pb-2 pt-2">
+    <nav aria-label="Breadcrumb" className="mb-1 font-mono text-[0.72rem] text-ink-soft">
       <Link to="/projects" className="text-custody hover:underline">
         Projects
       </Link>
@@ -103,9 +112,17 @@ const Masthead = ({ session, tokens }: { session: SessionFacts; tokens: TokenTot
         All sessions
       </Link>
     </nav>
-    <h1 className="max-w-[62ch] text-[1.375rem] font-semibold leading-tight">
+    <h1
+      title={session.title ?? undefined}
+      className="max-w-[62ch] truncate text-[1.375rem] font-semibold leading-tight"
+    >
       {session.title ?? <span className="text-faded italic">untitled session</span>}
     </h1>
+  </header>
+)
+
+const Masthead = ({ session, tokens }: { session: SessionFacts; tokens: TokenTotals }) => (
+  <div className="border-b-2 border-ink pb-4">
     <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[0.78rem] text-ink-soft">
       <span>{session.projectName}</span>
       <span aria-hidden="true" className="text-rule">
@@ -142,7 +159,7 @@ const Masthead = ({ session, tokens }: { session: SessionFacts; tokens: TokenTot
       <Fact label="Tokens in" value={tokens.inputTokens.toLocaleString("en-US")} />
       <Fact label="Tokens out" value={tokens.outputTokens.toLocaleString("en-US")} />
     </dl>
-  </header>
+  </div>
 )
 
 const NotFound = ({ onBack }: { onBack: () => void }) => (
@@ -206,6 +223,7 @@ const agentLabelOf = (detail: Detail) => {
 
 const tabsFor = (
   detail: Detail,
+  payload: SessionDetailPayload,
   artifactCount: number,
   inlineTools: boolean,
 ): ReadonlyArray<Tab> => [
@@ -216,13 +234,15 @@ const tabsFor = (
   },
   { id: "tools", label: "Tool Calls", count: detail.toolCalls.length },
   { id: "artifacts", label: "Artifacts", count: artifactCount },
+  { id: "commits", label: "Commits", count: payload.commits.length },
+  { id: "pulls", label: "Pull Requests", count: payload.pullRequests.length },
 ]
 
 const InlineToolsToggle = ({
   checked,
   onChange,
 }: { checked: boolean; onChange: (next: boolean) => void }) => (
-  <label className="mt-4 flex w-fit cursor-pointer items-center gap-2 text-[0.78rem] text-ink-soft">
+  <label className="flex w-fit shrink-0 cursor-pointer items-center gap-2 pb-2 text-[0.78rem] text-ink-soft">
     <input
       type="checkbox"
       checked={checked}
@@ -357,18 +377,30 @@ const ArtifactsPanel = ({ detail, captured }: { detail: Detail; captured: Captur
 
 const Panel = ({
   detail,
+  payload,
   tab,
   inlineTools,
   captured,
-}: { detail: Detail; tab: TabId; inlineTools: boolean; captured: CapturedState }) => {
+  onJump,
+}: {
+  detail: Detail
+  payload: SessionDetailPayload
+  tab: TabId
+  inlineTools: boolean
+  captured: CapturedState
+  onJump: (messageId: string) => void
+}) => {
   if (tab === "tools")
     return <ToolCallsView calls={detail.toolCalls} agentOf={agentLabelOf(detail)} />
   if (tab === "artifacts") return <ArtifactsPanel detail={detail} captured={captured} />
+  if (tab === "commits") return <CommitsView commits={payload.commits} onJump={onJump} />
+  if (tab === "pulls")
+    return <PullRequestsView pullRequests={payload.pullRequests} onJump={onJump} />
 
   return <Conversation detail={detail} inlineTools={inlineTools} />
 }
 
-const TAB_IDS: ReadonlyArray<TabId> = ["conversation", "tools", "artifacts"]
+const TAB_IDS: ReadonlyArray<TabId> = ["conversation", "tools", "artifacts", "commits", "pulls"]
 
 const isTabId = (value: string | null): value is TabId =>
   value !== null && TAB_IDS.includes(value as TabId)
@@ -397,6 +429,28 @@ const useCapturedArtifacts = (sessionId: string): CapturedState => {
   return state
 }
 
+/**
+ * Tracks an element's rendered height so a second sticky layer can sit exactly beneath the
+ * first. A hardcoded offset would leave a gap -- or clip the title -- at any other font size.
+ */
+const useMeasuredHeight = <T extends HTMLElement>() => {
+  const ref = useRef<T | null>(null)
+  const [height, setHeight] = useState(0)
+
+  useEffect(() => {
+    const node = ref.current
+    if (!node) return
+    const measure = () => setHeight(node.getBoundingClientRect().height)
+    measure()
+    if (typeof ResizeObserver === "undefined") return
+    const observer = new ResizeObserver(measure)
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [])
+
+  return { ref, height }
+}
+
 const Ready = ({ payload }: { payload: SessionDetailPayload }) => {
   // Tab and tool visibility live in the URL so back/forward restore the view.
   const [params, setParams] = useSearchParams()
@@ -418,8 +472,22 @@ const Ready = ({ payload }: { payload: SessionDetailPayload }) => {
   }
 
   const detail = useMemo(() => toDetail(payload), [payload])
+  // A jump belongs on the transcript, so it drops the tab and names the message in one step --
+  // two navigations would leave the reader on Commits with the message selected behind it.
+  // Inline tools go on unconditionally: capture files a commit against its `git commit` tool
+  // call, and landing on a hidden record is the one outcome a jump must never have.
+  const jumpToMessage = (messageId: string): void => {
+    const merged = new URLSearchParams(params)
+    merged.delete("tab")
+    merged.set(MESSAGE_PARAM, messageId)
+    merged.set("tools", "1")
+    setParams(merged)
+  }
+
   const captured = useCapturedArtifacts(payload.session.id)
   const artifactCount = artifactsFor(detail, capturedRows(captured)).length
+  const { ref: headRef, height: headHeight } = useMeasuredHeight<HTMLElement>()
+  const { ref: tabsRef, height: tabsHeight } = useMeasuredHeight<HTMLDivElement>()
 
   // The session itself loaded, so a 401 here is a cookie that expired mid-view. Clearing the
   // cached identity is what stops /login bouncing straight back.
@@ -428,23 +496,36 @@ const Ready = ({ payload }: { payload: SessionDetailPayload }) => {
   }
 
   return (
-    <section>
+    // Everything the pinned bars cover reads `--sticky-head` to clear them: the agent rail parks
+    // below it, and a permalinked message scrolls to just under it rather than behind it.
+    <section style={{ "--sticky-head": `${headHeight + tabsHeight}px` } as React.CSSProperties}>
+      <SessionHead session={detail.session} measure={headRef} />
       <Masthead session={detail.session} tokens={detail.tokenUsage} />
 
-      <div className="mt-4">
-        <Tabs
-          tabs={tabsFor(detail, artifactCount, inlineTools)}
-          selected={tab}
-          onSelect={(next) => update({ tab: next })}
-        />
+      {/* Measured rather than a fixed offset: the head's height moves with the reader's font size. */}
+      <div ref={tabsRef} className="sticky z-20 mt-4 bg-paper" style={{ top: headHeight }}>
+        <div className="flex flex-wrap items-end justify-between gap-x-4 border-b border-rule">
+          <Tabs
+            tabs={tabsFor(detail, payload, artifactCount, inlineTools)}
+            selected={tab}
+            onSelect={(next) => update({ tab: next })}
+          />
+          {tab === "conversation" ? (
+            <InlineToolsToggle checked={inlineTools} onChange={(next) => update({ tools: next })} />
+          ) : null}
+        </div>
       </div>
 
-      {tab === "conversation" ? (
-        <InlineToolsToggle checked={inlineTools} onChange={(next) => update({ tools: next })} />
-      ) : null}
-
       <div role="tabpanel" id={`panel-${tab}`} aria-labelledby={`tab-${tab}`} className="pt-4">
-        <Panel key={tab} detail={detail} tab={tab} inlineTools={inlineTools} captured={captured} />
+        <Panel
+          key={tab}
+          detail={detail}
+          payload={payload}
+          tab={tab}
+          inlineTools={inlineTools}
+          captured={captured}
+          onJump={jumpToMessage}
+        />
       </div>
     </section>
   )

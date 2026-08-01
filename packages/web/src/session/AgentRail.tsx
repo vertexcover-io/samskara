@@ -91,7 +91,9 @@ type Props = {
 export const AgentRail = ({ entries, selectedId, onSelect }: Props) => (
   <aside
     aria-label="Agents in this session"
-    className="min-w-0 min-[900px]:sticky min-[900px]:top-4 min-[900px]:max-h-[calc(100dvh-2rem)] min-[900px]:self-start min-[900px]:overflow-y-auto min-[900px]:pr-1"
+    // `--sticky-head` is the height of the pinned title and tab bars, published by the session
+    // route. Parking under it is what keeps the first agent visible rather than behind them.
+    className="min-w-0 min-[900px]:sticky min-[900px]:top-[calc(var(--sticky-head,0px)_+_1rem)] min-[900px]:max-h-[calc(100dvh_-_var(--sticky-head,0px)_-_2rem)] min-[900px]:self-start min-[900px]:overflow-y-auto min-[900px]:pr-1"
   >
     <h2 className="text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-faded">
       Agents · {entries.length}

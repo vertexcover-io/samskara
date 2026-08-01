@@ -78,12 +78,41 @@ export type TokenTotals = {
   readonly thinkingTokens: number
 }
 
+/**
+ * `recordedAt` is when capture filed the commit, not its author date. `messageId` names the turn
+ * that produced it, which is what lets a sha link back to the moment it was made.
+ */
+export type SessionCommit = {
+  readonly sha: string
+  readonly branch: string | null
+  readonly subject: string | null
+  readonly filesChanged: number | null
+  readonly insertions: number | null
+  readonly deletions: number | null
+  readonly messageId: string | null
+  readonly recordedAt: string
+  readonly repo: SessionRepo
+}
+
+/** Capture stores only PRs the session opened, so every row here was created by this session. */
+export type SessionPullRequest = {
+  readonly number: number
+  readonly title: string | null
+  readonly baseBranch: string | null
+  readonly headBranch: string | null
+  readonly messageId: string | null
+  readonly recordedAt: string
+  readonly repo: SessionRepo
+}
+
 export type SessionDetailPayload = {
   readonly session: SessionFacts
   readonly messages: ReadonlyArray<RawMessage>
   readonly toolCalls: ReadonlyArray<RawToolCall>
   readonly subagents: ReadonlyArray<RawSubagent>
   readonly tokenUsage: TokenTotals
+  readonly commits: ReadonlyArray<SessionCommit>
+  readonly pullRequests: ReadonlyArray<SessionPullRequest>
 }
 
 /**

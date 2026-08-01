@@ -2,8 +2,10 @@ import type {
   RawMessage,
   RawSubagent,
   RawToolCall,
+  SessionCommit,
   SessionDetailPayload,
   SessionFacts,
+  SessionPullRequest,
   TokenTotals,
 } from "../api/types.js"
 
@@ -57,6 +59,8 @@ type PayloadParts = {
   readonly toolCalls?: ReadonlyArray<RawToolCall>
   readonly subagents?: ReadonlyArray<RawSubagent>
   readonly tokenUsage?: Partial<TokenTotals>
+  readonly commits?: ReadonlyArray<SessionCommit>
+  readonly pullRequests?: ReadonlyArray<SessionPullRequest>
 }
 
 export const buildPayload = (parts: PayloadParts = {}): SessionDetailPayload => {
@@ -74,8 +78,36 @@ export const buildPayload = (parts: PayloadParts = {}): SessionDetailPayload => 
     toolCalls,
     subagents,
     tokenUsage: tokens(parts.tokenUsage),
+    commits: parts.commits ?? [],
+    pullRequests: parts.pullRequests ?? [],
   }
 }
+
+const REPO = { host: "github.com", owner: "acme", repoName: "widgets" } as const
+
+export const commit = (overrides: Partial<SessionCommit> = {}): SessionCommit => ({
+  sha: "9f3c1ab",
+  branch: "master",
+  subject: "feat(ingest): make the upsert idempotent",
+  filesChanged: 7,
+  insertions: 152,
+  deletions: 3,
+  messageId: null,
+  recordedAt: "2026-03-01T11:00:00.000Z",
+  repo: REPO,
+  ...overrides,
+})
+
+export const pullRequest = (overrides: Partial<SessionPullRequest> = {}): SessionPullRequest => ({
+  number: 391,
+  title: "Make ingest idempotent",
+  baseBranch: "master",
+  headBranch: "feat/idempotent-ingest",
+  messageId: null,
+  recordedAt: "2026-03-01T11:05:00.000Z",
+  repo: REPO,
+  ...overrides,
+})
 
 export const text = (value: string): unknown => ({ text: value })
 

@@ -1,6 +1,6 @@
 import { useRef } from "react"
 
-export type TabId = "conversation" | "tools" | "artifacts"
+export type TabId = "conversation" | "tools" | "artifacts" | "commits" | "pulls"
 
 export type Tab = {
   readonly id: TabId

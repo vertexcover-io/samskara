@@ -2,9 +2,12 @@ import { type SQL, and, asc, desc, eq, gte, lte, sql } from "drizzle-orm"
 import type { PgColumn } from "drizzle-orm/pg-core"
 import type { Querier } from "../db/client.js"
 import {
+  commits,
   messages,
   projects,
+  pullRequests,
   repos,
+  sessionPullRequests,
   sessions,
   subagents,
   tokenUsage,
@@ -274,12 +277,42 @@ export type TokenUsageTotals = {
   readonly thinkingTokens: number
 }
 
+/**
+ * `recordedAt` is when capture filed the commit, not the author date -- the transcript is the
+ * clock here. `messageId` is the turn that produced it, which is what ties a commit to the
+ * moment it was made rather than leaving it a free-floating sha.
+ */
+export type SessionCommitRow = {
+  readonly sha: string
+  readonly branch: string | null
+  readonly subject: string | null
+  readonly filesChanged: number | null
+  readonly insertions: number | null
+  readonly deletions: number | null
+  readonly messageId: string | null
+  readonly recordedAt: string
+  readonly repo: SessionRepo
+}
+
+/** A row exists only for a PR the session opened, so membership already means "created here". */
+export type SessionPullRequestRow = {
+  readonly number: number
+  readonly title: string | null
+  readonly baseBranch: string | null
+  readonly headBranch: string | null
+  readonly messageId: string | null
+  readonly recordedAt: string
+  readonly repo: SessionRepo
+}
+
 export type SessionDetailRow = {
   readonly session: SessionFactsRow
   readonly messages: ReadonlyArray<MessageRow>
   readonly toolCalls: ReadonlyArray<ToolCallRow>
   readonly subagents: ReadonlyArray<SubagentRow>
   readonly tokenUsage: TokenUsageTotals
+  readonly commits: ReadonlyArray<SessionCommitRow>
+  readonly pullRequests: ReadonlyArray<SessionPullRequestRow>
 }
 
 const toolCallCount = sql<number>`(
@@ -336,59 +369,95 @@ export const getDetail = async (
   const facts = await findVisibleSession(db, userId, sessionId)
   if (!facts) return null
 
-  const [messageRows, toolCallRows, subagentRows, tokenRows] = await Promise.all([
-    db
-      .select({
-        id: messages.id,
-        msgType: messages.msgType,
-        subType: messages.subType,
-        role: messages.role,
-        lineNumber: messages.lineNumber,
-        timestamp: sql<string | null>`${messages.timestamp}`,
-        agentId: messages.agentId,
-        isSubagent: messages.isSubagent,
-        model: messages.model,
-        content: messages.content,
-        details: messages.details,
-      })
-      .from(messages)
-      .where(eq(messages.sessionId, sessionId))
-      .orderBy(asc(messages.lineNumber), asc(messages.subIndex)),
-    db
-      .select({
-        toolId: toolCall.toolId,
-        messageId: toolCall.messageId,
-        toolName: toolCall.toolName,
-        toolInput: toolCall.toolInput,
-        result: toolResult.result,
-        status: toolResult.status,
-      })
-      .from(toolCall)
-      .innerJoin(messages, eq(messages.id, toolCall.messageId))
-      .leftJoin(toolResult, eq(toolResult.toolId, toolCall.toolId))
-      .where(eq(messages.sessionId, sessionId))
-      .orderBy(asc(messages.lineNumber), asc(toolCall.toolId)),
-    db
-      .select({
-        agentId: subagents.agentId,
-        agentType: subagents.agentType,
-        description: subagents.description,
-        parentAgentId: subagents.parentAgentId,
-      })
-      .from(subagents)
-      .where(eq(subagents.sessionId, sessionId))
-      .orderBy(asc(subagents.createdAt), asc(subagents.agentId)),
-    db
-      .select({
-        inputTokens: sql<number>`coalesce(sum(${tokenUsage.inputTokens}), 0)::int`,
-        outputTokens: sql<number>`coalesce(sum(${tokenUsage.outputTokens}), 0)::int`,
-        cachedTokens: sql<number>`coalesce(sum(${tokenUsage.cachedTokens}), 0)::int`,
-        thinkingTokens: sql<number>`coalesce(sum(${tokenUsage.thinkingTokens}), 0)::int`,
-      })
-      .from(tokenUsage)
-      .innerJoin(messages, eq(messages.id, tokenUsage.messageId))
-      .where(eq(messages.sessionId, sessionId)),
-  ])
+  const [messageRows, toolCallRows, subagentRows, tokenRows, commitRows, prRows] =
+    await Promise.all([
+      db
+        .select({
+          id: messages.id,
+          msgType: messages.msgType,
+          subType: messages.subType,
+          role: messages.role,
+          lineNumber: messages.lineNumber,
+          timestamp: sql<string | null>`${messages.timestamp}`,
+          agentId: messages.agentId,
+          isSubagent: messages.isSubagent,
+          model: messages.model,
+          content: messages.content,
+          details: messages.details,
+        })
+        .from(messages)
+        .where(eq(messages.sessionId, sessionId))
+        .orderBy(asc(messages.lineNumber), asc(messages.subIndex)),
+      db
+        .select({
+          toolId: toolCall.toolId,
+          messageId: toolCall.messageId,
+          toolName: toolCall.toolName,
+          toolInput: toolCall.toolInput,
+          result: toolResult.result,
+          status: toolResult.status,
+        })
+        .from(toolCall)
+        .innerJoin(messages, eq(messages.id, toolCall.messageId))
+        .leftJoin(toolResult, eq(toolResult.toolId, toolCall.toolId))
+        .where(eq(messages.sessionId, sessionId))
+        .orderBy(asc(messages.lineNumber), asc(toolCall.toolId)),
+      db
+        .select({
+          agentId: subagents.agentId,
+          agentType: subagents.agentType,
+          description: subagents.description,
+          parentAgentId: subagents.parentAgentId,
+        })
+        .from(subagents)
+        .where(eq(subagents.sessionId, sessionId))
+        .orderBy(asc(subagents.createdAt), asc(subagents.agentId)),
+      db
+        .select({
+          inputTokens: sql<number>`coalesce(sum(${tokenUsage.inputTokens}), 0)::int`,
+          outputTokens: sql<number>`coalesce(sum(${tokenUsage.outputTokens}), 0)::int`,
+          cachedTokens: sql<number>`coalesce(sum(${tokenUsage.cachedTokens}), 0)::int`,
+          thinkingTokens: sql<number>`coalesce(sum(${tokenUsage.thinkingTokens}), 0)::int`,
+        })
+        .from(tokenUsage)
+        .innerJoin(messages, eq(messages.id, tokenUsage.messageId))
+        .where(eq(messages.sessionId, sessionId)),
+      db
+        .select({
+          sha: commits.sha,
+          branch: commits.branch,
+          subject: commits.subject,
+          filesChanged: commits.filesChanged,
+          insertions: commits.insertions,
+          deletions: commits.deletions,
+          messageId: commits.messageId,
+          recordedAt: sql<string>`${commits.createdAt}`,
+          repoHost: repos.host,
+          repoOwner: repos.owner,
+          repoName: repos.repoName,
+        })
+        .from(commits)
+        .innerJoin(repos, eq(repos.id, commits.repoId))
+        .where(eq(commits.sessionId, sessionId))
+        .orderBy(asc(commits.createdAt), asc(commits.sha)),
+      db
+        .select({
+          number: pullRequests.number,
+          title: pullRequests.title,
+          baseBranch: pullRequests.baseBranch,
+          headBranch: pullRequests.headBranch,
+          messageId: sessionPullRequests.messageId,
+          recordedAt: sql<string>`${sessionPullRequests.createdAt}`,
+          repoHost: repos.host,
+          repoOwner: repos.owner,
+          repoName: repos.repoName,
+        })
+        .from(sessionPullRequests)
+        .innerJoin(pullRequests, eq(pullRequests.id, sessionPullRequests.prId))
+        .innerJoin(repos, eq(repos.id, pullRequests.repoId))
+        .where(eq(sessionPullRequests.sessionId, sessionId))
+        .orderBy(asc(pullRequests.number)),
+    ])
 
   return {
     session: facts,
@@ -396,5 +465,13 @@ export const getDetail = async (
     toolCalls: toolCallRows,
     subagents: subagentRows,
     tokenUsage: tokenRows[0] ?? EMPTY_TOKENS,
+    commits: commitRows.map(({ repoHost, repoOwner, repoName, ...commit }) => ({
+      ...commit,
+      repo: { host: repoHost, owner: repoOwner, repoName },
+    })),
+    pullRequests: prRows.map(({ repoHost, repoOwner, repoName, ...pr }) => ({
+      ...pr,
+      repo: { host: repoHost, owner: repoOwner, repoName },
+    })),
   }
 }

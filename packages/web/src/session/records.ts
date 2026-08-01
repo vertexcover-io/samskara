@@ -372,6 +372,34 @@ export const toDetail = (payload: SessionDetailPayload): SessionDetail => {
     }
   }
 
+  // Pairing above consumes one queued branch per spawn call, so a branch whose call was never
+  // captured is left behind -- and an annex only renders from a spawn record. Without this the
+  // branch's messages sit in the payload with nothing in the timeline able to reach them, and
+  // `?agent=` silently opens nothing. Anchor each leftover to its own first message so it lands in
+  // time order rather than after the whole transcript.
+  for (const [track, waiting] of pending) {
+    for (const agent of waiting) {
+      if (spawned.has(agent.agentId)) continue
+      spawned.add(agent.agentId)
+
+      const first = branches.get(agent.agentId)?.[0]
+      const marker: TimelineRecord = {
+        id: `spawn-${agent.agentId}`,
+        lineNumber: first?.lineNumber ?? 0,
+        timestamp: first?.timestamp ?? null,
+        agentId: track,
+        sources: [],
+        kind: "agentSpawn",
+        agent,
+      }
+
+      const into = trackOf(track)
+      const at = into.findIndex((record) => record.lineNumber > marker.lineNumber)
+      if (at === -1) into.push(marker)
+      else into.splice(at, 0, marker)
+    }
+  }
+
   return {
     session: payload.session,
     records,

@@ -8,7 +8,7 @@ import type {
   RepoIdentity,
   TokenUsage,
 } from "@samskara/core"
-import { isGitCommitCommand, isPrCreateCommand } from "@samskara/core"
+import { isGitCommitCommand, isPrCreateCommand, pullRequestFlags } from "@samskara/core"
 import type pino from "pino"
 import type { Db, Querier } from "../db/client.js"
 import * as commitsRepo from "../repositories/commits.repo.js"
@@ -201,12 +201,15 @@ const storePullRequests = async (tx: Querier, input: StoreInput): Promise<void> 
     if (!call) return []
     const repoId = repoIdByKey.get(repoKeyOf(prRepoOf(event)))
     if (!repoId) return []
+    // The number and repo come from the result; the title and branches exist only in the
+    // command, which the stored call already holds for verification.
     return [
       {
         repoId,
         number: event.number,
         sessionId,
         messageId: call.messageId,
+        ...pullRequestFlags(call.command ?? ""),
       },
     ]
   })

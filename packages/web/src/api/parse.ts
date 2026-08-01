@@ -5,8 +5,10 @@ import type {
   RawMessage,
   RawSubagent,
   RawToolCall,
+  SessionCommit,
   SessionDetailPayload,
   SessionFacts,
+  SessionPullRequest,
   SessionRepo,
   SessionSummary,
   TokenTotals,
@@ -245,7 +247,66 @@ export const parseSessionDetail = (body: unknown): SessionDetailPayload | null =
   const subagents = allParsed(fields.subagents.map(parseSubagent))
   if (session === null || messages === null || toolCalls === null || subagents === null) return null
 
-  return { session, messages, toolCalls, subagents, tokenUsage: parseTokens(fields.tokenUsage) }
+  return {
+    session,
+    messages,
+    toolCalls,
+    subagents,
+    tokenUsage: parseTokens(fields.tokenUsage),
+    commits: parseList(fields.commits, parseCommit),
+    pullRequests: parseList(fields.pullRequests, parsePullRequest),
+  }
+}
+
+/** Lenient like the repo it decorates: one malformed row is dropped, it does not fail the session. */
+const parseList = <T>(value: unknown, parse: (row: unknown) => T | null): ReadonlyArray<T> => {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((row) => {
+    const parsed = parse(row)
+    return parsed === null ? [] : [parsed]
+  })
+}
+
+const parseCommit = (value: unknown): SessionCommit | null => {
+  const fields = asFields(value)
+  if (!fields) return null
+
+  const sha = str(fields.sha)
+  const recordedAt = str(fields.recordedAt)
+  const repo = parseRepo(fields.repo)
+  if (sha === null || recordedAt === null || repo === null) return null
+
+  return {
+    sha,
+    branch: nullableStr(fields.branch) ?? null,
+    subject: nullableStr(fields.subject) ?? null,
+    filesChanged: nullableNum(fields.filesChanged) ?? null,
+    insertions: nullableNum(fields.insertions) ?? null,
+    deletions: nullableNum(fields.deletions) ?? null,
+    messageId: nullableStr(fields.messageId) ?? null,
+    recordedAt,
+    repo,
+  }
+}
+
+const parsePullRequest = (value: unknown): SessionPullRequest | null => {
+  const fields = asFields(value)
+  if (!fields) return null
+
+  const number = num(fields.number)
+  const recordedAt = str(fields.recordedAt)
+  const repo = parseRepo(fields.repo)
+  if (number === null || recordedAt === null || repo === null) return null
+
+  return {
+    number,
+    title: nullableStr(fields.title) ?? null,
+    baseBranch: nullableStr(fields.baseBranch) ?? null,
+    headBranch: nullableStr(fields.headBranch) ?? null,
+    messageId: nullableStr(fields.messageId) ?? null,
+    recordedAt,
+    repo,
+  }
 }
 
 const parseCapturedArtifact = (value: unknown): CapturedArtifact | null => {
