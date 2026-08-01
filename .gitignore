@@ -4,7 +4,9 @@ dist
 *.tsbuildinfo
 .env
 .DS_Store
-.harness/
+.harness/*
+!.harness/knowledge/
+!.harness/README.md
 
 .worktrees/
 .pi-subagents
@@ -16,5 +18,7 @@ playwright-report/
 blob-report/
 .playwright/
 .harness/features/*/verification/
-.harness/runtime/
+.harness/*
+!.harness/knowledge/
+!.harness/README.md
 .humanlayer
