@@ -20,7 +20,7 @@ import {
   tokenPath,
 } from "../config/paths.js"
 import { isProjectEnabled, syncFromFor } from "../config/projects.js"
-import { resolveLocalProject } from "../project-resolver.js"
+import { resolveLocalProject, runGit } from "../project-resolver.js"
 import { runArtifactWorkers } from "./artifact-worker.js"
 import { type ArtifactCycleDeps, type WatcherConfig, type WatcherDeps, runCycle } from "./driver.js"
 import { createArtifactSink, createHttpSink } from "./sink.js"
@@ -144,6 +144,7 @@ export const watch = async (options: WatchOptions): Promise<void> => {
       log,
       sink: createArtifactSink({ apiBase, token, fetch: globalThis.fetch }),
       clock: { now: () => Date.now() },
+      runGit,
       stopped: () => stopping,
     },
   ).catch((err: unknown) => {

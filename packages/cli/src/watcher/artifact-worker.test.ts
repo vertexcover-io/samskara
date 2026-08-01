@@ -13,14 +13,40 @@ import {
   MAX_ATTEMPTS,
   runArtifactWorkers,
 } from "./artifact-worker.js"
+import type { GitRunner } from "./resolveProject.js"
 import { spyLogger } from "./test-logger.js"
 
 const sha256 = (content: string): string => createHash("sha256").update(content).digest("hex")
 
+type GitRecorder = {
+  readonly calls: ReadonlyArray<{ readonly args: ReadonlyArray<string>; readonly cwd: string }>
+  readonly runGit: GitRunner
+}
+
 /**
- * `isCapturable` always excludes `/tmp` and `/private/tmp` outright (containment.ts), and under
- * some runners `os.tmpdir()` resolves to exactly that root when `$TMPDIR` isn't inherited. `/var/tmp`
- * is the same kind of OS-provided scratch space without colliding with that exclusion.
+ * Mirrors `git ls-files -z`: only tracked paths appear, each NUL-terminated, and the order is
+ * git's own rather than the caller's. `null` stands for every failure the real runner collapses
+ * into one -- not a repo, git absent, non-zero exit.
+ */
+const gitFake = (tracked: ReadonlyArray<string> | null): GitRecorder => {
+  const calls: Array<{ args: ReadonlyArray<string>; cwd: string }> = []
+  return {
+    calls,
+    runGit: async (args, cwd) => {
+      calls.push({ args, cwd })
+      return tracked === null ? null : tracked.map((path) => `${path}\0`).join("")
+    },
+  }
+}
+
+/**
+ * `isCapturable` always excludes `/tmp` and `/private/tmp` outright (containment.ts), and
+ * `os.tmpdir()` falls back to exactly that root whenever `$TMPDIR` is unset. `/var/tmp` is the same
+ * kind of OS-provided scratch space without colliding with that exclusion.
+ *
+ * Turbo's strict env mode used to strip `$TMPDIR`, which made this fire under `bun run test` but
+ * not under a direct `vitest run`; turbo.json now declares it in the test task's `passThroughEnv`.
+ * This guard remains for environments where `$TMPDIR` is genuinely unset, such as CI containers.
  */
 const scratchRoot = (): string =>
   ["/tmp", "/private/tmp"].includes(tmpdir()) ? "/var/tmp" : tmpdir()
@@ -59,11 +85,16 @@ describe("artifact workers", () => {
     ...over,
   })
 
-  const deps = (sink: ArtifactSink, now = 1_800_000_000_000): ArtifactWorkerDeps => ({
+  const deps = (
+    sink: ArtifactSink,
+    now = 1_800_000_000_000,
+    runGit: GitRunner = async () => "",
+  ): ArtifactWorkerDeps => ({
     fileHistoryDir: join(dir, "file-history"),
     log: recorder.log,
     sink,
     clock: { now: () => now },
+    runGit,
   })
 
   beforeEach(async () => {
@@ -471,6 +502,201 @@ describe("artifact workers", () => {
 
     expect(sink.sent).toHaveLength(0)
     expect((await readQueue(queuePath)).entries).toHaveLength(0)
+  })
+
+  test("S14: a tracked reference is rejected while its untracked sibling is kept", async () => {
+    const reportPath = join(dir, "notes.md")
+    await mkdir(join(dir, "src"), { recursive: true })
+    await mkdir(join(dir, "clips"), { recursive: true })
+    await writeFile(join(dir, "src", "driver.ts"), "export const x = 1", "utf8")
+    await writeFile(join(dir, "clips", "run.mp4"), "video bytes", "utf8")
+    await writeFile(
+      reportPath,
+      '<img src="src/driver.ts"><video src="clips/run.mp4"></video>',
+      "utf8",
+    )
+
+    await enqueue(queuePath, [entry({ path: reportPath, relativePath: "notes.md" })])
+    const sink = scriptedSink([200])
+    const git = gitFake(["src/driver.ts"])
+
+    await runArtifactWorkers(
+      { queuePath, statePath, workers: 1, drainOnce: true },
+      deps(sink, 1_800_000_000_000, git.runGit),
+    )
+
+    const sent = sink.sent.map((payload) => payload.path)
+    expect(sent).toContain(join(dir, "clips", "run.mp4"))
+    expect(sent).not.toContain(join(dir, "src", "driver.ts"))
+  })
+
+  test("S15: classification is one git call carrying the whole reference set", async () => {
+    const reportPath = join(dir, "notes.md")
+    for (const name of ["a.png", "b.png", "c.png", "d.png"]) {
+      await writeFile(join(dir, name), `${name} bytes`, "utf8")
+    }
+    await writeFile(
+      reportPath,
+      ["a.png", "b.png", "c.png", "d.png"].map((name) => `<img src="${name}">`).join("\n"),
+      "utf8",
+    )
+
+    await enqueue(queuePath, [entry({ path: reportPath, relativePath: "notes.md" })])
+    const git = gitFake([])
+
+    await runArtifactWorkers(
+      { queuePath, statePath, workers: 1, drainOnce: true },
+      deps(scriptedSink([200]), 1_800_000_000_000, git.runGit),
+    )
+
+    expect(git.calls).toHaveLength(1)
+    expect(git.calls[0]?.args).toEqual(expect.arrayContaining(["a.png", "b.png", "c.png", "d.png"]))
+    expect(git.calls[0]?.cwd).toBe(dir)
+  })
+
+  test("S16: the git invocation disables pathspec magic", async () => {
+    const reportPath = join(dir, "notes.md")
+    await writeFile(join(dir, "shot[1].png"), "shot bytes", "utf8")
+    await writeFile(reportPath, '<img src="shot[1].png">', "utf8")
+
+    await enqueue(queuePath, [entry({ path: reportPath, relativePath: "notes.md" })])
+    const sink = scriptedSink([200])
+    const git = gitFake([])
+
+    await runArtifactWorkers(
+      { queuePath, statePath, workers: 1, drainOnce: true },
+      deps(sink, 1_800_000_000_000, git.runGit),
+    )
+
+    // A top-level git option: after the subcommand git rejects it as unknown.
+    expect(git.calls[0]?.args.slice(0, 4)).toEqual(["--literal-pathspecs", "ls-files", "-z", "--"])
+    expect(sink.sent.map((payload) => payload.path)).toContain(join(dir, "shot[1].png"))
+  })
+
+  test("S17: tracked-ness is matched by identity, not by position", async () => {
+    const reportPath = join(dir, "notes.md")
+    for (const name of ["a.png", "b.png", "c.png"]) {
+      await writeFile(join(dir, name), `${name} bytes`, "utf8")
+    }
+    await writeFile(
+      reportPath,
+      ["a.png", "b.png", "c.png"].map((name) => `<img src="${name}">`).join("\n"),
+      "utf8",
+    )
+
+    await enqueue(queuePath, [entry({ path: reportPath, relativePath: "notes.md" })])
+    const sink = scriptedSink([200])
+
+    await runArtifactWorkers(
+      { queuePath, statePath, workers: 1, drainOnce: true },
+      deps(sink, 1_800_000_000_000, gitFake(["c.png"]).runGit),
+    )
+
+    const sent = sink.sent.map((payload) => payload.path)
+    expect(sent).toContain(join(dir, "a.png"))
+    expect(sent).toContain(join(dir, "b.png"))
+    expect(sent).not.toContain(join(dir, "c.png"))
+  })
+
+  test("S18: a git failure drops every reference for that document", async () => {
+    const reportPath = join(dir, "notes.md")
+    await writeFile(join(dir, "a.png"), "a bytes", "utf8")
+    await writeFile(join(dir, "b.png"), "b bytes", "utf8")
+    await writeFile(reportPath, '<img src="a.png"><img src="b.png">', "utf8")
+
+    const report = entry({ path: reportPath, relativePath: "notes.md" })
+    await enqueue(queuePath, [report])
+    const sink = scriptedSink([200])
+
+    await runArtifactWorkers(
+      { queuePath, statePath, workers: 1, drainOnce: true },
+      deps(sink, 1_800_000_000_000, gitFake(null).runGit),
+    )
+
+    expect(sink.sent.map((payload) => payload.path)).toEqual([reportPath])
+    // The document's own upload still succeeded -- a scan failure never undoes it.
+    const state = await readArtifactState(statePath)
+    expect(state.artifacts[stateKey(report.sessionId, reportPath)]?.currentHash).toBeDefined()
+  })
+
+  test("S19: an out-of-root reference never reaches git", async () => {
+    const reportPath = join(dir, "pages", "report.md")
+    await mkdir(dirname(reportPath), { recursive: true })
+    await writeFile(join(dirname(dir), "outside.png"), "outside bytes", "utf8")
+    await writeFile(join(dir, "pages", "inside.mp4"), "video bytes", "utf8")
+    await writeFile(
+      reportPath,
+      '<img src="../../outside.png"><video src="inside.mp4"></video>',
+      "utf8",
+    )
+
+    await enqueue(queuePath, [entry({ path: reportPath, relativePath: "pages/report.md" })])
+    const sink = scriptedSink([200])
+    const git = gitFake([])
+
+    await runArtifactWorkers(
+      { queuePath, statePath, workers: 1, drainOnce: true },
+      deps(sink, 1_800_000_000_000, git.runGit),
+    )
+
+    // One escaping path would make the real `git ls-files` exit 128 and print nothing for the
+    // whole batch, so the filter order is what keeps this call answerable.
+    const passed = (git.calls[0]?.args ?? []).filter((arg) => !arg.startsWith("-") && arg !== "--")
+    expect(passed.some((arg) => arg.startsWith(".."))).toBe(false)
+    expect(sink.sent.map((payload) => payload.path)).toContain(join(dir, "pages", "inside.mp4"))
+  })
+
+  test("A1: a verification report seeds its own generated media and nothing from the repo", async () => {
+    const reportPath = join(dir, "verification", "proof-report.html")
+    await mkdir(dirname(reportPath), { recursive: true })
+    await mkdir(join(dir, "src"), { recursive: true })
+    await writeFile(join(dir, "verification", "run.mp4"), "video bytes", "utf8")
+    await writeFile(join(dir, "verification", "shot.png"), "shot bytes", "utf8")
+    await writeFile(join(dir, "src", "driver.ts"), "export const x = 1", "utf8")
+    await writeFile(join(dirname(dir), "outside.png"), "outside bytes", "utf8")
+    await writeFile(
+      reportPath,
+      [
+        '<video src="run.mp4" poster="shot.png"></video>',
+        '<a href="../src/driver.ts">source</a>',
+        '<img src="https://example.com/remote.png">',
+        '<img src="../../outside.png">',
+      ].join("\n"),
+      "utf8",
+    )
+
+    const report = entry({
+      path: reportPath,
+      relativePath: "verification/proof-report.html",
+      sessionId: "proof-session",
+    })
+    await enqueue(queuePath, [report])
+
+    const sink = scriptedSink([200])
+    const git = gitFake(["src/driver.ts"])
+    const config = { queuePath, statePath, workers: 1, drainOnce: true }
+
+    // Drain repeatedly: each pass claims what the previous pass enqueued, until nothing is due.
+    for (let pass = 0; pass < 4; pass += 1) {
+      await runArtifactWorkers(config, deps(sink, 1_800_000_000_000, git.runGit))
+    }
+
+    const sent = sink.sent.map((payload) => payload.path)
+    expect(sent).toContain(join(dir, "verification", "run.mp4"))
+    expect(sent).toContain(join(dir, "verification", "shot.png"))
+    expect(sent).not.toContain(join(dir, "src", "driver.ts"))
+    expect(sent.some((path) => path.includes("outside.png"))).toBe(false)
+    expect(sent.some((path) => path.includes("remote.png"))).toBe(false)
+
+    for (const payload of sink.sent) {
+      if (payload.path === reportPath) continue
+      expect(payload.sessionId).toBe(report.sessionId)
+      expect(payload.changeKind).toBe("created")
+    }
+
+    // Quiescent: the queue drained and nothing was uploaded twice.
+    expect((await readQueue(queuePath)).entries).toHaveLength(0)
+    expect(new Set(sent).size).toBe(sent.length)
   })
 
   test("S13 (regression): an artifact with no references uploads exactly as before", async () => {

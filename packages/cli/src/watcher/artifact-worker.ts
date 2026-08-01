@@ -1,5 +1,5 @@
 import { stat } from "node:fs/promises"
-import { dirname, relative, sep } from "node:path"
+import { dirname, relative, resolve, sep } from "node:path"
 import type { ArtifactUploadPayload } from "@samskara/core"
 import { z } from "zod"
 import { atomicWriteJson, readJson, withFileLock } from "../config/atomic.js"
@@ -7,6 +7,7 @@ import { referencedPaths } from "./artifact-extract.js"
 import { type ArtifactQueue, type QueueEntry, enqueue, keyOf, readQueue } from "./artifact-queue.js"
 import { type ArtifactUpload, type ArtifactUploadDeps, prepareUpload } from "./artifact-upload.js"
 import { isCapturable } from "./containment.js"
+import type { GitRunner } from "./resolveProject.js"
 
 // --- upload state: the worker's own record of what already landed --------------------------
 
@@ -80,6 +81,11 @@ export type ArtifactWorkerConfig = {
 export type ArtifactWorkerDeps = ArtifactUploadDeps & {
   readonly sink: ArtifactSink
   readonly clock: { now(): number }
+  /**
+   * Required rather than optional: an absent runner would silently skip the tracked-reference
+   * filter, and the failure mode of that is capturing every source file a document links to.
+   */
+  readonly runGit: GitRunner
   readonly stopped?: () => boolean
 }
 
@@ -187,6 +193,42 @@ const capturableReferences = async (
   return survivors
 }
 
+/**
+ * Tracked means pre-existing repo content, which is close to the inverse of generated output. One
+ * batched call classifies the whole set; a loop would cost a subprocess per reference.
+ *
+ * Git prints only the tracked paths, in its own order, so the answer is matched by set membership
+ * rather than by position. It also prints them repo-relative even when given absolute paths, which
+ * is why each one is resolved back against the root.
+ *
+ * `--literal-pathspecs` is a top-level git option and has to precede the subcommand -- placed after
+ * it, git rejects it as unknown. Without it pathspec magic is on, and a screenshot named
+ * `shot[1].png` is read as a character class and silently fails to match.
+ *
+ * Callers must pass a non-empty set: `git ls-files` with no pathspec lists the entire repository.
+ *
+ * Returns null when git could not answer at all -- not a repo, git absent, non-zero exit -- so the
+ * caller can fail closed rather than treat every reference as untracked.
+ */
+const trackedAmong = async (
+  deps: ArtifactWorkerDeps,
+  projectRoot: string,
+  paths: ReadonlyArray<string>,
+): Promise<ReadonlySet<string> | null> => {
+  const relatives = paths.map((path) => relative(projectRoot, path))
+  const output = await deps.runGit(
+    ["--literal-pathspecs", "ls-files", "-z", "--", ...relatives],
+    projectRoot,
+  )
+  if (output === null) return null
+
+  const tracked = output
+    .split("\0")
+    .filter((line) => line.length > 0)
+    .map((line) => resolve(projectRoot, line))
+  return new Set(tracked)
+}
+
 const referenceEntry = (
   ref: string,
   projectRoot: string,
@@ -226,8 +268,17 @@ const enqueueReferences = async (
     const survivors = await capturableReferences(refs, projectRoot)
     if (survivors.length === 0) return
 
+    // Ordered after `capturableReferences` on purpose: that gate confines every path to the project
+    // root, and one path outside it makes `git ls-files` exit 128 and print nothing for the whole
+    // batch -- which would then fail closed and discard the references that were perfectly valid.
+    const tracked = await trackedAmong(deps, projectRoot, survivors)
+    if (tracked === null) return
+
+    const kept = survivors.filter((ref) => !tracked.has(ref))
+    if (kept.length === 0) return
+
     const now = deps.clock.now()
-    const entries = survivors.map((ref) => referenceEntry(ref, projectRoot, entry, now))
+    const entries = kept.map((ref) => referenceEntry(ref, projectRoot, entry, now))
     await enqueue(config.queuePath, entries, deps.log)
   } catch (error) {
     deps.log.warn({ path: entry.path, err: error }, "artifact reference scan failed")
