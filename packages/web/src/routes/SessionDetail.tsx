@@ -15,6 +15,7 @@ import type {
 import { SessionExpired } from "../auth/SessionExpired.js"
 import { AgentRail, agentEntries } from "../session/AgentRail.js"
 import { ArtifactsView } from "../session/ArtifactsView.js"
+import { CommitsView, PullRequestsView } from "../session/ChangesView.js"
 import { RecordStream } from "../session/RecordStream.js"
 import { type Tab, type TabId, Tabs } from "../session/Tabs.js"
 import { ToolCallsView } from "../session/ToolCallsView.js"
@@ -222,6 +223,7 @@ const agentLabelOf = (detail: Detail) => {
 
 const tabsFor = (
   detail: Detail,
+  payload: SessionDetailPayload,
   artifactCount: number,
   inlineTools: boolean,
 ): ReadonlyArray<Tab> => [
@@ -232,6 +234,8 @@ const tabsFor = (
   },
   { id: "tools", label: "Tool Calls", count: detail.toolCalls.length },
   { id: "artifacts", label: "Artifacts", count: artifactCount },
+  { id: "commits", label: "Commits", count: payload.commits.length },
+  { id: "pulls", label: "Pull Requests", count: payload.pullRequests.length },
 ]
 
 const InlineToolsToggle = ({
@@ -373,18 +377,30 @@ const ArtifactsPanel = ({ detail, captured }: { detail: Detail; captured: Captur
 
 const Panel = ({
   detail,
+  payload,
   tab,
   inlineTools,
   captured,
-}: { detail: Detail; tab: TabId; inlineTools: boolean; captured: CapturedState }) => {
+  onJump,
+}: {
+  detail: Detail
+  payload: SessionDetailPayload
+  tab: TabId
+  inlineTools: boolean
+  captured: CapturedState
+  onJump: (messageId: string) => void
+}) => {
   if (tab === "tools")
     return <ToolCallsView calls={detail.toolCalls} agentOf={agentLabelOf(detail)} />
   if (tab === "artifacts") return <ArtifactsPanel detail={detail} captured={captured} />
+  if (tab === "commits") return <CommitsView commits={payload.commits} onJump={onJump} />
+  if (tab === "pulls")
+    return <PullRequestsView pullRequests={payload.pullRequests} onJump={onJump} />
 
   return <Conversation detail={detail} inlineTools={inlineTools} />
 }
 
-const TAB_IDS: ReadonlyArray<TabId> = ["conversation", "tools", "artifacts"]
+const TAB_IDS: ReadonlyArray<TabId> = ["conversation", "tools", "artifacts", "commits", "pulls"]
 
 const isTabId = (value: string | null): value is TabId =>
   value !== null && TAB_IDS.includes(value as TabId)
@@ -456,6 +472,18 @@ const Ready = ({ payload }: { payload: SessionDetailPayload }) => {
   }
 
   const detail = useMemo(() => toDetail(payload), [payload])
+  // A jump belongs on the transcript, so it drops the tab and names the message in one step --
+  // two navigations would leave the reader on Commits with the message selected behind it.
+  // Inline tools go on unconditionally: capture files a commit against its `git commit` tool
+  // call, and landing on a hidden record is the one outcome a jump must never have.
+  const jumpToMessage = (messageId: string): void => {
+    const merged = new URLSearchParams(params)
+    merged.delete("tab")
+    merged.set(MESSAGE_PARAM, messageId)
+    merged.set("tools", "1")
+    setParams(merged)
+  }
+
   const captured = useCapturedArtifacts(payload.session.id)
   const artifactCount = artifactsFor(detail, capturedRows(captured)).length
   const { ref: headRef, height: headHeight } = useMeasuredHeight<HTMLElement>()
@@ -478,7 +506,7 @@ const Ready = ({ payload }: { payload: SessionDetailPayload }) => {
       <div ref={tabsRef} className="sticky z-20 mt-4 bg-paper" style={{ top: headHeight }}>
         <div className="flex flex-wrap items-end justify-between gap-x-4 border-b border-rule">
           <Tabs
-            tabs={tabsFor(detail, artifactCount, inlineTools)}
+            tabs={tabsFor(detail, payload, artifactCount, inlineTools)}
             selected={tab}
             onSelect={(next) => update({ tab: next })}
           />
@@ -489,7 +517,15 @@ const Ready = ({ payload }: { payload: SessionDetailPayload }) => {
       </div>
 
       <div role="tabpanel" id={`panel-${tab}`} aria-labelledby={`tab-${tab}`} className="pt-4">
-        <Panel key={tab} detail={detail} tab={tab} inlineTools={inlineTools} captured={captured} />
+        <Panel
+          key={tab}
+          detail={detail}
+          payload={payload}
+          tab={tab}
+          inlineTools={inlineTools}
+          captured={captured}
+          onJump={jumpToMessage}
+        />
       </div>
     </section>
   )

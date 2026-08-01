@@ -87,6 +87,14 @@ const serializeDetail = (detail: SessionDetailRow) => ({
   toolCalls: detail.toolCalls,
   subagents: detail.subagents,
   tokenUsage: detail.tokenUsage,
+  commits: detail.commits.map((commit) => ({
+    ...commit,
+    recordedAt: new Date(commit.recordedAt).toISOString(),
+  })),
+  pullRequests: detail.pullRequests.map((pr) => ({
+    ...pr,
+    recordedAt: new Date(pr.recordedAt).toISOString(),
+  })),
 })
 
 export const sessionsRoutes = ({ db, env }: Deps): Hono<{ Variables: AuthVariables }> => {
