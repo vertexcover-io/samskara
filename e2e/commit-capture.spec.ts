@@ -255,7 +255,6 @@ test.describe("commit capture", () => {
     expect(rows[0]).toMatchObject({
       sha: "2314a2e44",
       branch: "feat/local-source-graph",
-      // The sub-repo the Bash call ran in, NOT the project root repo `widgets`.
       repoName: SUB_REPO_NAME,
     })
 
@@ -278,14 +277,12 @@ test.describe("commit capture", () => {
       deletions: 2,
     })
 
-    // The commit points at the message that made it -- the Bash toolCall row.
     const [caller] = await sql<{ id: string; msgType: string }[]>`
       select id, "msgType" from messages
       where "sessionId" = ${SESSION_ID} and "msgType" = 'toolCall'
     `
     expect(full?.messageId).toBe(caller?.id)
 
-    // The project root repo exists too, but nothing was attributed to it here.
     const attributed = await sql<{ count: string }[]>`
       select count(*)::text as count from commits c
       join repos r on r.id = c."repoId"
@@ -320,7 +317,8 @@ test.describe("commit capture", () => {
       // The PR names `refrens/birds` -- a repo no cwd in this session ever pointed at, which is
       // exactly why a PR's repo must come from its url rather than the call's working directory.
       toolResultLine("toolu-pr-1", "https://github.com/refrens/birds/pull/391", 3),
-      // A later read of the same PR must not downgrade it from opened to merely referenced.
+      // A PR merely viewed is not recorded -- the single row asserted below proves this pair
+      // contributed nothing.
       toolCallLine("toolu-pr-2", "Bash", { command: "gh pr view 391" }, 4),
       toolResultLine("toolu-pr-2", "https://github.com/refrens/birds/pull/391", 5),
       toolCallLine("toolu-commit-sub", "Bash", { command: "git commit -m 'feat: sub'" }, 6),
@@ -353,15 +351,14 @@ test.describe("commit capture", () => {
       (rows) => `${rows.length} commit rows; daemon said: ${harness.logs.join("")}`,
     )
 
-    // Each commit carries the repo of the checkout it ran in, not one shared attribution.
     expect(commitRows).toEqual([
       { sha: "5ab1111", repoName: SUB_REPO_NAME },
       { sha: "c00d222", repoName: "widgets" },
     ])
 
     const prRows = await pollUntil(
-      () => sql<{ number: number; repoName: string; createdHere: boolean }[]>`
-        select p.number, r.repo_name as "repoName", spr."createdHere"
+      () => sql<{ number: number; repoName: string }[]>`
+        select p.number, r.repo_name as "repoName"
         from "sessionPullRequests" spr
         join "pullRequests" p on p.id = spr."prId"
         join repos r on r.id = p."repoId"
@@ -371,6 +368,6 @@ test.describe("commit capture", () => {
       (rows) => `${rows.length} pull request rows; daemon said: ${harness.logs.join("")}`,
     )
 
-    expect(prRows).toEqual([{ number: 391, repoName: "birds", createdHere: true }])
+    expect(prRows).toEqual([{ number: 391, repoName: "birds" }])
   })
 })

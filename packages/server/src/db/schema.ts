@@ -222,10 +222,7 @@ export const commits = pgTable(
   ],
 )
 
-/**
- * A pull request, keyed by the repo its URL named and its number. Unlike a commit's facts, a
- * title is mutable, so this row is upserted rather than frozen at first observation.
- */
+/** A pull request a session opened, keyed by the repo its URL named and its number. */
 export const pullRequests = pgTable(
   "pullRequests",
   {
@@ -241,10 +238,7 @@ export const pullRequests = pgTable(
   (t) => [unique("pullRequests_repo_number_unique").on(t.repoId, t.number)],
 )
 
-/**
- * `createdHere` sits on the join rather than on the PR: whether a PR was *opened* is a fact
- * about one session's relationship to it, and the same PR is referenced by many sessions.
- */
+/** Only PRs the session opened are stored, so a row here means "this session created that PR". */
 export const sessionPullRequests = pgTable(
   "sessionPullRequests",
   {
@@ -254,7 +248,6 @@ export const sessionPullRequests = pgTable(
     prId: uuid("prId")
       .notNull()
       .references(() => pullRequests.id, { onDelete: "cascade" }),
-    createdHere: boolean("createdHere").notNull().default(false),
     messageId: uuid("messageId").references(() => messages.id, { onDelete: "set null" }),
     createdAt: createdAtCamel,
   },

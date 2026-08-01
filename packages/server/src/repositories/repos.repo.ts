@@ -3,12 +3,7 @@ import { and, eq } from "drizzle-orm"
 import type { Querier } from "../db/client.js"
 import { repos } from "../db/schema.js"
 
-/**
- * Identity is (host, owner, repoName, userId). `host` is part of it because github.com/acme/x and
- * gitlab.com/acme/x are different repos -- and keying on it does not split ssh from https, since
- * `parseRemote` yields the same host for both forms. `ownerType` is stored but NOT keyed on: a
- * remote URL cannot distinguish a user from an org, and keying on an unknown would split one repo.
- */
+/** Identity is (host, owner, repoName, userId) -- the rationale lives on the table in schema.ts. */
 export const upsertByIdentity = async (
   db: Querier,
   identity: RepoIdentity,

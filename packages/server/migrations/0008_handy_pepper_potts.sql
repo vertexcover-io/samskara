@@ -11,7 +11,6 @@ CREATE TABLE "pullRequests" (
 CREATE TABLE "sessionPullRequests" (
 	"sessionId" text NOT NULL,
 	"prId" uuid NOT NULL,
-	"createdHere" boolean DEFAULT false NOT NULL,
 	"messageId" uuid,
 	"createdAt" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "sessionPullRequests_sessionId_prId_pk" PRIMARY KEY("sessionId","prId")

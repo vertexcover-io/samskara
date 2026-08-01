@@ -761,13 +761,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "createdHere": {
-          "name": "createdHere",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
         "messageId": {
           "name": "messageId",
           "type": "uuid",

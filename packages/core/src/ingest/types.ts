@@ -21,10 +21,6 @@ const nonnegativeInteger = z.number().int().nonnegative()
 const jsonValue = z.unknown()
 const timestamp = z.string().datetime({ offset: true })
 
-/**
- * `ownerType` cannot be told from a remote URL, so capture always sends "org"; only the GitHub
- * API distinguishes a user from an org, and that lookup is not part of capture.
- */
 export const repoIdentitySchema = z
   .object({
     host: nonemptyString,
@@ -387,9 +383,9 @@ export const commitEventSchema = z
   .strict()
 
 /**
- * A pull request the session opened or read. Its repo is spelled out by the URL rather than
- * carried in a `repo` field like a commit's: one call can print PRs in several repos, so the
- * cwd the call ran in says nothing about which repo any one of them belongs to.
+ * A pull request the session opened. Its repo is spelled out by the PR's own URL rather than
+ * carried in a `repo` field like a commit's: the URL names the target repo, which need not be
+ * any cwd the session visited.
  */
 export const pullRequestEventSchema = z
   .object({
@@ -398,8 +394,6 @@ export const pullRequestEventSchema = z
     owner: nonemptyString,
     repoName: nonemptyString,
     number: z.number().int().positive(),
-    title: nonemptyString.optional(),
-    createdHere: z.boolean(),
     callId: nonemptyString,
   })
   .strict()
