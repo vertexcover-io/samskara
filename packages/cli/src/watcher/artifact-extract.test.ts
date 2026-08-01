@@ -1,7 +1,8 @@
+import { join } from "node:path"
 import type { NormalizedMessage, ParsedRecord } from "@samskara/core"
 import { createLogger } from "@samskara/core"
 import { describe, expect, test } from "vitest"
-import { type PotentialArtifact, collectArtifacts } from "./artifact-extract.js"
+import { type PotentialArtifact, collectArtifacts, referencedPaths } from "./artifact-extract.js"
 
 const CWD = "/work/app"
 
@@ -177,5 +178,77 @@ describe("collectArtifacts", () => {
 
     expect(candidates.map((candidate) => candidate.path)).toEqual(["/work/app/docs/a.md"])
     expect(candidates[0]?.origin).toBe("fileEvent")
+  })
+})
+
+describe("referencedPaths", () => {
+  const FROM_DIR = "/work/app/docs"
+
+  test("S2: markdown images and links are both extracted, and a title suffix is dropped", () => {
+    const content = '![shot](img/a.png) and [clip](vid/b.mp4) and [c](vid/c.mp4 "caption")'
+
+    expect(referencedPaths(content, FROM_DIR)).toEqual([
+      join(FROM_DIR, "img/a.png"),
+      join(FROM_DIR, "vid/b.mp4"),
+      join(FROM_DIR, "vid/c.mp4"),
+    ])
+  })
+
+  test("S3: remote and non-file references are ignored", () => {
+    const content = [
+      '<img src="https://example.com/a.png">',
+      '<a href="http://x/y">',
+      '<a href="data:image/png;base64,AAA">',
+      '<a href="mailto:a@b.c">',
+      '<script src="//cdn.example.com/z.js">',
+      '<a href="#section">',
+    ].join("\n")
+
+    expect(referencedPaths(content, FROM_DIR)).toEqual([])
+  })
+
+  test("S4: query strings and fragments are stripped before resolving", () => {
+    const content = '<video src="clips/run.mp4?t=3#frag"><img src="img/a.png#top">'
+
+    expect(referencedPaths(content, FROM_DIR)).toEqual([
+      join(FROM_DIR, "clips/run.mp4"),
+      join(FROM_DIR, "img/a.png"),
+    ])
+  })
+
+  test("S5: references resolve against the document's own directory, not the project root", () => {
+    const content = '<img src="../assets/a.png">'
+
+    expect(referencedPaths(content, "/work/app/docs/deep")).toEqual([
+      join("/work/app/docs", "assets/a.png"),
+    ])
+  })
+
+  test("S6: a percent-encoded filename decodes before resolving", () => {
+    const content = '<img src="shots/01%20login.png">'
+
+    expect(referencedPaths(content, FROM_DIR)).toEqual([join(FROM_DIR, "shots/01 login.png")])
+  })
+
+  test("S8: reference-style markdown links and autolinks are not extracted", () => {
+    const content = "[shot][ref]\n\n[ref]: img/a.png\n\n<./b.mp4>"
+
+    expect(referencedPaths(content, FROM_DIR)).toEqual([])
+  })
+
+  test("dedupes by resolved path, keeping first-appearance order", () => {
+    const content = '<img src="img/a.png"><a href="img/a.png">[again](img/a.png)'
+
+    expect(referencedPaths(content, FROM_DIR)).toEqual([join(FROM_DIR, "img/a.png")])
+  })
+
+  test("html src, href, and poster attributes are all extracted", () => {
+    const content = '<video src="v.mp4" poster="p.png"><a href="l.pdf">'
+
+    expect(referencedPaths(content, FROM_DIR)).toEqual([
+      join(FROM_DIR, "v.mp4"),
+      join(FROM_DIR, "p.png"),
+      join(FROM_DIR, "l.pdf"),
+    ])
   })
 })

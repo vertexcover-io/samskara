@@ -131,6 +131,50 @@ const factsOf = (
   return []
 }
 
+const HTML_ATTR_REFERENCE = /\b(?:src|href|poster)\s*=\s*["']([^"']*)["']/gi
+const MARKDOWN_REFERENCE = /!?\[[^\]]*\]\(\s*([^)\s]+)/g
+const NON_LOCAL_REFERENCE = /^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i
+
+const rawReferencesIn = (content: string): ReadonlyArray<string> =>
+  [
+    ...[...content.matchAll(HTML_ATTR_REFERENCE)].map((match) => match[1]),
+    ...[...content.matchAll(MARKDOWN_REFERENCE)].map((match) => match[1]),
+  ].filter((ref): ref is string => ref !== undefined)
+
+const withoutFragmentAndQuery = (ref: string): string =>
+  (ref.split("#")[0] ?? "").split("?")[0] ?? ""
+
+const decoded = (ref: string): string => {
+  try {
+    return decodeURIComponent(ref)
+  } catch {
+    return ref
+  }
+}
+
+/**
+ * HTML `src`/`href`/`poster` and inline markdown links/images, resolved against the document's
+ * own directory. Reference-style markdown links (`[id]: path`) and autolinks (`<./clip.mp4>`) are
+ * deliberately not matched -- see design.md D7.
+ */
+export const referencedPaths = (content: string, fromDir: string): ReadonlyArray<string> => {
+  const seen = new Set<string>()
+  const result: string[] = []
+
+  for (const raw of rawReferencesIn(content)) {
+    if (NON_LOCAL_REFERENCE.test(raw)) continue
+    const local = decoded(withoutFragmentAndQuery(raw))
+    if (local.length === 0) continue
+
+    const resolved = resolve(fromDir, local)
+    if (seen.has(resolved)) continue
+    seen.add(resolved)
+    result.push(resolved)
+  }
+
+  return result
+}
+
 export const collectArtifacts = (
   records: ReadonlyArray<ParsedRecord>,
   cwd: string,
