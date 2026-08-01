@@ -219,6 +219,7 @@ const parseSubagent = (value: unknown): RawSubagent | null => {
     agentType: nullableStr(fields.agentType) ?? null,
     description: nullableStr(fields.description) ?? null,
     parentAgentId: nullableStr(fields.parentAgentId) ?? null,
+    spawnToolUseId: nullableStr(fields.spawnToolUseId) ?? null,
   }
 }
 

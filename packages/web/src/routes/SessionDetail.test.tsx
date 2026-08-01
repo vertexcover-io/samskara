@@ -21,6 +21,7 @@ const PAYLOAD: SessionDetailPayload = buildPayload({
       agentType: "db-schema-auditor",
       description: "Audit keys",
       parentAgentId: null,
+      spawnToolUseId: null,
     },
   ],
   messages: [
@@ -70,7 +71,13 @@ const PAYLOAD: SessionDetailPayload = buildPayload({
 
 const BRANCH_PAYLOAD: SessionDetailPayload = buildPayload({
   subagents: [
-    { agentId: "a1", agentType: "auditor", description: "Audit keys", parentAgentId: null },
+    {
+      agentId: "a1",
+      agentType: "auditor",
+      description: "Audit keys",
+      parentAgentId: null,
+      spawnToolUseId: null,
+    },
   ],
   messages: [
     message({ lineNumber: 1, msgType: "turnEvent", subType: "agentSpawn", agentId: "a1" }),
@@ -107,8 +114,20 @@ const agentCall = (messageId: string, toolId: string) => ({
 
 const NESTED_PAYLOAD: SessionDetailPayload = buildPayload({
   subagents: [
-    { agentId: "a1", agentType: "explorer", description: "Top task", parentAgentId: null },
-    { agentId: "a2", agentType: "researcher", description: "Nested task", parentAgentId: "a1" },
+    {
+      agentId: "a1",
+      agentType: "explorer",
+      description: "Top task",
+      parentAgentId: null,
+      spawnToolUseId: null,
+    },
+    {
+      agentId: "a2",
+      agentType: "researcher",
+      description: "Nested task",
+      parentAgentId: "a1",
+      spawnToolUseId: null,
+    },
   ],
   messages: [
     message({ id: "top-call", lineNumber: 1, msgType: "toolCall" }),

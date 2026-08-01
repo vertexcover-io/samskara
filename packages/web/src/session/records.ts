@@ -325,14 +325,15 @@ export const toDetail = (payload: SessionDetailPayload): SessionDetail => {
   const branches = new Map<string, Array<TimelineRecord>>()
   const spawned = new Set<string>()
 
-  // Capture does not always emit a spawn event, but the Agent tool call that launched each branch
-  // is on the track that made it -- the main spine for a top-level agent, the parent's branch for
-  // a nested one. Pair them per track, in order, so a branch anchors to the call that started it.
-  const pending = new Map<string | null, Array<RawSubagent>>()
+  // Capture does not always emit a spawn event, but each branch records the id of the call that
+  // launched it, so a branch anchors to its own call rather than to whichever came next. Counting
+  // instead would assume one call per branch, and a human-started branch never has one -- every
+  // branch after it would then wear the wrong call's label.
+  const bySpawnCall = new Map<string, RawSubagent>()
+  const unattached: Array<RawSubagent> = []
   for (const agent of payload.subagents) {
-    const siblings = pending.get(agent.parentAgentId)
-    if (siblings) siblings.push(agent)
-    else pending.set(agent.parentAgentId, [agent])
+    if (agent.spawnToolUseId === null) unattached.push(agent)
+    else bySpawnCall.set(agent.spawnToolUseId, agent)
   }
 
   const trackOf = (track: string | null): Array<TimelineRecord> => {
@@ -357,7 +358,7 @@ export const toDetail = (payload: SessionDetailPayload): SessionDetail => {
     if (record.kind !== "tool") continue
     for (const call of record.calls) {
       if (!SPAWN_TOOLS.has(call.toolName)) continue
-      const agent = pending.get(track)?.shift()
+      const agent = bySpawnCall.get(call.toolId)
       if (agent === undefined || spawned.has(agent.agentId)) continue
       spawned.add(agent.agentId)
       // No sources: this marker is synthesised from the tool call rendered just above it, and
@@ -372,32 +373,38 @@ export const toDetail = (payload: SessionDetailPayload): SessionDetail => {
     }
   }
 
-  // Pairing above consumes one queued branch per spawn call, so a branch whose call was never
-  // captured is left behind -- and an annex only renders from a spawn record. Without this the
-  // branch's messages sit in the payload with nothing in the timeline able to reach them, and
-  // `?agent=` silently opens nothing. Anchor each leftover to its own first message so it lands in
-  // time order rather than after the whole transcript.
-  for (const [track, waiting] of pending) {
-    for (const agent of waiting) {
-      if (spawned.has(agent.agentId)) continue
-      spawned.add(agent.agentId)
+  // Branches no call claimed: one a human started, so no call exists, and one whose call never
+  // reached the timeline. An annex renders only from a spawn record, so without a marker the
+  // branch's messages sit in the payload with nothing able to reach them and `?agent=` opens
+  // nothing.
+  //
+  // Placed by when the branch ran. Every track numbers its lines from 1, so a lineNumber anchor
+  // would put a branch that started an hour in at the very top of the session.
+  for (const agent of [...unattached, ...bySpawnCall.values()]) {
+    if (spawned.has(agent.agentId)) continue
+    spawned.add(agent.agentId)
 
-      const first = branches.get(agent.agentId)?.[0]
-      const marker: TimelineRecord = {
-        id: `spawn-${agent.agentId}`,
-        lineNumber: first?.lineNumber ?? 0,
-        timestamp: first?.timestamp ?? null,
-        agentId: track,
-        sources: [],
-        kind: "agentSpawn",
-        agent,
-      }
-
-      const into = trackOf(track)
-      const at = into.findIndex((record) => record.lineNumber > marker.lineNumber)
-      if (at === -1) into.push(marker)
-      else into.splice(at, 0, marker)
+    const first = branches.get(agent.agentId)?.[0]
+    const marker: TimelineRecord = {
+      id: `spawn-${agent.agentId}`,
+      lineNumber: first?.lineNumber ?? 0,
+      timestamp: first?.timestamp ?? null,
+      agentId: agent.parentAgentId,
+      sources: [],
+      kind: "agentSpawn",
+      agent,
     }
+
+    const into = trackOf(agent.parentAgentId)
+    const startedAt = marker.timestamp === null ? null : Date.parse(marker.timestamp)
+    const at =
+      startedAt === null
+        ? -1
+        : into.findIndex(
+            (record) => record.timestamp !== null && Date.parse(record.timestamp) > startedAt,
+          )
+    if (at === -1) into.push(marker)
+    else into.splice(at, 0, marker)
   }
 
   return {

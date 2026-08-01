@@ -662,6 +662,7 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions/:id", () => {
       agentId: "agent-audit",
       agentType: "db-schema-auditor",
       description: "Audit unique constraints",
+      spawnToolUseId: "toolu_016HFcaNDieHnTH4Nty25mXr",
       sourceRelativePath: "sub/agent-audit.jsonl",
     })
     await db.insert(tokenUsage).values({
@@ -705,6 +706,9 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions/:id", () => {
         agentType: "db-schema-auditor",
         description: "Audit unique constraints",
         parentAgentId: null,
+        // Carried through so the viewer can anchor the branch to the call that launched it,
+        // rather than counting calls and mispairing every branch after a human-started one.
+        spawnToolUseId: "toolu_016HFcaNDieHnTH4Nty25mXr",
       },
     ])
     expect(body.tokenUsage).toEqual({
