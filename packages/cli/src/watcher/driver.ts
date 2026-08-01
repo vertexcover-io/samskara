@@ -152,13 +152,19 @@ const syncTrack = async (
   deps: WatcherDeps,
 ): Promise<Checkpoint | undefined> => {
   const records = await attributeRepos(track.records, track.project.root)
+  // Collected once over the whole track, then attached to the chunk holding each event's
+  // *result*: the call may sit in an earlier chunk, already persisted by the time the event
+  // arrives, and the server resolves the callId from its stored rows.
+  const events = collectGitEvents(records, deps.log)
   let sentThrough = 0
   for (const request of sliceByMessages(records, MESSAGE_CAP)) {
-    // Per chunk rather than per track: a commit's `callId` is resolved to a message id by the
-    // server, so it must travel with the same payload as the toolCall it names. The cost is
-    // that a call and its result split across the message cap yield no commit.
-    const events = collectGitEvents(request.records, deps.log)
-    const { status } = await deps.sink.send(payloadFor(track, request.records, origin, events))
+    const resultIds = new Set(
+      request.records
+        .flatMap((record) => record.messages)
+        .flatMap((message) => (message.msgType === "toolResult" ? [message.details.callId] : [])),
+    )
+    const chunkEvents = events.filter((event) => resultIds.has(event.callId))
+    const { status } = await deps.sink.send(payloadFor(track, request.records, origin, chunkEvents))
     if (status < 200 || status >= 300) {
       deps.log.warn(
         { sessionId: track.sessionId, key: track.checkpointKey, status },

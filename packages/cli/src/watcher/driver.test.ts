@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
   type FileSystem,
+  type NormalizedMessage,
   type ParsedRecord,
   type ProjectIdentity,
   createClaudePlugin,
@@ -776,5 +777,73 @@ describe("watcher driver", () => {
 
     expect(sink.received.length).toBe(1)
     expect(store.checkpoints[key]).toBeUndefined()
+  })
+
+  test("a call and its result split across the message cap still yield the commit, on the result's payload", async () => {
+    const key = "/fake/split.jsonl"
+    const base = {
+      sessionId: "sess-split",
+      source: "claude_code" as const,
+      sourceSchemaVersion: 1,
+      trackId: "main",
+    }
+    const one = (lineNumber: number, message: NormalizedMessage): ParsedRecord => ({
+      lineUuid: `00000000-0000-5000-8000-${lineNumber.toString().padStart(12, "0")}`,
+      lineNumber,
+      raw: {},
+      messages: [message],
+    })
+    const call: NormalizedMessage = {
+      ...base,
+      subIndex: 0,
+      msgType: "toolCall",
+      details: { callId: "call-split", name: "Bash", input: { command: "git commit -m split" } },
+    }
+    const result: NormalizedMessage = {
+      ...base,
+      subIndex: 0,
+      msgType: "toolResult",
+      details: {
+        callId: "call-split",
+        output: "[main abc1234] split\n 1 file changed, 1 insertion(+)",
+        status: "unknown",
+      },
+    }
+    const track = {
+      type: "main" as const,
+      sessionId: "sess-split",
+      project,
+      sourceRelativePath: key,
+      checkpointKey: key,
+      records: [record(1, MESSAGE_CAP - 1), one(2, call), one(3, result)],
+      lastLineProcessed: 3,
+      checkpointAt: (lineNumber: number) => ({
+        source: "claude_code" as const,
+        mtime: 10,
+        size: 20,
+        lineProcessed: lineNumber,
+      }),
+    }
+    const stubPlugin = {
+      source: "claude_code",
+      collect: async () => [{ sessionId: "sess-split", tracks: [track] }],
+    }
+
+    const sink = createInMemorySink()
+    await runCycle(config, deps({ sink, glob: async () => [], plugin: stubPlugin }))
+
+    expect(sink.received).toHaveLength(2)
+    expect(sink.received[0]).not.toHaveProperty("gitEvents")
+    expect(sink.received[1]?.gitEvents).toEqual([
+      {
+        kind: "commit",
+        sha: "abc1234",
+        branch: "main",
+        subject: "split",
+        filesChanged: 1,
+        insertions: 1,
+        callId: "call-split",
+      },
+    ])
   })
 })

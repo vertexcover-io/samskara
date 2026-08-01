@@ -8,6 +8,7 @@ import type {
   RepoIdentity,
   TokenUsage,
 } from "@samskara/core"
+import { isGitCommitCommand, isPrCreateCommand } from "@samskara/core"
 import type pino from "pino"
 import type { Db, Querier } from "../db/client.js"
 import * as commitsRepo from "../repositories/commits.repo.js"
@@ -53,16 +54,13 @@ type RepoIdKey = string
 const KEY_SEPARATOR = "\n"
 
 // Mirrors the (host, owner, repoName) part of repos' identity -- `userId` is constant across one
-// ingest. `host` is included so a PR on github.com/acme/x and one on gitlab.com/acme/x resolve to
-// different repos rather than sharing a row and overwriting each other's title.
+// ingest.
 const repoKeyOf = (repo: RepoIdentity): RepoIdKey =>
   [repo.host, repo.owner, repo.repoName].join(KEY_SEPARATOR)
 
 /**
- * A PR names its repo in its own URL, which carries no owner type. It is left undefined rather
- * than guessed: the repo may never have been a cwd, and an invented `org` would assert a fact we
- * do not have. Since `ownerType` is out of the identity key, a PR-derived repo still collapses
- * onto the same row as the cwd-derived one when the session did reach it.
+ * A PR's URL carries no owner type, and `ownerType` is not part of the identity key, so a
+ * PR-derived repo collapses onto the same row as a cwd-derived one.
  */
 const prRepoOf = (event: PullRequestEvent): RepoIdentity => ({
   host: event.host,
@@ -135,39 +133,44 @@ const toMessageRow = (
   }
 }
 
-const messageIdsByCallId = (
-  flatMessages: ReadonlyArray<FlatMessage>,
-  idByKey: ReadonlyMap<messagesRepo.MessageKey, string>,
-): ReadonlyMap<string, string> =>
-  new Map(
-    flatMessages.flatMap((flat) => {
-      const { message } = flat
-      if (message.msgType !== "toolCall") return []
-      const id = idByKey.get(messagesRepo.keyOf(flat.lineUuid, message.subIndex))
-      return id ? [[message.details.callId, id] as const] : []
-    }),
-  )
-
 type StoreInput = {
   readonly sessionId: string
   readonly events: ReadonlyArray<GitEvent>
-  readonly flatMessages: ReadonlyArray<FlatMessage>
   readonly repoIdByKey: ReadonlyMap<RepoIdKey, string>
-  readonly idByKey: ReadonlyMap<messagesRepo.MessageKey, string>
+  readonly calls: ReadonlyMap<string, toolRowsRepo.StoredCall>
+}
+
+/**
+ * No event is trusted: each must name a stored Bash call whose command proves the intent, and
+ * `messageId` derives from that call. The call may have been persisted by an earlier payload --
+ * a chunk split or a result arriving cycles after its call resolves here all the same.
+ */
+const verifiedCall = (
+  input: StoreInput,
+  callId: string,
+  provesIntent: (command: string) => boolean,
+): toolRowsRepo.StoredCall | null => {
+  const call = input.calls.get(callId)
+  if (!call || call.toolName !== "Bash") return null
+  if (!call.command || !provesIntent(call.command)) return null
+  return call
 }
 
 /**
  * A commit's repo is the one its own Bash call ran in -- never the session's or the project's,
  * because a sub-repo inside a workspace is only identifiable from the calling message's cwd.
- * An event whose repo never resolved is dropped: `commits.repoId` is half its identity.
+ * The event's own repo wins when present; a candidate shipped without one falls back to the
+ * stored call message's attribution. Still unresolved is dropped: `commits.repoId` is half the
+ * row's identity.
  */
 const storeCommits = async (tx: Querier, input: StoreInput): Promise<void> => {
-  const { sessionId, events, flatMessages, repoIdByKey, idByKey } = input
-  const messageIdByCallId = messageIdsByCallId(flatMessages, idByKey)
+  const { sessionId, events, repoIdByKey } = input
 
   const rows = events.flatMap((event) => {
     if (event.kind !== "commit") return []
-    const repoId = event.repo ? repoIdByKey.get(repoKeyOf(event.repo)) : undefined
+    const call = verifiedCall(input, event.callId, isGitCommitCommand)
+    if (!call) return []
+    const repoId = event.repo ? repoIdByKey.get(repoKeyOf(event.repo)) : (call.repoId ?? undefined)
     if (!repoId) return []
     return [
       {
@@ -179,7 +182,7 @@ const storeCommits = async (tx: Querier, input: StoreInput): Promise<void> => {
         insertions: event.insertions,
         deletions: event.deletions,
         sessionId,
-        messageId: messageIdByCallId.get(event.callId),
+        messageId: call.messageId,
       },
     ]
   })
@@ -187,31 +190,26 @@ const storeCommits = async (tx: Querier, input: StoreInput): Promise<void> => {
   await commitsRepo.insertObserved(tx, rows)
 }
 
-/**
- * Unlike a commit, a PR's repo comes from its own URL rather than the calling message's cwd --
- * one call routinely prints PRs belonging to several different repos.
- */
 const storePullRequests = async (tx: Querier, input: StoreInput): Promise<void> => {
-  const { sessionId, events, flatMessages, repoIdByKey, idByKey } = input
-  const messageIdByCallId = messageIdsByCallId(flatMessages, idByKey)
+  const { sessionId, events, repoIdByKey } = input
 
   const rows = events.flatMap((event) => {
     if (event.kind !== "pullRequest") return []
+    const call = verifiedCall(input, event.callId, isPrCreateCommand)
+    if (!call) return []
     const repoId = repoIdByKey.get(repoKeyOf(prRepoOf(event)))
     if (!repoId) return []
     return [
       {
         repoId,
         number: event.number,
-        title: event.title,
         sessionId,
-        createdHere: event.createdHere,
-        messageId: messageIdByCallId.get(event.callId),
+        messageId: call.messageId,
       },
     ]
   })
 
-  await pullRequestsRepo.upsertObserved(tx, rows)
+  await pullRequestsRepo.insertOpened(tx, rows)
 }
 
 const deriveToolRows = async (
@@ -298,16 +296,19 @@ export const ingest = async (ctx: Ctx, payload: IngestPayload): Promise<IngestRe
         payload.sessionId,
         rows,
       )
+      // Tool rows are persisted before events are stored so a same-payload call is resolvable
+      // by the same lookup that serves calls from earlier payloads.
+      await deriveToolRows(tx, flat, idByKey)
       const storeInput = {
         sessionId: payload.sessionId,
         events: gitEvents,
-        flatMessages: flat,
         repoIdByKey,
-        idByKey,
+        calls: await toolRowsRepo.callsByIds(tx, payload.sessionId, [
+          ...new Set(gitEvents.map((event) => event.callId)),
+        ]),
       }
       await storeCommits(tx, storeInput)
       await storePullRequests(tx, storeInput)
-      await deriveToolRows(tx, flat, idByKey)
       await storeTokens(tx, flat, idByKey)
       await subagentsRepo.resolveParentAgentIds(tx, payload.sessionId)
       log.info(

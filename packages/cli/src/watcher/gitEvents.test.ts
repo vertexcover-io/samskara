@@ -224,7 +224,7 @@ describe("collectGitEvents", () => {
     ])
   })
 
-  test("S15: a bare PR url printed by gh pr create is recorded as opened, against the repo the url names", () => {
+  test("S15: a bare PR url printed by gh pr create is recorded, against the repo the url names", () => {
     expect(
       prsOf("gh pr create --fill", "https://github.com/vertexcover-io/harness-engineering/pull/59"),
     ).toEqual([
@@ -234,7 +234,6 @@ describe("collectGitEvents", () => {
         owner: "vertexcover-io",
         repoName: "harness-engineering",
         number: 59,
-        createdHere: true,
         callId: "call-pr",
       },
     ])
@@ -265,17 +264,16 @@ describe("collectGitEvents", () => {
     ])
   })
 
-  test("S17: the same PR url seen through gh pr view is recorded but not marked as opened", () => {
+  test("S17: a PR url seen through gh pr view is not recorded -- only creations are captured", () => {
     const prs = prsOf(
       "gh pr view 59 --json url",
       "https://github.com/vertexcover-io/harness-engineering/pull/59",
     )
 
-    expect(prs).toHaveLength(1)
-    expect(prs[0]).toMatchObject({ number: 59, createdHere: false })
+    expect(prs).toEqual([])
   })
 
-  test("S18: a grep whose search pattern contains the words gh pr create opens nothing", () => {
+  test("S18: a grep whose search pattern contains the words gh pr create records nothing", () => {
     const prs = prsOf(
       "grep -rn 'gh pr create' ~/.claude/projects",
       [
@@ -284,46 +282,14 @@ describe("collectGitEvents", () => {
       ].join("\n"),
     )
 
-    expect(prs.map((pr) => pr.createdHere)).toEqual([false, false])
-  })
-
-  test("a gh pr list --json result yields the PR's title, where a bare url carries none", () => {
-    const [withTitle] = prsOf(
-      "gh pr list --json number,title,url",
-      '[{"number":1034,"title":"feat: local source-graph — consume @refrens deps from source in dev","url":"https://github.com/refrens/disco/pull/1034"}]',
-    )
-
-    expect(withTitle).toMatchObject({
-      repoName: "disco",
-      number: 1034,
-      title: "feat: local source-graph — consume @refrens deps from source in dev",
-    })
-
-    const [bare] = prsOf(
-      "gh pr view 59",
-      "https://github.com/vertexcover-io/harness-engineering/pull/59",
-    )
-    expect(bare).not.toHaveProperty("title")
-  })
-
-  test("a title belongs to the repo its json named, and does not bleed onto another repo's PR of the same number", () => {
-    const prs = prsOf(
-      "gh pr list --json number,title,url",
-      [
-        '[{"number":42,"title":"disco: fix the thing","url":"https://github.com/refrens/disco/pull/42"}]',
-        "cross-referenced in https://github.com/refrens/talos/pull/42",
-      ].join("\n"),
-    )
-
-    expect(prs).toEqual([
-      expect.objectContaining({ repoName: "disco", number: 42, title: "disco: fix the thing" }),
-      expect.objectContaining({ repoName: "talos", number: 42 }),
-    ])
-    expect(prs.find((pr) => pr.repoName === "talos")).not.toHaveProperty("title")
+    expect(prs).toEqual([])
   })
 
   test("a GitLab merge request url is captured with its own host, so repos.host is not assumed to be github.com", () => {
-    const [event] = prsOf("glab mr view 12", "https://gitlab.com/acme/serana/-/merge_requests/12")
+    const [event] = prsOf(
+      "glab mr create --fill",
+      "https://gitlab.com/acme/serana/-/merge_requests/12",
+    )
 
     expect(event).toMatchObject({
       host: "gitlab.com",
@@ -336,14 +302,21 @@ describe("collectGitEvents", () => {
   test("the same PR url printed twice by one call records one PR, not two", () => {
     expect(
       prsOf(
-        "gh pr view 59",
+        "gh pr create --fill",
         "https://github.com/refrens/birds/pull/391\nhttps://github.com/refrens/birds/pull/391",
       ),
     ).toHaveLength(1)
   })
 
-  test("a result with no matching Bash call, and a non-Bash tool, both record nothing", () => {
-    expect(collect([bashResult(0, "orphan", "[main abc1234] stray output")])).toEqual([])
+  test("a result whose call was never seen ships as a candidate, without a repo", () => {
+    // The call may have been flushed in an earlier chunk or cycle -- the server verifies the
+    // candidate against the stored call before keeping it.
+    expect(collect([bashResult(0, "orphan", "[main abc1234] stray output")])).toEqual([
+      { kind: "commit", sha: "abc1234", branch: "main", subject: "stray output", callId: "orphan" },
+    ])
+  })
+
+  test("a result whose call is a known non-Bash tool records nothing", () => {
     expect(
       collect([
         message({

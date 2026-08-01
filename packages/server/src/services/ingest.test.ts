@@ -305,7 +305,6 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
     const [first, second, third] = rows
     expect(first?.repoId).toBeTruthy()
     expect(second?.repoId).toBeTruthy()
-    // Two repos, not one: a session that moves between checkouts is the whole point.
     expect(first?.repoId).not.toBe(second?.repoId)
     expect(third?.repoId).toBeNull()
 
@@ -368,6 +367,26 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
 
     const [after] = await db.select().from(sessions).where(eq(sessions.id, sessionId))
     expect(after).toMatchObject({ cwd: "/work/serana", startCommit })
+
+    // A replay with a fresh watcher state file re-sends an origin, but the sha it reads is
+    // today's HEAD -- the frozen first write must win over it.
+    await ingest(
+      ctx,
+      mainPayload(
+        sessionId,
+        [
+          customMessage({
+            sessionId,
+            lineUuid: "0191d942-3ba5-7dba-9a7d-000000000003",
+            lineNumber: 3,
+          }),
+        ],
+        { startCwd: "/work/replayed", startCommit: "ffff0000ffff0000ffff0000ffff0000ffff0000" },
+      ),
+    )
+
+    const [replayed] = await db.select().from(sessions).where(eq(sessions.id, sessionId))
+    expect(replayed).toMatchObject({ cwd: "/work/serana", startCommit })
   })
 
   test("S22: a session started outside a git repo ingests with a startCwd but a null starting sha", async () => {
@@ -499,13 +518,110 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
     expect(after).toEqual(before)
   })
 
+  test("a commit event arriving a payload after its call resolves message and repo from stored rows", async () => {
+    const sessionId = "sess-commit-split"
+    const call = customMessage({
+      sessionId,
+      lineUuid: "0191d942-3ba5-7dba-9a7d-0000000000c2",
+      lineNumber: 1,
+    })
+    await ingest(
+      ctx,
+      mainPayload(sessionId, [
+        {
+          ...call,
+          message: {
+            ...call.message,
+            msgType: "toolCall",
+            details: {
+              callId: "call-late",
+              name: "Bash",
+              input: { command: "git commit -m late" },
+            },
+            repo: subRepo,
+          } as NormalizedMessage,
+        },
+      ]),
+    )
+
+    // The result's chunk ships the event as a candidate -- no repo attached.
+    const filler = customMessage({
+      sessionId,
+      lineUuid: "0191d942-3ba5-7dba-9a7d-0000000000c3",
+      lineNumber: 2,
+    })
+    await ingest(ctx, {
+      ...mainPayload(sessionId, [filler]),
+      gitEvents: [{ kind: "commit", sha: "ab12cd3", subject: "late", callId: "call-late" }],
+    })
+
+    const [row] = await db
+      .select({ sha: commits.sha, repoId: commits.repoId, messageId: commits.messageId })
+      .from(commits)
+      .where(eq(commits.sessionId, sessionId))
+    const [caller] = await db
+      .select({ id: messages.id, repoId: messages.repoId })
+      .from(messages)
+      .where(and(eq(messages.sessionId, sessionId), eq(messages.msgType, "toolCall")))
+    expect(row).toMatchObject({ sha: "ab12cd3" })
+    expect(row?.messageId).toBe(caller?.id)
+    expect(row?.repoId).toBe(caller?.repoId)
+  })
+
+  test("an event naming a call whose stored command is not a real invocation is dropped", async () => {
+    const sessionId = "sess-commit-grep"
+    const call = customMessage({
+      sessionId,
+      lineUuid: "0191d942-3ba5-7dba-9a7d-0000000000c4",
+      lineNumber: 1,
+    })
+    await ingest(ctx, {
+      ...mainPayload(sessionId, [
+        {
+          ...call,
+          message: {
+            ...call.message,
+            msgType: "toolCall",
+            details: {
+              callId: "call-grep",
+              name: "Bash",
+              input: { command: "grep -rn 'git commit' docs/" },
+            },
+            repo: subRepo,
+          } as NormalizedMessage,
+        },
+      ]),
+      gitEvents: [
+        {
+          kind: "commit",
+          sha: "faceb00",
+          subject: "quoted from a doc",
+          repo: subRepo,
+          callId: "call-grep",
+        },
+      ],
+    })
+
+    expect(await db.select().from(commits).where(eq(commits.sessionId, sessionId))).toHaveLength(0)
+  })
+
+  test("a candidate event whose call is unknown to the session stores nothing", async () => {
+    const sessionId = "sess-commit-ghost"
+    await ingest(ctx, {
+      ...mainPayload(sessionId, [
+        customMessage({ sessionId, lineUuid: "0191d942-3ba5-7dba-9a7d-0000000000c5" }),
+      ]),
+      gitEvents: [{ kind: "commit", sha: "0ddba11", callId: "call-ghost" }],
+    })
+
+    expect(await db.select().from(commits).where(eq(commits.sessionId, sessionId))).toHaveLength(0)
+  })
+
   const prPayload = (
     sessionId: string,
     event: {
       readonly number: number
-      readonly createdHere: boolean
       readonly repoName?: string
-      readonly title?: string
       readonly lineUuid: string
     },
   ): IngestPayload => {
@@ -528,8 +644,6 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
           owner: "vertexcover-io",
           repoName: event.repoName ?? "harness-engineering",
           number: event.number,
-          ...(event.title ? { title: event.title } : {}),
-          createdHere: event.createdHere,
           callId: "call-pr",
         },
       ],
@@ -540,11 +654,9 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
     db
       .select({
         number: pullRequests.number,
-        title: pullRequests.title,
         repoName: repos.repoName,
         host: repos.host,
         owner: repos.owner,
-        createdHere: sessionPullRequests.createdHere,
         messageId: sessionPullRequests.messageId,
       })
       .from(sessionPullRequests)
@@ -558,7 +670,6 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
       ctx,
       prPayload(sessionId, {
         number: 59,
-        createdHere: true,
         lineUuid: "0191d942-3ba5-7dba-9a7d-0000000000d1",
       }),
     )
@@ -570,7 +681,6 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
       host: "github.com",
       owner: "vertexcover-io",
       repoName: "harness-engineering",
-      createdHere: true,
     })
 
     const [caller] = await db
@@ -580,13 +690,12 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
     expect(rows[0]?.messageId).toBe(caller?.id)
   })
 
-  test("S19: a session that opens a PR then re-reads it keeps one row still marked as opened", async () => {
-    const sessionId = "sess-pr-created-then-viewed"
+  test("S19: re-ingesting the same PR creation keeps one row and one link", async () => {
+    const sessionId = "sess-pr-created-twice"
     await ingest(
       ctx,
       prPayload(sessionId, {
         number: 77,
-        createdHere: true,
         lineUuid: "0191d942-3ba5-7dba-9a7d-0000000000d2",
       }),
     )
@@ -594,20 +703,13 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
       ctx,
       prPayload(sessionId, {
         number: 77,
-        createdHere: false,
-        title: "feat: capture pull requests",
-        lineUuid: "0191d942-3ba5-7dba-9a7d-0000000000d3",
+        lineUuid: "0191d942-3ba5-7dba-9a7d-0000000000d2",
       }),
     )
 
     const rows = await prRowsFor(sessionId)
     expect(rows).toHaveLength(1)
-    // The later reference updates the mutable title but must never downgrade authorship.
-    expect(rows[0]).toMatchObject({
-      number: 77,
-      createdHere: true,
-      title: "feat: capture pull requests",
-    })
+    expect(rows[0]).toMatchObject({ number: 77 })
   })
 
   test("S20: a session working across two repos attributes each of its commits to the checkout it was made in, and lists both repos as touched", async () => {
@@ -673,7 +775,6 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
     expect(new Set(rows.map((row) => `${row.sha}:${row.repoName}`))).toEqual(
       new Set(["b1rd5aa:birds", "ta105bb:talos"]),
     )
-    // Two distinct repos, not one shared attribution.
     expect(new Set(rows.map((row) => row.repoId)).size).toBe(2)
 
     const touched = await db
@@ -690,14 +791,13 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
       ctx,
       prPayload(sessionId, {
         number: 391,
-        createdHere: false,
         repoName: "birds",
         lineUuid: "0191d942-3ba5-7dba-9a7d-0000000000d4",
       }),
     )
 
     const rows = await prRowsFor(sessionId)
-    expect(rows[0]).toMatchObject({ repoName: "birds", number: 391, createdHere: false })
+    expect(rows[0]).toMatchObject({ repoName: "birds", number: 391 })
 
     const [row] = await db
       .select({ repoId: messages.repoId })
