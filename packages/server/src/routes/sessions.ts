@@ -11,6 +11,7 @@ import {
   findVisibleProjectBySlug,
   getDetail,
   listAccessible,
+  remove,
 } from "../repositories/sessions.repo.js"
 import { serializeArtifact } from "./artifacts.js"
 
@@ -133,6 +134,18 @@ export const sessionsRoutes = ({ db, env }: Deps): Hono<{ Variables: AuthVariabl
     if (rows === null) return c.json({ error: "sessionNotFound" }, 404)
 
     return c.json({ artifacts: rows.map(serializeArtifact) })
+  })
+
+  /**
+   * Scoped to `cli` rather than `web`: this exists so a local replay can re-ingest a session from
+   * its transcript, and nothing in the web app should be able to destroy captured history.
+   */
+  app.delete("/:id", requireAuth({ db, env }, ["cli"]), async (c) => {
+    const removed = await remove(db, c.req.param("id"), c.get("user").id)
+
+    if (!removed) return c.json({ error: "sessionNotFound" }, 404)
+
+    return c.body(null, 204)
   })
 
   return app

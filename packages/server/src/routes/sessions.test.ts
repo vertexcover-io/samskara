@@ -5,6 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import { buildApp } from "../app.js"
 import { type Db, createDb } from "../db/client.js"
 import {
+  artifact,
   messages,
   projects,
   sessions,
@@ -583,6 +584,15 @@ const detailRequest = async (db: Db, userId: string, sessionId: string): Promise
   })
 }
 
+/** Bearer + `cli` audience: the delete route is deliberately closed to the browser's token. */
+const deleteRequest = async (db: Db, userId: string, sessionId: string): Promise<Response> => {
+  const token = await signToken(env, { sub: userId, aud: "cli" })
+  return buildApp(db, env).request(`/api/sessions/${sessionId}`, {
+    method: "DELETE",
+    headers: { authorization: `Bearer ${token}` },
+  })
+}
+
 describe.skipIf(!dockerAvailable())("GET /api/sessions/:id", () => {
   let container: StartedPostgreSqlContainer
   let teardown: () => Promise<void>
@@ -832,5 +842,98 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions/:id", () => {
 
     expect(res.status).toBe(401)
     expect(await res.json()).toEqual({ error: "unauthorized" })
+  })
+
+  test("S42: deleting a session takes everything it owns with it, so a replay re-ingests into an empty slot", async () => {
+    const owner = await seedUser(db, 2401, "replay-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Replay", slug: "replay" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "replayable",
+      userId: owner,
+      projectId,
+      title: "Replayable",
+      updatedAt: new Date(),
+    })
+    const messageId = await insertMessage(db, {
+      sessionId: "replayable",
+      lineNumber: 1,
+      msgType: "toolCall",
+    })
+    await db.insert(toolCall).values({ toolId: "t-r", messageId, toolName: "Grep", toolInput: {} })
+    await db.insert(subagents).values({
+      sessionId: "replayable",
+      agentId: "agent-r",
+      sourceRelativePath: "sub/agent-r.jsonl",
+    })
+    await db.insert(artifact).values({
+      sessionId: "replayable",
+      path: "/work/app/docs/a.md",
+      relativePath: "docs/a.md",
+      mimeType: "text/markdown",
+      isBinary: false,
+      currentContent: Buffer.from("hi"),
+      currentHash: "hash-r",
+      changeKind: "created",
+    })
+
+    const res = await deleteRequest(db, owner, "replayable")
+    expect(res.status).toBe(204)
+
+    // The cascade is the whole point: one delete has to leave nothing behind for the replay to
+    // collide with, so each dependent table is checked rather than the session row alone.
+    expect(await db.select().from(sessions)).toHaveLength(0)
+    expect(await db.select().from(messages)).toHaveLength(0)
+    expect(await db.select().from(toolCall)).toHaveLength(0)
+    expect(await db.select().from(subagents)).toHaveLength(0)
+    expect(await db.select().from(artifact)).toHaveLength(0)
+  })
+
+  test("S42: a stranger deleting someone else's session gets 404 and the session survives", async () => {
+    const ownerA = await seedUser(db, 2402, "delete-owner")
+    const userB = await seedUser(db, 2403, "delete-stranger")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Sealed", slug: "sealed-delete" },
+      ownerId: ownerA,
+    })
+    await seedSession(db, {
+      id: "not-yours",
+      userId: ownerA,
+      projectId,
+      title: "Sealed",
+      updatedAt: new Date(),
+    })
+
+    const denied = await deleteRequest(db, userB, "not-yours")
+
+    expect(denied.status).toBe(404)
+    expect(await denied.json()).toEqual({ error: "sessionNotFound" })
+    expect(await db.select().from(sessions)).toHaveLength(1)
+  })
+
+  test("S42: a web-audience token cannot delete, so the browser can never destroy captured history", async () => {
+    const owner = await seedUser(db, 2404, "web-token-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Web", slug: "web-delete" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "web-guarded",
+      userId: owner,
+      projectId,
+      title: "Guarded",
+      updatedAt: new Date(),
+    })
+
+    const webToken = await signToken(env, { sub: owner, aud: "web" })
+    const res = await buildApp(db, env).request("/api/sessions/web-guarded", {
+      method: "DELETE",
+      headers: { cookie: `session=${webToken}` },
+    })
+
+    expect(res.status).toBe(401)
+    expect(await db.select().from(sessions)).toHaveLength(1)
   })
 })
