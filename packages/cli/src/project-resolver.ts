@@ -6,7 +6,7 @@ import { type ResolvedRepo, createRepoResolver, resolveHeadSha } from "./watcher
 
 const execFileAsync = promisify(execFile)
 
-const runGit = async (args: ReadonlyArray<string>, cwd: string): Promise<string | null> => {
+export const runGit = async (args: ReadonlyArray<string>, cwd: string): Promise<string | null> => {
   try {
     const { stdout } = await execFileAsync("git", [...args], { cwd })
     return stdout.trim()

@@ -23,7 +23,8 @@
     "lint": {},
     "test": {
       "dependsOn": ["^build"],
-      "env": ["DATABASE_URL"]
+      "env": ["DATABASE_URL"],
+      "passThroughEnv": ["TMPDIR"]
     },
     "dev": {
       "cache": false,

@@ -659,6 +659,7 @@ describe("watcher driver", () => {
           log: createLogger({ service: "test" }, { level: "silent" }),
           sink: slowSink,
           clock: { now: () => Date.now() },
+          runGit: async () => "",
         },
       )
 
