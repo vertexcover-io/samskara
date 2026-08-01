@@ -279,6 +279,8 @@ describe("classifyContentType", () => {
   test("S25: mimeType follows the extension while isBinary follows the bytes", () => {
     const nul = Buffer.from("text\u0000more")
     const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    // A real ftyp box: the same bytes the server sniffs to serve mp4 inline.
+    const mp4 = Buffer.from("000000186674797069736f6d", "hex")
 
     const rows = [
       {
@@ -288,6 +290,7 @@ describe("classifyContentType", () => {
         isBinary: false,
       },
       { name: "logo.png", content: png, mimeType: "image/png", isBinary: true },
+      { name: "run.mp4", content: mp4, mimeType: "video/mp4", isBinary: true },
       {
         name: "main.ts",
         content: Buffer.from("const a = 1"),
