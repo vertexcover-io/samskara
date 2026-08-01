@@ -523,6 +523,7 @@ describe("watcher driver", () => {
       resolveProject: async () => rooted,
       artifacts: {
         queuePath,
+        seen: new Map<string, string>(),
         realpath: async (path: string) => path,
         stat: async () => ({ size: 10, mtimeMs: 1 }),
       },
@@ -702,22 +703,12 @@ describe("watcher driver", () => {
     test("an unchanged file is not re-enqueued on a later cycle", async () => {
       const main = join(projects, "sess-1.jsonl")
       const queuePath = join(dir, "artifact-queue.json")
-      const statePath = join(dir, "artifacts.json")
+      // One deps object across both cycles, as the daemon does: `artifactDeps()` is built once and
+      // the loop reuses it, so the seen map is what carries across cycles.
+      const shared = artifactDeps(queuePath)
 
       await writeFile(main, `${writeLine("l1", "sess-1", "docs/a.md")}\n`, "utf8")
-      await runCycle(
-        config,
-        deps({
-          glob: async () => [main],
-          ...artifactDeps(queuePath),
-          artifacts: {
-            queuePath,
-            statePath,
-            realpath: async (path: string) => path,
-            stat: async () => ({ size: 10, mtimeMs: 1 }),
-          },
-        }),
-      )
+      await runCycle(config, deps({ glob: async () => [main], ...shared }))
 
       const first = JSON.parse(await readFile(queuePath, "utf8")) as { entries: unknown[] }
       expect(first.entries).toHaveLength(1)
@@ -726,17 +717,7 @@ describe("watcher driver", () => {
       await writeFile(main, `${writeLine("l2", "sess-1", "docs/a.md")}\n`, { flag: "a" })
       await runCycle(
         config,
-        deps({
-          glob: async () => [main],
-          clock: { now: () => 9999 },
-          artifacts: {
-            queuePath,
-            statePath,
-            realpath: async (path: string) => path,
-            stat: async () => ({ size: 10, mtimeMs: 1 }),
-          },
-          resolveProject: async () => rooted,
-        }),
+        deps({ glob: async () => [main], clock: { now: () => 9999 }, ...shared }),
       )
 
       const second = JSON.parse(await readFile(queuePath, "utf8")) as {
@@ -744,6 +725,48 @@ describe("watcher driver", () => {
       }
       expect(second.entries).toHaveLength(1)
       expect(second.entries[0]?.observedAt).not.toBe(new Date(9999).toISOString())
+    })
+
+    test("S10: a file whose enqueue failed is retried, not remembered as already queued", async () => {
+      // The seen map must only ever record what actually reached the queue. Recording it before
+      // the write succeeds would skip the file on every later cycle -- a silent, permanent drop.
+      const main = join(projects, "sess-1.jsonl")
+      await writeFile(main, `${writeLine("l1", "sess-1", "docs/a.md")}\n`, "utf8")
+
+      const seen = new Map<string, string>()
+      const artifacts = {
+        seen,
+        realpath: async (path: string) => path,
+        stat: async () => ({ size: 10, mtimeMs: 1 }),
+      }
+
+      // A directory cannot be written as a file, so the enqueue throws.
+      const blocked = join(dir, "blocked-queue")
+      await mkdir(blocked, { recursive: true })
+      await runCycle(
+        config,
+        deps({
+          glob: async () => [main],
+          resolveProject: async () => rooted,
+          artifacts: { ...artifacts, queuePath: blocked },
+        }),
+      ).catch(() => undefined)
+
+      expect(seen.size).toBe(0)
+
+      const queuePath = join(dir, "retry-queue.json")
+      await runCycle(
+        config,
+        deps({
+          glob: async () => [main],
+          resolveProject: async () => rooted,
+          artifacts: { ...artifacts, queuePath },
+        }),
+      )
+
+      const queue = JSON.parse(await readFile(queuePath, "utf8")) as { entries: unknown[] }
+      expect(queue.entries).toHaveLength(1)
+      expect(seen.size).toBe(1)
     })
   })
 

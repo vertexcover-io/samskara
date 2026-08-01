@@ -82,7 +82,7 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
  */
 export const artifactDeps = (): ArtifactCycleDeps => ({
   queuePath: artifactQueuePath(),
-  statePath: artifactStatePath(),
+  seen: new Map(),
   realpath,
   stat: async (path) => {
     const s = await stat(path)

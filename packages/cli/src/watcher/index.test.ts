@@ -32,7 +32,9 @@ test("the daemon's artifact deps point into the active samskara home and resolve
   const deps = artifactDeps()
 
   expect(deps.queuePath).toBe(join(home, "artifact-queue.json"))
-  expect(deps.statePath).toBe(join(home, "artifacts.json"))
+  // The seen map is per-run state, so it starts empty and never touches the home directory --
+  // `artifacts.json` there belongs solely to the workers.
+  expect(deps.seen.size).toBe(0)
 
   // `stat` and `realpath` are the cycle's only disk contact with an artifact: a symlink must
   // resolve to its target so containment judges the real file, and `stat` must report its size.

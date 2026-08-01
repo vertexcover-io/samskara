@@ -15,7 +15,6 @@ import type {
 } from "@samskara/core"
 import { readCheckpoints, writeCheckpoints } from "@samskara/core"
 import type pino from "pino"
-import { atomicWriteJson, readJson } from "../config/atomic.js"
 import { createLocalRepoResolver, resolveLocalHeadSha } from "../project-resolver.js"
 import { collectArtifacts } from "./artifact-extract.js"
 import { type QueueEntry, enqueue } from "./artifact-queue.js"
@@ -34,7 +33,12 @@ export type WatcherConfig = { readonly statePath: string }
  */
 export type ArtifactCycleDeps = {
   readonly queuePath: string
-  readonly statePath?: string
+  /**
+   * Which files were queued, and at what `mtime:size`. Held for the daemon's lifetime rather than
+   * on disk: its only job is to stop a stuck flush re-queueing the same bytes every cycle, which
+   * matters within a run and not across restarts. The worker's content hash remains the authority.
+   */
+  readonly seen: Map<string, string>
   readonly realpath: (path: string) => Promise<string>
   readonly stat: (path: string) => Promise<{ readonly size: number; readonly mtimeMs: number }>
 }
@@ -211,19 +215,6 @@ const syncSession = async (
 }
 
 /** `mtimeMs:size` — an artifact whose stamp is unchanged since the last cycle is already queued. */
-type SeenStamps = Record<string, string>
-
-const readSeen = async (path: string | undefined): Promise<SeenStamps> => {
-  if (!path) return {}
-  const raw = await readJson(path)
-  if (typeof raw !== "object" || raw === null) return {}
-  return Object.fromEntries(
-    Object.entries(raw as Record<string, unknown>).filter(
-      (pair): pair is [string, string] => typeof pair[1] === "string",
-    ),
-  )
-}
-
 const enqueueArtifacts = async (
   batch: SessionBatch,
   root: string,
@@ -231,9 +222,10 @@ const enqueueArtifacts = async (
   artifacts: ArtifactCycleDeps,
 ): Promise<void> => {
   const observedAt = new Date(deps.clock.now()).toISOString()
-  const seen = await readSeen(artifacts.statePath)
-  const stamps: SeenStamps = { ...seen }
   const entries: QueueEntry[] = []
+  // Staged, not committed: a file counts as seen only once its entry reaches the queue. Recording
+  // it before the write succeeds would skip it on every later cycle -- a silent, permanent drop.
+  const pending: Array<readonly [string, string]> = []
 
   for (const track of batch.tracks) {
     const cwd = track.project.root ?? root
@@ -244,8 +236,8 @@ const enqueueArtifacts = async (
       const stat = await artifacts.stat(resolved).catch(() => null)
       if (!stat) continue
       const stamp = `${stat.mtimeMs}:${stat.size}`
-      if (seen[resolved] === stamp) continue
-      stamps[resolved] = stamp
+      if (artifacts.seen.get(resolved) === stamp) continue
+      pending.push([resolved, stamp])
 
       entries.push({
         sessionId: track.sessionId,
@@ -264,7 +256,7 @@ const enqueueArtifacts = async (
 
   if (entries.length === 0) return
   await enqueue(artifacts.queuePath, entries, deps.log)
-  if (artifacts.statePath) await atomicWriteJson(artifacts.statePath, stamps)
+  for (const [path, stamp] of pending) artifacts.seen.set(path, stamp)
 }
 
 export const runCycle = async (
