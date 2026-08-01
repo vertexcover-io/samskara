@@ -18,7 +18,7 @@ import type pino from "pino"
 import { createLocalRepoResolver, resolveLocalHeadSha } from "../project-resolver.js"
 import { collectArtifacts } from "./artifact-extract.js"
 import { type QueueEntry, enqueue } from "./artifact-queue.js"
-import { isCapturable } from "./containment.js"
+import { capturableRealpath } from "./containment.js"
 import { collectGitEvents } from "./gitEvents.js"
 
 export const MESSAGE_CAP = 2000
@@ -230,8 +230,8 @@ const enqueueArtifacts = async (
   for (const track of batch.tracks) {
     const cwd = track.project.root ?? root
     for (const candidate of collectArtifacts(track.records, cwd, deps.log)) {
-      const resolved = await artifacts.realpath(candidate.path).catch(() => candidate.path)
-      if (!isCapturable(resolved, root)) continue
+      const resolved = await capturableRealpath(candidate.path, root, artifacts.realpath)
+      if (resolved === null) continue
 
       const stat = await artifacts.stat(resolved).catch(() => null)
       if (!stat) continue

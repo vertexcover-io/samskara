@@ -161,7 +161,7 @@ export const referencedPaths = (content: string, fromDir: string): ReadonlyArray
     const local = decoded(withoutFragmentAndQuery(raw))
     if (local.length === 0) continue
 
-    const resolved = resolve(fromDir, local)
+    const resolved = absolute(local, fromDir)
     if (seen.has(resolved)) continue
     seen.add(resolved)
     result.push(resolved)

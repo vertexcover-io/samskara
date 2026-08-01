@@ -58,6 +58,20 @@ const alwaysExcluded = (path: string): boolean => {
   return roots.some((root) => isInside(path, root)) || isHomeDotfile(path, home)
 }
 
+/**
+ * The order is the point: `isCapturable` is lexical, so a symlink inside the root pointing outside
+ * it passes on its own path while every later read follows the link to the real target. Resolving
+ * first is what makes containment mean what it says, and both callers need the same rule.
+ */
+export const capturableRealpath = async (
+  path: string,
+  projectRoot: string,
+  realpath: (target: string) => Promise<string>,
+): Promise<string | null> => {
+  const resolved = await realpath(path).catch(() => path)
+  return isCapturable(resolved, projectRoot) ? resolved : null
+}
+
 export const isCapturable = (absolutePath: string, projectRoot: string): boolean => {
   const path = resolve(absolutePath)
   const root = resolve(projectRoot)
