@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react"
+import { render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, test, vi } from "vitest"
 import { AppRoutes } from "./App.js"
@@ -93,7 +93,9 @@ test("S12: an empty project list renders CLI-capture guidance and no grid - not 
   expect(await screen.findByText("samskara capture")).toBeInTheDocument()
   expect(screen.getByText(/send your first capture from the cli/i)).toBeInTheDocument()
   expect(screen.queryByRole("list")).not.toBeInTheDocument()
-  expect(screen.queryByRole("button", { name: /samskara(?! capture)/i })).not.toBeInTheDocument()
+  // Scoped to main: the shell's own wordmark links to /projects and is not a project card.
+  const main = within(screen.getByRole("main"))
+  expect(main.queryByRole("link", { name: /samskara(?! capture)/i })).not.toBeInTheDocument()
 })
 
 test("S10: a session that expires after /api/auth/me resolved lands on /login and stops requesting - it does not ping-pong between /login and /projects forever", async () => {
@@ -124,7 +126,8 @@ test("S13: activating the samskara card navigates to /sessions?project=samskara 
 
   renderAt("/projects")
 
-  const card = await screen.findByRole("button", { name: /samskara/i })
+  const main = await screen.findByRole("main")
+  const card = await within(main).findByRole("link", { name: /samskara/i })
   await userEvent.click(card)
 
   expect(screen.getByTestId("location")).toHaveTextContent("/sessions?project=samskara")

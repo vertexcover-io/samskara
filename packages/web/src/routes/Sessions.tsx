@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
-import { useNavigate, useSearchParams } from "react-router-dom"
+import { useSearchParams } from "react-router-dom"
 import { getJson } from "../api/client.js"
 import { parseSessionList } from "../api/parse.js"
 import type { ApiError, SessionSummary } from "../api/types.js"
@@ -82,10 +82,9 @@ const ErrorState = ({ error }: { error: ApiError }) => (
 type ResultProps = {
   readonly state: State
   readonly onClear: () => void
-  readonly onOpen: (id: string) => void
 }
 
-const Result = ({ state, onClear, onOpen }: ResultProps) => {
+const Result = ({ state, onClear }: ResultProps) => {
   if (state.phase === "loading") return <LoadingShell label="Retrieving sessions" />
 
   if (state.phase === "failed") {
@@ -99,7 +98,7 @@ const Result = ({ state, onClear, onOpen }: ResultProps) => {
     <ul className="grid grid-cols-1 gap-1.5">
       {state.sessions.map((session) => (
         <li key={session.id}>
-          <SessionRow session={session} onOpen={({ id }) => onOpen(id)} />
+          <SessionRow session={session} to={`/sessions/${session.id}`} />
         </li>
       ))}
     </ul>
@@ -110,7 +109,6 @@ export const Sessions = () => {
   const [searchParams, setSearchParams] = useSearchParams()
   const [state, setState] = useState<State>({ phase: "loading" })
   const [vocabulary, setVocabulary] = useState<ReadonlyArray<SessionSummary>>([])
-  const navigate = useNavigate()
 
   const query = serializeFilters(parseFilters(searchParams)).toString()
   const filters = useMemo(() => parseFilters(new URLSearchParams(query)), [query])
@@ -192,11 +190,7 @@ export const Sessions = () => {
       </div>
 
       <div className="mt-4">
-        <Result
-          state={shown}
-          onClear={() => applyFilters(EMPTY_FILTERS)}
-          onOpen={(id) => navigate(`/sessions/${id}`)}
-        />
+        <Result state={shown} onClear={() => applyFilters(EMPTY_FILTERS)} />
       </div>
     </section>
   )

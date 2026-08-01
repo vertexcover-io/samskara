@@ -1,10 +1,7 @@
 import type { ReactNode } from "react"
+import { Link } from "react-router-dom"
 import type { ProjectSummary } from "../api/types.js"
-
-const formatTimestamp = (iso: string): string => {
-  const parsed = new Date(iso)
-  return Number.isNaN(parsed.getTime()) ? iso : parsed.toISOString().replace("T", " ").slice(0, 16)
-}
+import { absoluteTime } from "../time.js"
 
 const Field = ({ label, children }: { label: string; children: ReactNode }) => (
   <div className="min-w-0">
@@ -17,18 +14,17 @@ const Field = ({ label, children }: { label: string; children: ReactNode }) => (
 
 type Props = {
   readonly project: ProjectSummary
-  readonly onOpen: (project: ProjectSummary) => void
+  readonly to: string
 }
 
-export const ProjectCard = ({ project, onOpen }: Props) => {
+export const ProjectCard = ({ project, to }: Props) => {
   const { name, slug, sessionCount, lastActiveAt } = project
   const dormant = sessionCount === 0
 
   return (
-    <button
-      type="button"
-      onClick={() => onOpen(project)}
-      className="flex w-full flex-col gap-3 border border-rule bg-panel-2 p-4 text-left transition-shadow hover:shadow-[0_6px_18px_-8px_rgba(26,28,32,0.35)]"
+    <Link
+      to={to}
+      className="flex w-full flex-col gap-3 border border-rule bg-panel-2 p-4 text-left shadow-card transition-colors hover:border-ink-soft"
     >
       <div className="min-w-0">
         <h2 className="truncate text-[0.9375rem] font-semibold">{name}</h2>
@@ -41,7 +37,7 @@ export const ProjectCard = ({ project, onOpen }: Props) => {
           {lastActiveAt === null ? (
             <span className="text-faded italic underline decoration-dotted">unavailable</span>
           ) : (
-            formatTimestamp(lastActiveAt)
+            absoluteTime(lastActiveAt)
           )}
         </Field>
       </div>
@@ -51,6 +47,6 @@ export const ProjectCard = ({ project, onOpen }: Props) => {
           No sessions captured
         </output>
       ) : null}
-    </button>
+    </Link>
   )
 }

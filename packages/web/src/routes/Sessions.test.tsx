@@ -72,7 +72,7 @@ test("S23: loading /sessions?project=p&user=u&range=week shows all three control
 
   renderAt("/sessions?project=samskara&user=maya&range=week")
 
-  await screen.findByRole("button", { name: /port the session detail surface/i })
+  await screen.findByRole("link", { name: /port the session detail surface/i })
 
   expect(control(/project/i).value).toBe("samskara")
   expect(control(/user/i).value).toBe("maya")
@@ -84,7 +84,7 @@ test("S23: the request sent to the server carries the same filters the URL decla
 
   renderAt("/sessions?project=samskara&user=maya&range=week")
 
-  await screen.findByRole("button", { name: /port the session detail surface/i })
+  await screen.findByRole("link", { name: /port the session detail surface/i })
 
   expect(calls).toContain("/api/sessions?project=samskara&user=maya&range=week")
   expect(calls.filter((path) => path !== "/api/sessions")).toEqual([
@@ -97,7 +97,7 @@ test("S24: changing User to maya writes user=maya into the URL and refetches wit
 
   renderAt("/sessions?project=samskara")
 
-  await screen.findByRole("button", { name: /port the session detail surface/i })
+  await screen.findByRole("link", { name: /port the session detail surface/i })
   await userEvent.selectOptions(control(/user/i), "maya")
 
   await waitFor(() =>
@@ -111,7 +111,7 @@ test("S24: clearing the Project filter removes project= from the URL rather than
 
   renderAt("/sessions?project=samskara")
 
-  await screen.findByRole("button", { name: /port the session detail surface/i })
+  await screen.findByRole("link", { name: /port the session detail surface/i })
   await userEvent.selectOptions(control(/project/i), "")
 
   await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("/sessions"))
@@ -153,7 +153,7 @@ test("S26: activating the row for s-1 navigates to /sessions/s-1", async () => {
 
   renderAt("/sessions")
 
-  const row = await screen.findByRole("button", { name: /port the session detail surface/i })
+  const row = await screen.findByRole("link", { name: /port the session detail surface/i })
   await userEvent.click(row)
 
   await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("/sessions/s-1"))
@@ -174,7 +174,7 @@ test("S25: when the vocabulary request fails, the controls still offer the value
 
   renderAt("/sessions?range=week")
 
-  await screen.findByRole("button", { name: /port the session detail surface/i })
+  await screen.findByRole("link", { name: /port the session detail surface/i })
 
   await waitFor(() => {
     const users = Array.from(control(/user/i).options).map((option) => option.value)
@@ -198,14 +198,12 @@ test("S25: with user=maya applied, ravi is still offered - options come from the
 
   renderAt("/sessions?user=maya")
 
-  await screen.findByRole("button", { name: /port the session detail surface/i })
+  await screen.findByRole("link", { name: /port the session detail surface/i })
 
   await waitFor(() => {
     const users = Array.from(control(/user/i).options).map((option) => option.value)
     expect(users).toContain("ravi")
   })
   expect(control(/user/i).value).toBe("maya")
-  expect(
-    screen.queryByRole("button", { name: /trim the ingest pipeline/i }),
-  ).not.toBeInTheDocument()
+  expect(screen.queryByRole("link", { name: /trim the ingest pipeline/i })).not.toBeInTheDocument()
 })
