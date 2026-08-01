@@ -164,6 +164,21 @@ export const classifyClaudePath = (
   return null
 }
 
+/**
+ * Claude Code names the session on an `ai-title` line and rewrites it as the subject becomes
+ * clearer, so the last one in the batch wins. A batch with none returns undefined rather than an
+ * empty string: the session upsert coalesces, so only a real title may replace a stored one.
+ */
+const titleFrom = (records: ReadonlyArray<ParsedRecord>): string | undefined => {
+  for (let index = records.length - 1; index >= 0; index -= 1) {
+    const raw = records[index]?.raw
+    if (!isObject(raw) || raw.type !== "ai-title") continue
+    const title = stringValue(raw.aiTitle)?.trim()
+    if (title) return title
+  }
+  return undefined
+}
+
 const roleFor = (role: unknown): "user" | "assistant" | "system" | "developer" | "unknown" => {
   if (role === "user" || role === "assistant" || role === "system" || role === "developer")
     return role
@@ -1043,7 +1058,10 @@ const collectTrack = async (
     lastLineProcessed: allLines.at(-1)?.lineNumber ?? fromLine,
     checkpointAt: checkpointAtFor({ mtime: stat.mtimeMs, size: stat.size }),
   }
-  if (!location.agentId) return { ...shared, type: "main" }
+  if (!location.agentId) {
+    const title = titleFrom(records)
+    return { ...shared, type: "main", ...(title === undefined ? {} : { title }) }
+  }
 
   const agent = await readClaudeSidecar(fs, path)
   return {

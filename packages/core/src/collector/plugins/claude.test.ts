@@ -40,6 +40,9 @@ const collectDeps = (
 
 const empty: CheckpointStore = { checkpoints: {} }
 
+const transcript = (...lines: ReadonlyArray<unknown>): string =>
+  `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`
+
 const mkTranscriptDir = async (): Promise<string> => {
   const root = await mkdtemp(join(tmpdir(), "samskara-claude-"))
   const dir = join(root, ".claude", "projects", "bucket")
@@ -785,6 +788,58 @@ describe("collect", () => {
     expect(track?.checkpointKey).toBe(path)
     expect(track?.checkpointAt(1).lineProcessed).toBe(1)
     expect(track?.checkpointAt(1).source).toBe("claude_code")
+  })
+
+  test("the session title is the last ai-title line, so a retitled session ends up current", async () => {
+    // Claude Code rewrites the title as the session's subject becomes clearer, appending a fresh
+    // `ai-title` line each time. The newest one is the session's name; earlier guesses are stale.
+    const dir = await mkTranscriptDir()
+    const path = join(dir, "sess-1.jsonl")
+    await writeFile(
+      path,
+      transcript(
+        { type: "ai-title", aiTitle: "Debug the thing", sessionId: "sess-1" },
+        assistantLine,
+        { type: "ai-title", aiTitle: "Capture artifacts", sessionId: "sess-1" },
+      ),
+      "utf8",
+    )
+
+    const batches = await createClaudePlugin(nodeFs).collect(empty, collectDeps([path]))
+
+    expect(batches[0]?.tracks[0]?.title).toBe("Capture artifacts")
+  })
+
+  test("a batch with no ai-title line carries no title, so a stored one is never cleared", async () => {
+    const dir = await mkTranscriptDir()
+    const path = join(dir, "sess-1.jsonl")
+    await writeFile(path, `${JSON.stringify(assistantLine)}\n`, "utf8")
+
+    const batches = await createClaudePlugin(nodeFs).collect(empty, collectDeps([path]))
+
+    expect(batches[0]?.tracks[0]?.title).toBeUndefined()
+    expect("title" in (batches[0]?.tracks[0] ?? {})).toBe(false)
+  })
+
+  test("an ai-title line with a blank or missing aiTitle is ignored, not stored as an empty name", async () => {
+    const dir = await mkTranscriptDir()
+    const path = join(dir, "sess-1.jsonl")
+    await writeFile(
+      path,
+      // A real ai-title line carries no cwd, so a transcript of nothing but titles never resolves
+      // a project. The assistant line is what makes this file collectable at all.
+      transcript(
+        assistantLine,
+        { type: "ai-title", aiTitle: "Real title", sessionId: "sess-1" },
+        { type: "ai-title", aiTitle: "   ", sessionId: "sess-1" },
+        { type: "ai-title", sessionId: "sess-1" },
+      ),
+      "utf8",
+    )
+
+    const batches = await createClaudePlugin(nodeFs).collect(empty, collectDeps([path]))
+
+    expect(batches[0]?.tracks[0]?.title).toBe("Real title")
   })
 
   test("a real-format subagent file yields a subagent track carrying agent info", async () => {
