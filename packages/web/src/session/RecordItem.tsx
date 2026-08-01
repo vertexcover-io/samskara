@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useState } from "react"
 import { copyText } from "../account/copyText.js"
+import { absoluteTime, clockTime } from "../time.js"
 import { Markdown } from "./Markdown.js"
 import { ToolCallItem } from "./ToolCallItem.js"
 import {
@@ -10,15 +11,43 @@ import {
   anchorOf,
 } from "./records.js"
 
-const clockOf = (iso: string | null): string => {
-  if (iso === null) return "--:--:--"
-  const parsed = new Date(iso)
-  return Number.isNaN(parsed.getTime()) ? "--:--:--" : parsed.toISOString().slice(11, 19)
-}
-
 const Unavailable = () => (
   <span className="text-faded italic underline decoration-dotted">unavailable</span>
 )
+
+/**
+ * Who a record came from, reduced to the three groups a reader actually needs to tell apart while
+ * scrolling: what the human sent, what Claude produced, and what neither of them typed.
+ */
+export type ActorTone = "user" | "assistant" | "aside"
+
+export const toneOf = (record: TimelineRecord): ActorTone => {
+  if (record.kind === "prompt" || record.kind === "command") return "user"
+  if (record.kind === "assistant" || record.kind === "tool" || record.kind === "artifact") {
+    return "assistant"
+  }
+  return "aside"
+}
+
+/** One colour per actor, carried by all three marks so they read as a single signal. */
+const GUTTER: Readonly<Record<ActorTone, string>> = {
+  user: "border-l-2 border-l-ink",
+  assistant: "border-l-2 border-l-custody",
+  aside: "border-l-2 border-l-rule",
+}
+
+const LABEL: Readonly<Record<ActorTone, string>> = {
+  user: "text-ink",
+  assistant: "text-custody",
+  aside: "text-faded",
+}
+
+/** Spine nodes, filled for the human and hollow for everyone else. Read by RecordStream. */
+export const SPINE_DOT: Readonly<Record<ActorTone, string>> = {
+  user: "before:border-ink before:bg-ink",
+  assistant: "before:border-custody before:bg-paper",
+  aside: "before:border-rule before:bg-paper",
+}
 
 const CopyLink = ({ url }: { url: string }) => {
   const [copied, setCopied] = useState(false)
@@ -61,13 +90,20 @@ const CopyLink = ({ url }: { url: string }) => {
 
 const Stamp = ({ timestamp, link }: { timestamp: string | null; link?: string }) => (
   <span className="ml-auto flex items-center gap-1">
-    <time className="font-mono text-[0.72rem] text-ink-soft">{clockOf(timestamp)}</time>
+    <time
+      dateTime={timestamp ?? undefined}
+      title={timestamp === null ? undefined : absoluteTime(timestamp)}
+      className="font-mono text-[0.72rem] text-ink-soft"
+    >
+      {clockTime(timestamp)}
+    </time>
     {link === undefined ? null : <CopyLink url={link} />}
   </span>
 )
 
 const Head = ({
   actor,
+  tone,
   kind,
   timestamp,
   model,
@@ -75,6 +111,7 @@ const Head = ({
   link,
 }: {
   actor: string
+  tone: ActorTone
   kind?: string
   timestamp: string | null
   model?: string | null
@@ -82,7 +119,7 @@ const Head = ({
   link?: string
 }) => (
   <div className="flex flex-wrap items-baseline gap-2">
-    <span className="text-[0.75rem] font-semibold">{actor}</span>
+    <span className={`text-[0.75rem] font-semibold ${LABEL[tone]}`}>{actor}</span>
     {model ? <span className="font-mono text-[0.72rem] text-ink-soft">{model}</span> : null}
     {kind ? (
       <span className="text-[0.625rem] font-semibold uppercase tracking-[0.1em] text-faded">
@@ -168,11 +205,16 @@ const Exhibit = ({ artifact }: { artifact: Artifact }) => (
   </div>
 )
 
-type ShellProps = { readonly anchor: string; readonly linked: boolean }
+type ShellProps = {
+  readonly anchor: string
+  readonly linked: boolean
+  readonly tone: ActorTone
+}
 
-const Shell = ({ children, anchor, linked }: ShellProps & { children: ReactNode }) => (
+const Shell = ({ children, anchor, linked, tone }: ShellProps & { children: ReactNode }) => (
   <article
     id={anchor}
+    data-actor={tone}
     aria-current={linked ? "location" : undefined}
     // Scroll margin clears the pinned bars, so a permalinked message lands below them, not behind.
     className={`group relative scroll-mt-[calc(var(--sticky-head,0px)_+_1rem)] py-3 ${
@@ -213,13 +255,17 @@ type Props = {
 }
 
 export const RecordItem = ({ record, showTools = true, annex, link, linked = false }: Props) => {
-  const shell: ShellProps = { anchor: anchorOf(record), linked }
+  const tone = toneOf(record)
+  const shell: ShellProps = { anchor: anchorOf(record), linked, tone }
+  const gutter = GUTTER[tone]
 
   if (record.kind === "prompt") {
     return (
       <Shell {...shell}>
-        <Head actor={record.actor} timestamp={record.timestamp} link={link} />
-        <div className="mt-2 w-fit max-w-[104ch] rounded-xs border border-rule border-l-2 border-l-ink bg-panel-2 px-3 py-3">
+        <Head actor={record.actor} tone={tone} timestamp={record.timestamp} link={link} />
+        <div
+          className={`mt-2 w-fit max-w-[104ch] rounded-xs border border-rule ${gutter} bg-panel-2 px-3 py-3`}
+        >
           <PromptBody parts={record.parts} />
         </div>
       </Shell>
@@ -231,8 +277,16 @@ export const RecordItem = ({ record, showTools = true, annex, link, linked = fal
   if (record.kind === "command") {
     return (
       <Shell {...shell}>
-        <Head actor={record.actor} kind="Command" timestamp={record.timestamp} link={link} />
-        <div className="mt-2 w-fit max-w-[104ch] rounded-xs border border-rule border-l-2 border-l-ink bg-panel-2 px-3 py-3">
+        <Head
+          actor={record.actor}
+          tone={tone}
+          kind="Command"
+          timestamp={record.timestamp}
+          link={link}
+        />
+        <div
+          className={`mt-2 w-fit max-w-[104ch] rounded-xs border border-rule ${gutter} bg-panel-2 px-3 py-3`}
+        >
           <p className="font-mono text-[0.78rem] font-semibold">{record.command}</p>
           {record.args === "" ? null : (
             <div className="mt-2 border-t border-rule pt-2">
@@ -249,7 +303,7 @@ export const RecordItem = ({ record, showTools = true, annex, link, linked = fal
   if (record.kind === "injection") {
     return (
       <Shell {...shell}>
-        <Head actor={record.label} timestamp={record.timestamp} link={link} />
+        <Head actor={record.label} tone={tone} timestamp={record.timestamp} link={link} />
         <div className="mt-1 w-fit max-w-[104ch]">
           <Collapsed label={firstLine(record.body) || record.label} body={record.body} />
         </div>
@@ -262,13 +316,16 @@ export const RecordItem = ({ record, showTools = true, annex, link, linked = fal
       <Shell {...shell}>
         <Head
           actor={record.actor}
+          tone={tone}
           timestamp={record.timestamp}
           model={record.model}
           stats={record.block === undefined ? undefined : <BlockSummary block={record.block} />}
           link={link}
         />
         {record.thinking === null && record.body === "" ? null : (
-          <div className="mt-2 w-fit max-w-[104ch] rounded-xs border border-rule bg-panel-2 px-3 py-3">
+          <div
+            className={`mt-2 w-fit max-w-[104ch] rounded-xs border border-rule ${gutter} bg-panel-2 px-3 py-3`}
+          >
             {record.thinking === null ? null : <Thinking thinking={record.thinking} />}
             {record.body === "" ? null : <Prose body={record.body} />}
           </div>
@@ -281,7 +338,13 @@ export const RecordItem = ({ record, showTools = true, annex, link, linked = fal
     if (!showTools) return null
     return (
       <Shell {...shell}>
-        <Head actor="Claude" kind="Tool call" timestamp={record.timestamp} link={link} />
+        <Head
+          actor="Claude"
+          tone={tone}
+          kind="Tool call"
+          timestamp={record.timestamp}
+          link={link}
+        />
         <div className="mt-2 grid min-w-0 grid-cols-[minmax(0,1fr)] gap-2">
           {record.calls.length === 0 ? (
             <p className="text-[0.78rem] italic text-faded">
@@ -337,7 +400,13 @@ export const RecordItem = ({ record, showTools = true, annex, link, linked = fal
   if (record.kind === "artifact") {
     return (
       <Shell {...shell}>
-        <Head actor="Claude" kind="Artifact filed" timestamp={record.timestamp} link={link} />
+        <Head
+          actor="Claude"
+          tone={tone}
+          kind="Artifact filed"
+          timestamp={record.timestamp}
+          link={link}
+        />
         <div className="mt-2">
           <Exhibit artifact={record.artifact} />
         </div>
@@ -347,7 +416,13 @@ export const RecordItem = ({ record, showTools = true, annex, link, linked = fal
 
   return (
     <Shell {...shell}>
-      <Head actor="System" kind={record.label} timestamp={record.timestamp} link={link} />
+      <Head
+        actor="System"
+        tone={tone}
+        kind={record.label}
+        timestamp={record.timestamp}
+        link={link}
+      />
       <p className="mt-2 font-mono text-[0.75rem] text-ink-soft">
         <span aria-hidden="true" className="text-custody">
           ◆

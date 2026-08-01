@@ -32,6 +32,7 @@ import {
   toDetail,
 } from "../session/records.js"
 import { LoadingShell } from "../shell/LoadingShell.js"
+import { absoluteTime } from "../time.js"
 
 type State =
   | { readonly phase: "loading" }
@@ -41,18 +42,6 @@ type State =
 const Unavailable = () => (
   <span className="text-faded italic underline decoration-dotted">unavailable</span>
 )
-
-const formatMoment = (iso: string): string => {
-  const parsed = new Date(iso)
-  if (Number.isNaN(parsed.getTime())) return iso
-  return parsed.toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  })
-}
 
 const formatDuration = (ms: number): string => {
   const totalMinutes = Math.round(ms / 60_000)
@@ -147,7 +136,7 @@ const Masthead = ({ session, tokens }: { session: SessionFacts; tokens: TokenTot
     >
       <Fact
         label="Created"
-        value={session.createdAt === null ? <Unavailable /> : formatMoment(session.createdAt)}
+        value={session.createdAt === null ? <Unavailable /> : absoluteTime(session.createdAt)}
       />
       <Fact
         label="Duration"
@@ -343,7 +332,7 @@ const Conversation = ({ detail, inlineTools }: { detail: Detail; inlineTools: bo
       records={view.records}
       branches={view.branches}
       showTools={inlineTools}
-      spine={false}
+      spine
       openIds={ancestryOf(agentId, detail.agents)}
       onOpen={focus.open}
       onExit={focus.exit}

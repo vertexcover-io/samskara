@@ -1,4 +1,4 @@
-import { RecordItem } from "./RecordItem.js"
+import { RecordItem, SPINE_DOT, toneOf } from "./RecordItem.js"
 import { type AnnexContext, annexFor } from "./SubagentAnnex.js"
 import { type TimelineRecord, anchorOf } from "./records.js"
 
@@ -26,10 +26,14 @@ export const RecordStream = ({ records, spine, ...context }: Props) => {
   }
 
   return (
+    // The spine runs down the gutter's centre at 16px: a 2px line from 15px, and a 10px node from
+    // 11px. `calc(-2rem + 11px)` cancels the list's own padding, so the node keeps its place if the
+    // gutter changes. Both marks are sized in px, not rem -- the root font scales on wide viewports,
+    // and a rem-sized node drifts off a px-positioned line.
     <ol
       className={
         spine
-          ? "relative pl-8 before:absolute before:bottom-3 before:left-2.5 before:top-3 before:w-px before:bg-custody"
+          ? "relative pl-8 before:absolute before:bottom-3 before:left-[15px] before:top-3 before:w-[2px] before:bg-rule"
           : "relative"
       }
     >
@@ -40,7 +44,7 @@ export const RecordStream = ({ records, spine, ...context }: Props) => {
             dimmed(record, openIds) ? "opacity-30 saturate-50" : ""
           } ${
             spine
-              ? "before:absolute before:-left-[1.4rem] before:top-[1.35rem] before:size-1.5 before:rounded-pill before:border before:border-custody before:bg-paper"
+              ? `before:absolute before:left-[calc(-2rem_+_11px)] before:top-[1.3rem] before:z-10 before:size-[10px] before:rounded-pill before:border-2 ${SPINE_DOT[toneOf(record)]}`
               : ""
           }`}
         >

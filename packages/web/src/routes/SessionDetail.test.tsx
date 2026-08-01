@@ -916,3 +916,32 @@ test("EDGE-008: a 404 from the detail endpoint renders a not-found state with a 
   expect(screen.getByRole("button", { name: /back to all sessions/i })).toBeInTheDocument()
   expect(screen.queryByRole("tab")).not.toBeInTheDocument()
 })
+
+test("S63: the transcript marks who each record came from, so a prompt and a reply are told apart without reading them", async () => {
+  renderDetail()
+
+  await waitFor(() => expect(tabs()).toHaveLength(5))
+  const panel = panelOf()
+
+  const prompt = panel.querySelector('[data-actor="user"]')
+  expect(prompt?.textContent).toContain("Make it idempotent")
+
+  const reply = panel.querySelector('[data-actor="assistant"]')
+  expect(reply?.textContent).toContain("Here is the plan for the upsert")
+
+  // A branch event is neither: nobody typed it and Claude did not say it.
+  expect(panel.querySelectorAll('[data-actor="aside"]').length).toBeGreaterThan(0)
+})
+
+test("S63: every record in the transcript carries an actor, so none renders unattributed", async () => {
+  renderDetail()
+
+  await waitFor(() => expect(tabs()).toHaveLength(5))
+  const panel = panelOf()
+
+  const records = panel.querySelectorAll("article")
+  expect(records.length).toBeGreaterThan(0)
+  for (const record of records) {
+    expect(["user", "assistant", "aside"]).toContain(record.getAttribute("data-actor"))
+  }
+})
