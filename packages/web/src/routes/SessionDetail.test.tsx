@@ -404,6 +404,39 @@ test("jumping to a commit made by a tool call reveals that call, rather than lan
   expect(within(panelOf()).getByRole("button", { name: /Bash/ })).toBeInTheDocument()
 })
 
+test("a pull request lists the title and branches it was opened with", async () => {
+  const user = userEvent.setup()
+  renderDetail(buildPayload({ pullRequests: [pullRequest()] }))
+
+  await waitFor(() => expect(tabs()).toHaveLength(5))
+  await user.click(screen.getByRole("tab", { name: /Pull Requests/ }))
+
+  const panel = panelOf()
+  expect(within(panel).getByRole("link", { name: "#391" })).toHaveAttribute(
+    "href",
+    "https://github.com/acme/widgets/pull/391",
+  )
+  expect(within(panel).getByText("Make ingest idempotent")).toBeInTheDocument()
+  expect(within(panel).getByText(/feat\/idempotent-ingest → master/)).toBeInTheDocument()
+})
+
+// A PR resolved from its URL alone carries no invocation to read, so the row must degrade
+// rather than print "? → ?" where branches were never captured.
+test("a pull request captured without its invocation shows no branch pair at all", async () => {
+  const user = userEvent.setup()
+  renderDetail(
+    buildPayload({
+      pullRequests: [pullRequest({ title: null, baseBranch: null, headBranch: null })],
+    }),
+  )
+
+  await waitFor(() => expect(tabs()).toHaveLength(5))
+  await user.click(screen.getByRole("tab", { name: /Pull Requests/ }))
+
+  expect(panelOf().textContent).not.toContain("→")
+  expect(within(panelOf()).getByText("unavailable")).toBeInTheDocument()
+})
+
 test("a session that recorded no pull requests says so, rather than showing an empty list", async () => {
   const user = userEvent.setup()
   renderDetail()

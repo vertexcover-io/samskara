@@ -101,6 +101,8 @@ export const commit = (overrides: Partial<SessionCommit> = {}): SessionCommit =>
 export const pullRequest = (overrides: Partial<SessionPullRequest> = {}): SessionPullRequest => ({
   number: 391,
   title: "Make ingest idempotent",
+  baseBranch: "master",
+  headBranch: "feat/idempotent-ingest",
   messageId: null,
   recordedAt: "2026-03-01T11:05:00.000Z",
   repo: REPO,

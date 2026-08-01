@@ -231,7 +231,11 @@ export const pullRequests = pgTable(
       .notNull()
       .references(() => repos.id, { onDelete: "cascade" }),
     number: integer("number").notNull(),
+    // All three exist only in the `gh pr create` command, never in its output, so they are
+    // absent for any PR captured before the command was read. Never overwritten with null.
     title: text("title"),
+    baseBranch: text("baseBranch"),
+    headBranch: text("headBranch"),
     createdAt: createdAtCamel,
     updatedAt: updatedAtCamel,
   },

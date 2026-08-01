@@ -98,6 +98,8 @@ export type SessionCommit = {
 export type SessionPullRequest = {
   readonly number: number
   readonly title: string | null
+  readonly baseBranch: string | null
+  readonly headBranch: string | null
   readonly messageId: string | null
   readonly recordedAt: string
   readonly repo: SessionRepo

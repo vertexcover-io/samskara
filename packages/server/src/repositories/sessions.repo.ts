@@ -298,6 +298,8 @@ export type SessionCommitRow = {
 export type SessionPullRequestRow = {
   readonly number: number
   readonly title: string | null
+  readonly baseBranch: string | null
+  readonly headBranch: string | null
   readonly messageId: string | null
   readonly recordedAt: string
   readonly repo: SessionRepo
@@ -442,6 +444,8 @@ export const getDetail = async (
         .select({
           number: pullRequests.number,
           title: pullRequests.title,
+          baseBranch: pullRequests.baseBranch,
+          headBranch: pullRequests.headBranch,
           messageId: sessionPullRequests.messageId,
           recordedAt: sql<string>`${sessionPullRequests.createdAt}`,
           repoHost: repos.host,

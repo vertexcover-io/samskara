@@ -170,6 +170,11 @@ const PullRequestRow = ({
         <span className="text-[0.625rem] font-semibold uppercase tracking-[0.1em] text-faded">
           Opened here
         </span>
+        {pr.headBranch === null && pr.baseBranch === null ? null : (
+          <span className="rounded-pill border border-rule px-2 py-0.5 font-mono text-[0.6875rem] text-ink-soft">
+            {pr.headBranch ?? "?"} → {pr.baseBranch ?? "?"}
+          </span>
+        )}
         <span className="ml-auto flex items-center gap-2">
           {messageId === null ? null : <JumpToMessage onJump={() => onJump(messageId)} />}
           <Stamp iso={pr.recordedAt} />

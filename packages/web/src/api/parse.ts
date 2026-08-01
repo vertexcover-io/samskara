@@ -301,6 +301,8 @@ const parsePullRequest = (value: unknown): SessionPullRequest | null => {
   return {
     number,
     title: nullableStr(fields.title) ?? null,
+    baseBranch: nullableStr(fields.baseBranch) ?? null,
+    headBranch: nullableStr(fields.headBranch) ?? null,
     messageId: nullableStr(fields.messageId) ?? null,
     recordedAt,
     repo,
