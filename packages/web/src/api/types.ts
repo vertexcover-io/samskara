@@ -4,7 +4,6 @@ export type ProjectSummary = {
   readonly slug: string
   readonly sessionCount: number
   readonly lastActiveAt: string | null
-  readonly lastSessionTitle: string | null
 }
 
 export type SessionSummary = {

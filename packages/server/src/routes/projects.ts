@@ -15,7 +15,6 @@ const serialize = (row: ProjectSummaryRow) => ({
   slug: row.slug,
   sessionCount: row.sessionCount,
   lastActiveAt: row.lastActiveAt === null ? null : new Date(row.lastActiveAt).toISOString(),
-  lastSessionTitle: row.lastSessionTitle,
 })
 
 export const projectsRoutes = ({ db, env }: Deps): Hono<{ Variables: AuthVariables }> => {

@@ -100,7 +100,6 @@ export type ProjectSummaryRow = {
   readonly slug: string
   readonly sessionCount: number
   readonly lastActiveAt: string | null
-  readonly lastSessionTitle: string | null
 }
 
 const ownSessions = sql`"sessions" where "sessions"."projectId" = "projects"."id"`
@@ -108,11 +107,6 @@ const ownSessions = sql`"sessions" where "sessions"."projectId" = "projects"."id
 const sessionCount = sql<number>`(select count(*)::int from ${ownSessions})`
 
 const lastActiveAt = sql<string | null>`(select max("sessions"."updatedAt") from ${ownSessions})`
-
-const lastSessionTitle = sql<string | null>`(
-  select "sessions"."title" from ${ownSessions}
-  order by "sessions"."updatedAt" desc limit 1
-)`
 
 export const listAccessibleSummaries = (
   db: Querier,
@@ -125,7 +119,6 @@ export const listAccessibleSummaries = (
       slug: projects.slug,
       sessionCount,
       lastActiveAt,
-      lastSessionTitle,
     })
     .from(projects)
     .where(visibleToUser(db, userId))

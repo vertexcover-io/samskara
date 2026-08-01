@@ -707,7 +707,8 @@ export const ArtifactsView = ({
       <aside className="border-b border-rule bg-panel min-[720px]:border-b-0 min-[720px]:border-r">
         <div className="border-b border-rule px-3 py-3">
           <h3 className="text-[0.8125rem] font-semibold">Filed exhibits</h3>
-          <div className="mt-2 flex flex-wrap gap-1" role="group" aria-label="Filter by type">
+          <fieldset className="mt-2 flex flex-wrap gap-1">
+            <legend className="sr-only">Filter by type</legend>
             {(["all", "code", "docs", "media"] as const).map((option) => (
               <button
                 key={option}
@@ -724,7 +725,7 @@ export const ArtifactsView = ({
                 {option} {counts[option]}
               </button>
             ))}
-          </div>
+          </fieldset>
           {exhibits.some((exhibit) => exhibit.downloadUrl !== null) ? (
             <button
               type="button"

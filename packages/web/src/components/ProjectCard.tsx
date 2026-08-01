@@ -21,7 +21,7 @@ type Props = {
 }
 
 export const ProjectCard = ({ project, onOpen }: Props) => {
-  const { name, slug, sessionCount, lastActiveAt, lastSessionTitle } = project
+  const { name, slug, sessionCount, lastActiveAt } = project
   const dormant = sessionCount === 0
 
   return (
@@ -50,13 +50,7 @@ export const ProjectCard = ({ project, onOpen }: Props) => {
         <output className="block border-t border-rule-soft pt-2 text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-warn">
           No sessions captured
         </output>
-      ) : (
-        <p className="truncate border-t border-rule-soft pt-2 text-ink-soft">
-          {lastSessionTitle ?? (
-            <span className="text-faded italic underline decoration-dotted">untitled session</span>
-          )}
-        </p>
-      )}
+      ) : null}
     </button>
   )
 }

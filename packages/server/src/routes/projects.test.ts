@@ -36,7 +36,6 @@ type ProjectSummary = {
   readonly slug: string
   readonly sessionCount: number
   readonly lastActiveAt: string | null
-  readonly lastSessionTitle: string | null
 }
 
 const seedUser = (db: Db, githubId: number, login: string): Promise<string> =>
@@ -153,7 +152,6 @@ describe.skipIf(!dockerAvailable())("GET /api/projects", () => {
       slug: "samskara",
       sessionCount: 2,
       lastActiveAt: new Date("2026-02-01T00:00:00Z").toISOString(),
-      lastSessionTitle: "Newer session",
     })
   })
 
@@ -172,7 +170,6 @@ describe.skipIf(!dockerAvailable())("GET /api/projects", () => {
       slug: "empty",
       sessionCount: 0,
       lastActiveAt: null,
-      lastSessionTitle: null,
     })
   })
 

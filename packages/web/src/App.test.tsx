@@ -19,7 +19,6 @@ const samskara: ProjectSummary = {
   slug: "samskara",
   sessionCount: 3,
   lastActiveAt: "2026-02-01T09:30:00.000Z",
-  lastSessionTitle: "Port the session detail surface",
 }
 
 const jsonResponse = (status: number, body: unknown): Response =>

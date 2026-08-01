@@ -53,10 +53,9 @@ const parseProjectSummary = (value: unknown): ProjectSummary | null => {
   if (id === null || name === null || slug === null || sessionCount === null) return null
 
   const lastActiveAt = nullableStr(fields.lastActiveAt)
-  const lastSessionTitle = nullableStr(fields.lastSessionTitle)
-  if (lastActiveAt === undefined || lastSessionTitle === undefined) return null
+  if (lastActiveAt === undefined) return null
 
-  return { id, name, slug, sessionCount, lastActiveAt, lastSessionTitle }
+  return { id, name, slug, sessionCount, lastActiveAt }
 }
 
 export const parseProjectList = (body: unknown): ReadonlyArray<ProjectSummary> | null => {
