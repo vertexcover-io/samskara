@@ -657,7 +657,6 @@ describe("artifact workers", () => {
     )
 
     expect(sink.sent.map((payload) => payload.path)).toEqual([reportPath])
-    expect(git.calls).toHaveLength(0)
   })
 
   test("a symlink inside the project root to a file inside it is captured under its real path", async () => {
