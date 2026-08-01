@@ -174,7 +174,8 @@ const Shell = ({ children, anchor, linked }: ShellProps & { children: ReactNode 
   <article
     id={anchor}
     aria-current={linked ? "location" : undefined}
-    className={`group relative scroll-mt-4 py-3 ${
+    // Scroll margin clears the pinned bars, so a permalinked message lands below them, not behind.
+    className={`group relative scroll-mt-[calc(var(--sticky-head,0px)_+_1rem)] py-3 ${
       linked ? "-mx-3 rounded-xs bg-stamp/5 px-3 shadow-[inset_3px_0_0_var(--color-stamp)]" : ""
     }`}
   >

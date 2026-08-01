@@ -346,8 +346,10 @@ test("S37: the masthead reports all six session facts from the payload", async (
 })
 
 const metaLineOf = async (): Promise<string> => {
-  const heading = await screen.findByRole("heading", { name: "Make ingest idempotent" })
-  const line = heading.parentElement?.querySelector("p")
+  await screen.findByRole("heading", { name: "Make ingest idempotent" })
+  // The title is pinned in its own bar now, so the meta line is found from the facts it sits above.
+  const masthead = screen.getByRole("group", { name: /session facts/i }).parentElement
+  const line = masthead?.querySelector("p")
   return (line?.textContent ?? "").replace(/\s+/g, " ").trim()
 }
 
