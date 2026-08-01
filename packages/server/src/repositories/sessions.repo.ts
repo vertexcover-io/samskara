@@ -27,14 +27,15 @@ export type UpsertSessionInput = {
   readonly fields: SessionFields
 }
 
-/**
- * Last-write-wins unless the incoming value is null, in which case the stored one stands --
- * note `excluded` comes first. That is what a session's launch context needs: only the first
- * flush carries it, and every later flush must leave it alone.
- */
-const keepExisting = (column: PgColumn) =>
+/** Incoming non-null wins (`excluded` first): capture rarely supplies a title, the latest is best. */
+const enrich = (column: PgColumn) =>
   sql`coalesce(${sql.raw(`excluded."${column.name}"`)}, ${column})`
 
+/**
+ * The launch context (`cwd`, `startCommit`) is written only on row creation and never on
+ * conflict: a replayed transcript reads today's HEAD, not the sha the session started on, so a
+ * re-stamp is always wrong. A session created without one keeps null forever.
+ */
 export const upsert = async (db: Querier, input: UpsertSessionInput): Promise<void> => {
   const { id, source, userId, projectId, fields } = input
   await db
@@ -51,9 +52,7 @@ export const upsert = async (db: Querier, input: UpsertSessionInput): Promise<vo
     .onConflictDoUpdate({
       target: sessions.id,
       set: {
-        title: keepExisting(sessions.title),
-        cwd: keepExisting(sessions.cwd),
-        startCommit: keepExisting(sessions.startCommit),
+        title: enrich(sessions.title),
         updatedAt: sql`now()`,
       },
     })
