@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, realpath, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import type { ArtifactUploadPayload } from "@samskara/core"
@@ -90,7 +90,9 @@ describe("artifact workers", () => {
   })
 
   beforeEach(async () => {
-    dir = await mkdtemp(join(scratchRoot(), "samskara-worker-"))
+    // Realpath'd so it agrees with the worker's own realpath'd reference candidates -- on macOS
+    // `/var` is itself a symlink to `/private/var`, and a raw mkdtemp path would never match.
+    dir = await realpath(await mkdtemp(join(scratchRoot(), "samskara-worker-")))
     queuePath = join(dir, "artifact-queue.json")
     statePath = join(dir, "artifacts.json")
     filePath = join(dir, "notes.md")
@@ -635,6 +637,72 @@ describe("artifact workers", () => {
     const passed = (git.calls[0]?.args ?? []).filter((arg) => !arg.startsWith("-") && arg !== "--")
     expect(passed.some((arg) => arg.startsWith(".."))).toBe(false)
     expect(sink.sent.map((payload) => payload.path)).toContain(join(dir, "pages", "inside.mp4"))
+  })
+
+  test("a symlink inside the project root pointing outside it is never captured", async () => {
+    const reportPath = join(dir, "notes.md")
+    await mkdir(join(dir, "assets"), { recursive: true })
+    const secretPath = join(dirname(dir), "secret.txt")
+    await writeFile(secretPath, "outside bytes", "utf8")
+    await symlink(secretPath, join(dir, "assets", "logo.png"))
+    await writeFile(reportPath, '<img src="assets/logo.png">', "utf8")
+
+    await enqueue(queuePath, [entry({ path: reportPath, relativePath: "notes.md" })])
+    const sink = scriptedSink([200])
+    const git = gitFake([])
+
+    await runArtifactWorkers(
+      { queuePath, statePath, workers: 1, drainOnce: true },
+      deps(sink, 1_800_000_000_000, git.runGit),
+    )
+
+    expect(sink.sent.map((payload) => payload.path)).toEqual([reportPath])
+    expect(git.calls).toHaveLength(0)
+  })
+
+  test("a symlink inside the project root to a file inside it is captured under its real path", async () => {
+    const reportPath = join(dir, "notes.md")
+    await mkdir(join(dir, "assets"), { recursive: true })
+    await mkdir(join(dir, "clips"), { recursive: true })
+    await writeFile(join(dir, "clips", "run.mp4"), "video bytes", "utf8")
+    await symlink(join(dir, "clips", "run.mp4"), join(dir, "assets", "link.mp4"))
+    await writeFile(reportPath, '<video src="assets/link.mp4"></video>', "utf8")
+
+    await enqueue(queuePath, [entry({ path: reportPath, relativePath: "notes.md" })])
+    const sink = scriptedSink([200])
+    const git = gitFake([])
+
+    await runArtifactWorkers(
+      { queuePath, statePath, workers: 1, drainOnce: true },
+      deps(sink, 1_800_000_000_000, git.runGit),
+    )
+
+    const sent = sink.sent.map((payload) => payload.path)
+    expect(sent).toContain(join(dir, "clips", "run.mp4"))
+    expect(sent).not.toContain(join(dir, "assets", "link.mp4"))
+  })
+
+  test("a scan-body exception is caught and never turns a succeeded upload into a retry", async () => {
+    const reportPath = join(dir, "notes.md")
+    await writeFile(join(dir, "a.png"), "a bytes", "utf8")
+    await writeFile(reportPath, '<img src="a.png">', "utf8")
+
+    const report = entry({ path: reportPath, relativePath: "notes.md" })
+    await enqueue(queuePath, [report])
+    const sink = scriptedSink([200])
+    const throwingRunGit: GitRunner = async () => {
+      throw new Error("boom")
+    }
+
+    await runArtifactWorkers(
+      { queuePath, statePath, workers: 1, drainOnce: true },
+      deps(sink, 1_800_000_000_000, throwingRunGit),
+    )
+
+    expect(sink.sent.map((payload) => payload.path)).toEqual([reportPath])
+    const state = await readArtifactState(statePath)
+    expect(state.artifacts[stateKey(report.sessionId, reportPath)]?.currentHash).toBeDefined()
+    expect((await readQueue(queuePath)).entries).toHaveLength(0)
   })
 
   test("A1: a verification report seeds its own generated media and nothing from the repo", async () => {

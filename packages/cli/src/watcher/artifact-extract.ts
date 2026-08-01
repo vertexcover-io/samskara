@@ -131,8 +131,8 @@ const factsOf = (
   return []
 }
 
-const HTML_ATTR_REFERENCE = /\b(?:src|href|poster)\s*=\s*["']([^"']*)["']/gi
-const MARKDOWN_REFERENCE = /!?\[[^\]]*\]\(\s*([^)\s]+)/g
+const HTML_ATTR_REFERENCE = /(?<![\w:-])(?:src|href|poster)\s*=\s*["']([^"']*)["']/gi
+const MARKDOWN_REFERENCE = /!?\[[^\]]*\]\(\s*((?:[^()\s]|\([^()]*\))+)/g
 const NON_LOCAL_REFERENCE = /^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i
 
 const rawReferencesIn = (content: string): ReadonlyArray<string> =>
