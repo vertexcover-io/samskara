@@ -1,8 +1,12 @@
+import { stat } from "node:fs/promises"
+import { dirname, relative, sep } from "node:path"
 import type { ArtifactUploadPayload } from "@samskara/core"
 import { z } from "zod"
 import { atomicWriteJson, readJson, withFileLock } from "../config/atomic.js"
-import { type ArtifactQueue, type QueueEntry, keyOf, readQueue } from "./artifact-queue.js"
+import { referencedPaths } from "./artifact-extract.js"
+import { type ArtifactQueue, type QueueEntry, enqueue, keyOf, readQueue } from "./artifact-queue.js"
 import { type ArtifactUpload, type ArtifactUploadDeps, prepareUpload } from "./artifact-upload.js"
+import { isCapturable } from "./containment.js"
 
 // --- upload state: the worker's own record of what already landed --------------------------
 
@@ -149,6 +153,87 @@ const outcomeFor = (result: ArtifactSinkResult): Outcome => {
   return "drop"
 }
 
+const REFERENCE_SCAN_EXTENSIONS = [".html", ".htm", ".md"]
+
+const isReferenceScannable = (path: string): boolean => {
+  const lower = path.toLowerCase()
+  return REFERENCE_SCAN_EXTENSIONS.some((ext) => lower.endsWith(ext))
+}
+
+/**
+ * `entry.relativePath` is always a suffix of `entry.path` (both required by the queue schema),
+ * so the project root is what remains once that suffix and its separator are trimmed off.
+ */
+const projectRootOf = (entry: QueueEntry): string => {
+  const withoutRelative = entry.path.slice(0, entry.path.length - entry.relativePath.length)
+  return withoutRelative.endsWith(sep) ? withoutRelative.slice(0, -1) : withoutRelative
+}
+
+const isExistingFile = async (path: string): Promise<boolean> =>
+  stat(path)
+    .then((info) => info.isFile())
+    .catch(() => false)
+
+const capturableReferences = async (
+  refs: ReadonlyArray<string>,
+  projectRoot: string,
+): Promise<ReadonlyArray<string>> => {
+  const survivors: string[] = []
+  for (const ref of refs) {
+    if (!(await isExistingFile(ref))) continue
+    if (!isCapturable(ref, projectRoot)) continue
+    survivors.push(ref)
+  }
+  return survivors
+}
+
+const referenceEntry = (
+  ref: string,
+  projectRoot: string,
+  entry: QueueEntry,
+  now: number,
+): QueueEntry => ({
+  sessionId: entry.sessionId,
+  path: ref,
+  relativePath: relative(projectRoot, ref),
+  changeKind: "created",
+  observedAt: new Date(now).toISOString(),
+  attempts: 0,
+})
+
+/**
+ * Runs on the branch where `entry`'s upload just succeeded and its hash is already recorded, so a
+ * document that links back to itself (directly or through another document) short-circuits on the
+ * churn check before it can be scanned again -- see `advanceArtifactState` above this branch.
+ *
+ * A throw here must never turn an already-succeeded upload into a retry, so the whole body is
+ * guarded and logged rather than propagated.
+ */
+const enqueueReferences = async (
+  config: ArtifactWorkerConfig,
+  deps: ArtifactWorkerDeps,
+  entry: QueueEntry,
+  upload: ArtifactUpload,
+): Promise<void> => {
+  try {
+    if (upload.encoding !== "utf8") return
+    if (!isReferenceScannable(entry.path)) return
+
+    const refs = referencedPaths(upload.currentContent, dirname(entry.path))
+    if (refs.length === 0) return
+
+    const projectRoot = projectRootOf(entry)
+    const survivors = await capturableReferences(refs, projectRoot)
+    if (survivors.length === 0) return
+
+    const now = deps.clock.now()
+    const entries = survivors.map((ref) => referenceEntry(ref, projectRoot, entry, now))
+    await enqueue(config.queuePath, entries, deps.log)
+  } catch (error) {
+    deps.log.warn({ path: entry.path, err: error }, "artifact reference scan failed")
+  }
+}
+
 /**
  * Processes at most one entry. Returns false when nothing was due, so the caller can idle rather
  * than spin.
@@ -191,6 +276,7 @@ const processOne = async (
         currentHash: upload.currentHash,
         baseCaptured: upload.baseContent !== undefined,
       })
+      await enqueueReferences(config, deps, entry, upload)
       return true
     }
 

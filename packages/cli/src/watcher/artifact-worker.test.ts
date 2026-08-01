@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto"
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import type { ArtifactUploadPayload } from "@samskara/core"
 import { beforeEach, describe, expect, test, vi } from "vitest"
 import { type QueueEntry, enqueue, readQueue } from "./artifact-queue.js"
@@ -16,6 +16,14 @@ import {
 import { spyLogger } from "./test-logger.js"
 
 const sha256 = (content: string): string => createHash("sha256").update(content).digest("hex")
+
+/**
+ * `isCapturable` always excludes `/tmp` and `/private/tmp` outright (containment.ts), and under
+ * some runners `os.tmpdir()` resolves to exactly that root when `$TMPDIR` isn't inherited. `/var/tmp`
+ * is the same kind of OS-provided scratch space without colliding with that exclusion.
+ */
+const scratchRoot = (): string =>
+  ["/tmp", "/private/tmp"].includes(tmpdir()) ? "/var/tmp" : tmpdir()
 
 type Recorder = ArtifactSink & { readonly sent: ReadonlyArray<ArtifactUploadPayload> }
 
@@ -59,7 +67,7 @@ describe("artifact workers", () => {
   })
 
   beforeEach(async () => {
-    dir = await mkdtemp(join(tmpdir(), "samskara-worker-"))
+    dir = await mkdtemp(join(scratchRoot(), "samskara-worker-"))
     queuePath = join(dir, "artifact-queue.json")
     statePath = join(dir, "artifacts.json")
     filePath = join(dir, "notes.md")
@@ -299,6 +307,184 @@ describe("artifact workers", () => {
     expect(
       (await readArtifactState(statePath)).artifacts[stateKey(target.sessionId, target.path)],
     ).toBeUndefined()
+  })
+
+  test("S1: an HTML artifact's referenced video is queued under the referencing session", async () => {
+    const reportPath = join(dir, "docs", "report.html")
+    await mkdir(dirname(reportPath), { recursive: true })
+    await writeFile(reportPath, '<video src="../clips/run.mp4"></video>', "utf8")
+    await mkdir(join(dir, "clips"), { recursive: true })
+    await writeFile(join(dir, "clips", "run.mp4"), "video bytes", "utf8")
+
+    const report = entry({
+      path: reportPath,
+      relativePath: "docs/report.html",
+      sessionId: "report-session",
+    })
+    await enqueue(queuePath, [report])
+
+    const sink = scriptedSink([200])
+    await runArtifactWorkers({ queuePath, statePath, workers: 1, drainOnce: true }, deps(sink))
+
+    const video = sink.sent.find((payload) => payload.path === join(dir, "clips", "run.mp4"))
+    expect(video?.sessionId).toBe(report.sessionId)
+    expect(video?.changeKind).toBe("created")
+    expect(video?.relativePath).toBe("clips/run.mp4")
+    expect((await readQueue(queuePath)).entries).toHaveLength(0)
+  })
+
+  test("S7: references that cannot be captured are dropped, per reference rather than per document", async () => {
+    const reportPath = join(dir, "pages", "report.md")
+    await mkdir(dirname(reportPath), { recursive: true })
+    await mkdir(join(dir, "pages", "adir"), { recursive: true })
+    await mkdir(join(dir, "node_modules", "pkg"), { recursive: true })
+    await writeFile(join(dir, "pages", "ok.png"), "ok bytes", "utf8")
+    await writeFile(join(dir, ".env"), "SECRET=1", "utf8")
+    await writeFile(join(dir, "node_modules", "pkg", "a.js"), "module.exports = {}", "utf8")
+    await writeFile(join(dirname(dir), "outside.png"), "outside bytes", "utf8")
+    await writeFile(
+      reportPath,
+      [
+        '<img src="missing.png">',
+        '<img src="adir">',
+        '<img src="../../outside.png">',
+        '<img src="../.env">',
+        '<img src="../node_modules/pkg/a.js">',
+        '<img src="ok.png">',
+      ].join("\n"),
+      "utf8",
+    )
+
+    const report = entry({ path: reportPath, relativePath: "pages/report.md" })
+    await enqueue(queuePath, [report])
+
+    const sink = scriptedSink([200])
+    await runArtifactWorkers({ queuePath, statePath, workers: 1, drainOnce: true }, deps(sink))
+
+    expect(sink.sent.map((payload) => payload.path).sort()).toEqual(
+      [reportPath, join(dir, "pages", "ok.png")].sort(),
+    )
+  })
+
+  test("S9: only text .html/.htm/.md artifacts are scanned for references", async () => {
+    const targets = {
+      md: join(dir, "target-md.dat"),
+      html: join(dir, "target-html.dat"),
+      txt: join(dir, "target-txt.dat"),
+      ts: join(dir, "target-ts.dat"),
+      png: join(dir, "target-png.dat"),
+    }
+    await Promise.all(Object.values(targets).map((path) => writeFile(path, "target bytes", "utf8")))
+
+    const docMd = join(dir, "doc.md")
+    const docHtml = join(dir, "doc.html")
+    const docTxt = join(dir, "doc.txt")
+    const docTs = join(dir, "doc.ts")
+    const docPng = join(dir, "doc.png")
+    await writeFile(docMd, 'href="target-md.dat"', "utf8")
+    await writeFile(docHtml, 'href="target-html.dat"', "utf8")
+    await writeFile(docTxt, 'href="target-txt.dat"', "utf8")
+    await writeFile(docTs, 'href="target-ts.dat"', "utf8")
+    await writeFile(docPng, Buffer.concat([Buffer.from('href="target-png.dat"'), Buffer.from([0])]))
+
+    await enqueue(queuePath, [
+      entry({ path: docMd, relativePath: "doc.md" }),
+      entry({ path: docHtml, relativePath: "doc.html", sessionId: "sess-2" }),
+      entry({ path: docTxt, relativePath: "doc.txt", sessionId: "sess-3" }),
+      entry({ path: docTs, relativePath: "doc.ts", sessionId: "sess-4" }),
+      entry({ path: docPng, relativePath: "doc.png", sessionId: "sess-5" }),
+    ])
+
+    const sink = scriptedSink([200])
+    await runArtifactWorkers({ queuePath, statePath, workers: 1, drainOnce: true }, deps(sink))
+
+    const sentPaths = new Set(sink.sent.map((payload) => payload.path))
+    expect(sentPaths.has(targets.md)).toBe(true)
+    expect(sentPaths.has(targets.html)).toBe(true)
+    expect(sentPaths.has(targets.txt)).toBe(false)
+    expect(sentPaths.has(targets.ts)).toBe(false)
+    expect(sentPaths.has(targets.png)).toBe(false)
+  })
+
+  test("S10: a failed upload seeds nothing", async () => {
+    const reportPath = join(dir, "report.md")
+    await writeFile(reportPath, 'href="target.dat"', "utf8")
+    await writeFile(join(dir, "target.dat"), "target bytes", "utf8")
+    const report = entry({ path: reportPath, relativePath: "report.md" })
+    await enqueue(queuePath, [report])
+
+    const retrySink = scriptedSink([500])
+    await runArtifactWorkers({ queuePath, statePath, workers: 1, drainOnce: true }, deps(retrySink))
+
+    expect(retrySink.sent).toHaveLength(1)
+    const afterRetry = await readQueue(queuePath)
+    expect(afterRetry.entries).toHaveLength(1)
+    expect(afterRetry.entries[0]?.path).toBe(reportPath)
+
+    const later = Date.parse(afterRetry.entries[0]?.nextAttemptAt ?? "") + 1
+    const dropSink = scriptedSink([404])
+    await runArtifactWorkers(
+      { queuePath, statePath, workers: 1, drainOnce: true },
+      deps(dropSink, later),
+    )
+
+    expect((await readQueue(queuePath)).entries).toHaveLength(0)
+    expect(dropSink.sent.some((payload) => payload.path === join(dir, "target.dat"))).toBe(false)
+  })
+
+  test("S11: mutually referencing documents settle without repeated uploads", async () => {
+    const aPath = join(dir, "a.md")
+    const bPath = join(dir, "b.md")
+    await writeFile(aPath, 'href="b.md"', "utf8")
+    await writeFile(bPath, 'href="a.md"', "utf8")
+
+    const sessionId = "mutual-session"
+    await enqueue(queuePath, [entry({ path: aPath, relativePath: "a.md", sessionId })])
+
+    const sink = scriptedSink([200])
+    await runArtifactWorkers({ queuePath, statePath, workers: 1, drainOnce: true }, deps(sink))
+
+    expect((await readQueue(queuePath)).entries).toHaveLength(0)
+    expect(sink.sent.filter((payload) => payload.path === aPath)).toHaveLength(1)
+    expect(sink.sent.filter((payload) => payload.path === bPath)).toHaveLength(1)
+
+    const state = await readArtifactState(statePath)
+    expect(state.artifacts[stateKey(sessionId, aPath)]).toBeDefined()
+    expect(state.artifacts[stateKey(sessionId, bPath)]).toBeDefined()
+  })
+
+  test("S12: an already-captured document is not rescanned", async () => {
+    const reportPath = join(dir, "report.md")
+    const content = 'href="video.mp4"'
+    await writeFile(reportPath, content, "utf8")
+    await writeFile(join(dir, "video.mp4"), "video bytes", "utf8")
+
+    const report = entry({ path: reportPath, relativePath: "report.md" })
+    await advanceArtifactState(statePath, stateKey(report.sessionId, reportPath), {
+      currentHash: sha256(content),
+      baseCaptured: false,
+    })
+    await enqueue(queuePath, [report])
+
+    const sink = scriptedSink([200])
+    await runArtifactWorkers({ queuePath, statePath, workers: 1, drainOnce: true }, deps(sink))
+
+    expect(sink.sent).toHaveLength(0)
+    expect((await readQueue(queuePath)).entries).toHaveLength(0)
+  })
+
+  test("S13 (regression): an artifact with no references uploads exactly as before", async () => {
+    const target = entry()
+    await enqueue(queuePath, [target])
+
+    const sink = scriptedSink([200])
+    await runArtifactWorkers({ queuePath, statePath, workers: 1, drainOnce: true }, deps(sink))
+
+    expect(sink.sent).toHaveLength(1)
+    expect((await readQueue(queuePath)).entries).toHaveLength(0)
+    expect(
+      (await readArtifactState(statePath)).artifacts[stateKey(target.sessionId, target.path)],
+    ).toEqual({ currentHash: sha256("current bytes\n"), baseCaptured: false })
   })
 })
 
