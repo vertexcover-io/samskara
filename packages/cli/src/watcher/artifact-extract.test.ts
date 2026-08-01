@@ -251,4 +251,28 @@ describe("referencedPaths", () => {
       join(FROM_DIR, "l.pdf"),
     ])
   })
+
+  test("a markdown destination with balanced parentheses is not truncated", () => {
+    const content = "[shot](image(1).png)"
+
+    expect(referencedPaths(content, FROM_DIR)).toEqual([join(FROM_DIR, "image(1).png")])
+  })
+
+  test("attributes that merely end in src/href/poster are not extracted", () => {
+    const content = [
+      '<img data-src="thumb.jpg">',
+      '<a data-href="foo.html">',
+      '<svg><use xlink:href="icons.svg#a"></svg>',
+      '<video data-poster="p.jpg">',
+    ].join("\n")
+
+    expect(referencedPaths(content, FROM_DIR)).toEqual([])
+  })
+
+  test("a malformed percent-encoded reference falls back to the raw string rather than throwing", () => {
+    const content = '<img src="shots/bad%zzname.png">'
+
+    expect(() => referencedPaths(content, FROM_DIR)).not.toThrow()
+    expect(referencedPaths(content, FROM_DIR)).toEqual([join(FROM_DIR, "shots/bad%zzname.png")])
+  })
 })

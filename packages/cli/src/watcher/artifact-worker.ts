@@ -1,4 +1,4 @@
-import { stat } from "node:fs/promises"
+import { realpath, stat } from "node:fs/promises"
 import { dirname, relative, resolve, sep } from "node:path"
 import type { ArtifactUploadPayload } from "@samskara/core"
 import { z } from "zod"
@@ -171,10 +171,19 @@ const projectRootOf = (entry: QueueEntry): string => {
   return withoutRelative.endsWith(sep) ? withoutRelative.slice(0, -1) : withoutRelative
 }
 
-const isExistingFile = async (path: string): Promise<boolean> =>
-  stat(path)
-    .then((info) => info.isFile())
-    .catch(() => false)
+/**
+ * Resolves symlinks before containment is judged, mirroring `driver.ts`'s enqueue path:
+ * `isCapturable` is a lexical check, so a symlink inside the project root pointing outside it
+ * would otherwise pass containment on its own path while the read that follows resolves the
+ * link and reads the true, out-of-root target.
+ */
+const realCapturablePath = async (ref: string, projectRoot: string): Promise<string | null> => {
+  const resolved = await realpath(ref).catch(() => ref)
+  const info = await stat(resolved).catch(() => null)
+  if (!info?.isFile()) return null
+  if (!isCapturable(resolved, projectRoot)) return null
+  return resolved
+}
 
 const capturableReferences = async (
   refs: ReadonlyArray<string>,
@@ -182,9 +191,8 @@ const capturableReferences = async (
 ): Promise<ReadonlyArray<string>> => {
   const survivors: string[] = []
   for (const ref of refs) {
-    if (!(await isExistingFile(ref))) continue
-    if (!isCapturable(ref, projectRoot)) continue
-    survivors.push(ref)
+    const resolved = await realCapturablePath(ref, projectRoot)
+    if (resolved !== null) survivors.push(resolved)
   }
   return survivors
 }
@@ -251,7 +259,11 @@ const enqueueReferences = async (
     const refs = referencedPaths(upload.currentContent, dirname(entry.path))
     if (refs.length === 0) return
 
-    const projectRoot = projectRootOf(entry)
+    // Realpath'd so it agrees with `capturableReferences`' resolved candidates -- on macOS
+    // `/var` is itself a symlink to `/private/var`, so an un-resolved root would reject every
+    // in-root reference once the candidate side is resolved.
+    const rawRoot = projectRootOf(entry)
+    const projectRoot = await realpath(rawRoot).catch(() => rawRoot)
     const survivors = await capturableReferences(refs, projectRoot)
     if (survivors.length === 0) return
 
