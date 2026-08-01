@@ -17,8 +17,4 @@ test-results/
 playwright-report/
 blob-report/
 .playwright/
-.harness/features/*/verification/
-.harness/*
-!.harness/knowledge/
-!.harness/README.md
 .humanlayer
