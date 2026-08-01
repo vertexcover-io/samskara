@@ -442,6 +442,43 @@ describe("reasoning blocks", () => {
   })
 })
 
+// A slash command is the one thing in the transcript the user definitely typed. It arrives as a
+// localCommand, which used to shape as an event and be dropped along with the hooks and snapshots.
+describe("slash commands", () => {
+  const commandView = (details: unknown) =>
+    conversationView(
+      toDetail(
+        buildPayload({ messages: [message({ lineNumber: 1, msgType: "localCommand", details })] }),
+      ),
+      true,
+    ).records
+
+  test("an invocation survives the shaping that drops events, carrying what was typed with it", () => {
+    const [record] = commandView({
+      command: "/orchestrate",
+      commandType: "slash",
+      args: "Capture files the agent wrote",
+    })
+
+    expect(record?.kind).toBe("command")
+    expect(record).toMatchObject({
+      command: "/orchestrate",
+      args: "Capture files the agent wrote",
+    })
+  })
+
+  test("a bare command still marks where it ran, with nothing claimed for its arguments", () => {
+    const [record] = commandView({ command: "/clear", commandType: "slash" })
+
+    expect(record?.kind).toBe("command")
+    expect(record).toMatchObject({ command: "/clear", args: "" })
+  })
+
+  test("a local command naming no command of its own stays an event, so stdout rows keep out", () => {
+    expect(commandView({ stdout: "Set model to Opus", commandType: "unknown" })).toEqual([])
+  })
+})
+
 // A branch can spawn its own branches. Its marker belongs on the track that launched it -- the
 // parent's, not the main spine's -- or the agent is listed in the rail with nothing to open.
 test("S76: an agent spawned by another agent gets its marker inside the parent's branch, so a nested branch is reachable rather than orphaned", () => {

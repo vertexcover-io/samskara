@@ -42,6 +42,12 @@ export type TimelineRecord = RecordBase &
     | { readonly kind: "agentSpawn"; readonly agent: RawSubagent }
     | { readonly kind: "agentReturn"; readonly agent: RawSubagent }
     | { readonly kind: "artifact"; readonly artifact: Artifact }
+    | {
+        readonly kind: "command"
+        readonly command: string
+        readonly args: string
+        readonly actor: string
+      }
     | { readonly kind: "injection"; readonly label: string; readonly body: string }
     | { readonly kind: "event"; readonly label: string; readonly body: string }
   )
@@ -258,6 +264,22 @@ const toRecord = (
       kind: "prompt",
       parts: promptParts(raw),
       actor: actorFor(raw, agents, userLogin),
+    }
+  }
+
+  // Only an invocation earns a record. The rest of what capture files as a localCommand is a
+  // command's own output, which names nothing and belongs with the events.
+  if (raw.msgType === "localCommand") {
+    const details = fields(raw.details) ?? {}
+    const command = str(details.command)
+    if (command !== null) {
+      return {
+        ...base(raw),
+        kind: "command",
+        command,
+        args: str(details.args) ?? "",
+        actor: userLogin,
+      }
     }
   }
 

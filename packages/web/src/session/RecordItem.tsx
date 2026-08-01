@@ -225,6 +225,24 @@ export const RecordItem = ({ record, showTools = true, annex, link, linked = fal
     )
   }
 
+  // Shown in full, never folded: the arguments are the request the session was opened with, and
+  // hiding them is what made a transcript look like it began at the reply.
+  if (record.kind === "command") {
+    return (
+      <Shell {...shell}>
+        <Head actor={record.actor} kind="Command" timestamp={record.timestamp} link={link} />
+        <div className="mt-2 w-fit max-w-[104ch] rounded-xs border border-rule border-l-2 border-l-ink bg-panel-2 px-3 py-3">
+          <p className="font-mono text-[0.78rem] font-semibold">{record.command}</p>
+          {record.args === "" ? null : (
+            <div className="mt-2 border-t border-rule pt-2">
+              <Markdown source={record.args} />
+            </div>
+          )}
+        </div>
+      </Shell>
+    )
+  }
+
   // What put it there stands in for who said it: these arrive under the user's role but nobody
   // typed them, and they run to tens of thousands of characters. Folded away by default.
   if (record.kind === "injection") {

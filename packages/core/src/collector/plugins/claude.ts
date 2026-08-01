@@ -393,8 +393,11 @@ const handleLocalCommandMessage = (
     (typeof data.command === "string" ? data.command : undefined)
   const exitCode = integerValue(data.exitCode)
   const status = exitCode === undefined ? "unknown" : exitCode === 0 ? "success" : "failure"
+  // A bare invocation still writes the tag, so an empty one means no arguments were given.
+  const args = tagValue(content, "command-args")?.trim()
   return detailedMessage(base, "localCommand", {
     command,
+    args: args === "" ? undefined : args,
     commandType: command?.startsWith("/") ? "slash" : "unknown",
     status,
     stdout:

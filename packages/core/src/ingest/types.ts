@@ -204,6 +204,9 @@ const compactionDetailsSchema = z
 const localCommandDetailsSchema = z
   .object({
     command: z.string().optional(),
+    // Everything typed after the command name -- for a slash command that opens a session, this
+    // is the entire request. Absent when the command was invoked bare.
+    args: nonemptyString.optional(),
     commandType: z.enum(["slash", "shell", "unknown"]).optional(),
     status: z.enum(["success", "failure", "cancelled", "unknown"]).optional(),
     stdout: z.string().optional(),

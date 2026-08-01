@@ -414,6 +414,43 @@ describe("normalizeClaude", () => {
     })
   })
 
+  // The invocation is one line holding the command and everything typed after it. Keeping only
+  // the name discards the whole request, and the session reads as though it began at the reply.
+  test("a slash command keeps the arguments typed with it, not just its name", () => {
+    const [message] = normalizeClaude({
+      type: "user",
+      message: {
+        role: "user",
+        content:
+          "<command-name>/orchestrate</command-name><command-args>Capture files the agent wrote</command-args>",
+      },
+    })
+
+    expect(message).toMatchObject({
+      msgType: "localCommand",
+      details: {
+        command: "/orchestrate",
+        commandType: "slash",
+        args: "Capture files the agent wrote",
+      },
+    })
+  })
+
+  test("a command invoked bare carries no arguments rather than an empty string", () => {
+    const [message] = normalizeClaude({
+      type: "user",
+      message: {
+        role: "user",
+        content: "<command-name>/clear</command-name><command-args></command-args>",
+      },
+    })
+
+    expect(message).toMatchObject({ msgType: "localCommand", details: { command: "/clear" } })
+    expect(
+      message.msgType === "localCommand" ? message.details.args : "unreachable",
+    ).toBeUndefined()
+  })
+
   test("S11: tool and progress status never depends on guesswork", () => {
     expect(
       normalizeClaude({

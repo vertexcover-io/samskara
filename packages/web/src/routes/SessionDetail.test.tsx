@@ -235,6 +235,38 @@ test("a screenshot pasted with a prompt renders as an image inside that prompt, 
   expect(panel.textContent).not.toContain(png)
 })
 
+test("the slash command that opened a session is on Conversation, spec and all", async () => {
+  renderDetail(
+    buildPayload({
+      messages: [
+        message({
+          lineNumber: 1,
+          msgType: "localCommand",
+          details: {
+            command: "/harness:orchestrate",
+            commandType: "slash",
+            args: "Capture files the agent caused to be written",
+          },
+        }),
+        message({
+          lineNumber: 2,
+          msgType: "message",
+          role: "assistant",
+          content: text("I'll start the pipeline"),
+        }),
+      ],
+    }),
+  )
+
+  await waitFor(() => expect(tabs()).toHaveLength(3))
+
+  const panel = panelOf()
+  expect(within(panel).getByText("/harness:orchestrate")).toBeInTheDocument()
+  expect(
+    within(panel).getByText(/Capture files the agent caused to be written/),
+  ).toBeInTheDocument()
+})
+
 test("a block whose thinking was encrypted shows what it did, not a claim that its text went missing", async () => {
   renderDetail(
     buildPayload({
