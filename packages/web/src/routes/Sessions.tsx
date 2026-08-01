@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react"
-import { useSearchParams } from "react-router-dom"
+import { useNavigate, useSearchParams } from "react-router-dom"
 import { getJson } from "../api/client.js"
 import { parseSessionList } from "../api/parse.js"
 import type { ApiError, SessionSummary } from "../api/types.js"
 import { SessionExpired } from "../auth/SessionExpired.js"
 import { FilterBar } from "../components/FilterBar.js"
 import { SessionRow } from "../components/SessionRow.js"
+import { MESSAGE_PARAM } from "../session/permalink.js"
 import {
   EMPTY_FILTERS,
   type SessionFilters,
@@ -31,15 +32,31 @@ const distinct = (
   return [...values].sort()
 }
 
-const NoResults = ({ onClear }: { onClear: () => void }) => (
+// a ranked result's winning chunk carries an anchor, so opening it lands on that message
+// rather than the top of the session -- the same MESSAGE_PARAM the transcript view already
+// scrolls to.
+const sessionLink = (session: SessionSummary): string =>
+  session.anchorMessageId === null
+    ? `/sessions/${session.id}`
+    : `/sessions/${session.id}?${MESSAGE_PARAM}=${encodeURIComponent(session.anchorMessageId)}`
+
+/**
+ * A search that found nothing and a filter set that matched nothing are different situations, and
+ * the recovery differs too: one wants the words changed, the other the filters widened. Saying
+ * "no sessions match these filters" to someone who just typed a query names the wrong cause.
+ */
+const NoResults = ({ onClear, query }: { onClear: () => void; query: string | null }) => (
   <section className="border border-dashed border-rule bg-panel p-8 text-center">
     <p className="text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-stamp">
       Nothing filed under these terms
     </p>
-    <h2 className="mt-2 text-[0.9375rem] font-semibold">No sessions match these filters</h2>
+    <h2 className="mt-2 text-[0.9375rem] font-semibold">
+      {query === null ? "No sessions match these filters" : `Nothing found for “${query}”`}
+    </h2>
     <p className="mx-auto mt-2 max-w-md text-ink-soft">
-      The filters above are still applied. Widen them, or clear them to see every session you can
-      read.
+      {query === null
+        ? "The filters above are still applied. Widen them, or clear them to see every session you can read."
+        : "Search covers what was said in a session, including tool output. Try fewer or different words — the filters above still apply too."}
     </p>
     <button
       type="button"
@@ -81,10 +98,12 @@ const ErrorState = ({ error }: { error: ApiError }) => (
 
 type ResultProps = {
   readonly state: State
+  readonly query: string | null
   readonly onClear: () => void
+  readonly onOpen: (session: SessionSummary) => void
 }
 
-const Result = ({ state, onClear }: ResultProps) => {
+const Result = ({ state, query, onClear, onOpen }: ResultProps) => {
   if (state.phase === "loading") return <LoadingShell label="Retrieving sessions" />
 
   if (state.phase === "failed") {
@@ -92,13 +111,13 @@ const Result = ({ state, onClear }: ResultProps) => {
     return <ErrorState error={state.error} />
   }
 
-  if (state.sessions.length === 0) return <NoResults onClear={onClear} />
+  if (state.sessions.length === 0) return <NoResults onClear={onClear} query={query} />
 
   return (
     <ul className="grid grid-cols-1 gap-1.5">
       {state.sessions.map((session) => (
         <li key={session.id}>
-          <SessionRow session={session} to={`/sessions/${session.id}`} />
+          <SessionRow session={session} onOpen={onOpen} />
         </li>
       ))}
     </ul>
@@ -109,6 +128,7 @@ export const Sessions = () => {
   const [searchParams, setSearchParams] = useSearchParams()
   const [state, setState] = useState<State>({ phase: "loading" })
   const [vocabulary, setVocabulary] = useState<ReadonlyArray<SessionSummary>>([])
+  const navigate = useNavigate()
 
   const query = serializeFilters(parseFilters(searchParams)).toString()
   const filters = useMemo(() => parseFilters(new URLSearchParams(query)), [query])
@@ -190,7 +210,22 @@ export const Sessions = () => {
       </div>
 
       <div className="mt-4">
-        <Result state={shown} onClear={() => applyFilters(EMPTY_FILTERS)} />
+        {filters.q !== null && shown.phase === "ready" && shown.sessions.length > 0 ? (
+          <p data-testid="result-count" className="mb-2 text-[0.78rem] text-ink-soft">
+            {shown.sessions.length} {shown.sessions.length === 1 ? "session" : "sessions"} matching{" "}
+            <span className="font-semibold text-ink">“{filters.q}”</span>
+            {/* Only claim the ordering when the list actually has it: typing a query switches the
+                sort to relevance, but the reader can then pick another sort and keep the query. */}
+            {filters.sort === "relevance" ? ", best match first" : null}
+          </p>
+        ) : null}
+
+        <Result
+          state={shown}
+          query={filters.q}
+          onClear={() => applyFilters(EMPTY_FILTERS)}
+          onOpen={(session) => navigate(sessionLink(session))}
+        />
       </div>
     </section>
   )

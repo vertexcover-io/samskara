@@ -20,6 +20,7 @@ import type { Env } from "../lib/env.js"
 import { signToken } from "../lib/jwt.js"
 import * as projectsRepo from "../repositories/projects.repo.js"
 import * as reposRepo from "../repositories/repos.repo.js"
+import { writeChunksForSession } from "../repositories/sessionChunks.repo.js"
 
 const dockerAvailable = () => {
   try {
@@ -124,6 +125,33 @@ const seedMessage = async (
     cachedTokens: 0,
     thinkingTokens: 0,
   })
+}
+
+// Two `message`/`user` rows: the first opens a turn, the second closes it, making the first
+// chunkable (D6). Chunked immediately, mirroring what `ingest` does after a real flush.
+const seedSearchableTurn = async (db: Db, sessionId: string, text: string): Promise<void> => {
+  await db.insert(messages).values({
+    sessionId,
+    lineUuid: crypto.randomUUID(),
+    subIndex: 0,
+    msgType: "message",
+    role: "user",
+    lineNumber: 1,
+    content: { type: "text", value: text },
+    raw: {},
+    sourceSchemaVersion: 1,
+  })
+  await db.insert(messages).values({
+    sessionId,
+    lineUuid: crypto.randomUUID(),
+    subIndex: 0,
+    msgType: "message",
+    role: "user",
+    lineNumber: 2,
+    raw: {},
+    sourceSchemaVersion: 1,
+  })
+  await writeChunksForSession(db, sessionId)
 }
 
 const request = async (db: Db, userId: string, query: string): Promise<Response> => {
@@ -485,6 +513,304 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
 
     expect(res.status).toBe(400)
   })
+
+  test("D19: `?q=` reorders the same set by relevance rather than recency, and carries a score and snippet", async () => {
+    const owner = await seedUser(db, 1901, "q-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Q", slug: "q-project" },
+      ownerId: owner,
+    })
+    // Recency order (newest updatedAt first) is the exact opposite of relevance order here.
+    await seedSession(db, {
+      id: "q-weak-but-newest",
+      userId: owner,
+      projectId,
+      title: "Weak but newest",
+      updatedAt: new Date("2026-04-02T00:00:00Z"),
+    })
+    await seedSession(db, {
+      id: "q-strong-but-oldest",
+      userId: owner,
+      projectId,
+      title: "Strong but oldest",
+      updatedAt: new Date("2026-04-01T00:00:00Z"),
+    })
+    await seedSearchableTurn(db, "q-weak-but-newest", "mentions the outage once in passing")
+    await seedSearchableTurn(
+      db,
+      "q-strong-but-oldest",
+      "outage outage outage root cause of the outage",
+    )
+
+    const withoutQuery = await listAs(db, owner)
+    expect(idsOf(withoutQuery)).toEqual(["q-weak-but-newest", "q-strong-but-oldest"])
+
+    const res = await request(db, owner, "?q=outage")
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      sessions: ReadonlyArray<
+        SessionSummary & { score: number; snippet: string; anchorMessageId: string | null }
+      >
+    }
+
+    expect(idsOf(body.sessions)).toEqual(["q-strong-but-oldest", "q-weak-but-newest"])
+    expect(body.sessions[0]?.score).toBeGreaterThan(0)
+    expect(body.sessions[0]?.snippet).toBeTruthy()
+    // D22: the row that wins a global result carries its chunk's anchor, so the caller can jump
+    // straight to the matching turn rather than the top of the session.
+    expect(body.sessions[0]?.anchorMessageId).toBeTruthy()
+  })
+
+  test("D20: a session belonging to another user is absent from `?q=` results even when it matches strongly", async () => {
+    const owner = await seedUser(db, 1902, "q-scope-owner")
+    const stranger = await seedUser(db, 1903, "q-scope-stranger")
+    const ownerProject = await projectsRepo.upsert(db, {
+      identity: { name: "Owner", slug: "q-owner-proj" },
+      ownerId: owner,
+    })
+    const strangerProject = await projectsRepo.upsert(db, {
+      identity: { name: "Stranger", slug: "q-stranger-proj" },
+      ownerId: stranger,
+    })
+    await seedSession(db, {
+      id: "q-owner-session",
+      userId: owner,
+      projectId: ownerProject,
+      title: "Owner",
+      updatedAt: new Date(),
+    })
+    await seedSession(db, {
+      id: "q-stranger-session",
+      userId: stranger,
+      projectId: strangerProject,
+      title: "Stranger",
+      updatedAt: new Date(),
+    })
+    await seedSearchableTurn(db, "q-owner-session", "briefly touches on quantum entanglement")
+    await seedSearchableTurn(
+      db,
+      "q-stranger-session",
+      "quantum entanglement quantum entanglement quantum entanglement",
+    )
+
+    const res = await request(db, owner, "?q=quantum entanglement")
+    const body = (await res.json()) as { sessions: ReadonlyArray<SessionSummary> }
+
+    expect(idsOf(body.sessions)).toEqual(["q-owner-session"])
+  })
+})
+
+type SearchChunk = {
+  readonly anchorMessageId: string | null
+  readonly snippet: string
+  readonly score: number
+}
+
+// Each text becomes its own closed turn (D6): texts.length user rows, each closing the one
+// before it, plus a final closing row -- returns the anchor id of each turn, in order.
+const seedTurns = async (
+  db: Db,
+  sessionId: string,
+  texts: ReadonlyArray<string>,
+): Promise<ReadonlyArray<string>> => {
+  const anchors: string[] = []
+  for (const [index, text] of texts.entries()) {
+    const [row] = await db
+      .insert(messages)
+      .values({
+        sessionId,
+        lineUuid: crypto.randomUUID(),
+        subIndex: 0,
+        msgType: "message",
+        role: "user",
+        lineNumber: index + 1,
+        content: { type: "text", value: text },
+        raw: {},
+        sourceSchemaVersion: 1,
+      })
+      .returning({ id: messages.id })
+    if (!row) throw new Error("seed turn failed")
+    anchors.push(row.id)
+  }
+  await db.insert(messages).values({
+    sessionId,
+    lineUuid: crypto.randomUUID(),
+    subIndex: 0,
+    msgType: "message",
+    role: "user",
+    lineNumber: texts.length + 1,
+    raw: {},
+    sourceSchemaVersion: 1,
+  })
+  await writeChunksForSession(db, sessionId)
+  return anchors
+}
+
+const searchRequest = async (
+  db: Db,
+  userId: string,
+  sessionId: string,
+  query: string,
+): Promise<Response> => {
+  const token = await signToken(env, { sub: userId, aud: "web" })
+  return buildApp(db, env).request(
+    `/api/sessions/${encodeURIComponent(sessionId)}/search?q=${encodeURIComponent(query)}`,
+    { headers: { cookie: `session=${token}` } },
+  )
+}
+
+describe.skipIf(!dockerAvailable())("GET /api/sessions/:id/search", () => {
+  let container: StartedPostgreSqlContainer
+  let teardown: () => Promise<void>
+  let db: Db
+
+  beforeAll(async () => {
+    container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start()
+    const url = container.getConnectionUri()
+    execFileSync("bun", ["run", "db:migrate"], {
+      cwd: packageDir,
+      env: { ...process.env, DATABASE_URL: url },
+      stdio: "inherit",
+    })
+    const created = createDb(url)
+    db = created.db
+    teardown = async () => {
+      await created.client.end()
+      await container.stop()
+    }
+  }, 120_000)
+
+  afterAll(async () => {
+    await teardown?.()
+  })
+
+  beforeEach(async () => {
+    await db.delete(sessions)
+    await db.delete(userProjectGrant)
+    await db.delete(projects)
+    await db.delete(users)
+  })
+
+  test("`?q=` inside a session returns only that session's chunks, ranked", async () => {
+    const owner = await seedUser(db, 3001, "scoped-search-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Scoped", slug: "scoped-search" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "scoped-a",
+      userId: owner,
+      projectId,
+      title: "A",
+      updatedAt: new Date(),
+    })
+    await seedSession(db, {
+      id: "scoped-b",
+      userId: owner,
+      projectId,
+      title: "B",
+      updatedAt: new Date(),
+    })
+    const [matchingAnchor] = await seedTurns(db, "scoped-a", [
+      "the login timeout keeps happening",
+      "totally unrelated filler content",
+    ])
+    await seedTurns(db, "scoped-b", [
+      "login timeout login timeout login timeout, a much stronger match",
+    ])
+
+    const res = await searchRequest(db, owner, "scoped-a", "login timeout")
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { chunks: ReadonlyArray<SearchChunk> }
+
+    // Session B's chunk matches far more strongly, so its presence in the response would prove
+    // the scope was dropped, not merely miscounted.
+    expect(body.chunks).toHaveLength(1)
+    expect(body.chunks[0]?.anchorMessageId).toBe(matchingAnchor)
+    expect(body.chunks[0]?.score).toBeGreaterThan(0)
+  })
+
+  test("D1: the same query scoped and unscoped ranks the shared chunk consistently", async () => {
+    const owner = await seedUser(db, 3002, "consistency-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Consistency", slug: "consistency-search" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "consistency-sess",
+      userId: owner,
+      projectId,
+      title: "Only match",
+      updatedAt: new Date(),
+    })
+    // The only chunk in the whole corpus, so it ranks #1 in both the scoped and the unscoped
+    // keyword list -- which is what makes the two RRF scores comparable rather than shifted by a
+    // differently-sized candidate pool.
+    await seedSearchableTurn(
+      db,
+      "consistency-sess",
+      "xylozomp crenellation xylozomp crenellation investigate the xylozomp crenellation bug",
+    )
+
+    const globalRes = await request(db, owner, "?q=xylozomp crenellation")
+    const globalBody = (await globalRes.json()) as {
+      sessions: ReadonlyArray<SessionSummary & { score: number }>
+    }
+    expect(idsOf(globalBody.sessions)).toEqual(["consistency-sess"])
+
+    const scopedRes = await searchRequest(db, owner, "consistency-sess", "xylozomp crenellation")
+    const scopedBody = (await scopedRes.json()) as { chunks: ReadonlyArray<SearchChunk> }
+
+    expect(scopedBody.chunks).toHaveLength(1)
+    expect(scopedBody.chunks[0]?.score).toBe(globalBody.sessions[0]?.score)
+  })
+
+  test("another user's session id returns 404 even when its chunks match strongly", async () => {
+    const owner = await seedUser(db, 3003, "search-404-owner")
+    const stranger = await seedUser(db, 3004, "search-404-stranger")
+    const strangerProject = await projectsRepo.upsert(db, {
+      identity: { name: "Stranger", slug: "search-404-stranger-proj" },
+      ownerId: stranger,
+    })
+    await seedSession(db, {
+      id: "search-404-stranger-session",
+      userId: stranger,
+      projectId: strangerProject,
+      title: "Stranger",
+      updatedAt: new Date(),
+    })
+    await seedSearchableTurn(
+      db,
+      "search-404-stranger-session",
+      "outage outage outage outage outage",
+    )
+
+    const res = await searchRequest(db, owner, "search-404-stranger-session", "outage")
+
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: "sessionNotFound" })
+  })
+
+  test("a session with no matching chunk returns an empty list and 200, not 404", async () => {
+    const owner = await seedUser(db, 3005, "search-empty-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Empty", slug: "search-empty" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "search-empty-session",
+      userId: owner,
+      projectId,
+      title: "Empty",
+      updatedAt: new Date(),
+    })
+    await seedSearchableTurn(db, "search-empty-session", "totally unrelated content")
+
+    const res = await searchRequest(db, owner, "search-empty-session", "xenomorphic quasar")
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ chunks: [] })
+  })
 })
 
 type DetailMessage = {
@@ -672,7 +998,6 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions/:id", () => {
       agentId: "agent-audit",
       agentType: "db-schema-auditor",
       description: "Audit unique constraints",
-      spawnToolUseId: "toolu_016HFcaNDieHnTH4Nty25mXr",
       sourceRelativePath: "sub/agent-audit.jsonl",
     })
     await db.insert(tokenUsage).values({
@@ -716,7 +1041,6 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions/:id", () => {
         agentType: "db-schema-auditor",
         description: "Audit unique constraints",
         parentAgentId: null,
-        spawnToolUseId: "toolu_016HFcaNDieHnTH4Nty25mXr",
       },
     ])
     expect(body.tokenUsage).toEqual({

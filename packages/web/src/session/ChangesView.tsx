@@ -1,5 +1,4 @@
 import type { SessionCommit, SessionPullRequest, SessionRepo } from "../api/types.js"
-import { absoluteTime, relativeTime } from "../time.js"
 
 const Unavailable = () => (
   <span className="text-faded italic underline decoration-dotted">unavailable</span>
@@ -12,17 +11,37 @@ const Empty = ({ title, children }: { title: string; children: React.ReactNode }
   </div>
 )
 
+const exact = (iso: string): string => {
+  const parsed = new Date(iso)
+  return Number.isNaN(parsed.getTime()) ? "--" : `${parsed.toISOString().slice(0, 19)}Z`
+}
+
+const MINUTE = 60_000
+const HOUR = 60 * MINUTE
+const DAY = 24 * HOUR
+
 /**
  * A transcript is read soon after it is written, so "2 hours ago" places a commit against the
  * session far better than a timestamp does. The exact time stays one hover away.
  */
+export const timeAgo = (iso: string, now: number = Date.now()): string => {
+  const parsed = new Date(iso).getTime()
+  if (Number.isNaN(parsed)) return "--"
+
+  const elapsed = now - parsed
+  if (elapsed < 0) return "just now"
+  if (elapsed < MINUTE) return "just now"
+
+  const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"} ago`
+  if (elapsed < HOUR) return plural(Math.floor(elapsed / MINUTE), "minute")
+  if (elapsed < DAY) return plural(Math.floor(elapsed / HOUR), "hour")
+  if (elapsed < 30 * DAY) return plural(Math.floor(elapsed / DAY), "day")
+  return exact(iso).slice(0, 10)
+}
+
 const Stamp = ({ iso }: { iso: string }) => (
-  <time
-    dateTime={iso}
-    title={absoluteTime(iso)}
-    className="font-mono text-[0.6875rem] text-ink-soft"
-  >
-    {relativeTime(iso)}
+  <time dateTime={iso} title={exact(iso)} className="font-mono text-[0.6875rem] text-ink-soft">
+    {timeAgo(iso)}
   </time>
 )
 
@@ -34,34 +53,8 @@ const Row = ({ children }: { children: React.ReactNode }) => (
   <li className="border-rule border-b py-3 last:border-b-0">{children}</li>
 )
 
-/** What the row is reads first; everything below it is the evidence for that claim. */
-const Subject = ({ children }: { children: React.ReactNode }) => (
-  <p className="max-w-[104ch] text-[0.875rem] font-semibold leading-snug">{children}</p>
-)
-
-/**
- * One mono line carrying the record's provenance -- identifier, branch, diffstat, repo, when.
- * Filed as a single line because these are read together or not at all; as three stacked rows they
- * pushed the subject into fifth place on a narrow screen.
- */
-const Custody = ({ children }: { children: React.ReactNode }) => (
-  <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[0.6875rem] text-ink-soft">
-    {children}
-  </div>
-)
-
-const Sep = () => (
-  <span aria-hidden="true" className="text-rule">
-    ·
-  </span>
-)
-
-const Chip = ({ children }: { children: React.ReactNode }) => (
-  <span className="rounded-pill border border-rule px-2 py-0.5">{children}</span>
-)
-
 const RepoName = ({ repo }: { repo: SessionRepo }) => (
-  <span className="text-faded">
+  <span className="font-mono text-[0.6875rem] text-faded">
     {repo.owner}/{repo.repoName}
   </span>
 )
@@ -70,7 +63,7 @@ const JumpToMessage = ({ onJump }: { onJump: () => void }) => (
   <button
     type="button"
     onClick={onJump}
-    className="rounded-xs border border-rule px-2 py-0.5 text-ink-soft transition-colors hover:border-ink-soft hover:bg-panel"
+    className="rounded-xs border border-rule px-2 py-0.5 font-mono text-[0.6875rem] text-ink-soft hover:bg-panel"
   >
     Jump to transcript
   </button>
@@ -90,7 +83,7 @@ const DiffStat = ({ commit }: { commit: SessionCommit }) => {
   ].filter((part): part is string => part !== null)
 
   if (parts.length === 0) return null
-  return <span className="text-faded">{parts.join(" · ")}</span>
+  return <span className="font-mono text-[0.6875rem] text-faded">{parts.join(" · ")}</span>
 }
 
 const CommitRow = ({
@@ -101,29 +94,34 @@ const CommitRow = ({
   const messageId = commit.messageId
   return (
     <Row>
-      <Subject>{commit.subject ?? <Unavailable />}</Subject>
-      <Custody>
+      <div className="flex flex-wrap items-baseline gap-2">
         {url === null ? (
-          <span className="font-semibold text-custody">{commit.sha}</span>
+          <span className="font-mono text-[0.78rem] font-semibold">{commit.sha}</span>
         ) : (
           <a
             href={url}
             target="_blank"
             rel="noreferrer"
-            className="font-semibold text-custody underline decoration-dotted"
+            className="font-mono text-[0.78rem] font-semibold underline decoration-dotted"
           >
             {commit.sha}
           </a>
         )}
-        {commit.branch === null ? null : <Chip>{commit.branch}</Chip>}
+        {commit.branch === null ? null : (
+          <span className="rounded-pill border border-rule px-2 py-0.5 font-mono text-[0.6875rem] text-ink-soft">
+            {commit.branch}
+          </span>
+        )}
         <DiffStat commit={commit} />
-        <Sep />
-        <RepoName repo={commit.repo} />
         <span className="ml-auto flex items-center gap-2">
           {messageId === null ? null : <JumpToMessage onJump={() => onJump(messageId)} />}
           <Stamp iso={commit.recordedAt} />
         </span>
-      </Custody>
+      </div>
+      <p className="mt-1 max-w-[104ch] text-[0.82rem]">{commit.subject ?? <Unavailable />}</p>
+      <p className="mt-1">
+        <RepoName repo={commit.repo} />
+      </p>
     </Row>
   )
 }
@@ -156,33 +154,36 @@ const PullRequestRow = ({
   const messageId = pr.messageId
   return (
     <Row>
-      <Subject>{pr.title ?? <Unavailable />}</Subject>
-      <Custody>
+      <div className="flex flex-wrap items-baseline gap-2">
         {url === null ? (
-          <span className="font-semibold text-custody">#{pr.number}</span>
+          <span className="font-mono text-[0.78rem] font-semibold">#{pr.number}</span>
         ) : (
           <a
             href={url}
             target="_blank"
             rel="noreferrer"
-            className="font-semibold text-custody underline decoration-dotted"
+            className="font-mono text-[0.78rem] font-semibold underline decoration-dotted"
           >
             #{pr.number}
           </a>
         )}
-        <span className="text-faded">opened here</span>
+        <span className="text-[0.625rem] font-semibold uppercase tracking-[0.1em] text-faded">
+          Opened here
+        </span>
         {pr.headBranch === null && pr.baseBranch === null ? null : (
-          <Chip>
+          <span className="rounded-pill border border-rule px-2 py-0.5 font-mono text-[0.6875rem] text-ink-soft">
             {pr.headBranch ?? "?"} → {pr.baseBranch ?? "?"}
-          </Chip>
+          </span>
         )}
-        <Sep />
-        <RepoName repo={pr.repo} />
         <span className="ml-auto flex items-center gap-2">
           {messageId === null ? null : <JumpToMessage onJump={() => onJump(messageId)} />}
           <Stamp iso={pr.recordedAt} />
         </span>
-      </Custody>
+      </div>
+      <p className="mt-1 max-w-[104ch] text-[0.82rem]">{pr.title ?? <Unavailable />}</p>
+      <p className="mt-1">
+        <RepoName repo={pr.repo} />
+      </p>
     </Row>
   )
 }

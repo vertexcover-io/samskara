@@ -17,6 +17,7 @@ import * as messagesRepo from "../repositories/messages.repo.js"
 import * as projectsRepo from "../repositories/projects.repo.js"
 import * as pullRequestsRepo from "../repositories/pullRequests.repo.js"
 import * as reposRepo from "../repositories/repos.repo.js"
+import * as sessionChunksRepo from "../repositories/sessionChunks.repo.js"
 import * as sessionsRepo from "../repositories/sessions.repo.js"
 import * as subagentsRepo from "../repositories/subagents.repo.js"
 import * as tokenUsageRepo from "../repositories/tokenUsage.repo.js"
@@ -262,8 +263,9 @@ export const ingest = async (ctx: Ctx, payload: IngestPayload): Promise<IngestRe
   const { db, log, userId } = ctx
   const flat = flatten(payload.records, payload.sourceRelativePath, payload.type === "subagent")
 
+  let result: IngestResponse
   try {
-    return await db.transaction(async (tx) => {
+    result = await db.transaction(async (tx) => {
       const projectId = await projectsRepo.upsert(tx, {
         identity: payload.project,
         ownerId: userId,
@@ -326,4 +328,18 @@ export const ingest = async (ctx: Ctx, payload: IngestPayload): Promise<IngestRe
     if (error === SESSION_NOT_FOUND) return { error: "sessionNotFound" }
     throw error
   }
+
+  // Chunking runs after the transaction commits, never inside it: it must not fail the ingest
+  // request, and chunk rows are derived state -- the next flush recomputes them regardless.
+  try {
+    await sessionChunksRepo.writeChunksForSession(db, payload.sessionId)
+    // Only a main payload can carry a title; a subagent flush never changes one.
+    if (payload.type === "main") {
+      await sessionChunksRepo.writeTitleChunkForSession(db, payload.sessionId)
+    }
+  } catch (error) {
+    log.error({ err: error, sessionId: payload.sessionId }, "Chunking failed after ingest")
+  }
+
+  return result
 }

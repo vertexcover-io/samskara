@@ -9,6 +9,7 @@ import { authRoutes } from "./routes/auth.js"
 import { ingestRoutes } from "./routes/ingest.js"
 import { projectsRoutes } from "./routes/projects.js"
 import { sessionsRoutes } from "./routes/sessions.js"
+import { type EmbeddingClient, unconfiguredEmbeddingClient } from "./search/embedding.js"
 import { type GithubClient, createGithubClient } from "./services/github.js"
 import { type PairingStore, createPairingStore } from "./services/pairing.js"
 
@@ -16,6 +17,7 @@ type Deps = {
   readonly githubClient?: GithubClient
   readonly pairingStore?: PairingStore
   readonly rootLog?: pino.Logger
+  readonly embeddingClient?: EmbeddingClient
 }
 
 type Variables = { log: pino.Logger }
@@ -24,6 +26,7 @@ export const buildApp = (db: Db, env: Env, deps: Deps = {}): Hono<{ Variables: V
   const githubClient = deps.githubClient ?? createGithubClient(env)
   const pairingStore = deps.pairingStore ?? createPairingStore()
   const rootLog = deps.rootLog ?? createLogger({ service: "samskara-server" })
+  const embeddingClient = deps.embeddingClient ?? unconfiguredEmbeddingClient
   const app = new Hono<{ Variables: Variables }>()
 
   app.use(loggingMiddleware(rootLog))
@@ -33,7 +36,7 @@ export const buildApp = (db: Db, env: Env, deps: Deps = {}): Hono<{ Variables: V
   app.route("/api/ingest", ingestRoutes({ db, env }))
   app.route("/api/artifacts", artifactRoutes({ db, env }))
   app.route("/api/projects", projectsRoutes({ db, env }))
-  app.route("/api/sessions", sessionsRoutes({ db, env }))
+  app.route("/api/sessions", sessionsRoutes({ db, env, embeddingClient }))
 
   app.onError((err, c) => {
     ;(c.get("log") ?? rootLog).error({ err }, "server error")

@@ -69,8 +69,6 @@ type Props = {
   readonly path: string | null
   /** Declared directly by a markdown fence, where there is no path to infer from. */
   readonly language?: string
-  /** Wraps long lines instead of scrolling them sideways. */
-  readonly wrap?: boolean
 }
 
 /**
@@ -78,10 +76,9 @@ type Props = {
  * immediately and is replaced once tokenised, so a large file is readable rather than blank while
  * it loads -- and a grammar that fails to load leaves the file readable instead of empty.
  */
-export const Code = ({ source, path, language: declared, wrap = false }: Props) => {
+export const Code = ({ source, path, language: declared }: Props) => {
   const language = declared ?? (path === null ? null : languageForPath(path))
   const [html, setHtml] = useState<string | null>(null)
-  const flow = wrap ? "artifact-wrap" : "overflow-x-auto"
 
   useEffect(() => {
     if (language === null) return
@@ -101,7 +98,7 @@ export const Code = ({ source, path, language: declared, wrap = false }: Props) 
   if (html !== null) {
     return (
       <div
-        className={`artifact-code ${flow} bg-panel p-3 text-[0.72rem] leading-relaxed ${path === null ? "" : "border border-rule"}`}
+        className={`artifact-code overflow-x-auto bg-panel p-3 text-[0.72rem] leading-relaxed ${path === null ? "" : "border border-rule"}`}
         // biome-ignore lint/security/noDangerouslySetInnerHtml: shiki emits escaped, tokenised markup
         dangerouslySetInnerHTML={{ __html: html }}
       />
@@ -110,7 +107,7 @@ export const Code = ({ source, path, language: declared, wrap = false }: Props) 
 
   return (
     <pre
-      className={`${wrap ? "whitespace-pre-wrap break-words" : "overflow-x-auto"} bg-panel p-3 font-mono text-[0.72rem] leading-relaxed ${path === null ? "" : "border border-rule"}`}
+      className={`overflow-x-auto bg-panel p-3 font-mono text-[0.72rem] leading-relaxed ${path === null ? "" : "border border-rule"}`}
     >
       {source}
     </pre>

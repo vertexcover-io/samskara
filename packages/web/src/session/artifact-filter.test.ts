@@ -1,12 +1,5 @@
 import { expect, test } from "vitest"
-import {
-  buildTree,
-  countByKind,
-  folderPaths,
-  kindOfPath,
-  matchesKind,
-  matchesQuery,
-} from "./artifact-filter.js"
+import { buildTree, countByKind, folderPaths, kindOfPath, matchesKind } from "./artifact-filter.js"
 
 test("files are grouped by what a reader scans for, not by mime family", () => {
   const cases: ReadonlyArray<readonly [string | null, boolean, string]> = [
@@ -86,31 +79,6 @@ test("the tree nests folders, sorts folders before files, and collapses single-c
     "driver.ts",
   ])
   expect(cliSrc?.kind === "folder" && cliSrc.path).toBe("packages/cli/src")
-})
-
-test("a filename query matches any part of the path, ignoring case, and an empty query keeps everything", () => {
-  const driver = { relativePath: "packages/cli/src/driver.ts", label: null, isBinary: false }
-  const readme = { relativePath: null, label: "docs/README.md", isBinary: false }
-
-  expect(matchesQuery(driver, "")).toBe(true)
-  expect(matchesQuery(driver, "   ")).toBe(true)
-
-  expect(matchesQuery(driver, "driver")).toBe(true)
-  expect(matchesQuery(driver, "DRIVER")).toBe(true)
-  // A folder anywhere in the path is a legitimate way to narrow to it.
-  expect(matchesQuery(driver, "cli/src")).toBe(true)
-  expect(matchesQuery(driver, "readme")).toBe(false)
-
-  // A frame-link has no relativePath, so its label is what gets searched.
-  expect(matchesQuery(readme, "readme")).toBe(true)
-  expect(matchesQuery(readme, "driver")).toBe(false)
-})
-
-test("an artifact with neither path nor label never matches a real query, but survives an empty one", () => {
-  const nameless = { relativePath: null, label: null, isBinary: false }
-
-  expect(matchesQuery(nameless, "")).toBe(true)
-  expect(matchesQuery(nameless, "anything")).toBe(false)
 })
 
 test("folderPaths lists every folder so the browser can open expanded", () => {

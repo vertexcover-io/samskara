@@ -1,5 +1,5 @@
 import { expect, test } from "vitest"
-import { parseSessionArtifacts } from "./parse.js"
+import { parseSessionArtifacts, parseSessionList, parseSessionSearchChunks } from "./parse.js"
 import type { CapturedArtifact } from "./types.js"
 
 const ROW = {
@@ -57,4 +57,74 @@ test("S54: a row missing a required field is rejected, so no partially-typed art
   expect(parseSessionArtifacts({ artifacts: [{ ...ROW, relativePath: 42 }] })).toBeNull()
   expect(parseSessionArtifacts({ notArtifacts: [] })).toBeNull()
   expect(parseSessionArtifacts(null)).toBeNull()
+})
+
+const SESSION_ROW = {
+  id: "s-1",
+  title: "Port the session detail surface",
+  projectName: "Samskara",
+  projectSlug: "samskara",
+  userLogin: "maya",
+  model: "claude-opus-5",
+  durationMs: 3_723_000,
+  tokensTotal: 128_400,
+  status: "complete",
+  lastActiveAt: "2026-02-01T09:30:00.000Z",
+}
+
+test("D19: a session row with no snippet key (the plain, unfiltered list route) parses with snippet null, not a failure", () => {
+  const parsed = parseSessionList({ sessions: [SESSION_ROW] })
+  if (parsed === null) throw new Error("expected a plain session row to parse")
+
+  expect(parsed[0]?.snippet).toBeNull()
+  expect(parsed[0]?.anchorMessageId).toBeNull()
+})
+
+test("D19: a session row carrying a snippet (a `?q=` response) parses it through", () => {
+  const parsed = parseSessionList({
+    sessions: [{ ...SESSION_ROW, score: 0.42, snippet: "investigate the memory leak" }],
+  })
+  if (parsed === null) throw new Error("expected a ranked session row to parse")
+
+  expect(parsed[0]?.snippet).toBe("investigate the memory leak")
+})
+
+test("D22: a ranked session row carries the winning chunk's anchor", () => {
+  const parsed = parseSessionList({
+    sessions: [
+      {
+        ...SESSION_ROW,
+        score: 0.42,
+        snippet: "investigate the memory leak",
+        anchorMessageId: "m-9",
+      },
+    ],
+  })
+  if (parsed === null) throw new Error("expected a ranked session row to parse")
+
+  expect(parsed[0]?.anchorMessageId).toBe("m-9")
+})
+
+test("D1: a well-formed `/:id/search` response parses into ranked chunks", () => {
+  const parsed = parseSessionSearchChunks({
+    chunks: [
+      { anchorMessageId: "m-1", snippet: "the login timeout keeps happening", score: 0.031 },
+      { anchorMessageId: null, snippet: "Outage investigation", score: 0.02 },
+    ],
+  })
+  if (parsed === null) throw new Error("expected a well-formed chunks response to parse")
+
+  expect(parsed).toEqual([
+    { anchorMessageId: "m-1", snippet: "the login timeout keeps happening", score: 0.031 },
+    { anchorMessageId: null, snippet: "Outage investigation", score: 0.02 },
+  ])
+})
+
+test("D1: a chunks response missing a required field is rejected, so no partially-typed chunk reaches the view", () => {
+  expect(parseSessionSearchChunks({ chunks: [{ anchorMessageId: "m-1", score: 0.03 }] })).toBeNull()
+  expect(
+    parseSessionSearchChunks({ chunks: [{ anchorMessageId: "m-1", snippet: "hi" }] }),
+  ).toBeNull()
+  expect(parseSessionSearchChunks({ notChunks: [] })).toBeNull()
+  expect(parseSessionSearchChunks(null)).toBeNull()
 })

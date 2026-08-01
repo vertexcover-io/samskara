@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react"
-import { expect, test } from "vitest"
+import userEvent from "@testing-library/user-event"
+import { expect, test, vi } from "vitest"
 import type { SessionSummary } from "../api/types.js"
-import { TestRouter } from "../tests/test-router.js"
 import { SessionRow } from "./SessionRow.js"
 
 const populated: SessionSummary = {
@@ -15,19 +15,14 @@ const populated: SessionSummary = {
   tokensTotal: 128_400,
   status: "complete",
   lastActiveAt: "2026-02-01T09:30:00.000Z",
+  snippet: null,
+  anchorMessageId: null,
 }
 
-const renderRow = (session: SessionSummary) =>
-  render(
-    <TestRouter initialEntries={["/sessions"]}>
-      <SessionRow session={session} to={`/sessions/${session.id}`} />
-    </TestRouter>,
-  )
-
 test("S18: a row summarises the session on one line - title, who, duration, tokens, project", () => {
-  renderRow(populated)
+  render(<SessionRow session={populated} onOpen={vi.fn()} />)
 
-  const row = screen.getByRole("link")
+  const row = screen.getByRole("button")
 
   expect(row).toHaveTextContent("Port the session detail surface")
   expect(row).toHaveTextContent("Samskara")
@@ -38,68 +33,74 @@ test("S18: a row summarises the session on one line - title, who, duration, toke
 })
 
 test("S18: a session with no repo omits it rather than reserving a placeholder for it", () => {
-  renderRow({ ...populated, repo: null })
+  render(<SessionRow session={{ ...populated, repo: null }} onOpen={vi.fn()} />)
 
-  const row = screen.getByRole("link")
+  const row = screen.getByRole("button")
   expect(row).toHaveTextContent("maya · 1h 2m")
   expect(row).not.toHaveTextContent("unavailable")
 })
 
 test("S18: a remoteless repo reads as its own name - never the absolute path it is keyed by", () => {
   const repo = { host: "local", owner: "/Users/maya/Projects/samskara", repoName: "samskara" }
-  renderRow({ ...populated, repo })
+  render(<SessionRow session={{ ...populated, repo }} onOpen={vi.fn()} />)
 
-  const row = screen.getByRole("link")
+  const row = screen.getByRole("button")
   expect(row).toHaveTextContent("samskara")
   expect(row).not.toHaveTextContent("/Users/maya")
 })
 
 test("S26: the row reports capture recency in relative terms rather than a raw timestamp", () => {
-  renderRow(populated)
+  render(<SessionRow session={populated} onOpen={vi.fn()} />)
 
-  expect(screen.getByRole("link")).not.toHaveTextContent("2026-02-01T09:30")
-})
-
-test("S26: the relative stamp carries the exact moment as a tooltip, so recency never costs precision", () => {
-  renderRow(populated)
-
-  expect(screen.getByRole("time")).toHaveAttribute("title", "Feb 1, 2026, 09:30")
+  expect(screen.getByRole("button")).not.toHaveTextContent("2026-02-01T09:30")
 })
 
 test("S19: a null duration renders an explicit placeholder - never 0, an em dash, or a fabricated value", () => {
-  renderRow({ ...populated, durationMs: null })
+  render(<SessionRow session={{ ...populated, durationMs: null }} onOpen={vi.fn()} />)
 
   expect(screen.getByText("unavailable")).toBeInTheDocument()
 
-  const row = screen.getByRole("link")
+  const row = screen.getByRole("button")
   expect(row).toHaveTextContent("unavailable")
   expect(row).not.toHaveTextContent("null")
   expect(row).not.toHaveTextContent("—")
 })
 
 test("S19: a null title reads as 'untitled session' rather than an empty heading", () => {
-  renderRow({ ...populated, title: null })
+  render(<SessionRow session={{ ...populated, title: null }} onOpen={vi.fn()} />)
 
-  expect(screen.getByRole("link")).toHaveTextContent("untitled session")
+  expect(screen.getByRole("button")).toHaveTextContent("untitled session")
 })
 
 test("S26: a zero token total renders as 0 - the 'unavailable' path is reserved for genuinely absent data", () => {
-  renderRow({ ...populated, tokensTotal: 0 })
+  render(<SessionRow session={{ ...populated, tokensTotal: 0 }} onOpen={vi.fn()} />)
 
-  expect(screen.getByRole("link")).toHaveTextContent("0")
+  expect(screen.getByRole("button")).toHaveTextContent("0")
   expect(screen.queryByText("unavailable")).not.toBeInTheDocument()
 })
 
-test("S26: token totals scale past thousands rather than reading as five-figure 'k'", () => {
-  renderRow({ ...populated, tokensTotal: 12_400_000 })
-  expect(screen.getByRole("link")).toHaveTextContent("12.4M tokens")
+test("S26: activating the row hands its session back to the caller", async () => {
+  const onOpen = vi.fn()
+  render(<SessionRow session={populated} onOpen={onOpen} />)
 
-  renderRow({ ...populated, tokensTotal: 2_500_000_000 })
-  expect(screen.getAllByRole("link")[1]).toHaveTextContent("2.5B tokens")
+  await userEvent.click(screen.getByRole("button"))
+
+  expect(onOpen).toHaveBeenCalledWith(populated)
 })
 
-test("S26: the row is a link, so a session opens in a new tab the way any other link does", () => {
-  renderRow(populated)
+test("D19: a search result's snippet renders on the row", () => {
+  render(
+    <SessionRow
+      session={{ ...populated, snippet: "investigate the memory leak in the worker" }}
+      onOpen={vi.fn()}
+    />,
+  )
 
-  expect(screen.getByRole("link")).toHaveAttribute("href", "/sessions/s-1")
+  expect(screen.getByText("investigate the memory leak in the worker")).toBeInTheDocument()
+})
+
+test("a session with no snippet renders no snippet text - not an empty quote", () => {
+  render(<SessionRow session={populated} onOpen={vi.fn()} />)
+
+  expect(screen.queryByTestId("session-snippet")).not.toBeInTheDocument()
 })

@@ -6,18 +6,27 @@ import type { Env } from "../lib/env.js"
 import { type AuthVariables, requireAuth } from "../lib/require-auth.js"
 import { listForSession } from "../repositories/artifacts.repo.js"
 import {
+  type RankedChunk,
+  type RankedSession,
+  searchSessionChunks,
+  searchSessions,
+} from "../repositories/search.repo.js"
+import {
   type SessionDetailRow,
   type SessionSummaryRow,
   findVisibleProjectBySlug,
   getDetail,
+  isSessionVisible,
   listAccessible,
   remove,
 } from "../repositories/sessions.repo.js"
+import type { EmbeddingClient } from "../search/embedding.js"
 import { serializeArtifact } from "./artifacts.js"
 
 type Deps = {
   readonly db: Db
   readonly env: Env
+  readonly embeddingClient: EmbeddingClient
 }
 
 const RANGES = ["all", "hour", "today", "week", "month", "custom"] as const
@@ -34,6 +43,7 @@ const querySchema = z.object({
   range: z.enum(RANGES).optional(),
   from: isoDate,
   to: isoDate,
+  q: z.string().trim().min(1).optional(),
 })
 
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -72,6 +82,21 @@ const serialize = (row: SessionSummaryRow) => ({
   lastActiveAt: new Date(row.lastActiveAt).toISOString(),
 })
 
+// RankedSession extends SessionSummaryRow, so only the new fields are appended -- the existing
+// response shape is preserved and the web client's parser keeps working for the no-`q` case.
+const serializeRanked = (row: RankedSession) => ({
+  ...serialize(row),
+  score: row.score,
+  snippet: row.snippet,
+  anchorMessageId: row.anchorMessageId,
+})
+
+const serializeChunk = (row: RankedChunk) => ({
+  anchorMessageId: row.anchorMessageId,
+  snippet: row.snippet,
+  score: row.score,
+})
+
 const isoOrNull = (value: string | null): string | null =>
   value === null ? null : new Date(value).toISOString()
 
@@ -98,11 +123,15 @@ const serializeDetail = (detail: SessionDetailRow) => ({
   })),
 })
 
-export const sessionsRoutes = ({ db, env }: Deps): Hono<{ Variables: AuthVariables }> => {
+export const sessionsRoutes = ({
+  db,
+  env,
+  embeddingClient,
+}: Deps): Hono<{ Variables: AuthVariables }> => {
   const app = new Hono<{ Variables: AuthVariables }>()
 
   app.get("/", requireAuth({ db, env }, ["web"]), zValidator("query", querySchema), async (c) => {
-    const { project, user, range, from, to } = c.req.valid("query")
+    const { project, user, range, from, to, q } = c.req.valid("query")
     const userId = c.get("user").id
 
     if (project !== undefined && (await findVisibleProjectBySlug(db, userId, project)) === null) {
@@ -110,13 +139,19 @@ export const sessionsRoutes = ({ db, env }: Deps): Hono<{ Variables: AuthVariabl
     }
 
     const window = { range, from, to }
-    const rows = await listAccessible(db, userId, {
+    const listFilter = {
       projectSlug: project,
       userLogin: user,
       since: sinceFor(window, new Date()),
       until: untilFor(window),
-    })
+    }
 
+    if (q !== undefined) {
+      const ranked = await searchSessions(db, userId, q, embeddingClient, listFilter)
+      return c.json({ sessions: ranked.map(serializeRanked) })
+    }
+
+    const rows = await listAccessible(db, userId, listFilter)
     return c.json({ sessions: rows.map(serialize) })
   })
 
@@ -147,6 +182,26 @@ export const sessionsRoutes = ({ db, env }: Deps): Hono<{ Variables: AuthVariabl
 
     return c.body(null, 204)
   })
+
+  app.get(
+    "/:id/search",
+    requireAuth({ db, env }, ["web"]),
+    zValidator("query", z.object({ q: z.string().trim().min(1) })),
+    async (c) => {
+      const userId = c.get("user").id
+      const sessionId = c.req.param("id")
+
+      // A session id in the URL is not authorization: matches the sibling routes' 404, so an
+      // invisible session and a missing one are indistinguishable to a caller.
+      if (!(await isSessionVisible(db, userId, sessionId))) {
+        return c.json({ error: "sessionNotFound" }, 404)
+      }
+
+      const { q } = c.req.valid("query")
+      const chunks = await searchSessionChunks(db, userId, sessionId, q, embeddingClient)
+      return c.json({ chunks: chunks.map(serializeChunk) })
+    },
+  )
 
   return app
 }

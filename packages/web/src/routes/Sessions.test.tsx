@@ -24,6 +24,8 @@ const session: SessionSummary = {
   tokensTotal: 4200,
   status: "complete",
   lastActiveAt: "2026-02-01T09:30:00.000Z",
+  snippet: null,
+  anchorMessageId: null,
 }
 
 const jsonResponse = (status: number, body: unknown): Response =>
@@ -63,6 +65,12 @@ const control = (name: RegExp): HTMLSelectElement => {
   return element
 }
 
+const searchBox = (): HTMLInputElement => {
+  const element = screen.getByRole("searchbox")
+  if (!(element instanceof HTMLInputElement)) throw new Error("search box is not an input")
+  return element
+}
+
 afterEach(() => {
   vi.unstubAllGlobals()
 })
@@ -72,7 +80,7 @@ test("S23: loading /sessions?project=p&user=u&range=week shows all three control
 
   renderAt("/sessions?project=samskara&user=maya&range=week")
 
-  await screen.findByRole("link", { name: /port the session detail surface/i })
+  await screen.findByRole("button", { name: /port the session detail surface/i })
 
   expect(control(/project/i).value).toBe("samskara")
   expect(control(/user/i).value).toBe("maya")
@@ -84,7 +92,7 @@ test("S23: the request sent to the server carries the same filters the URL decla
 
   renderAt("/sessions?project=samskara&user=maya&range=week")
 
-  await screen.findByRole("link", { name: /port the session detail surface/i })
+  await screen.findByRole("button", { name: /port the session detail surface/i })
 
   expect(calls).toContain("/api/sessions?project=samskara&user=maya&range=week")
   expect(calls.filter((path) => path !== "/api/sessions")).toEqual([
@@ -97,7 +105,7 @@ test("S24: changing User to maya writes user=maya into the URL and refetches wit
 
   renderAt("/sessions?project=samskara")
 
-  await screen.findByRole("link", { name: /port the session detail surface/i })
+  await screen.findByRole("button", { name: /port the session detail surface/i })
   await userEvent.selectOptions(control(/user/i), "maya")
 
   await waitFor(() =>
@@ -111,7 +119,7 @@ test("S24: clearing the Project filter removes project= from the URL rather than
 
   renderAt("/sessions?project=samskara")
 
-  await screen.findByRole("link", { name: /port the session detail surface/i })
+  await screen.findByRole("button", { name: /port the session detail surface/i })
   await userEvent.selectOptions(control(/project/i), "")
 
   await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("/sessions"))
@@ -153,7 +161,7 @@ test("S26: activating the row for s-1 navigates to /sessions/s-1", async () => {
 
   renderAt("/sessions")
 
-  const row = await screen.findByRole("link", { name: /port the session detail surface/i })
+  const row = await screen.findByRole("button", { name: /port the session detail surface/i })
   await userEvent.click(row)
 
   await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("/sessions/s-1"))
@@ -174,7 +182,7 @@ test("S25: when the vocabulary request fails, the controls still offer the value
 
   renderAt("/sessions?range=week")
 
-  await screen.findByRole("link", { name: /port the session detail surface/i })
+  await screen.findByRole("button", { name: /port the session detail surface/i })
 
   await waitFor(() => {
     const users = Array.from(control(/user/i).options).map((option) => option.value)
@@ -198,12 +206,165 @@ test("S25: with user=maya applied, ravi is still offered - options come from the
 
   renderAt("/sessions?user=maya")
 
-  await screen.findByRole("link", { name: /port the session detail surface/i })
+  await screen.findByRole("button", { name: /port the session detail surface/i })
 
   await waitFor(() => {
     const users = Array.from(control(/user/i).options).map((option) => option.value)
     expect(users).toContain("ravi")
   })
   expect(control(/user/i).value).toBe("maya")
-  expect(screen.queryByRole("link", { name: /trim the ingest pipeline/i })).not.toBeInTheDocument()
+  expect(
+    screen.queryByRole("button", { name: /trim the ingest pipeline/i }),
+  ).not.toBeInTheDocument()
+})
+
+test("D19: loading /sessions?q=... pre-fills the search box from the URL", async () => {
+  stubFetch(okWith([session]))
+
+  renderAt("/sessions?q=memory%20leak")
+
+  await screen.findByRole("button", { name: /port the session detail surface/i })
+
+  expect(searchBox().value).toBe("memory leak")
+})
+
+test("D19: typing into the search box writes q and relevance into the URL, and refetches with q", async () => {
+  const calls = stubFetch(okWith([session]))
+
+  renderAt("/sessions")
+  await screen.findByRole("button", { name: /port the session detail surface/i })
+
+  await userEvent.type(searchBox(), "memory leak")
+
+  await waitFor(() => {
+    expect(screen.getByTestId("location")).toHaveTextContent("q=memory")
+    expect(screen.getByTestId("location")).toHaveTextContent("sort=relevance")
+  })
+  expect(calls.at(-1)).toContain("q=memory")
+})
+
+test("D19: clearing the search box removes q and restores the recent sort", async () => {
+  stubFetch(okWith([session]))
+
+  renderAt("/sessions?q=memory+leak&sort=relevance")
+  await screen.findByRole("button", { name: /port the session detail surface/i })
+
+  await userEvent.clear(searchBox())
+
+  await waitFor(() => expect(screen.getByTestId("location")).not.toHaveTextContent("q="))
+  expect(screen.getByTestId("location")).not.toHaveTextContent("sort=")
+})
+
+test("D19: a search result's snippet renders on its row", async () => {
+  stubFetch(() =>
+    Promise.resolve(
+      jsonResponse(200, {
+        sessions: [{ ...session, snippet: "investigate the memory leak in the worker" }],
+      }),
+    ),
+  )
+
+  renderAt("/sessions?q=memory+leak")
+
+  expect(await screen.findByText("investigate the memory leak in the worker")).toBeInTheDocument()
+})
+
+test("D22: opening a search result whose winning chunk carries an anchor lands on that message, not the top of the session", async () => {
+  stubFetch(() =>
+    Promise.resolve(jsonResponse(200, { sessions: [{ ...session, anchorMessageId: "m-9" }] })),
+  )
+
+  renderAt("/sessions?q=memory+leak")
+
+  const row = await screen.findByRole("button", { name: /port the session detail surface/i })
+  await userEvent.click(row)
+
+  await waitFor(() =>
+    expect(screen.getByTestId("location")).toHaveTextContent("/sessions/s-1?m=m-9"),
+  )
+})
+
+test("a result with no anchor (a title-only match) opens the plain session, with no dangling ?m=", async () => {
+  stubFetch(okWith([session]))
+
+  renderAt("/sessions")
+
+  const row = await screen.findByRole("button", { name: /port the session detail surface/i })
+  await userEvent.click(row)
+
+  await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("/sessions/s-1"))
+  expect(screen.getByTestId("location")).not.toHaveTextContent("m=")
+})
+
+test("a matched term in a snippet is marked, so a reader can see why the row came back", async () => {
+  // The server delimits matches with control characters rather than markup, because snippet text
+  // comes from tool output and must never reach the DOM as HTML.
+  stubFetch(() =>
+    Promise.resolve(
+      jsonResponse(200, {
+        sessions: [{ ...session, snippet: "the \u0002migration\u0003 never applied" }],
+      }),
+    ),
+  )
+
+  renderAt("/sessions?q=migration")
+
+  const marked = await screen.findByText("migration")
+  expect(marked.tagName).toBe("MARK")
+  expect(screen.getByTestId("session-snippet")).toHaveTextContent("the migration never applied")
+})
+
+test("a snippet carrying markup renders it as text, never as elements", async () => {
+  stubFetch(() =>
+    Promise.resolve(
+      jsonResponse(200, {
+        sessions: [{ ...session, snippet: "<img src=x onerror=1> \u0002hit\u0003" }],
+      }),
+    ),
+  )
+
+  renderAt("/sessions?q=hit")
+
+  const snippet = await screen.findByTestId("session-snippet")
+  expect(snippet.querySelector("img")).toBeNull()
+  expect(snippet).toHaveTextContent("<img src=x onerror=1>")
+})
+
+test("a search reports how many sessions matched and what it searched for", async () => {
+  stubFetch(okWith([session]))
+
+  renderAt("/sessions?q=memory+leak")
+
+  const count = await screen.findByTestId("result-count")
+  expect(count).toHaveTextContent("1 session matching")
+  expect(count).toHaveTextContent("memory leak")
+})
+
+test("an empty result names the query rather than blaming the filters", async () => {
+  stubFetch(okWith([]))
+
+  renderAt("/sessions?q=xyzzy")
+
+  expect(await screen.findByText(/Nothing found for/)).toBeInTheDocument()
+  expect(screen.queryByText(/No sessions match these filters/)).toBeNull()
+})
+
+test("an empty result with no query still speaks about filters", async () => {
+  stubFetch(okWith([]))
+
+  renderAt("/sessions?project=none")
+
+  expect(await screen.findByText(/No sessions match these filters/)).toBeInTheDocument()
+})
+
+test("the count claims 'best match first' only while the list is actually in that order", async () => {
+  stubFetch(okWith([session]))
+
+  renderAt("/sessions?q=memory+leak&sort=oldest")
+
+  const count = await screen.findByTestId("result-count")
+  // The query is still applied, so the count is still true -- but the reader chose a different
+  // order, and asserting relevance ordering over an oldest-first list is simply false.
+  expect(count).toHaveTextContent("1 session matching")
+  expect(count).not.toHaveTextContent("best match first")
 })

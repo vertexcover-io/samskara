@@ -11,7 +11,7 @@ export const RANGE_LABEL: Readonly<Record<Range, string>> = {
   custom: "Custom range…",
 }
 
-export const SORTS = ["recent", "oldest", "tokens", "project"] as const
+export const SORTS = ["recent", "oldest", "tokens", "project", "relevance"] as const
 
 export type Sort = (typeof SORTS)[number]
 
@@ -20,6 +20,7 @@ export const SORT_LABEL: Readonly<Record<Sort, string>> = {
   oldest: "Oldest first",
   tokens: "Most tokens",
   project: "Project name",
+  relevance: "Best match",
 }
 
 export type SessionFilters = {
@@ -29,6 +30,7 @@ export type SessionFilters = {
   readonly from: string | null
   readonly to: string | null
   readonly sort: Sort
+  readonly q: string | null
 }
 
 export const EMPTY_FILTERS: SessionFilters = {
@@ -38,6 +40,7 @@ export const EMPTY_FILTERS: SessionFilters = {
   from: null,
   to: null,
   sort: "recent",
+  q: null,
 }
 
 const isRange = (value: string | null): value is Range =>
@@ -68,6 +71,7 @@ export const parseFilters = (params: URLSearchParams): SessionFilters => {
     from: isoDate(params.get("from")),
     to: isoDate(params.get("to")),
     sort: isSort(sort) ? sort : "recent",
+    q: trimmed(params.get("q")),
   }
 }
 
@@ -81,7 +85,21 @@ export const serializeFilters = (filters: SessionFilters): URLSearchParams => {
     if (filters.to !== null) params.set("to", filters.to)
   }
   if (filters.sort !== "recent") params.set("sort", filters.sort)
+  if (filters.q !== null) params.set("q", filters.q)
   return params
+}
+
+/**
+ * Typing into the search box changes more than `q`: while the sort is still the untouched
+ * default, a non-empty query switches the effective sort to relevance so the ranked response
+ * isn't immediately reshuffled back to recency; clearing the query while still on relevance
+ * restores it. A sort the user picked explicitly is left alone either way.
+ */
+export const withQuery = (filters: SessionFilters, rawQuery: string): SessionFilters => {
+  const q = trimmed(rawQuery)
+  if (q !== null && filters.sort === "recent") return { ...filters, q, sort: "relevance" }
+  if (q === null && filters.sort === "relevance") return { ...filters, q, sort: "recent" }
+  return { ...filters, q }
 }
 
 const startOf = (range: Range, now: number): number | null => {
@@ -124,6 +142,10 @@ export const sortSessions = <T extends Sortable>(
   sessions: ReadonlyArray<T>,
   sort: Sort,
 ): ReadonlyArray<T> => {
+  // The server already returned these in relevance order; re-sorting client-side would silently
+  // reshuffle a ranked response back into recency order (plan correction 1).
+  if (sort === "relevance") return sessions
+
   const at = (session: T): number => new Date(session.lastActiveAt).getTime() || 0
   const copy = [...sessions]
 

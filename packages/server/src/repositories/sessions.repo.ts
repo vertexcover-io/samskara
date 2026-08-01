@@ -95,6 +95,25 @@ export type SessionRepo = {
   readonly repoName: string
 }
 
+/**
+ * The read-side visibility check `existsForUser` is not: that one is ownership-only, for write
+ * paths. This is project-scoped `visibleToUser`, matching what `getDetail` and `/:id/artifacts`
+ * already use to decide a session is reachable at all -- a session id in the URL is not
+ * authorization.
+ */
+export const isSessionVisible = async (
+  db: Querier,
+  userId: string,
+  sessionId: string,
+): Promise<boolean> => {
+  const [row] = await db
+    .select({ id: sessions.id })
+    .from(sessions)
+    .innerJoin(projects, eq(projects.id, sessions.projectId))
+    .where(and(eq(sessions.id, sessionId), visibleToUser(db, userId)))
+  return row !== undefined
+}
+
 export type SessionSummaryRow = {
   readonly id: string
   readonly title: string | null
@@ -113,41 +132,39 @@ export type SessionListFilter = {
   readonly userLogin?: string
   readonly since?: Date
   readonly until?: Date
+  readonly sessionId?: string
 }
 
 const ownMessages = sql`"messages" where "messages"."sessionId" = "sessions"."id"`
 
 const messageCount = sql<number>`(select count(*)::int from ${ownMessages})`
 
-const durationMs = sql<number | null>`(
+// Exported: `search.repo.ts`'s `RankedSession` extends this same summary shape, and a second
+// copy of these projections is how one silently stops matching the other.
+export const durationMs = sql<number | null>`(
   select (extract(epoch from max("messages"."timestamp") - min("messages"."timestamp")) * 1000)::bigint
   from ${ownMessages}
   having count("messages"."timestamp") > 1
 )`
 
-/**
- * Every column is int4 and the total is not: a long session passes 2^31 on cached tokens alone.
- * Widening before the addition -- not after -- is what matters, since `a + b` overflows while
- * evaluating, long before any cast to the result could apply.
- */
-const tokensTotal = sql<number>`(
+export const tokensTotal = sql<number>`(
   select coalesce(sum(
-    "tokenUsage"."inputTokens"::bigint + "tokenUsage"."outputTokens"::bigint
-    + "tokenUsage"."cachedTokens"::bigint + "tokenUsage"."thinkingTokens"::bigint
-  ), 0)::bigint
+    "tokenUsage"."inputTokens" + "tokenUsage"."outputTokens"
+    + "tokenUsage"."cachedTokens" + "tokenUsage"."thinkingTokens"
+  ), 0)::int
   from "tokenUsage"
   join "messages" on "messages"."id" = "tokenUsage"."messageId"
   where "messages"."sessionId" = "sessions"."id"
 )`
 
-const status = sql<string>`case when ${messageCount} = 0 then 'empty' else 'complete' end`
+export const status = sql<string>`case when ${messageCount} = 0 then 'empty' else 'complete' end`
 
 /**
  * A session has no repo of its own: attribution lives on messages, and one session can span a
  * workspace's sub-repos. The repo most of its messages ran in stands for the session, ties going
  * to whichever appeared first.
  */
-const dominantRepoId = sql`(
+export const dominantRepoId = sql`(
   select "messages"."repoId"
   from ${ownMessages} and "messages"."repoId" is not null
   group by "messages"."repoId"
@@ -155,7 +172,7 @@ const dominantRepoId = sql`(
   limit 1
 )`
 
-const repoColumns = {
+export const repoColumns = {
   repoHost: repos.host,
   repoOwner: repos.owner,
   repoName: repos.repoName,
@@ -167,7 +184,7 @@ type RepoColumns = {
   readonly repoName: string | null
 }
 
-const withRepo = <T extends RepoColumns>({
+export const withRepo = <T extends RepoColumns>({
   repoHost,
   repoOwner,
   repoName,
@@ -181,7 +198,7 @@ const withRepo = <T extends RepoColumns>({
 })
 
 // Capture rarely supplies a title, so fall back to the opening user prompt.
-const derivedTitle = sql<string | null>`coalesce(${sessions.title}, (
+export const derivedTitle = sql<string | null>`coalesce(${sessions.title}, (
   select left(
     btrim(split_part(
       coalesce(m."content"->>'value', m."content"->>'text', m."content"->>'body'),
@@ -199,16 +216,26 @@ const derivedTitle = sql<string | null>`coalesce(${sessions.title}, (
   limit 1
 ))`
 
-export const listAccessible = (
+export const scopeConditions = (
   db: Querier,
   userId: string,
-  filter: SessionListFilter = {},
-): Promise<ReadonlyArray<SessionSummaryRow>> => {
+  filter: SessionListFilter,
+): Array<SQL | undefined> => {
   const conditions: Array<SQL | undefined> = [visibleToUser(db, userId)]
   if (filter.projectSlug !== undefined) conditions.push(eq(projects.slug, filter.projectSlug))
   if (filter.userLogin !== undefined) conditions.push(eq(users.githubLogin, filter.userLogin))
   if (filter.since !== undefined) conditions.push(gte(sessions.updatedAt, filter.since))
   if (filter.until !== undefined) conditions.push(lte(sessions.updatedAt, filter.until))
+  if (filter.sessionId !== undefined) conditions.push(eq(sessions.id, filter.sessionId))
+  return conditions
+}
+
+export const listAccessible = (
+  db: Querier,
+  userId: string,
+  filter: SessionListFilter = {},
+): Promise<ReadonlyArray<SessionSummaryRow>> => {
+  const conditions = scopeConditions(db, userId, filter)
 
   return db
     .select({
@@ -229,7 +256,7 @@ export const listAccessible = (
     .leftJoin(repos, sql`${repos.id} = ${dominantRepoId}`)
     .where(and(...conditions))
     .orderBy(desc(sessions.updatedAt))
-    .then((rows) => rows.map((row) => ({ ...withRepo(row), tokensTotal: Number(row.tokensTotal) })))
+    .then((rows) => rows.map(withRepo))
 }
 
 export const findVisibleProjectBySlug = async (
@@ -287,7 +314,6 @@ export type SubagentRow = {
   readonly agentType: string | null
   readonly description: string | null
   readonly parentAgentId: string | null
-  readonly spawnToolUseId: string | null
 }
 
 export type TokenUsageTotals = {
@@ -381,22 +407,6 @@ const EMPTY_TOKENS: TokenUsageTotals = {
   thinkingTokens: 0,
 }
 
-/**
- * The driver hands back `bigint` as a string, so a column widened to survive the sum arrives as
- * text and would serialise as `"7000000000"`. Converting here keeps the row's declared `number`
- * type honest rather than leaving each route to remember a cast. Exact well past any real total:
- * doubles carry integers to 2^53.
- */
-const countedTokens = (row: TokenUsageTotals | undefined): TokenUsageTotals =>
-  row === undefined
-    ? EMPTY_TOKENS
-    : {
-        inputTokens: Number(row.inputTokens),
-        outputTokens: Number(row.outputTokens),
-        cachedTokens: Number(row.cachedTokens),
-        thinkingTokens: Number(row.thinkingTokens),
-      }
-
 export const getDetail = async (
   db: Querier,
   userId: string,
@@ -444,18 +454,16 @@ export const getDetail = async (
           agentType: subagents.agentType,
           description: subagents.description,
           parentAgentId: subagents.parentAgentId,
-          spawnToolUseId: subagents.spawnToolUseId,
         })
         .from(subagents)
         .where(eq(subagents.sessionId, sessionId))
         .orderBy(asc(subagents.createdAt), asc(subagents.agentId)),
       db
         .select({
-          // `sum()` over int4 is already bigint; casting it back to int is what overflowed.
-          inputTokens: sql<number>`coalesce(sum(${tokenUsage.inputTokens}), 0)::bigint`,
-          outputTokens: sql<number>`coalesce(sum(${tokenUsage.outputTokens}), 0)::bigint`,
-          cachedTokens: sql<number>`coalesce(sum(${tokenUsage.cachedTokens}), 0)::bigint`,
-          thinkingTokens: sql<number>`coalesce(sum(${tokenUsage.thinkingTokens}), 0)::bigint`,
+          inputTokens: sql<number>`coalesce(sum(${tokenUsage.inputTokens}), 0)::int`,
+          outputTokens: sql<number>`coalesce(sum(${tokenUsage.outputTokens}), 0)::int`,
+          cachedTokens: sql<number>`coalesce(sum(${tokenUsage.cachedTokens}), 0)::int`,
+          thinkingTokens: sql<number>`coalesce(sum(${tokenUsage.thinkingTokens}), 0)::int`,
         })
         .from(tokenUsage)
         .innerJoin(messages, eq(messages.id, tokenUsage.messageId))
@@ -502,7 +510,7 @@ export const getDetail = async (
     messages: messageRows,
     toolCalls: toolCallRows,
     subagents: subagentRows,
-    tokenUsage: countedTokens(tokenRows[0]),
+    tokenUsage: tokenRows[0] ?? EMPTY_TOKENS,
     commits: commitRows.map(({ repoHost, repoOwner, repoName, ...commit }) => ({
       ...commit,
       repo: { host: repoHost, owner: repoOwner, repoName },

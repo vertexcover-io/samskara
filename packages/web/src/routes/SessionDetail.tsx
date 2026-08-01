@@ -17,6 +17,7 @@ import { AgentRail, agentEntries } from "../session/AgentRail.js"
 import { ArtifactsView } from "../session/ArtifactsView.js"
 import { CommitsView, PullRequestsView } from "../session/ChangesView.js"
 import { RecordStream } from "../session/RecordStream.js"
+import { SessionSearch } from "../session/SessionSearch.js"
 import { type Tab, type TabId, Tabs } from "../session/Tabs.js"
 import { ToolCallsView } from "../session/ToolCallsView.js"
 import { useFocusMode } from "../session/focus.js"
@@ -32,7 +33,6 @@ import {
   toDetail,
 } from "../session/records.js"
 import { LoadingShell } from "../shell/LoadingShell.js"
-import { absoluteTime } from "../time.js"
 
 type State =
   | { readonly phase: "loading" }
@@ -42,6 +42,18 @@ type State =
 const Unavailable = () => (
   <span className="text-faded italic underline decoration-dotted">unavailable</span>
 )
+
+const formatMoment = (iso: string): string => {
+  const parsed = new Date(iso)
+  if (Number.isNaN(parsed.getTime())) return iso
+  return parsed.toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  })
+}
 
 const formatDuration = (ms: number): string => {
   const totalMinutes = Math.round(ms / 60_000)
@@ -136,7 +148,7 @@ const Masthead = ({ session, tokens }: { session: SessionFacts; tokens: TokenTot
     >
       <Fact
         label="Created"
-        value={session.createdAt === null ? <Unavailable /> : absoluteTime(session.createdAt)}
+        value={session.createdAt === null ? <Unavailable /> : formatMoment(session.createdAt)}
       />
       <Fact
         label="Duration"
@@ -332,7 +344,7 @@ const Conversation = ({ detail, inlineTools }: { detail: Detail; inlineTools: bo
       records={view.records}
       branches={view.branches}
       showTools={inlineTools}
-      spine
+      spine={false}
       openIds={ancestryOf(agentId, detail.agents)}
       onOpen={focus.open}
       onExit={focus.exit}
@@ -463,6 +475,15 @@ const Ready = ({ payload }: { payload: SessionDetailPayload }) => {
     setParams(merged)
   }
 
+  // D1/D22: a search result's anchor reuses the same MESSAGE_PARAM the transcript view already
+  // scrolls to (permalink.ts) -- this only has to switch to the conversation tab and set it.
+  const openResult = (anchorMessageId: string): void => {
+    const merged = new URLSearchParams(params)
+    merged.delete("tab")
+    merged.set(MESSAGE_PARAM, anchorMessageId)
+    setParams(merged)
+  }
+
   const detail = useMemo(() => toDetail(payload), [payload])
   // A jump belongs on the transcript, so it drops the tab and names the message in one step --
   // two navigations would leave the reader on Commits with the message selected behind it.
@@ -493,6 +514,8 @@ const Ready = ({ payload }: { payload: SessionDetailPayload }) => {
     <section style={{ "--sticky-head": `${headHeight + tabsHeight}px` } as React.CSSProperties}>
       <SessionHead session={detail.session} measure={headRef} />
       <Masthead session={detail.session} tokens={detail.tokenUsage} />
+
+      <SessionSearch sessionId={detail.session.id} onSelect={openResult} />
 
       {/* Measured rather than a fixed offset: the head's height moves with the reader's font size. */}
       <div ref={tabsRef} className="sticky z-20 mt-4 bg-paper" style={{ top: headHeight }}>
