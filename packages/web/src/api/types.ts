@@ -69,6 +69,8 @@ export type RawSubagent = {
   readonly agentType: string | null
   readonly description: string | null
   readonly parentAgentId: string | null
+  /** The `Agent`/`Task` call that launched it. Null when a human started it, so no call exists. */
+  readonly spawnToolUseId: string | null
 }
 
 export type TokenTotals = {

@@ -268,6 +268,7 @@ export type SubagentRow = {
   readonly agentType: string | null
   readonly description: string | null
   readonly parentAgentId: string | null
+  readonly spawnToolUseId: string | null
 }
 
 export type TokenUsageTotals = {
@@ -408,6 +409,7 @@ export const getDetail = async (
           agentType: subagents.agentType,
           description: subagents.description,
           parentAgentId: subagents.parentAgentId,
+          spawnToolUseId: subagents.spawnToolUseId,
         })
         .from(subagents)
         .where(eq(subagents.sessionId, sessionId))

@@ -10,6 +10,7 @@ const AGENT = {
   agentType: "db-schema-auditor",
   description: "Audit unique constraints",
   parentAgentId: null,
+  spawnToolUseId: null,
 }
 
 const branchesOf = () => {
