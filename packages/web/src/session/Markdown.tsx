@@ -1,4 +1,4 @@
-import type { ReactNode } from "react"
+import { type ReactNode, memo } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { Code } from "./Code.js"
@@ -15,7 +15,13 @@ const languageOf = (className: unknown): string | null => {
   return match?.[1] ?? null
 }
 
-export const Markdown = ({ source }: { source: string }) => (
+/**
+ * Memoised on its source, which is the only prop that can change what it draws. A transcript
+ * holds thousands of these, and toggling inline tools rebuilds every record object -- without
+ * this, one click re-parses every body in the session through remark to produce what was already
+ * on screen.
+ */
+export const Markdown = memo(({ source }: { source: string }) => (
   <div className="min-w-0 text-[0.8125rem] leading-relaxed">
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -103,4 +109,4 @@ export const Markdown = ({ source }: { source: string }) => (
       {source}
     </ReactMarkdown>
   </div>
-)
+))
