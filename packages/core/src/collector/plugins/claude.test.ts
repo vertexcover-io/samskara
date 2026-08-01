@@ -229,6 +229,15 @@ describe("normalizeClaude", () => {
     })
   })
 
+  test("carries the transcript line's cwd onto every message it fans out, and omits it when the line has none", () => {
+    expect(normalizeClaude(assistantLine).map((m) => m.cwd)).toEqual([
+      "/work/app",
+      "/work/app",
+      "/work/app",
+    ])
+    expect(normalizeClaude(userToolResultLine).map((m) => m.cwd)).toEqual([undefined])
+  })
+
   test("maps token usage and derives provider", () => {
     const [first] = normalizeClaude(assistantLine)
     expect(first?.msgType === "message" ? first.tokens : undefined).toEqual({

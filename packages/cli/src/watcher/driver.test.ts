@@ -3,12 +3,13 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
   type FileSystem,
+  type NormalizedMessage,
   type ParsedRecord,
   type ProjectIdentity,
   createClaudePlugin,
   createLogger,
 } from "@samskara/core"
-import { beforeEach, describe, expect, test } from "vitest"
+import { beforeEach, describe, expect, test, vi } from "vitest"
 import { enqueue } from "./artifact-queue.js"
 import { runArtifactWorkers } from "./artifact-worker.js"
 import {
@@ -18,7 +19,20 @@ import {
   runCycle,
   sliceByMessages,
 } from "./driver.js"
+import type { ResolvedRepo } from "./resolveRepo.js"
 import { createInMemorySink } from "./sink.js"
+
+// The driver binds these at module load, so the mock must replace the module, not a dep.
+const repoMocks = vi.hoisted(() => ({
+  resolveRepo: vi.fn<(cwd: string) => Promise<ResolvedRepo | null>>(async () => null),
+  resolveHead: vi.fn<(cwd: string) => Promise<string | null>>(async () => null),
+}))
+
+vi.mock("../project-resolver.js", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  createLocalRepoResolver: () => repoMocks.resolveRepo,
+  resolveLocalHeadSha: repoMocks.resolveHead,
+}))
 
 const nodeFs: FileSystem = {
   readFile: (path) => readFile(path, "utf8"),
@@ -118,6 +132,8 @@ describe("watcher driver", () => {
   })
 
   beforeEach(async () => {
+    repoMocks.resolveRepo.mockReset()
+    repoMocks.resolveHead.mockReset()
     dir = await mkdtemp(join(tmpdir(), "samskara-watch-"))
     projects = join(dir, ".claude", "projects", "bucket")
     await mkdir(projects, { recursive: true })
@@ -287,6 +303,195 @@ describe("watcher driver", () => {
 
     expect(store.checkpoints[a]).toBeUndefined()
     expect(store.checkpoints[b]?.lineProcessed).toBe(1)
+  })
+
+  describe("repo attribution", () => {
+    const serana = {
+      host: "github.com",
+      owner: "refrens",
+      ownerType: "org",
+      repoName: "serana",
+      root: "/work/serana",
+    } as const
+    const andromeda = { ...serana, repoName: "andromeda", root: "/work/andromeda" }
+
+    const stubRepoResolver = () => {
+      repoMocks.resolveRepo.mockImplementation(async (cwd) => {
+        if (cwd === "/work/serana") return serana
+        if (cwd === "/work/andromeda") return andromeda
+        return null
+      })
+    }
+
+    test("attributes each message to the repo of its own cwd, so one track spanning two checkouts sends two identities", async () => {
+      const main = join(projects, "sess-1.jsonl")
+      await writeFile(
+        main,
+        [
+          assistantLine("l1", "sess-1", { cwd: "/work/serana" }),
+          assistantLine("l2", "sess-1", { cwd: "/work/andromeda" }),
+          assistantLine("l3", "sess-1", { cwd: "/private/tmp/scratch" }),
+        ]
+          .map((line) => `${line}\n`)
+          .join(""),
+        "utf8",
+      )
+
+      const sink = createInMemorySink()
+      stubRepoResolver()
+      await runCycle(config, deps({ sink, glob: async () => [main] }))
+
+      const sent = sink.received[0]?.records.flatMap((r) => r.messages) ?? []
+      expect(sent.map((m) => m.repo?.repoName)).toEqual([
+        "serana",
+        "serana",
+        "andromeda",
+        "andromeda",
+        undefined,
+        undefined,
+      ])
+      // The `root` the resolver carries is CLI-side only; the wire identity is the four
+      // fields the repos table is keyed by.
+      expect(sent[0]?.repo).toEqual({
+        host: "github.com",
+        owner: "refrens",
+        ownerType: "org",
+        repoName: "serana",
+      })
+    })
+
+    test("captures the session's starting cwd and HEAD once, on the flush that creates it, and never re-reads HEAD on a later flush", async () => {
+      const main = join(projects, "sess-1.jsonl")
+      await writeFile(main, `${assistantLine("l1", "sess-1", { cwd: "/work/serana" })}\n`, "utf8")
+
+      const heads = [
+        "37f31013b7ac0a2e6f4c9d1e5a8b2c7d0e3f4a5b",
+        "aaaabbbbccccddddeeeeffff0000111122223333",
+      ]
+      let headReads = 0
+      repoMocks.resolveHead.mockImplementation(async () => heads[headReads++] ?? null)
+      stubRepoResolver()
+
+      const sink1 = createInMemorySink()
+      await runCycle(config, deps({ sink: sink1, glob: async () => [main] }))
+      expect(sink1.received[0]).toMatchObject({
+        startCwd: "/work/serana",
+        startCommit: heads[0],
+      })
+
+      // HEAD moves as the session commits. A second flush must not re-stamp the origin with
+      // whatever HEAD has become -- that is the sha the session ended on, not started on.
+      await writeFile(
+        main,
+        `${assistantLine("l1", "sess-1", { cwd: "/work/serana" })}\n${assistantLine("l2", "sess-1", { cwd: "/work/serana" })}\n`,
+        "utf8",
+      )
+      const sink2 = createInMemorySink()
+      await runCycle(config, deps({ sink: sink2, glob: async () => [main] }))
+      expect(sink2.received[0]).not.toHaveProperty("startCommit")
+      expect(headReads).toBe(1)
+    })
+
+    test("a subagent flush carries no session origin, so it cannot re-stamp the session it belongs to", async () => {
+      const sub = join(projects, "sess-1", "subagents", "agent-af66.jsonl")
+      await mkdir(join(projects, "sess-1", "subagents"), { recursive: true })
+      await writeFile(
+        sub,
+        `${assistantLine("s1", "sess-1", { agentId: "af66", cwd: "/work/serana" })}\n`,
+        "utf8",
+      )
+      await writeFile(
+        sub.replace(/\.jsonl$/, ".meta.json"),
+        JSON.stringify({ agentId: "af66" }),
+        "utf8",
+      )
+
+      const sink = createInMemorySink()
+      stubRepoResolver()
+      repoMocks.resolveHead.mockImplementation(
+        async () => "37f31013b7ac0a2e6f4c9d1e5a8b2c7d0e3f4a5b",
+      )
+      await runCycle(config, deps({ sink, glob: async () => [sub] }))
+
+      const payload = sink.received[0]
+      expect(payload?.type).toBe("subagent")
+      expect(payload).not.toHaveProperty("startCwd")
+      expect(payload).not.toHaveProperty("startCommit")
+      expect(payload?.records[0]?.messages[0]?.repo?.repoName).toBe("serana")
+    })
+
+    test("S13c: a git commit run in a sub-repo rides out on the payload carrying that sub-repo's identity", async () => {
+      const main = join(projects, "sess-1.jsonl")
+      const bashCall = JSON.stringify({
+        uuid: "c1",
+        sessionId: "sess-1",
+        cwd: "/work/serana",
+        timestamp: "2026-07-23T00:00:00.000Z",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu_commit",
+              name: "Bash",
+              input: { command: "git commit -m 'feat: sub-repo work'" },
+            },
+          ],
+        },
+      })
+      const bashResult = JSON.stringify({
+        uuid: "c2",
+        sessionId: "sess-1",
+        cwd: "/work/serana",
+        timestamp: "2026-07-23T00:00:01.000Z",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_commit",
+              content:
+                "[feat/local-source-graph 2314a2e44] feat: sub-repo work\n 3 files changed, 8 insertions(+), 2 deletions(-)",
+            },
+          ],
+        },
+      })
+      await writeFile(main, `${bashCall}\n${bashResult}\n`, "utf8")
+
+      const sink = createInMemorySink()
+      stubRepoResolver()
+      await runCycle(config, deps({ sink, glob: async () => [main] }))
+
+      expect(sink.received[0]?.gitEvents).toEqual([
+        {
+          kind: "commit",
+          sha: "2314a2e44",
+          branch: "feat/local-source-graph",
+          subject: "feat: sub-repo work",
+          filesChanged: 3,
+          insertions: 8,
+          deletions: 2,
+          repo: {
+            host: "github.com",
+            owner: "refrens",
+            ownerType: "org",
+            repoName: "serana",
+          },
+          callId: "toolu_commit",
+        },
+      ])
+    })
+
+    test("a flush with no git commit in it carries no gitEvents at all", async () => {
+      const main = join(projects, "sess-1.jsonl")
+      await writeFile(main, `${assistantLine("l1", "sess-1", { cwd: "/work/serana" })}\n`, "utf8")
+
+      const sink = createInMemorySink()
+      stubRepoResolver()
+      await runCycle(config, deps({ sink, glob: async () => [main] }))
+
+      expect(sink.received[0]).not.toHaveProperty("gitEvents")
+    })
   })
 
   describe("artifact enqueue", () => {
@@ -573,5 +778,73 @@ describe("watcher driver", () => {
 
     expect(sink.received.length).toBe(1)
     expect(store.checkpoints[key]).toBeUndefined()
+  })
+
+  test("a call and its result split across the message cap still yield the commit, on the result's payload", async () => {
+    const key = "/fake/split.jsonl"
+    const base = {
+      sessionId: "sess-split",
+      source: "claude_code" as const,
+      sourceSchemaVersion: 1,
+      trackId: "main",
+    }
+    const one = (lineNumber: number, message: NormalizedMessage): ParsedRecord => ({
+      lineUuid: `00000000-0000-5000-8000-${lineNumber.toString().padStart(12, "0")}`,
+      lineNumber,
+      raw: {},
+      messages: [message],
+    })
+    const call: NormalizedMessage = {
+      ...base,
+      subIndex: 0,
+      msgType: "toolCall",
+      details: { callId: "call-split", name: "Bash", input: { command: "git commit -m split" } },
+    }
+    const result: NormalizedMessage = {
+      ...base,
+      subIndex: 0,
+      msgType: "toolResult",
+      details: {
+        callId: "call-split",
+        output: "[main abc1234] split\n 1 file changed, 1 insertion(+)",
+        status: "unknown",
+      },
+    }
+    const track = {
+      type: "main" as const,
+      sessionId: "sess-split",
+      project,
+      sourceRelativePath: key,
+      checkpointKey: key,
+      records: [record(1, MESSAGE_CAP - 1), one(2, call), one(3, result)],
+      lastLineProcessed: 3,
+      checkpointAt: (lineNumber: number) => ({
+        source: "claude_code" as const,
+        mtime: 10,
+        size: 20,
+        lineProcessed: lineNumber,
+      }),
+    }
+    const stubPlugin = {
+      source: "claude_code",
+      collect: async () => [{ sessionId: "sess-split", tracks: [track] }],
+    }
+
+    const sink = createInMemorySink()
+    await runCycle(config, deps({ sink, glob: async () => [], plugin: stubPlugin }))
+
+    expect(sink.received).toHaveLength(2)
+    expect(sink.received[0]).not.toHaveProperty("gitEvents")
+    expect(sink.received[1]?.gitEvents).toEqual([
+      {
+        kind: "commit",
+        sha: "abc1234",
+        branch: "main",
+        subject: "split",
+        filesChanged: 1,
+        insertions: 1,
+        callId: "call-split",
+      },
+    ])
   })
 })

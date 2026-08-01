@@ -21,6 +21,17 @@ const nonnegativeInteger = z.number().int().nonnegative()
 const jsonValue = z.unknown()
 const timestamp = z.string().datetime({ offset: true })
 
+export const repoIdentitySchema = z
+  .object({
+    host: nonemptyString,
+    owner: nonemptyString,
+    // Optional, never guessed: a URL cannot settle user-vs-org. Not part of the repo's identity
+    // either, so an absent value can never split one repo into two rows.
+    ownerType: z.enum(["user", "org"]).optional(),
+    repoName: nonemptyString,
+  })
+  .strict()
+
 export const tokenUsageSchema = z
   .object({
     input: nonnegativeInteger,
@@ -60,6 +71,8 @@ const commonShape = {
   model: nonemptyString.optional(),
   provider: nonemptyString.optional(),
   agentId: nonemptyString.optional(),
+  cwd: nonemptyString.optional(),
+  repo: repoIdentitySchema.optional(),
   gitBranch: nonemptyString.optional(),
   gitCommit: nonemptyString.optional(),
 }
@@ -350,17 +363,67 @@ export const agentInfoSchema = z
   })
   .strict()
 
+/**
+ * A commit the session made, parsed from the tool output that produced it. `sha` is stored as
+ * git printed it -- an abbreviated sha cannot be expanded without the repo. `callId` points back
+ * at the Bash call, which is how the commit finds the message that created it.
+ */
+export const commitEventSchema = z
+  .object({
+    kind: z.literal("commit"),
+    sha: nonemptyString,
+    branch: nonemptyString.optional(),
+    subject: z.string().optional(),
+    filesChanged: nonnegativeInteger.optional(),
+    insertions: nonnegativeInteger.optional(),
+    deletions: nonnegativeInteger.optional(),
+    repo: repoIdentitySchema.optional(),
+    callId: nonemptyString,
+  })
+  .strict()
+
+/**
+ * A pull request the session opened. Its repo is spelled out by the PR's own URL rather than
+ * carried in a `repo` field like a commit's: the URL names the target repo, which need not be
+ * any cwd the session visited.
+ */
+export const pullRequestEventSchema = z
+  .object({
+    kind: z.literal("pullRequest"),
+    host: nonemptyString,
+    owner: nonemptyString,
+    repoName: nonemptyString,
+    number: z.number().int().positive(),
+    callId: nonemptyString,
+  })
+  .strict()
+
+export const gitEventSchema = z.discriminatedUnion("kind", [
+  commitEventSchema,
+  pullRequestEventSchema,
+])
+
 const ingestBaseShape = {
   sessionId: nonemptyString,
   project: projectIdentitySchema,
   sourceRelativePath: nonemptyString,
   title: z.string().optional(),
   records: z.array(parsedRecordSchema).readonly(),
+  gitEvents: z.array(gitEventSchema).readonly().optional(),
+}
+
+/**
+ * The session's launch context, captured once when the session is first seen. Only a main
+ * payload may carry it: a subagent flush arrives later and must not re-stamp the origin.
+ */
+const sessionOriginShape = {
+  startCwd: nonemptyString.optional(),
+  startCommit: nonemptyString.optional(),
 }
 
 export const ingestPayloadSchema = z
   .discriminatedUnion("type", [
-    z.object({ ...ingestBaseShape, type: z.literal("main") }).strict(),
+    z.object({ ...ingestBaseShape, ...sessionOriginShape, type: z.literal("main") }).strict(),
     z.object({ ...ingestBaseShape, type: z.literal("subagent"), agent: agentInfoSchema }).strict(),
   ])
   .superRefine((payload, ctx) => {
@@ -448,12 +511,10 @@ export type ProjectIdentity = z.infer<typeof projectIdentitySchema>
 export type AgentInfo = z.infer<typeof agentInfoSchema>
 export type IngestPayload = z.infer<typeof ingestPayloadSchema>
 
-export type RepoIdentity = {
-  readonly host: string
-  readonly owner: string
-  readonly ownerType: "user" | "org"
-  readonly repoName: string
-}
+export type RepoIdentity = z.infer<typeof repoIdentitySchema>
+export type GitEvent = z.infer<typeof gitEventSchema>
+export type CommitEvent = z.infer<typeof commitEventSchema>
+export type PullRequestEvent = z.infer<typeof pullRequestEventSchema>
 
 export type IngestResponse =
   | { readonly ingested: number; readonly deduped: number }

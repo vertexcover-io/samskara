@@ -7,19 +7,26 @@ export type ResolveProjectDeps = {
   readonly runGit: GitRunner
 }
 
-const parseRemote = (url: string): { readonly owner: string; readonly repoName: string } | null => {
+export type ParsedRemote = {
+  readonly host: string
+  readonly owner: string
+  readonly repoName: string
+}
+
+export const parseRemote = (url: string): ParsedRemote | null => {
   const cleaned = url.trim().replace(/\.git$/, "")
-  const ssh = cleaned.match(/^git@[^:]+:([^/]+)\/(.+)$/)
-  if (ssh?.[1] && ssh[2]) return { owner: ssh[1], repoName: ssh[2] }
-  const https = cleaned.match(/^https?:\/\/[^/]+\/([^/]+)\/(.+)$/)
-  if (https?.[1] && https[2]) return { owner: https[1], repoName: https[2] }
+  const ssh = cleaned.match(/^git@([^:]+):([^/]+)\/(.+)$/)
+  if (ssh?.[1] && ssh[2] && ssh[3]) return { host: ssh[1], owner: ssh[2], repoName: ssh[3] }
+  const https = cleaned.match(/^https?:\/\/([^/]+)\/([^/]+)\/(.+)$/)
+  if (https?.[1] && https[2] && https[3])
+    return { host: https[1], owner: https[2], repoName: https[3] }
   return null
 }
 
 // Blanket-replace both `/` and `\` so the slug is stable cross-platform.
 const slugFromDir = (dir: string): string => dir.replace(/[/\\]/g, "-")
 
-const basename = (dir: string): string => {
+export const basename = (dir: string): string => {
   const segments = dir.split(/[/\\]/).filter((s) => s.length > 0)
   return segments[segments.length - 1] ?? dir
 }
@@ -30,17 +37,23 @@ const normalizedAbsolutePath = (path: string): string =>
 const parentDirectory = (path: string): string =>
   isWindowsPath(path) ? win32.dirname(path) : dirname(path)
 
-export const resolveProject = async (
-  startDir: string,
-  { runGit }: ResolveProjectDeps,
-): Promise<ProjectIdentity> => {
+/**
+ * The **common** dir's parent, so a linked worktree resolves to its main checkout rather than
+ * to a repo of its own. Null when the directory is not inside a git repo at all.
+ */
+export const gitRootOf = async (startDir: string, runGit: GitRunner): Promise<string | null> => {
   const commonDir = await runGit(
     ["rev-parse", "--path-format=absolute", "--git-common-dir"],
     startDir,
   )
-  const projectRoot = commonDir
-    ? parentDirectory(normalizedAbsolutePath(commonDir))
-    : normalizedAbsolutePath(startDir)
+  return commonDir ? parentDirectory(normalizedAbsolutePath(commonDir)) : null
+}
+
+export const resolveProject = async (
+  startDir: string,
+  { runGit }: ResolveProjectDeps,
+): Promise<ProjectIdentity> => {
+  const projectRoot = (await gitRootOf(startDir, runGit)) ?? normalizedAbsolutePath(startDir)
   const remote = await runGit(["config", "--get", "remote.origin.url"], projectRoot)
   const parsed = remote ? parseRemote(remote) : null
   if (parsed) {

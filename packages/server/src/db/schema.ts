@@ -60,15 +60,22 @@ export const repos = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     host: text("host").notNull(),
     owner: text("owner").notNull(),
-    ownerType: text("owner_type").notNull(),
+    // Nullable and unconstrained: a remote URL cannot tell a user repo from an org repo, and a
+    // PR-derived repo may never have been a cwd. Guessing 'org' asserted a fact we do not have.
+    // Out of the identity key for the same reason -- an unknown must not split one repo in two.
+    ownerType: text("owner_type"),
     repoName: text("repo_name").notNull(),
+    userId: uuid("userId")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
     createdAt,
     updatedAt,
   },
-  (t) => [
-    unique("repos_identity_unique").on(t.host, t.owner, t.ownerType, t.repoName),
-    check("repos_owner_type_check", sql`${t.ownerType} in ('user', 'org')`),
-  ],
+  // Repos are personal, mirroring projects' UNIQUE (slug, ownerId): the same repo seen by two
+  // users is two rows. `host` is in the key because github.com/acme/x and gitlab.com/acme/x are
+  // genuinely different repos -- and it does not split ssh from https, since `parseRemote`
+  // yields the same host string for both forms.
+  (t) => [unique("repos_identity_unique").on(t.host, t.owner, t.repoName, t.userId)],
 )
 
 export const userOrgs = pgTable(
@@ -134,6 +141,7 @@ export const sessions = pgTable(
     provider: text("provider"),
     title: text("title"),
     cwd: text("cwd"),
+    startCommit: text("startCommit"),
     cliVersion: text("cliVersion"),
     permissionMode: text("permissionMode"),
     createdAt: createdAtCamel,
@@ -168,6 +176,7 @@ export const messages = pgTable(
     sourceSchemaVersion: integer("sourceSchemaVersion").notNull(),
     isSubagent: boolean("isSubagent").notNull().default(false),
     agentId: text("agentId"),
+    repoId: uuid("repoId").references(() => repos.id),
     gitBranch: text("gitBranch"),
     gitCommit: text("gitCommit"),
     createdAt: createdAtCamel,
@@ -182,6 +191,69 @@ export const messages = pgTable(
     index("messages_session_line_idx").on(t.sessionId, t.lineNumber),
     index("messages_session_agent_idx").on(t.sessionId, t.agentId),
     index("messages_agent_id_idx").on(t.agentId).where(sql`${t.isSubagent}`),
+    index("messages_repo_id_idx").on(t.repoId),
+  ],
+)
+
+/**
+ * A commit the session made. `messageId` is SET NULL rather than CASCADE: a commit is a
+ * historical fact that outlives the message row it was parsed from.
+ */
+export const commits = pgTable(
+  "commits",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    repoId: uuid("repoId")
+      .notNull()
+      .references(() => repos.id, { onDelete: "cascade" }),
+    sha: text("sha").notNull(),
+    branch: text("branch"),
+    subject: text("subject"),
+    filesChanged: integer("filesChanged"),
+    insertions: integer("insertions"),
+    deletions: integer("deletions"),
+    sessionId: text("sessionId").references(() => sessions.id, { onDelete: "cascade" }),
+    messageId: uuid("messageId").references(() => messages.id, { onDelete: "set null" }),
+    createdAt: createdAtCamel,
+  },
+  (t) => [
+    unique("commits_repo_sha_unique").on(t.repoId, t.sha),
+    index("commits_sessionId_idx").on(t.sessionId),
+  ],
+)
+
+/** A pull request a session opened, keyed by the repo its URL named and its number. */
+export const pullRequests = pgTable(
+  "pullRequests",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    repoId: uuid("repoId")
+      .notNull()
+      .references(() => repos.id, { onDelete: "cascade" }),
+    number: integer("number").notNull(),
+    title: text("title"),
+    createdAt: createdAtCamel,
+    updatedAt: updatedAtCamel,
+  },
+  (t) => [unique("pullRequests_repo_number_unique").on(t.repoId, t.number)],
+)
+
+/** Only PRs the session opened are stored, so a row here means "this session created that PR". */
+export const sessionPullRequests = pgTable(
+  "sessionPullRequests",
+  {
+    sessionId: text("sessionId")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    prId: uuid("prId")
+      .notNull()
+      .references(() => pullRequests.id, { onDelete: "cascade" }),
+    messageId: uuid("messageId").references(() => messages.id, { onDelete: "set null" }),
+    createdAt: createdAtCamel,
+  },
+  (t) => [
+    primaryKey({ columns: [t.sessionId, t.prId] }),
+    index("sessionPullRequests_prId_idx").on(t.prId),
   ],
 )
 

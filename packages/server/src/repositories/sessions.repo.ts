@@ -15,6 +15,8 @@ import { visibleToUser } from "./projects.repo.js"
 
 export type SessionFields = {
   readonly title?: string
+  readonly startCwd?: string
+  readonly startCommit?: string
 }
 
 export type UpsertSessionInput = {
@@ -25,9 +27,15 @@ export type UpsertSessionInput = {
   readonly fields: SessionFields
 }
 
-const keepExisting = (column: PgColumn) =>
+/** Incoming non-null wins (`excluded` first): capture rarely supplies a title, the latest is best. */
+const enrich = (column: PgColumn) =>
   sql`coalesce(${sql.raw(`excluded."${column.name}"`)}, ${column})`
 
+/**
+ * The launch context (`cwd`, `startCommit`) is written only on row creation and never on
+ * conflict: a replayed transcript reads today's HEAD, not the sha the session started on, so a
+ * re-stamp is always wrong. A session created without one keeps null forever.
+ */
 export const upsert = async (db: Querier, input: UpsertSessionInput): Promise<void> => {
   const { id, source, userId, projectId, fields } = input
   await db
@@ -38,11 +46,13 @@ export const upsert = async (db: Querier, input: UpsertSessionInput): Promise<vo
       userId,
       projectId,
       title: fields.title,
+      cwd: fields.startCwd,
+      startCommit: fields.startCommit,
     })
     .onConflictDoUpdate({
       target: sessions.id,
       set: {
-        title: keepExisting(sessions.title),
+        title: enrich(sessions.title),
         updatedAt: sql`now()`,
       },
     })

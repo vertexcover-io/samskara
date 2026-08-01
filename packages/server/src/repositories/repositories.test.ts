@@ -4,9 +4,22 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
 import { type Db, createDb } from "../db/client.js"
-import { projects, sessions, subagents, tokenUsage, toolCall, users } from "../db/schema.js"
+import {
+  commits,
+  projects,
+  pullRequests,
+  sessionPullRequests,
+  sessions,
+  subagents,
+  tokenUsage,
+  toolCall,
+  users,
+} from "../db/schema.js"
+import * as commitsRepo from "./commits.repo.js"
 import * as messagesRepo from "./messages.repo.js"
 import * as projectsRepo from "./projects.repo.js"
+import * as pullRequestsRepo from "./pullRequests.repo.js"
+import * as reposRepo from "./repos.repo.js"
 import * as sessionsRepo from "./sessions.repo.js"
 import * as subagentsRepo from "./subagents.repo.js"
 import * as tokenUsageRepo from "./tokenUsage.repo.js"
@@ -103,6 +116,22 @@ describe.skipIf(!dockerAvailable())("ingest repositories", () => {
     )
   })
 
+  test("sessions.upsert freezes the launch context at creation: a row created without one stays null", async () => {
+    const { userId, projectId } = await seedSession("sess-origin-frozen")
+
+    await sessionsRepo.upsert(db, {
+      id: "sess-origin-frozen",
+      source: "claude_code",
+      userId,
+      projectId,
+      fields: { startCwd: "/work/late", startCommit: "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111" },
+    })
+
+    const [row] = await db.select().from(sessions).where(eq(sessions.id, "sess-origin-frozen"))
+    expect(row?.cwd).toBeNull()
+    expect(row?.startCommit).toBeNull()
+  })
+
   test("projects.upsert is idempotent per (slug, ownerId) and refreshes name", async () => {
     const owner = await seedUser()
     const first = await projectsRepo.upsert(db, {
@@ -118,6 +147,37 @@ describe.skipIf(!dockerAvailable())("ingest repositories", () => {
     const rows = await db.select().from(projects).where(eq(projects.id, first))
     expect(rows).toHaveLength(1)
     expect(rows[0]?.name).toBe("widget-renamed")
+  })
+
+  test("repos.upsertByIdentity keys on (host, owner, repoName, userId): same path on two hosts is two repos, two users is two repos, ssh and https are one", async () => {
+    const owner = await seedUser()
+    const other = await seedUser()
+
+    const gh = await reposRepo.upsertByIdentity(
+      db,
+      { host: "github.com", owner: "acme", repoName: "serana" },
+      owner.id,
+    )
+    const gl = await reposRepo.upsertByIdentity(
+      db,
+      { host: "gitlab.com", owner: "acme", repoName: "serana" },
+      owner.id,
+    )
+    expect(gl).not.toBe(gh)
+
+    const theirs = await reposRepo.upsertByIdentity(
+      db,
+      { host: "github.com", owner: "acme", repoName: "serana" },
+      other.id,
+    )
+    expect(theirs).not.toBe(gh)
+
+    const again = await reposRepo.upsertByIdentity(
+      db,
+      { host: "github.com", owner: "acme", repoName: "serana" },
+      owner.id,
+    )
+    expect(again).toBe(gh)
   })
 
   test("authorization is owner-or-grant with ordered scopes", async () => {
@@ -256,5 +316,100 @@ describe.skipIf(!dockerAvailable())("ingest repositories", () => {
     const rows = await db.select().from(tokenUsage).where(eq(tokenUsage.messageId, messageId))
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({ inputTokens: 9, cachedTokens: 3, thinkingTokens: 4 })
+  })
+
+  describe("commits", () => {
+    const seedRepo = async (repoName: string) => {
+      const owner = await seedUser()
+      return reposRepo.upsertByIdentity(
+        db,
+        { host: "github.com", owner: "acme", ownerType: "org", repoName },
+        owner.id,
+      )
+    }
+
+    const startSessionAt = async (sessionId: string, startCommit?: string) => {
+      const { userId, projectId } = await seedSession(sessionId)
+      await sessionsRepo.upsert(db, {
+        id: sessionId,
+        source: "claude_code",
+        userId,
+        projectId,
+        fields: startCommit === undefined ? {} : { startCommit },
+      })
+    }
+
+    test("S14: a re-observed (repoId, sha) keeps the first observation's facts", async () => {
+      const sessionId = "sess-commit-dedup"
+      await startSessionAt(sessionId)
+      const repoId = await seedRepo("dedup-repo")
+
+      const first = {
+        repoId,
+        sha: "37f3101",
+        branch: "master",
+        subject: "docs: enrich clients",
+        filesChanged: 51,
+        insertions: 1993,
+        deletions: 417,
+        sessionId,
+      }
+      await commitsRepo.insertObserved(db, [first])
+      await commitsRepo.insertObserved(db, [
+        { ...first, branch: "rewritten", subject: "clobbered", filesChanged: 1 },
+      ])
+
+      const rows = await db.select().from(commits).where(eq(commits.repoId, repoId))
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toMatchObject(first)
+    })
+
+    test("the same sha observed in two different repos is two rows", async () => {
+      const sessionId = "sess-commit-two-repos"
+      await startSessionAt(sessionId)
+      const serana = await seedRepo("serana-commits")
+      const andromeda = await seedRepo("andromeda-commits")
+
+      await commitsRepo.insertObserved(db, [
+        { repoId: serana, sha: "deadbee", sessionId },
+        { repoId: andromeda, sha: "deadbee", sessionId },
+      ])
+
+      const rows = await db.select().from(commits).where(eq(commits.sha, "deadbee"))
+      expect(rows).toHaveLength(2)
+      expect(new Set(rows.map((row) => row.repoId))).toEqual(new Set([serana, andromeda]))
+    })
+
+    const linkOf = async (sessionId: string, repoId: string) => {
+      const [row] = await db
+        .select({ number: pullRequests.number, sessionId: sessionPullRequests.sessionId })
+        .from(sessionPullRequests)
+        .innerJoin(pullRequests, eq(pullRequests.id, sessionPullRequests.prId))
+        .where(eq(pullRequests.repoId, repoId))
+      return row
+    }
+
+    test("an opened PR links the session to the repo's PR row", async () => {
+      const sessionId = "sess-pr-open"
+      await startSessionAt(sessionId)
+      const repoId = await seedRepo("pr-open-repo")
+
+      await pullRequestsRepo.insertOpened(db, [{ repoId, number: 59, sessionId }])
+
+      expect(await linkOf(sessionId, repoId)).toEqual({ number: 59, sessionId })
+    })
+
+    test("a re-parse of the same creation stays one PR row and one link", async () => {
+      const sessionId = "sess-pr-reparse"
+      await startSessionAt(sessionId)
+      const repoId = await seedRepo("pr-reparse-repo")
+
+      await pullRequestsRepo.insertOpened(db, [{ repoId, number: 77, sessionId }])
+      await pullRequestsRepo.insertOpened(db, [{ repoId, number: 77, sessionId }])
+
+      const rows = await db.select().from(pullRequests).where(eq(pullRequests.repoId, repoId))
+      expect(rows).toHaveLength(1)
+      expect(await linkOf(sessionId, repoId)).toEqual({ number: 77, sessionId })
+    })
   })
 })
