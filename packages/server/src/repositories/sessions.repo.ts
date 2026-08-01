@@ -111,11 +111,16 @@ const durationMs = sql<number | null>`(
   having count("messages"."timestamp") > 1
 )`
 
+/**
+ * Every column is int4 and the total is not: a long session passes 2^31 on cached tokens alone.
+ * Widening before the addition -- not after -- is what matters, since `a + b` overflows while
+ * evaluating, long before any cast to the result could apply.
+ */
 const tokensTotal = sql<number>`(
   select coalesce(sum(
-    "tokenUsage"."inputTokens" + "tokenUsage"."outputTokens"
-    + "tokenUsage"."cachedTokens" + "tokenUsage"."thinkingTokens"
-  ), 0)::int
+    "tokenUsage"."inputTokens"::bigint + "tokenUsage"."outputTokens"::bigint
+    + "tokenUsage"."cachedTokens"::bigint + "tokenUsage"."thinkingTokens"::bigint
+  ), 0)::bigint
   from "tokenUsage"
   join "messages" on "messages"."id" = "tokenUsage"."messageId"
   where "messages"."sessionId" = "sessions"."id"
@@ -210,7 +215,7 @@ export const listAccessible = (
     .leftJoin(repos, sql`${repos.id} = ${dominantRepoId}`)
     .where(and(...conditions))
     .orderBy(desc(sessions.updatedAt))
-    .then((rows) => rows.map(withRepo))
+    .then((rows) => rows.map((row) => ({ ...withRepo(row), tokensTotal: Number(row.tokensTotal) })))
 }
 
 export const findVisibleProjectBySlug = async (
@@ -362,6 +367,22 @@ const EMPTY_TOKENS: TokenUsageTotals = {
   thinkingTokens: 0,
 }
 
+/**
+ * The driver hands back `bigint` as a string, so a column widened to survive the sum arrives as
+ * text and would serialise as `"7000000000"`. Converting here keeps the row's declared `number`
+ * type honest rather than leaving each route to remember a cast. Exact well past any real total:
+ * doubles carry integers to 2^53.
+ */
+const countedTokens = (row: TokenUsageTotals | undefined): TokenUsageTotals =>
+  row === undefined
+    ? EMPTY_TOKENS
+    : {
+        inputTokens: Number(row.inputTokens),
+        outputTokens: Number(row.outputTokens),
+        cachedTokens: Number(row.cachedTokens),
+        thinkingTokens: Number(row.thinkingTokens),
+      }
+
 export const getDetail = async (
   db: Querier,
   userId: string,
@@ -416,10 +437,11 @@ export const getDetail = async (
         .orderBy(asc(subagents.createdAt), asc(subagents.agentId)),
       db
         .select({
-          inputTokens: sql<number>`coalesce(sum(${tokenUsage.inputTokens}), 0)::int`,
-          outputTokens: sql<number>`coalesce(sum(${tokenUsage.outputTokens}), 0)::int`,
-          cachedTokens: sql<number>`coalesce(sum(${tokenUsage.cachedTokens}), 0)::int`,
-          thinkingTokens: sql<number>`coalesce(sum(${tokenUsage.thinkingTokens}), 0)::int`,
+          // `sum()` over int4 is already bigint; casting it back to int is what overflowed.
+          inputTokens: sql<number>`coalesce(sum(${tokenUsage.inputTokens}), 0)::bigint`,
+          outputTokens: sql<number>`coalesce(sum(${tokenUsage.outputTokens}), 0)::bigint`,
+          cachedTokens: sql<number>`coalesce(sum(${tokenUsage.cachedTokens}), 0)::bigint`,
+          thinkingTokens: sql<number>`coalesce(sum(${tokenUsage.thinkingTokens}), 0)::bigint`,
         })
         .from(tokenUsage)
         .innerJoin(messages, eq(messages.id, tokenUsage.messageId))
@@ -466,7 +488,7 @@ export const getDetail = async (
     messages: messageRows,
     toolCalls: toolCallRows,
     subagents: subagentRows,
-    tokenUsage: tokenRows[0] ?? EMPTY_TOKENS,
+    tokenUsage: countedTokens(tokenRows[0]),
     commits: commitRows.map(({ repoHost, repoOwner, repoName, ...commit }) => ({
       ...commit,
       repo: { host: repoHost, owner: repoOwner, repoName },
