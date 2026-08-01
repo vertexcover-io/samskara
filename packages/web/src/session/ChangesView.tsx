@@ -1,4 +1,5 @@
 import type { SessionCommit, SessionPullRequest, SessionRepo } from "../api/types.js"
+import { absoluteTime, relativeTime } from "../time.js"
 
 const Unavailable = () => (
   <span className="text-faded italic underline decoration-dotted">unavailable</span>
@@ -11,37 +12,17 @@ const Empty = ({ title, children }: { title: string; children: React.ReactNode }
   </div>
 )
 
-const exact = (iso: string): string => {
-  const parsed = new Date(iso)
-  return Number.isNaN(parsed.getTime()) ? "--" : `${parsed.toISOString().slice(0, 19)}Z`
-}
-
-const MINUTE = 60_000
-const HOUR = 60 * MINUTE
-const DAY = 24 * HOUR
-
 /**
  * A transcript is read soon after it is written, so "2 hours ago" places a commit against the
  * session far better than a timestamp does. The exact time stays one hover away.
  */
-export const timeAgo = (iso: string, now: number = Date.now()): string => {
-  const parsed = new Date(iso).getTime()
-  if (Number.isNaN(parsed)) return "--"
-
-  const elapsed = now - parsed
-  if (elapsed < 0) return "just now"
-  if (elapsed < MINUTE) return "just now"
-
-  const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"} ago`
-  if (elapsed < HOUR) return plural(Math.floor(elapsed / MINUTE), "minute")
-  if (elapsed < DAY) return plural(Math.floor(elapsed / HOUR), "hour")
-  if (elapsed < 30 * DAY) return plural(Math.floor(elapsed / DAY), "day")
-  return exact(iso).slice(0, 10)
-}
-
 const Stamp = ({ iso }: { iso: string }) => (
-  <time dateTime={iso} title={exact(iso)} className="font-mono text-[0.6875rem] text-ink-soft">
-    {timeAgo(iso)}
+  <time
+    dateTime={iso}
+    title={absoluteTime(iso)}
+    className="font-mono text-[0.6875rem] text-ink-soft"
+  >
+    {relativeTime(iso)}
   </time>
 )
 

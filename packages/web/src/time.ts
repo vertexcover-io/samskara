@@ -1,6 +1,18 @@
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
 const DAY = 24 * HOUR
+const MONTH = 30 * DAY
+
+/**
+ * `Intl` rather than a dependency or a hand-rolled table: pluralisation and wording are the parts
+ * that actually go wrong, and the platform already does them for every locale. What it does not
+ * decide is when to stop -- that is the product's call, and it lives below.
+ *
+ * `numeric: "auto"` is what turns one day into "yesterday" instead of "1 day ago".
+ */
+const RELATIVE = new Intl.RelativeTimeFormat("en-US", { numeric: "auto" })
+
+const localDate = (at: Date): string => at.toLocaleDateString("en-CA")
 
 /**
  * Every stamp in the app is rendered in the reader's own timezone. Capture writes UTC, and showing
@@ -31,16 +43,20 @@ export const clockTime = (iso: string | null): string => {
   })
 }
 
+/**
+ * Relative while that still locates something, then a date. Past thirty days "5 weeks ago" places
+ * a session no better than the date does, and reads less precisely.
+ */
 export const relativeTime = (iso: string, now: number = Date.now()): string => {
-  const parsed = new Date(iso)
-  if (Number.isNaN(parsed.getTime())) return "unknown"
+  const at = new Date(iso).getTime()
+  if (Number.isNaN(at)) return "--"
 
-  const elapsed = now - parsed.getTime()
+  // Clock skew between the capturing machine and the reader is real, and must never surface as a
+  // negative distance: a stamp from the future reads as now rather than counting backwards.
+  const elapsed = Math.max(0, now - at)
   if (elapsed < MINUTE) return "just now"
-  if (elapsed < HOUR) return `${Math.floor(elapsed / MINUTE)} min ago`
-  if (elapsed < DAY) return `${Math.floor(elapsed / HOUR)} h ago`
-  if (elapsed < 2 * DAY) return "Yesterday"
-  if (elapsed < 7 * DAY) return `${Math.floor(elapsed / DAY)} d ago`
-  if (elapsed < 30 * DAY) return `${Math.floor(elapsed / (7 * DAY))} wk ago`
-  return parsed.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" })
+  if (elapsed < HOUR) return RELATIVE.format(-Math.floor(elapsed / MINUTE), "minute")
+  if (elapsed < DAY) return RELATIVE.format(-Math.floor(elapsed / HOUR), "hour")
+  if (elapsed < MONTH) return RELATIVE.format(-Math.floor(elapsed / DAY), "day")
+  return localDate(new Date(at))
 }
