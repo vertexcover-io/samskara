@@ -64,7 +64,7 @@ const serialize = (row: SessionSummaryRow) => ({
   projectName: row.projectName,
   projectSlug: row.projectSlug,
   userLogin: row.userLogin,
-  model: row.model,
+  repo: row.repo,
   durationMs: row.durationMs === null ? null : Number(row.durationMs),
   tokensTotal: Number(row.tokensTotal),
   status: row.status,

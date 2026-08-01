@@ -33,7 +33,7 @@ export const facts = (overrides: Partial<SessionFacts> = {}): SessionFacts => ({
   projectName: "Samskara",
   projectSlug: "samskara",
   userLogin: "ritesh",
-  model: null,
+  repo: null,
   durationMs: 1_451_000,
   messageCount: 0,
   toolCallCount: 0,

@@ -1,3 +1,4 @@
+import { repoLabel } from "../api/repo.js"
 import type { SessionSummary } from "../api/types.js"
 
 const Unavailable = () => (
@@ -40,7 +41,7 @@ type Props = {
 }
 
 export const SessionRow = ({ session, onOpen }: Props) => {
-  const { title, projectName, userLogin, model, durationMs, tokensTotal, lastActiveAt } = session
+  const { title, projectName, userLogin, repo, durationMs, tokensTotal, lastActiveAt } = session
 
   return (
     <button
@@ -58,8 +59,9 @@ export const SessionRow = ({ session, onOpen }: Props) => {
           {title ?? <span className="text-faded italic">untitled session</span>}
         </span>
         <span className="mt-0.5 block truncate font-mono text-[0.72rem] text-ink-soft">
-          {userLogin} · {model ?? <Unavailable />} ·{" "}
-          {durationMs === null ? "--:--" : formatDuration(durationMs)} · {formatTokens(tokensTotal)}
+          {userLogin} · {repo === null ? null : `${repoLabel(repo)} · `}
+          {durationMs === null ? <Unavailable /> : formatDuration(durationMs)} ·{" "}
+          {formatTokens(tokensTotal)}
         </span>
       </span>
 

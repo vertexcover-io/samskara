@@ -7,6 +7,7 @@ import type {
   RawToolCall,
   SessionDetailPayload,
   SessionFacts,
+  SessionRepo,
   SessionSummary,
   TokenTotals,
 } from "./types.js"
@@ -71,6 +72,19 @@ const nullableNum = (value: unknown): number | null | undefined => {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined
 }
 
+/** Lenient by design: the repo decorates a session, so a malformed one is dropped, not fatal. */
+const parseRepo = (value: unknown): SessionRepo | null => {
+  const fields = asFields(value)
+  if (!fields) return null
+
+  const host = str(fields.host)
+  const owner = str(fields.owner)
+  const repoName = str(fields.repoName)
+  if (host === null || owner === null || repoName === null) return null
+
+  return { host, owner, repoName }
+}
+
 const parseSessionSummary = (value: unknown): SessionSummary | null => {
   const fields = asFields(value)
   if (!fields) return null
@@ -87,9 +101,8 @@ const parseSessionSummary = (value: unknown): SessionSummary | null => {
   if (tokensTotal === null) return null
 
   const title = nullableStr(fields.title)
-  const model = nullableStr(fields.model)
   const durationMs = nullableNum(fields.durationMs)
-  if (title === undefined || model === undefined || durationMs === undefined) return null
+  if (title === undefined || durationMs === undefined) return null
 
   return {
     id,
@@ -97,7 +110,7 @@ const parseSessionSummary = (value: unknown): SessionSummary | null => {
     projectName,
     projectSlug,
     userLogin,
-    model,
+    repo: parseRepo(fields.repo),
     durationMs,
     tokensTotal,
     status,
@@ -131,9 +144,8 @@ const parseFacts = (value: unknown): SessionFacts | null => {
   if (userLogin === null || lastActiveAt === null) return null
 
   const title = nullableStr(fields.title)
-  const model = nullableStr(fields.model)
   const durationMs = nullableNum(fields.durationMs)
-  if (title === undefined || model === undefined || durationMs === undefined) return null
+  if (title === undefined || durationMs === undefined) return null
 
   return {
     id,
@@ -141,7 +153,7 @@ const parseFacts = (value: unknown): SessionFacts | null => {
     projectName,
     projectSlug,
     userLogin,
-    model,
+    repo: parseRepo(fields.repo),
     durationMs,
     messageCount: numOr(fields.messageCount, 0),
     toolCallCount: numOr(fields.toolCallCount, 0),

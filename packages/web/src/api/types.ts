@@ -6,13 +6,20 @@ export type ProjectSummary = {
   readonly lastActiveAt: string | null
 }
 
+/** `host` is `local` for a repo with no remote — there `owner` is its absolute root path. */
+export type SessionRepo = {
+  readonly host: string
+  readonly owner: string
+  readonly repoName: string
+}
+
 export type SessionSummary = {
   readonly id: string
   readonly title: string | null
   readonly projectName: string
   readonly projectSlug: string
   readonly userLogin: string
-  readonly model: string | null
+  readonly repo: SessionRepo | null
   readonly durationMs: number | null
   readonly tokensTotal: number
   readonly status: string
@@ -25,7 +32,7 @@ export type SessionFacts = {
   readonly projectName: string
   readonly projectSlug: string
   readonly userLogin: string
-  readonly model: string | null
+  readonly repo: SessionRepo | null
   readonly durationMs: number | null
   readonly messageCount: number
   readonly toolCallCount: number

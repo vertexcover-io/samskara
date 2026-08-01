@@ -3,11 +3,13 @@ import { Link, useLocation, useNavigate, useParams, useSearchParams } from "reac
 import { fetchSessionArtifacts } from "../api/artifacts.js"
 import { getJson } from "../api/client.js"
 import { parseSessionDetail } from "../api/parse.js"
+import { repoLabel, repoUrl } from "../api/repo.js"
 import type {
   ApiError,
   CapturedArtifact,
   SessionDetailPayload,
   SessionFacts,
+  SessionRepo,
   TokenTotals,
 } from "../api/types.js"
 import { SessionExpired } from "../auth/SessionExpired.js"
@@ -68,6 +70,17 @@ const Fact = ({ label, value }: { label: string; value: React.ReactNode }) => (
   </div>
 )
 
+/** Opens in a new tab: this is the only link on the page that leaves the app entirely. */
+const RepoName = ({ repo }: { repo: SessionRepo }) => {
+  const url = repoUrl(repo)
+  if (url === null) return <span>{repoLabel(repo)}</span>
+  return (
+    <a href={url} target="_blank" rel="noreferrer" className="text-custody hover:underline">
+      {repoLabel(repo)}
+    </a>
+  )
+}
+
 const Masthead = ({ session, tokens }: { session: SessionFacts; tokens: TokenTotals }) => (
   <header className="border-b-2 border-ink pb-4 pt-2">
     <nav aria-label="Breadcrumb" className="mb-2 font-mono text-[0.72rem] text-ink-soft">
@@ -99,10 +112,14 @@ const Masthead = ({ session, tokens }: { session: SessionFacts; tokens: TokenTot
         ·
       </span>
       <span>{session.userLogin}</span>
-      <span aria-hidden="true" className="text-rule">
-        ·
-      </span>
-      <span>{session.model ?? <Unavailable />}</span>
+      {session.repo === null ? null : (
+        <>
+          <span aria-hidden="true" className="text-rule">
+            ·
+          </span>
+          <RepoName repo={session.repo} />
+        </>
+      )}
     </p>
 
     <dl

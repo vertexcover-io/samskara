@@ -4,6 +4,7 @@ import type { Querier } from "../db/client.js"
 import {
   messages,
   projects,
+  repos,
   sessions,
   subagents,
   tokenUsage,
@@ -71,13 +72,19 @@ export const existsForUser = async (db: Querier, id: string, userId: string): Pr
   return row !== undefined
 }
 
+export type SessionRepo = {
+  readonly host: string
+  readonly owner: string
+  readonly repoName: string
+}
+
 export type SessionSummaryRow = {
   readonly id: string
   readonly title: string | null
   readonly projectName: string
   readonly projectSlug: string
   readonly userLogin: string
-  readonly model: string | null
+  readonly repo: SessionRepo | null
   readonly durationMs: number | null
   readonly tokensTotal: number
   readonly status: string
@@ -112,6 +119,44 @@ const tokensTotal = sql<number>`(
 )`
 
 const status = sql<string>`case when ${messageCount} = 0 then 'empty' else 'complete' end`
+
+/**
+ * A session has no repo of its own: attribution lives on messages, and one session can span a
+ * workspace's sub-repos. The repo most of its messages ran in stands for the session, ties going
+ * to whichever appeared first.
+ */
+const dominantRepoId = sql`(
+  select "messages"."repoId"
+  from ${ownMessages} and "messages"."repoId" is not null
+  group by "messages"."repoId"
+  order by count(*) desc, min("messages"."lineNumber") asc
+  limit 1
+)`
+
+const repoColumns = {
+  repoHost: repos.host,
+  repoOwner: repos.owner,
+  repoName: repos.repoName,
+}
+
+type RepoColumns = {
+  readonly repoHost: string | null
+  readonly repoOwner: string | null
+  readonly repoName: string | null
+}
+
+const withRepo = <T extends RepoColumns>({
+  repoHost,
+  repoOwner,
+  repoName,
+  ...rest
+}: T): Omit<T, keyof RepoColumns> & { readonly repo: SessionRepo | null } => ({
+  ...rest,
+  repo:
+    repoHost !== null && repoOwner !== null && repoName !== null
+      ? { host: repoHost, owner: repoOwner, repoName }
+      : null,
+})
 
 // Capture rarely supplies a title, so fall back to the opening user prompt.
 const derivedTitle = sql<string | null>`coalesce(${sessions.title}, (
@@ -150,7 +195,7 @@ export const listAccessible = (
       projectName: projects.name,
       projectSlug: projects.slug,
       userLogin: users.githubLogin,
-      model: sessions.model,
+      ...repoColumns,
       durationMs,
       tokensTotal,
       status,
@@ -159,8 +204,10 @@ export const listAccessible = (
     .from(sessions)
     .innerJoin(projects, eq(projects.id, sessions.projectId))
     .innerJoin(users, eq(users.id, sessions.userId))
+    .leftJoin(repos, sql`${repos.id} = ${dominantRepoId}`)
     .where(and(...conditions))
     .orderBy(desc(sessions.updatedAt))
+    .then((rows) => rows.map(withRepo))
 }
 
 export const findVisibleProjectBySlug = async (
@@ -181,7 +228,7 @@ export type SessionFactsRow = {
   readonly projectName: string
   readonly projectSlug: string
   readonly userLogin: string
-  readonly model: string | null
+  readonly repo: SessionRepo | null
   readonly durationMs: number | null
   readonly messageCount: number
   readonly toolCallCount: number
@@ -258,7 +305,7 @@ const findVisibleSession = async (
       projectName: projects.name,
       projectSlug: projects.slug,
       userLogin: users.githubLogin,
-      model: sessions.model,
+      ...repoColumns,
       durationMs,
       messageCount,
       toolCallCount,
@@ -269,8 +316,9 @@ const findVisibleSession = async (
     .from(sessions)
     .innerJoin(projects, eq(projects.id, sessions.projectId))
     .innerJoin(users, eq(users.id, sessions.userId))
+    .leftJoin(repos, sql`${repos.id} = ${dominantRepoId}`)
     .where(and(eq(sessions.id, sessionId), visibleToUser(db, userId)))
-  return row
+  return row === undefined ? undefined : withRepo(row)
 }
 
 const EMPTY_TOKENS: TokenUsageTotals = {

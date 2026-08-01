@@ -10,14 +10,14 @@ const populated: SessionSummary = {
   projectName: "Samskara",
   projectSlug: "samskara",
   userLogin: "maya",
-  model: "claude-opus-5",
+  repo: { host: "github.com", owner: "acme", repoName: "samskara" },
   durationMs: 3_723_000,
   tokensTotal: 128_400,
   status: "complete",
   lastActiveAt: "2026-02-01T09:30:00.000Z",
 }
 
-test("S18: a row summarises the session on one line - title, who, model, duration, tokens, project", () => {
+test("S18: a row summarises the session on one line - title, who, duration, tokens, project", () => {
   render(<SessionRow session={populated} onOpen={vi.fn()} />)
 
   const row = screen.getByRole("button")
@@ -25,9 +25,26 @@ test("S18: a row summarises the session on one line - title, who, model, duratio
   expect(row).toHaveTextContent("Port the session detail surface")
   expect(row).toHaveTextContent("Samskara")
   expect(row).toHaveTextContent("maya")
-  expect(row).toHaveTextContent("claude-opus-5")
+  expect(row).toHaveTextContent("acme/samskara")
   expect(row).toHaveTextContent("1h 2m")
   expect(row).toHaveTextContent("128.4k tokens")
+})
+
+test("S18: a session with no repo omits it rather than reserving a placeholder for it", () => {
+  render(<SessionRow session={{ ...populated, repo: null }} onOpen={vi.fn()} />)
+
+  const row = screen.getByRole("button")
+  expect(row).toHaveTextContent("maya · 1h 2m")
+  expect(row).not.toHaveTextContent("unavailable")
+})
+
+test("S18: a remoteless repo reads as its own name - never the absolute path it is keyed by", () => {
+  const repo = { host: "local", owner: "/Users/maya/Projects/samskara", repoName: "samskara" }
+  render(<SessionRow session={{ ...populated, repo }} onOpen={vi.fn()} />)
+
+  const row = screen.getByRole("button")
+  expect(row).toHaveTextContent("samskara")
+  expect(row).not.toHaveTextContent("/Users/maya")
 })
 
 test("S26: the row reports capture recency in relative terms rather than a raw timestamp", () => {
@@ -36,8 +53,8 @@ test("S26: the row reports capture recency in relative terms rather than a raw t
   expect(screen.getByRole("button")).not.toHaveTextContent("2026-02-01T09:30")
 })
 
-test("S19: a null model and duration each render an explicit placeholder - never 0, an em dash, or a fabricated value", () => {
-  render(<SessionRow session={{ ...populated, model: null, durationMs: null }} onOpen={vi.fn()} />)
+test("S19: a null duration renders an explicit placeholder - never 0, an em dash, or a fabricated value", () => {
+  render(<SessionRow session={{ ...populated, durationMs: null }} onOpen={vi.fn()} />)
 
   expect(screen.getByText("unavailable")).toBeInTheDocument()
 

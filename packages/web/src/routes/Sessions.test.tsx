@@ -19,7 +19,7 @@ const session: SessionSummary = {
   projectName: "Samskara",
   projectSlug: "samskara",
   userLogin: "maya",
-  model: null,
+  repo: null,
   durationMs: 900_000,
   tokensTotal: 4200,
   status: "complete",

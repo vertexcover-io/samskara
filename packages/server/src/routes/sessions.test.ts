@@ -18,6 +18,7 @@ import {
 import type { Env } from "../lib/env.js"
 import { signToken } from "../lib/jwt.js"
 import * as projectsRepo from "../repositories/projects.repo.js"
+import * as reposRepo from "../repositories/repos.repo.js"
 
 const dockerAvailable = () => {
   try {
@@ -40,13 +41,19 @@ const env: Env = {
   jwtExpiresIn: "7d",
 }
 
+type SessionRepo = {
+  readonly host: string
+  readonly owner: string
+  readonly repoName: string
+}
+
 type SessionSummary = {
   readonly id: string
   readonly title: string | null
   readonly projectName: string
   readonly projectSlug: string
   readonly userLogin: string
-  readonly model: string | null
+  readonly repo: SessionRepo | null
   readonly durationMs: number | null
   readonly tokensTotal: number
   readonly status: string
@@ -84,7 +91,13 @@ const seedSession = (
 
 const seedMessage = async (
   db: Db,
-  input: { sessionId: string; lineNumber: number; timestamp: Date; tokens?: number },
+  input: {
+    sessionId: string
+    lineNumber: number
+    timestamp: Date
+    tokens?: number
+    repoId?: string
+  },
 ): Promise<void> => {
   const [row] = await db
     .insert(messages)
@@ -96,6 +109,7 @@ const seedMessage = async (
       role: "assistant",
       timestamp: input.timestamp,
       lineNumber: input.lineNumber,
+      repoId: input.repoId,
       raw: {},
       sourceSchemaVersion: 1,
     })
@@ -296,7 +310,7 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     expect(idsOf(await listAs(db, owner))).toEqual(["newest", "middle", "oldest"])
   })
 
-  test("S20: a summary carries the project name, login, summed tokens, and a duration spanning the message timestamps - with model null because ingest never writes it", async () => {
+  test("S20: a summary carries the project name, login, summed tokens, and a duration spanning the message timestamps", async () => {
     const owner = await seedUser(db, 1301, "shape-owner")
     const projectId = await projectsRepo.upsert(db, {
       identity: { name: "Shape", slug: "shape" },
@@ -330,12 +344,55 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
       projectName: "Shape",
       projectSlug: "shape",
       userLogin: "shape-owner",
-      model: null,
+      repo: null,
       durationMs: 5_400_000,
       tokensTotal: 350,
       status: "complete",
       lastActiveAt: new Date("2026-02-05T12:00:00Z").toISOString(),
     })
+  })
+
+  test("S20: a summary names the repo most of its messages ran in - a session spanning two repos reports the dominant one, not both", async () => {
+    const owner = await seedUser(db, 1501, "repo-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Repo", slug: "repo" },
+      ownerId: owner,
+    })
+    const main = await reposRepo.upsertByIdentity(
+      db,
+      { host: "github.com", owner: "acme", repoName: "samskara" },
+      owner,
+    )
+    const vendored = await reposRepo.upsertByIdentity(
+      db,
+      { host: "github.com", owner: "acme", repoName: "vendor" },
+      owner,
+    )
+    await seedSession(db, {
+      id: "repo-session",
+      userId: owner,
+      projectId,
+      title: "Repo session",
+      updatedAt: new Date("2026-02-06T12:00:00Z"),
+    })
+    await seedMessage(db, {
+      sessionId: "repo-session",
+      lineNumber: 1,
+      timestamp: new Date("2026-02-06T10:00:00Z"),
+      repoId: vendored,
+    })
+    for (const lineNumber of [2, 3]) {
+      await seedMessage(db, {
+        sessionId: "repo-session",
+        lineNumber,
+        timestamp: new Date("2026-02-06T11:00:00Z"),
+        repoId: main,
+      })
+    }
+
+    const [summary] = await listAs(db, owner)
+
+    expect(summary?.repo).toEqual({ host: "github.com", owner: "acme", repoName: "samskara" })
   })
 
   test("S20: a session with no messages reports a null duration and zero tokens with status empty - not a zero duration", async () => {
@@ -463,7 +520,7 @@ type SessionDetailBody = {
     readonly projectName: string
     readonly projectSlug: string
     readonly userLogin: string
-    readonly model: string | null
+    readonly repo: SessionRepo | null
     readonly durationMs: number | null
     readonly messageCount: number
     readonly toolCallCount: number
@@ -493,6 +550,7 @@ const insertMessage = async (
     isSubagent?: boolean
     content?: unknown
     details?: unknown
+    repoId?: string
   },
 ): Promise<string> => {
   const [row] = await db
@@ -503,6 +561,7 @@ const insertMessage = async (
       subIndex: 0,
       msgType: input.msgType,
       role: input.role,
+      repoId: input.repoId,
       timestamp: input.timestamp,
       lineNumber: input.lineNumber,
       agentId: input.agentId,
@@ -691,6 +750,44 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions/:id", () => {
         status: null,
       },
     ])
+  })
+
+  test("S39: the detail facts carry the session's repo, and a session whose messages carry none reports null", async () => {
+    const owner = await seedUser(db, 2151, "repo-detail-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "RepoDetail", slug: "repo-detail" },
+      ownerId: owner,
+    })
+    const repoId = await reposRepo.upsertByIdentity(
+      db,
+      { host: "local", owner: "/Users/maya/Projects/samskara", repoName: "samskara" },
+      owner,
+    )
+    for (const [id, attributed] of [
+      ["with-repo", true],
+      ["without-repo", false],
+    ] as const) {
+      await seedSession(db, { id, userId: owner, projectId, title: id, updatedAt: new Date() })
+      await insertMessage(db, {
+        sessionId: id,
+        lineNumber: 1,
+        msgType: "message",
+        repoId: attributed ? repoId : undefined,
+      })
+    }
+
+    const repoOf = async (id: string) => {
+      const res = await detailRequest(db, owner, id)
+      const body = (await res.json()) as SessionDetailBody
+      return body.session.repo
+    }
+
+    expect(await repoOf("with-repo")).toEqual({
+      host: "local",
+      owner: "/Users/maya/Projects/samskara",
+      repoName: "samskara",
+    })
+    expect(await repoOf("without-repo")).toBeNull()
   })
 
   test("EDGE-008 S40: an id that exists for nobody is 404 sessionNotFound - not 200 with an empty payload", async () => {

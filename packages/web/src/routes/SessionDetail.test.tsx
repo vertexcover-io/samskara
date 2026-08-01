@@ -257,6 +257,42 @@ test("S37: the masthead reports all six session facts from the payload", async (
   expect(within(facts).getByText("18,200")).toBeInTheDocument()
 })
 
+const metaLineOf = async (): Promise<string> => {
+  const heading = await screen.findByRole("heading", { name: "Make ingest idempotent" })
+  const line = heading.parentElement?.querySelector("p")
+  return (line?.textContent ?? "").replace(/\s+/g, " ").trim()
+}
+
+test("S37: the masthead names the repo the session ran in, alongside project and user", async () => {
+  const repo = { host: "github.com", owner: "acme", repoName: "samskara" }
+  renderDetail(buildPayload({ ...PAYLOAD, session: { repo } }))
+
+  expect(await metaLineOf()).toBe("Samskara·ritesh·acme/samskara")
+})
+
+test("S37: a remote-backed repo links out to the repo itself, on its own host", async () => {
+  const repo = { host: "gitlab.example.com", owner: "acme", repoName: "samskara" }
+  renderDetail(buildPayload({ ...PAYLOAD, session: { repo } }))
+
+  const link = await screen.findByRole("link", { name: "acme/samskara" })
+  expect(link).toHaveAttribute("href", "https://gitlab.example.com/acme/samskara")
+  expect(link).toHaveAttribute("rel", expect.stringContaining("noreferrer"))
+})
+
+test("S37: a remoteless repo is named but not linked - there is no url to send a reader to", async () => {
+  const repo = { host: "local", owner: "/Users/maya/Projects/samskara", repoName: "samskara" }
+  renderDetail(buildPayload({ ...PAYLOAD, session: { repo } }))
+
+  expect(await metaLineOf()).toBe("Samskara·ritesh·samskara")
+  expect(screen.queryByRole("link", { name: "samskara" })).toBeNull()
+})
+
+test("S37: a session with no repo ends the masthead at the user - no dangling separator", async () => {
+  renderDetail(buildPayload({ ...PAYLOAD, session: { repo: null } }))
+
+  expect(await metaLineOf()).toBe("Samskara·ritesh")
+})
+
 const CAPTURED = {
   id: "cap-1",
   path: "/work/acme/docs/notes.md",
