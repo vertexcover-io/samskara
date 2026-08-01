@@ -6,6 +6,7 @@ import {
   QUEUE_DEPTH_WARN_THRESHOLD,
   type QueueEntry,
   enqueue,
+  keyOf,
   readQueue,
 } from "./artifact-queue.js"
 import { spyLogger } from "./test-logger.js"
@@ -25,6 +26,27 @@ describe("artifact queue", () => {
 
   beforeEach(async () => {
     queuePath = join(await mkdtemp(join(tmpdir(), "samskara-queue-")), "artifact-queue.json")
+  })
+
+  test("S10: the key joins on a colon, which a session id can never contain", () => {
+    // Session ids are UUIDs, so the FIRST colon is always the separator and a drive letter or a
+    // colon inside the path stays on the path side. This matches `stateKey` in the worker.
+    const uuid = "0b9d4c1e-7f3a-4c22-9a6e-1d5f8b2c3e40"
+    const key = keyOf(entry({ sessionId: uuid, path: "C:\\work\\app\\a.md" }))
+
+    expect(key).toBe(`${uuid}:C:\\work\\app\\a.md`)
+    expect(key.slice(0, key.indexOf(":"))).toBe(uuid)
+    expect(key.slice(key.indexOf(":") + 1)).toBe("C:\\work\\app\\a.md")
+    // No control characters: this string is written into git-tracked source and JSON on disk.
+    expect(key).not.toMatch(/\p{Cc}/u)
+  })
+
+  test("S10: two paths under one session, and one path across two sessions, all key apart", () => {
+    const a = keyOf(entry({ sessionId: "sess-1", path: "/work/app/a.md" }))
+    const b = keyOf(entry({ sessionId: "sess-1", path: "/work/app/b.md" }))
+    const c = keyOf(entry({ sessionId: "sess-2", path: "/work/app/a.md" }))
+
+    expect(new Set([a, b, c]).size).toBe(3)
   })
 
   test("S12: an entry with every optional field populated round-trips unchanged", async () => {

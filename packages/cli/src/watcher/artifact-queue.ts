@@ -34,8 +34,12 @@ export const readQueue = async (path: string): Promise<ArtifactQueue> => {
   return parsed.success ? parsed.data : emptyQueue()
 }
 
-/** Shared with the worker so cycle-side dedup and worker-side claiming agree on identity. */
-export const keyOf = (entry: QueueEntry): string => `${entry.sessionId}\u0000${entry.path}`
+/**
+ * Shared with the worker so cycle-side dedup and worker-side claiming agree on identity, and the
+ * same shape as `stateKey`. A colon separates because a session id is a UUID and can never hold
+ * one, so the first colon is always the split even when the path carries its own.
+ */
+export const keyOf = (entry: QueueEntry): string => `${entry.sessionId}:${entry.path}`
 
 /**
  * Merges by `(sessionId, path)` rather than appending: a file edited across three cycles must
