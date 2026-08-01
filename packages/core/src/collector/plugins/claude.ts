@@ -400,14 +400,24 @@ const handleLocalCommandMessage = (
     stdout:
       tagValue(content, "local-command-stdout") ??
       (typeof data.stdout === "string" ? data.stdout : undefined),
-    stderr: typeof data.stderr === "string" ? data.stderr : undefined,
+    stderr:
+      tagValue(content, "local-command-stderr") ??
+      (typeof data.stderr === "string" ? data.stderr : undefined),
     exitCode,
   })
 }
+/**
+ * Output tags count as much as the invocation ones: a line carrying only a command's stdout is
+ * still the command speaking, and without them it reads as a prompt the user typed.
+ */
 const hasLocalCommandMarker = (content: string): boolean =>
-  ["<local-command-caveat>", "<command-name>", "<command-message>"].some((marker) =>
-    content.includes(marker),
-  )
+  [
+    "<local-command-caveat>",
+    "<command-name>",
+    "<command-message>",
+    "<local-command-stdout>",
+    "<local-command-stderr>",
+  ].some((marker) => content.includes(marker))
 
 const optionalString = z.string().min(1).optional()
 const nonnegativeNumber = z.number().finite().nonnegative()
@@ -670,6 +680,41 @@ const frameLinkSchema = z
  * Renders a line from its `message.content` — `user` and `assistant` lines, plus
  * any other type that carries conversational content.
  */
+/**
+ * A `user` line is not always something the user typed: the harness injects skill bodies, task
+ * notifications, compaction summaries and reminders under the same role, and they arrive in the
+ * hundreds. The transcript already flags each kind, so the classification is recorded once here
+ * rather than re-derived by every reader. Absent means a prompt the user actually sent.
+ */
+const injectionSubType = (data: Record<string, unknown>): string | undefined => {
+  if (data.isCompactSummary === true) return "compactSummary"
+
+  const injected = data.isMeta === true
+  // A tool put this here -- `sourceToolUseID` names the call, which is how a skill body is told
+  // apart from the reminders it sits among.
+  if (injected && stringValue(data.sourceToolUseID) !== undefined) return "toolInjection"
+
+  const origin = isObject(data.origin) ? stringValue(data.origin.kind) : stringValue(data.origin)
+  if (origin === "task-notification") return "taskNotification"
+
+  return injected ? "systemReminder" : undefined
+}
+
+/** Stamps the line's injection kind onto its user messages; tool rows carry their own types. */
+const stampInjection = (
+  messages: readonly [NormalizedMessage, ...NormalizedMessage[]],
+  subType: string | undefined,
+): readonly [NormalizedMessage, ...NormalizedMessage[]] =>
+  subType === undefined
+    ? messages
+    : nonEmpty(
+        messages.map((message) =>
+          message.msgType === "message" && message.role === "user"
+            ? { ...message, subType }
+            : message,
+        ),
+      )
+
 const handleConversationMessage = (
   data: Record<string, unknown>,
   common: CommonFields,
@@ -685,6 +730,7 @@ const handleConversationMessage = (
   const role = roleFor(envelope?.role)
   const usage = tokensFrom(envelope?.usage)
   const details = conversationDetailsFor(data)
+  const injection = injectionSubType(data)
 
   if (typeof content === "string") {
     const conversation = buildMessage(common, {
@@ -693,7 +739,7 @@ const handleConversationMessage = (
       content: { type: "text", value: content },
       details,
     })
-    return nonEmpty(withEmbeddedUsage([conversation], usage, common))
+    return stampInjection(nonEmpty(withEmbeddedUsage([conversation], usage, common)), injection)
   }
 
   if (Array.isArray(content)) {
@@ -702,7 +748,7 @@ const handleConversationMessage = (
     const messages = blocks.map((block, index) =>
       handleContentBlock(block, role, common, index, details),
     )
-    return nonEmpty(withEmbeddedUsage(messages, usage, common))
+    return stampInjection(nonEmpty(withEmbeddedUsage(messages, usage, common)), injection)
   }
 
   return [buildMessage(common, { msgType: "custom", subType: fallbackSubtype(data) })]

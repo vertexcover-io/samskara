@@ -18,9 +18,18 @@ type RecordBase = {
   readonly sources: ReadonlyArray<string>
 }
 
+/**
+ * One content block of a prompt. A turn that pasted a screenshot is captured as one row per
+ * block, so a prompt holds an ordered run of these rather than a single body.
+ */
+export type PromptPart = { readonly id: string } & (
+  | { readonly kind: "text"; readonly value: string }
+  | { readonly kind: "image"; readonly src: string }
+)
+
 export type TimelineRecord = RecordBase &
   (
-    | { readonly kind: "prompt"; readonly body: string; readonly actor: string }
+    | { readonly kind: "prompt"; readonly parts: ReadonlyArray<PromptPart>; readonly actor: string }
     | {
         readonly kind: "assistant"
         readonly body: string
@@ -33,6 +42,7 @@ export type TimelineRecord = RecordBase &
     | { readonly kind: "agentSpawn"; readonly agent: RawSubagent }
     | { readonly kind: "agentReturn"; readonly agent: RawSubagent }
     | { readonly kind: "artifact"; readonly artifact: Artifact }
+    | { readonly kind: "injection"; readonly label: string; readonly body: string }
     | { readonly kind: "event"; readonly label: string; readonly body: string }
   )
 
@@ -78,27 +88,96 @@ const collectText = (value: unknown): string => {
   return str(shape.text) ?? str(shape.value) ?? str(shape.content) ?? str(shape.body) ?? ""
 }
 
-const thinkingOf = (value: unknown): string | null => {
-  if (Array.isArray(value)) {
-    const parts = value
-      .map(fields)
-      .filter((part): part is Readonly<Record<string, unknown>> => part !== null)
-      .filter((part) => part.type === "thinking")
-      .map((part) => str(part.thinking) ?? str(part.text) ?? str(part.value) ?? "")
-      .filter(Boolean)
-    return parts.length === 0 ? null : parts.join("\n\n")
-  }
-  const shape = fields(value)
-  return shape === null ? null : str(shape.thinking)
+/** Capture names an assistant's thinking `reasoning`; other sources send it as `thinking`. */
+const THINKING_TYPES = new Set(["thinking", "reasoning"])
+
+const isThinking = (value: unknown): boolean => {
+  const type = str(fields(value)?.type)
+  return type !== null && THINKING_TYPES.has(type)
 }
 
-const proseOf = (value: unknown): string => {
-  if (!Array.isArray(value)) return collectText(value)
-  return value
-    .filter((part) => fields(part)?.type !== "thinking")
+/**
+ * Empty for anything that is not thinking. Encrypted thinking reaches us as a signature with no
+ * text, which is every reasoning block this project has captured -- there the answer is also
+ * empty, and the record discloses nothing rather than claiming its prose went missing.
+ */
+const thinkingTextOf = (value: unknown): string => {
+  const shape = fields(value)
+  if (shape === null) return ""
+  const explicit = str(shape.thinking)
+  if (explicit !== null) return explicit
+  return isThinking(value) ? (str(shape.text) ?? str(shape.value) ?? "") : ""
+}
+
+const thinkingOf = (value: unknown): string | null => {
+  const parts = (Array.isArray(value) ? value : [value])
+    .map(thinkingTextOf)
+    .filter((part) => part !== "")
+  return parts.length === 0 ? null : parts.join("\n\n")
+}
+
+const proseOf = (value: unknown): string =>
+  (Array.isArray(value) ? value : [value])
+    .filter((part) => !isThinking(part))
     .map(collectText)
     .filter(Boolean)
     .join("\n\n")
+
+/**
+ * Captured images carry their own bytes, so they render without a round trip. A block whose
+ * source cannot be addressed is dropped -- its `value` is raw base64, and letting it fall
+ * through to `collectText` would spill the whole payload into the transcript as prose.
+ */
+const imageSrcOf = (shape: Readonly<Record<string, unknown>>): string | null => {
+  const value = str(shape.value)
+  if (value === null) return null
+  if (str(shape.encoding) === "url") return value
+  const mediaType = str(shape.mediaType)
+  return str(shape.encoding) === "base64" && mediaType !== null
+    ? `data:${mediaType};base64,${value}`
+    : null
+}
+
+const promptPart = (value: unknown, id: string): PromptPart | null => {
+  const shape = fields(value)
+  if (shape?.type === "image") {
+    const src = imageSrcOf(shape)
+    return src === null ? null : { id, kind: "image", src }
+  }
+  const body = collectText(value)
+  return body === "" ? null : { id, kind: "text", value: body }
+}
+
+const promptParts = (raw: RawMessage): ReadonlyArray<PromptPart> => {
+  const blocks = Array.isArray(raw.content) ? raw.content : [raw.content]
+  return blocks.flatMap((block, index) => {
+    const part = promptPart(block, `${raw.id}:${index}`)
+    return part === null ? [] : [part]
+  })
+}
+
+/**
+ * Half the `user` turns in a long session were never typed: capture stamps the ones the harness
+ * injected with a subType, and these are the kinds it records. An unrecognised subType is left
+ * alone -- a marker this reader does not know must never hide something the user did say.
+ */
+const INJECTION_LABELS: Readonly<Record<string, string>> = {
+  compactSummary: "Context Continued",
+  taskNotification: "Task Notification",
+  systemReminder: "System Reminder",
+  localCommand: "Command Output",
+  toolInjection: "Tool Injection",
+}
+
+/** A skill body opens by naming its own directory, which is the only place the name appears. */
+const SKILL_PREFIX = /^Base directory for this skill:\s*\S*?\/([^/\s]+)\s*$/m
+
+const injectionLabel = (subType: string, body: string): string | null => {
+  const label = INJECTION_LABELS[subType]
+  if (label === undefined) return null
+  if (subType !== "toolInjection") return label
+  const skill = SKILL_PREFIX.exec(body)?.[1]
+  return skill === undefined ? label : `Skill Loaded — ${skill}`
 }
 
 const SPAWN_TOOLS = new Set(["Agent", "Task"])
@@ -170,10 +249,14 @@ const toRecord = (
   }
 
   if (raw.msgType === "message" && raw.role === "user") {
+    const body = collectText(raw.content)
+    const label = raw.subType === null ? null : injectionLabel(raw.subType, body)
+    if (label !== null) return { ...base(raw), kind: "injection", label, body }
+
     return {
       ...base(raw),
       kind: "prompt",
-      body: collectText(raw.content),
+      parts: promptParts(raw),
       actor: actorFor(raw, agents, userLogin),
     }
   }
@@ -295,6 +378,40 @@ const statsFor = (
   messages,
 })
 
+/**
+ * Capture splits a transcript line into one row per content block, which is what lets a tool
+ * call hold its own identity. A prompt has no such need: its blocks are one thing the user
+ * sent, so the rows sharing a line number are folded back into the turn they came from.
+ */
+const mergePromptTurns = (
+  records: ReadonlyArray<TimelineRecord>,
+): ReadonlyArray<TimelineRecord> => {
+  const merged: Array<TimelineRecord> = []
+
+  for (const record of records) {
+    const previous = merged[merged.length - 1]
+    const continues =
+      record.kind === "prompt" &&
+      previous !== undefined &&
+      previous.kind === "prompt" &&
+      previous.lineNumber === record.lineNumber &&
+      previous.agentId === record.agentId
+
+    if (!continues || previous === undefined || previous.kind !== "prompt") {
+      merged.push(record)
+      continue
+    }
+
+    merged[merged.length - 1] = {
+      ...previous,
+      parts: [...previous.parts, ...record.parts],
+      sources: [...previous.sources, ...record.sources],
+    }
+  }
+
+  return merged
+}
+
 const mergeAssistantRuns = (
   records: ReadonlyArray<TimelineRecord>,
   breakOnTools = false,
@@ -369,7 +486,7 @@ const shape = (
   withTools: boolean,
 ): ReadonlyArray<TimelineRecord> => {
   const merged = mergeAssistantRuns(
-    records.filter((record) => record.kind !== "event"),
+    mergePromptTurns(records.filter((record) => record.kind !== "event")),
     withTools,
   )
   return withTools ? merged : merged.filter((record) => record.kind !== "tool")

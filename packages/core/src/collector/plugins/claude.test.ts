@@ -353,6 +353,67 @@ describe("normalizeClaude", () => {
     expect(normalizeClaude(userToolResultLine)[0]).toMatchObject({ msgType: "toolResult" })
   })
 
+  test("a user line the harness injected is typed by its subType, so a reader never mistakes it for a typed prompt", () => {
+    const injected = (line: Record<string, unknown>) =>
+      normalizeClaude({
+        type: "user",
+        message: { role: "user", content: "body" },
+        ...line,
+      })[0]
+
+    expect(injected({ isCompactSummary: true, isMeta: true })).toMatchObject({
+      msgType: "message",
+      role: "user",
+      subType: "compactSummary",
+    })
+    expect(injected({ isMeta: true, sourceToolUseID: "toolu_1" })).toMatchObject({
+      subType: "toolInjection",
+    })
+    expect(
+      injected({ origin: { kind: "task-notification" }, promptSource: "system" }),
+    ).toMatchObject({ subType: "taskNotification" })
+    expect(injected({ isMeta: true })).toMatchObject({ subType: "systemReminder" })
+
+    const typed = injected({ origin: { kind: "human" }, promptSource: "typed" })
+    expect(typed).toMatchObject({ msgType: "message", role: "user" })
+    expect(typed?.msgType === "message" ? typed.subType : "unset").toBeUndefined()
+  })
+
+  test("an injected line fanned into blocks stamps every user block, and leaves the assistant's reasoning alone", () => {
+    const messages = normalizeClaude({
+      type: "user",
+      isMeta: true,
+      sourceToolUseID: "toolu_1",
+      message: {
+        role: "user",
+        content: [
+          { type: "text", text: "first" },
+          { type: "text", text: "second" },
+        ],
+      },
+    })
+
+    expect(messages.map((m) => (m.msgType === "message" ? m.subType : null))).toEqual([
+      "toolInjection",
+      "toolInjection",
+    ])
+  })
+
+  test("command output reaches the transcript as a localCommand, not as something the user said", () => {
+    const [message] = normalizeClaude({
+      type: "user",
+      message: {
+        role: "user",
+        content: "<local-command-stdout>Set model to Opus</local-command-stdout>",
+      },
+    })
+
+    expect(message).toMatchObject({
+      msgType: "localCommand",
+      details: { stdout: "Set model to Opus", commandType: "unknown" },
+    })
+  })
+
   test("S11: tool and progress status never depends on guesswork", () => {
     expect(
       normalizeClaude({

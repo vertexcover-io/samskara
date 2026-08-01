@@ -279,6 +279,9 @@ export const normalizedMessageSchema = z.discriminatedUnion("msgType", [
       ...tokenOwnerShape,
       msgType: z.literal("message"),
       role: z.enum(["user", "assistant", "system", "developer", "unknown"]),
+      // Set only when the harness injected the turn rather than the user typing it -- a skill
+      // body, a task notification, a compaction summary. Absent means a real prompt.
+      subType: nonemptyString.optional(),
       content: normalizedContentSchema,
       details: conversationDetailsSchema.optional(),
     })

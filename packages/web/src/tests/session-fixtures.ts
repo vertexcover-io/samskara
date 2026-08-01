@@ -78,3 +78,10 @@ export const buildPayload = (parts: PayloadParts = {}): SessionDetailPayload => 
 }
 
 export const text = (value: string): unknown => ({ text: value })
+
+export const pastedImage = (value: string, mediaType = "image/png"): unknown => ({
+  type: "image",
+  value,
+  mediaType,
+  encoding: "base64",
+})

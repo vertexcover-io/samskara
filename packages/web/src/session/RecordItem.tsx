@@ -2,7 +2,13 @@ import { type ReactNode, useEffect, useState } from "react"
 import { copyText } from "../account/copyText.js"
 import { Markdown } from "./Markdown.js"
 import { ToolCallItem } from "./ToolCallItem.js"
-import { type Artifact, type BlockStats, type TimelineRecord, anchorOf } from "./records.js"
+import {
+  type Artifact,
+  type BlockStats,
+  type PromptPart,
+  type TimelineRecord,
+  anchorOf,
+} from "./records.js"
 
 const clockOf = (iso: string | null): string => {
   if (iso === null) return "--:--:--"
@@ -95,19 +101,53 @@ const Prose = ({ body }: { body: string }) =>
     <Markdown source={body} />
   )
 
-const Thinking = ({ thinking }: { thinking: string }) => (
+const PromptBody = ({ parts }: { parts: ReadonlyArray<PromptPart> }) => {
+  if (parts.length === 0) return <Prose body="" />
+  return (
+    <div className="grid gap-2">
+      {parts.map((part) =>
+        part.kind === "text" ? (
+          <Prose key={part.id} body={part.value} />
+        ) : (
+          <img
+            key={part.id}
+            src={part.src}
+            alt="Attachment sent with this prompt"
+            className="max-h-[28rem] w-fit max-w-full rounded-xs border border-rule"
+          />
+        ),
+      )}
+    </div>
+  )
+}
+
+const Collapsed = ({ label, body }: { label: string; body: string }) => (
   <details className="my-2">
     <summary className="inline-flex cursor-pointer list-none items-center gap-2 rounded-pill border border-dashed border-rule px-3 py-1 text-[0.78rem] italic text-faded">
       <span aria-hidden="true" className="not-italic text-custody">
         ❖
       </span>
-      Thinking
+      {label}
     </summary>
     <div className="mt-2 max-w-[100ch] border-l-2 border-dashed border-rule px-3 py-2 text-ink-soft">
-      <Markdown source={thinking} />
+      <Markdown source={body} />
     </div>
   </details>
 )
+
+const Thinking = ({ thinking }: { thinking: string }) => (
+  <Collapsed label="Thinking" body={thinking} />
+)
+
+/** The opening line, for a summary that says what the block holds without unfolding it. */
+const firstLine = (body: string): string => {
+  const line =
+    body
+      .split("\n")
+      .find((candidate) => candidate.trim() !== "")
+      ?.trim() ?? ""
+  return line.length > 72 ? `${line.slice(0, 71)}…` : line
+}
 
 const Exhibit = ({ artifact }: { artifact: Artifact }) => (
   <div className="flex max-w-[104ch] items-start gap-3 rounded-xs border border-rule bg-panel-2 px-3 py-3">
@@ -179,7 +219,20 @@ export const RecordItem = ({ record, showTools = true, annex, link, linked = fal
       <Shell {...shell}>
         <Head actor={record.actor} timestamp={record.timestamp} link={link} />
         <div className="mt-2 w-fit max-w-[104ch] rounded-xs border border-rule border-l-2 border-l-ink bg-panel-2 px-3 py-3">
-          <Prose body={record.body} />
+          <PromptBody parts={record.parts} />
+        </div>
+      </Shell>
+    )
+  }
+
+  // What put it there stands in for who said it: these arrive under the user's role but nobody
+  // typed them, and they run to tens of thousands of characters. Folded away by default.
+  if (record.kind === "injection") {
+    return (
+      <Shell {...shell}>
+        <Head actor={record.label} timestamp={record.timestamp} link={link} />
+        <div className="mt-1 w-fit max-w-[104ch]">
+          <Collapsed label={firstLine(record.body) || record.label} body={record.body} />
         </div>
       </Shell>
     )
@@ -195,10 +248,12 @@ export const RecordItem = ({ record, showTools = true, annex, link, linked = fal
           stats={record.block === undefined ? undefined : <BlockSummary block={record.block} />}
           link={link}
         />
-        <div className="mt-2 w-fit max-w-[104ch] rounded-xs border border-rule bg-panel-2 px-3 py-3">
-          {record.thinking === null ? null : <Thinking thinking={record.thinking} />}
-          <Prose body={record.body} />
-        </div>
+        {record.thinking === null && record.body === "" ? null : (
+          <div className="mt-2 w-fit max-w-[104ch] rounded-xs border border-rule bg-panel-2 px-3 py-3">
+            {record.thinking === null ? null : <Thinking thinking={record.thinking} />}
+            {record.body === "" ? null : <Prose body={record.body} />}
+          </div>
+        )}
       </Shell>
     )
   }

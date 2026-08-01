@@ -227,6 +227,52 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
     })
   })
 
+  test("an injected user turn keeps the subType that says who put it there, so a reader can tell it from a typed prompt", async () => {
+    const sessionId = "sess-injection"
+    const lineUuid = "0191d942-3ba5-7dba-9a7d-22d65b3025b1"
+    const base = {
+      sessionId,
+      source: "claude_code" as const,
+      sourceSchemaVersion: 1,
+      trackId: "main",
+    }
+    const items: ReadonlyArray<TestMessage> = [
+      {
+        lineUuid,
+        lineNumber: 1,
+        message: {
+          ...base,
+          subIndex: 0,
+          msgType: "message",
+          role: "user",
+          subType: "toolInjection",
+          content: { type: "text", value: "Base directory for this skill: /skills/orchestrate" },
+        },
+      },
+      {
+        lineUuid: "0191d942-3ba5-7dba-9a7d-22d65b3025b2",
+        lineNumber: 2,
+        message: {
+          ...base,
+          subIndex: 0,
+          msgType: "message",
+          role: "user",
+          content: { type: "text", value: "actually typed" },
+        },
+      },
+    ]
+
+    expect(await ingest(ctx, mainPayload(sessionId, items))).toEqual({ ingested: 2, deduped: 0 })
+
+    const rows = await db
+      .select()
+      .from(messages)
+      .where(eq(messages.sessionId, sessionId))
+      .orderBy(messages.lineNumber)
+
+    expect(rows.map((row) => row.subType)).toEqual(["toolInjection", null])
+  })
+
   test("a subagent payload naming another user's session is refused, not attached to", async () => {
     // An aud:cli token is valid for ANY user's CLI installation, so proving a session exists
     // proves nothing about who may write to it. Without a userId-scoped check, one user's daemon

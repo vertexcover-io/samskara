@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest"
 import type { SessionDetailPayload } from "../api/types.js"
-import { buildPayload, message } from "../tests/session-fixtures.js"
+import { buildPayload, message, pastedImage } from "../tests/session-fixtures.js"
 import { artifactsOf, conversationView, locate, toDetail } from "./records.js"
 
 const kindsOf = (payload: SessionDetailPayload): ReadonlyArray<string> =>
@@ -33,6 +33,61 @@ describe("toDetail", () => {
     })
 
     expect(kindsOf(payload)).toEqual(["prompt", "assistant", "tool", "artifact", "event"])
+  })
+
+  test("a user turn the harness injected reads as an injection, never as a prompt the user typed", () => {
+    const payload = buildPayload({
+      messages: [
+        message({ lineNumber: 1, msgType: "message", role: "user", subType: "compactSummary" }),
+        message({ lineNumber: 2, msgType: "message", role: "user", subType: "taskNotification" }),
+        message({ lineNumber: 3, msgType: "message", role: "user", subType: "systemReminder" }),
+        message({ lineNumber: 4, msgType: "message", role: "user", subType: "localCommand" }),
+        message({ lineNumber: 5, msgType: "message", role: "user" }),
+      ],
+    })
+
+    expect(kindsOf(payload)).toEqual(["injection", "injection", "injection", "injection", "prompt"])
+  })
+
+  test("an injection is labelled by what put it there, and a skill body names the skill", () => {
+    const payload = buildPayload({
+      messages: [
+        message({
+          lineNumber: 1,
+          msgType: "message",
+          role: "user",
+          subType: "toolInjection",
+          content: {
+            type: "text",
+            value: "Base directory for this skill: /Users/maya/skills/orchestrate\n\n# Orchestrate",
+          },
+        }),
+        message({
+          lineNumber: 2,
+          msgType: "message",
+          role: "user",
+          subType: "toolInjection",
+          content: { type: "text", value: "some other tool output" },
+        }),
+        message({ lineNumber: 3, msgType: "message", role: "user", subType: "compactSummary" }),
+      ],
+    })
+
+    expect(
+      toDetail(payload).records.map((record) =>
+        record.kind === "injection" ? record.label : record.kind,
+      ),
+    ).toEqual(["Skill Loaded — orchestrate", "Tool Injection", "Context Continued"])
+  })
+
+  test("an unrecognised subType on a user turn is still a prompt - an unknown marker never hides what was said", () => {
+    const payload = buildPayload({
+      messages: [
+        message({ lineNumber: 1, msgType: "message", role: "user", subType: "somethingNew" }),
+      ],
+    })
+
+    expect(kindsOf(payload)).toEqual(["prompt"])
   })
 
   test("a toolResult message carrying no calls of its own is dropped, not rendered as an empty tool box", () => {
@@ -218,6 +273,172 @@ describe("conversationView", () => {
     expect(view.records.map((record) => record.kind)).toEqual(["tool", "agentSpawn"])
     expect(view.records[0]?.sources).toEqual(["agent-call"])
     expect(view.records[1]?.sources).toEqual([])
+  })
+})
+
+// One transcript line whose content array holds several blocks is captured as one row per block,
+// so a pasted screenshot arrives beside the text it was pasted with rather than inside it.
+describe("prompt turns", () => {
+  const PNG = "iVBORw0KGgoAAAANSUhEUg=="
+
+  const pastedTurn = (): SessionDetailPayload =>
+    buildPayload({
+      messages: [
+        message({
+          id: "ask-text",
+          lineNumber: 9,
+          msgType: "message",
+          role: "user",
+          content: { type: "text", value: "Remove the model chip" },
+        }),
+        message({
+          id: "ask-image",
+          lineNumber: 9,
+          msgType: "message",
+          role: "user",
+          content: pastedImage(PNG),
+        }),
+      ],
+    })
+
+  const promptAt = (payload: SessionDetailPayload, index = 0) => {
+    const record = conversationView(toDetail(payload), true).records[index]
+    if (record?.kind !== "prompt") throw new Error(`record ${index} is not a prompt`)
+    return record
+  }
+
+  test("the blocks of one prompt merge into a single record instead of one bubble per block", () => {
+    expect(conversationView(toDetail(pastedTurn()), true).records.map((r) => r.kind)).toEqual([
+      "prompt",
+    ])
+  })
+
+  test("a pasted image becomes an image part addressed by data URI, never its base64 as prose", () => {
+    const record = promptAt(pastedTurn())
+
+    expect(record.parts).toEqual([
+      { id: "ask-text:0", kind: "text", value: "Remove the model chip" },
+      { id: "ask-image:0", kind: "image", src: `data:image/png;base64,${PNG}` },
+    ])
+    expect(record.parts.some((part) => part.kind === "text" && part.value.includes(PNG))).toBe(
+      false,
+    )
+  })
+
+  test("prompts on separate lines are separate turns, however adjacent they render", () => {
+    const payload = buildPayload({
+      messages: [
+        message({
+          lineNumber: 9,
+          msgType: "message",
+          role: "user",
+          content: { type: "text", value: "first" },
+        }),
+        message({
+          lineNumber: 14,
+          msgType: "message",
+          role: "user",
+          content: { type: "text", value: "second" },
+        }),
+      ],
+    })
+
+    expect(conversationView(toDetail(payload), true).records.map((r) => r.kind)).toEqual([
+      "prompt",
+      "prompt",
+    ])
+  })
+
+  test("a merged prompt claims every block it swallowed, so a permalink to either one resolves", () => {
+    const sites = locate(conversationView(toDetail(pastedTurn()), true))
+
+    expect(sites.get("ask-text")).toEqual({ agentId: null, anchor: "r-ask-text" })
+    expect(sites.get("ask-image")).toEqual({ agentId: null, anchor: "r-ask-text" })
+  })
+
+  test("an image block with no encoding to resolve is dropped rather than spilled as base64 text", () => {
+    const payload = buildPayload({
+      messages: [
+        message({
+          id: "ask-image",
+          lineNumber: 9,
+          msgType: "message",
+          role: "user",
+          content: { type: "image", value: PNG },
+        }),
+      ],
+    })
+
+    expect(promptAt(payload).parts).toEqual([])
+  })
+
+  test("a user turn on a branch merges against that branch, not the prompt above it on the spine", () => {
+    const payload = buildPayload({
+      subagents: [
+        { agentId: "a1", agentType: "auditor", description: "Audit", parentAgentId: null },
+      ],
+      messages: [
+        message({
+          id: "spine-ask",
+          lineNumber: 9,
+          msgType: "message",
+          role: "user",
+          content: { type: "text", value: "spine" },
+        }),
+        message({
+          id: "branch-ask",
+          lineNumber: 9,
+          msgType: "message",
+          role: "user",
+          agentId: "a1",
+          isSubagent: true,
+          content: { type: "text", value: "branch" },
+        }),
+      ],
+    })
+
+    const view = conversationView(toDetail(payload), true)
+
+    expect(view.records.map((r) => r.kind)).toEqual(["prompt"])
+    expect(view.records[0]?.sources).toEqual(["spine-ask"])
+    expect(view.branches.get("a1")?.[0]?.sources).toEqual(["branch-ask"])
+  })
+})
+
+// Capture stores an assistant turn's thinking as a `reasoning` block. Encrypted thinking arrives
+// as a signature with no text at all, which is every reasoning block this project has captured.
+describe("reasoning blocks", () => {
+  const assistantAt = (content: unknown, index = 0) => {
+    const payload = buildPayload({
+      messages: [message({ lineNumber: 1, msgType: "message", role: "assistant", content })],
+    })
+    const record = toDetail(payload).records[index]
+    if (record?.kind !== "assistant") throw new Error(`record ${index} is not an assistant`)
+    return record
+  }
+
+  test("reasoning text is disclosed as thinking, never as the answer's prose", () => {
+    const record = assistantAt({ type: "reasoning", value: "Weighing the upsert", signature: "s" })
+
+    expect(record.thinking).toBe("Weighing the upsert")
+    expect(record.body).toBe("")
+  })
+
+  test("reasoning alongside prose keeps the two apart rather than concatenating them", () => {
+    const record = assistantAt([
+      { type: "reasoning", value: "Weighing the upsert" },
+      { type: "text", value: "Here is the plan" },
+    ])
+
+    expect(record.thinking).toBe("Weighing the upsert")
+    expect(record.body).toBe("Here is the plan")
+  })
+
+  test("encrypted reasoning holds a signature and no text, so it discloses nothing", () => {
+    const record = assistantAt({ type: "reasoning", value: "", signature: "sig" })
+
+    expect(record.thinking).toBeNull()
+    expect(record.body).toBe("")
   })
 })
 

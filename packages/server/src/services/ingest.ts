@@ -108,7 +108,9 @@ const toMessageRow = (
     parentUuid: message.parentUuid,
     msgType: message.msgType,
     subType:
-      message.msgType === "custom" || message.msgType === "systemEvent"
+      message.msgType === "custom" ||
+      message.msgType === "systemEvent" ||
+      message.msgType === "message"
         ? message.subType
         : undefined,
     role: message.msgType === "message" ? message.role : undefined,

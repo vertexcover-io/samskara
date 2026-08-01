@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event"
 import { Route, Routes } from "react-router-dom"
 import { afterEach, beforeEach, expect, test, vi } from "vitest"
 import type { SessionDetailPayload } from "../api/types.js"
-import { buildPayload, message, text } from "../tests/session-fixtures.js"
+import { buildPayload, message, pastedImage, text } from "../tests/session-fixtures.js"
 import { TestRouter } from "../tests/test-router.js"
 import { SessionDetail } from "./SessionDetail.js"
 
@@ -198,6 +198,62 @@ test("S38: Conversation hides tool payloads until the inline-tools checkbox is t
   expect(
     within(screen.getByRole("tabpanel")).getByRole("button", { name: /Grep/ }),
   ).toBeInTheDocument()
+})
+
+test("a screenshot pasted with a prompt renders as an image inside that prompt, not as its base64", async () => {
+  const png = "iVBORw0KGgoAAAANSUhEUg=="
+  renderDetail(
+    buildPayload({
+      messages: [
+        message({
+          lineNumber: 9,
+          msgType: "message",
+          role: "user",
+          content: { type: "text", value: "Remove the model chip" },
+        }),
+        message({
+          lineNumber: 9,
+          msgType: "message",
+          role: "user",
+          content: pastedImage(png),
+        }),
+      ],
+    }),
+  )
+
+  await waitFor(() => expect(tabs()).toHaveLength(3))
+
+  const panel = panelOf()
+  const prompt = within(panel)
+    .getByText(/Remove the model chip/)
+    .closest("article")
+  expect(prompt).not.toBeNull()
+  expect(within(prompt as HTMLElement).getByRole("img")).toHaveAttribute(
+    "src",
+    `data:image/png;base64,${png}`,
+  )
+  expect(panel.textContent).not.toContain(png)
+})
+
+test("a block whose thinking was encrypted shows what it did, not a claim that its text went missing", async () => {
+  renderDetail(
+    buildPayload({
+      messages: [
+        message({
+          lineNumber: 1,
+          msgType: "message",
+          role: "assistant",
+          content: { type: "reasoning", value: "", signature: "sig" },
+        }),
+      ],
+    }),
+  )
+
+  await waitFor(() => expect(tabs()).toHaveLength(3))
+
+  const panel = panelOf()
+  expect(within(panel).getByText("Claude")).toBeInTheDocument()
+  expect(panel.textContent).not.toContain("No text was captured")
 })
 
 test("S37: thinking is present but collapsed on Conversation, so the prose leads and the reasoning is opt-in", async () => {
@@ -591,6 +647,43 @@ test("S78: the rail opens a nested branch too, so every agent it lists leads som
 
   const nested = await screen.findByRole("region", { name: /researcher conversation/i })
   expect(within(nested).getByText(/Nested branch findings/)).toBeInTheDocument()
+})
+
+test("a skill body injected under the user's role is credited to the skill and folded away, not printed as a prompt", async () => {
+  const skill = `Base directory for this skill: /Users/maya/skills/orchestrate\n\n${"# Orchestrate\n".repeat(200)}`
+  renderDetail(
+    buildPayload({
+      messages: [
+        message({
+          lineNumber: 1,
+          msgType: "message",
+          role: "user",
+          content: text("Run the pipeline"),
+        }),
+        message({
+          lineNumber: 2,
+          msgType: "message",
+          role: "user",
+          subType: "toolInjection",
+          content: text(skill),
+        }),
+      ],
+    }),
+  )
+
+  await waitFor(() => expect(tabs()).toHaveLength(3))
+
+  const panel = panelOf()
+  const injected = within(panel).getByText("Skill Loaded — orchestrate").closest("article")
+  expect(injected).not.toBeNull()
+
+  // The skill stands where the speaker's name goes, so nothing claims the user said this.
+  const shown = injected as HTMLElement
+  expect(within(shown).queryByText("ritesh")).toBeNull()
+  // Present but folded: the reader opts into 3 KB of skill body rather than scrolling past it.
+  expect(shown.querySelector("details")).not.toHaveAttribute("open")
+
+  expect(within(panel).getByText(/Run the pipeline/)).toBeInTheDocument()
 })
 
 test("EDGE-008: a 404 from the detail endpoint renders a not-found state with a way back, not a blank panel", async () => {
