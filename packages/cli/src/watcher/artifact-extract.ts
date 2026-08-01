@@ -152,11 +152,6 @@ const decoded = (ref: string): string => {
   }
 }
 
-/**
- * HTML `src`/`href`/`poster` and inline markdown links/images, resolved against the document's
- * own directory. Reference-style markdown links (`[id]: path`) and autolinks (`<./clip.mp4>`) are
- * deliberately not matched -- see design.md D7.
- */
 export const referencedPaths = (content: string, fromDir: string): ReadonlyArray<string> => {
   const seen = new Set<string>()
   const result: string[] = []

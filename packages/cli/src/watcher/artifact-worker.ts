@@ -81,10 +81,6 @@ export type ArtifactWorkerConfig = {
 export type ArtifactWorkerDeps = ArtifactUploadDeps & {
   readonly sink: ArtifactSink
   readonly clock: { now(): number }
-  /**
-   * Required rather than optional: an absent runner would silently skip the tracked-reference
-   * filter, and the failure mode of that is capturing every source file a document links to.
-   */
   readonly runGit: GitRunner
   readonly stopped?: () => boolean
 }
@@ -194,21 +190,12 @@ const capturableReferences = async (
 }
 
 /**
- * Tracked means pre-existing repo content, which is close to the inverse of generated output. One
- * batched call classifies the whole set; a loop would cost a subprocess per reference.
- *
- * Git prints only the tracked paths, in its own order, so the answer is matched by set membership
- * rather than by position. It also prints them repo-relative even when given absolute paths, which
- * is why each one is resolved back against the root.
- *
  * `--literal-pathspecs` is a top-level git option and has to precede the subcommand -- placed after
- * it, git rejects it as unknown. Without it pathspec magic is on, and a screenshot named
- * `shot[1].png` is read as a character class and silently fails to match.
+ * it, git rejects it as unknown. Without it pathspec magic is on, and a file named `shot[1].png` is
+ * read as a character class. Git answers repo-relative and omits untracked paths entirely, so the
+ * answer is a set rather than a positional mapping.
  *
  * Callers must pass a non-empty set: `git ls-files` with no pathspec lists the entire repository.
- *
- * Returns null when git could not answer at all -- not a repo, git absent, non-zero exit -- so the
- * caller can fail closed rather than treat every reference as untracked.
  */
 const trackedAmong = async (
   deps: ArtifactWorkerDeps,
@@ -268,9 +255,8 @@ const enqueueReferences = async (
     const survivors = await capturableReferences(refs, projectRoot)
     if (survivors.length === 0) return
 
-    // Ordered after `capturableReferences` on purpose: that gate confines every path to the project
-    // root, and one path outside it makes `git ls-files` exit 128 and print nothing for the whole
-    // batch -- which would then fail closed and discard the references that were perfectly valid.
+    // Must follow `capturableReferences`: one path outside the root makes `git ls-files` exit 128
+    // and print nothing for the whole batch, discarding every valid reference with it.
     const tracked = await trackedAmong(deps, projectRoot, survivors)
     if (tracked === null) return
 
