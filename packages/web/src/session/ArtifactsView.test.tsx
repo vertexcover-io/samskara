@@ -238,6 +238,122 @@ test("S52: a created artifact whose body cannot be read degrades to a notice, no
   expect(await within(viewer).findByText(/contents unavailable/i)).toBeInTheDocument()
 })
 
+test("S55: each file row says whether it was created or edited, so the tree is scannable", () => {
+  render(
+    <TestRouter initialEntries={["/s/1?tab=artifacts"]}>
+      <ArtifactsView
+        artifacts={[
+          captured({ id: "c-new", relativePath: "src/added.ts", changeKind: "created" }),
+          captured({ id: "c-mod", relativePath: "src/changed.ts", changeKind: "edited" }),
+          captured({
+            id: "c-unk",
+            relativePath: "src/guessed.ts",
+            changeKind: "editedUnknownBase",
+          }),
+        ]}
+      />
+    </TestRouter>,
+  )
+
+  const list = screen.getByRole("list", { name: /filed artifacts/i })
+  const rowFor = (name: RegExp) => within(list).getByRole("button", { name }).textContent ?? ""
+
+  // The status leads the row, the way `git status` puts it in the margin.
+  expect(rowFor(/added\.ts/)).toMatch(/^Created\b/)
+  expect(rowFor(/changed\.ts/)).toMatch(/^Edited\b/)
+  // An unresolved base is still an edit; the row must not imply the file is new.
+  expect(rowFor(/guessed\.ts/)).toMatch(/^Edited\b/)
+})
+
+test("S55: a frame-link artifact has no change kind and gets no marker rather than a wrong one", () => {
+  render(
+    <TestRouter initialEntries={["/s/1?tab=artifacts"]}>
+      <ArtifactsView artifacts={ARTIFACTS} />
+    </TestRouter>,
+  )
+
+  const list = screen.getByRole("list", { name: /filed artifacts/i })
+  const row = within(list).getByRole("button", { name: /idempotency-design\.md/ })
+  expect(row.textContent).not.toMatch(/created|edited/i)
+})
+
+test("S54: an agent-authored HTML file renders as a page, not as syntax-highlighted source", () => {
+  render(
+    <TestRouter initialEntries={["/s/1?tab=artifacts"]}>
+      <ArtifactsView
+        artifacts={[
+          captured({
+            id: "c-html",
+            relativePath: "reports/proof.html",
+            mimeType: "text/html",
+            changeKind: "created",
+            editCount: 0,
+          }),
+        ]}
+      />
+    </TestRouter>,
+  )
+
+  const frame = screen.getByTitle(/rendered preview of reports\/proof\.html/i)
+  expect(frame.tagName).toBe("IFRAME")
+  expect(frame).toHaveAttribute("src", "/api/artifacts/c-html/raw?which=current")
+})
+
+test("S54: the preview frame is sandboxed without allow-same-origin, which would void the sandbox", () => {
+  // `allow-scripts` plus `allow-same-origin` lets a script inside remove its own sandbox and
+  // reload with full origin access. The server sends the same policy as a CSP header; the
+  // attribute repeats it so a cached response cannot arrive unsandboxed.
+  render(
+    <TestRouter initialEntries={["/s/1?tab=artifacts"]}>
+      <ArtifactsView
+        artifacts={[
+          captured({
+            id: "c-html",
+            relativePath: "reports/proof.html",
+            mimeType: "text/html",
+            changeKind: "created",
+            editCount: 0,
+          }),
+        ]}
+      />
+    </TestRouter>,
+  )
+
+  const sandbox = screen.getByTitle(/rendered preview/i).getAttribute("sandbox") ?? ""
+  expect(sandbox.split(/\s+/)).toContain("allow-scripts")
+  expect(sandbox).not.toContain("allow-same-origin")
+})
+
+test("S54: an edited HTML file still opens on its diff, with the rendered page one click away", async () => {
+  const user = userEvent.setup()
+  render(
+    <TestRouter initialEntries={["/s/1?tab=artifacts"]}>
+      <ArtifactsView
+        artifacts={[
+          captured({
+            id: "c-html",
+            relativePath: "reports/proof.html",
+            mimeType: "text/html",
+            diff: "@@ -1 +1 @@\n-<p>old</p>\n+<p>new</p>\n",
+          }),
+        ]}
+      />
+    </TestRouter>,
+  )
+
+  const viewer = within(screen.getByRole("region", { name: /artifact viewer/i }))
+  // The diff is what changed, so it stays the landing view even for a renderable file.
+  expect(viewer.getByText("+<p>new</p>")).toBeInTheDocument()
+  expect(viewer.queryByTitle(/rendered preview/i)).not.toBeInTheDocument()
+
+  await user.click(viewer.getByRole("tab", { name: /preview/i }))
+
+  expect(viewer.getByTitle(/rendered preview/i)).toHaveAttribute(
+    "src",
+    "/api/artifacts/c-html/raw?which=current",
+  )
+})
+
 test("S48: a binary captured artifact points its media at the raw route rather than a data url", () => {
   render(
     <TestRouter initialEntries={["/s/1?tab=artifacts"]}>

@@ -21,11 +21,13 @@ const Unavailable = () => (
   <span className="text-faded italic underline decoration-dotted">unavailable</span>
 )
 
-type Medium = "markdown" | "code" | "diff" | "image" | "video" | "unknown"
+type Medium = "markdown" | "code" | "diff" | "image" | "video" | "html" | "unknown"
 
 const EXTENSION_MEDIA: Readonly<Record<string, Medium>> = {
   md: "markdown",
   markdown: "markdown",
+  html: "html",
+  htm: "html",
   diff: "diff",
   patch: "diff",
   png: "image",
@@ -131,6 +133,7 @@ const mediumOf = (exhibit: Exhibit): Medium => {
   if (mime.startsWith("video/")) return "video"
   if (mime === "text/x-diff") return "diff"
   if (mime === "text/markdown") return "markdown"
+  if (mime === "text/html") return "html"
 
   const extension = extensionOf(exhibit)
   const byExtension = EXTENSION_MEDIA[extension]
@@ -144,6 +147,7 @@ const MEDIUM_LABEL: Readonly<Record<Medium, string>> = {
   diff: "Diff",
   image: "Image",
   video: "Video",
+  html: "Page",
   unknown: "Unknown",
 }
 
@@ -264,7 +268,22 @@ const FetchedText = ({ url, render }: { url: string; render: (text: string) => J
   return render(state.text)
 }
 
-type ArtifactViewId = "diff" | "split" | "current" | "base"
+/**
+ * Agent-authored markup renders as a page rather than as source, but only ever sandboxed. The raw
+ * route already sends `sandbox allow-scripts` as a response header; the attribute repeats it so a
+ * cached or proxied response cannot arrive unsandboxed. `allow-same-origin` must never join it --
+ * together the two let a script inside strip its own sandbox and reload with full origin access.
+ */
+const Preview = ({ url, name }: { url: string; name: string }) => (
+  <iframe
+    src={url}
+    sandbox="allow-scripts"
+    title={`Rendered preview of ${name}`}
+    className="h-[70vh] w-full border border-rule bg-white"
+  />
+)
+
+type ArtifactViewId = "diff" | "split" | "current" | "base" | "preview"
 
 /** Two panes on a wide screen, stacked below it -- 320px must not scroll horizontally. */
 const SideBySide = ({
@@ -343,11 +362,15 @@ const EditedBody = ({ exhibit }: { exhibit: Exhibit }) => {
   const path = exhibit.relativePath ?? exhibit.label
 
   const views: Array<readonly [ArtifactViewId, string]> = [["diff", "Diff"]]
+  if (mediumOf(exhibit) === "html" && exhibit.textUrl !== null) views.push(["preview", "Preview"])
   if (exhibit.baseUrl !== null) views.push(["split", "Side by side"])
   if (exhibit.textUrl !== null) views.push(["current", "Current"])
   if (exhibit.baseUrl !== null) views.push(["base", "Base"])
 
   const pane = () => {
+    if (view === "preview" && exhibit.textUrl !== null) {
+      return <Preview url={exhibit.textUrl} name={nameOf(exhibit)} />
+    }
     if (view === "current" && exhibit.textUrl !== null) {
       return (
         <FetchedText url={exhibit.textUrl} render={(text) => <Code source={text} path={path} />} />
@@ -414,6 +437,11 @@ const Body = ({ exhibit }: { exhibit: Exhibit }) => {
   // An edit carries a before AND an after, so it gets the switcher rather than one fixed pane.
   if (exhibit.diff !== null || exhibit.oldFragment !== null || exhibit.baseUrl !== null) {
     return <EditedBody exhibit={exhibit} />
+  }
+
+  // A created page has no before to compare against, so the rendered page is the whole story.
+  if (medium === "html" && exhibit.textUrl !== null) {
+    return <Preview url={exhibit.textUrl} name={nameOf(exhibit)} />
   }
 
   const asMedium = (text: string) => {
@@ -547,6 +575,28 @@ type TreeProps = {
 }
 
 /** A file browser: folders collapse, files select, indentation follows nesting depth. */
+/**
+ * A one-letter status in the margin, read like `git status`: A for a file the session created, M
+ * for one it modified. `editedUnknownBase` is still a modification -- only the pre-session copy is
+ * missing -- so it must not read as new. A frame-link has no change kind and gets no marker.
+ */
+const ChangeMark = ({ changeKind }: { changeKind: string | null }) => {
+  if (changeKind === null) return null
+  const created = changeKind === "created"
+  return (
+    <>
+      <span className="sr-only">{created ? "Created " : "Edited "}</span>
+      <span
+        aria-hidden="true"
+        title={created ? "Created" : "Edited"}
+        className={`w-3 shrink-0 text-center font-semibold ${created ? "text-ok" : "text-custody"}`}
+      >
+        {created ? "A" : "M"}
+      </span>
+    </>
+  )
+}
+
 const Tree = ({ nodes, depth, selectedId, openFolders, onToggle, onSelect }: TreeProps) => (
   <ul className={depth === 0 ? "" : ""}>
     {nodes.map((node) => {
@@ -592,7 +642,7 @@ const Tree = ({ nodes, depth, selectedId, openFolders, onToggle, onSelect }: Tre
                 : "text-ink-2"
             }`}
           >
-            <span className="w-3 shrink-0" />
+            <ChangeMark changeKind={node.item.changeKind} />
             <span className="truncate">{node.name}</span>
             {node.item.access === "denied" ? (
               <span className="ml-auto shrink-0 font-semibold text-err">locked</span>
