@@ -162,6 +162,28 @@ describe("normalizeClaude", () => {
     expect(source.token).toBe("secret-1")
   })
 
+  test("S3: NUL is stripped from every string, since Postgres jsonb cannot store it at all", () => {
+    // A transcript records whatever the agent typed, and source code legitimately contains a NUL
+    // escape. Left in place, inserting it into a jsonb column fails with 22P05, and every later
+    // flush for that session fails too, because the checkpoint never advances past the line.
+    const redacted = redactJson({
+      text: "const keyOf = `${id}\u0000${path}`",
+      nested: [{ deep: "a\u0000b" }],
+      "key\u0000name": "value",
+      untouched: "no control characters here",
+      count: 3,
+    })
+
+    expect(redacted).toEqual({
+      text: "const keyOf = `${id}${path}`",
+      nested: [{ deep: "ab" }],
+      keyname: "value",
+      untouched: "no control characters here",
+      count: 3,
+    })
+    expect(JSON.stringify(redacted)).not.toContain("\\u0000")
+  })
+
   test("S4: main, nested agents, workflow journals, and future tracks classify deterministically", () => {
     const root = "/home/me/.claude/projects"
     expect(classifyClaudePath(`${root}/-Users-me-app/sess-1.jsonl`, root)).toEqual({
