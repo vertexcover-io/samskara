@@ -63,6 +63,8 @@ const MIME_BY_EXTENSION: Record<string, string> = {
   ".jpeg": "image/jpeg",
   ".gif": "image/gif",
   ".webp": "image/webp",
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
   ".pdf": "application/pdf",
   ".zip": "application/zip",
   ".wasm": "application/wasm",

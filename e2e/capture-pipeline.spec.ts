@@ -786,6 +786,97 @@ test.describe("capture pipeline", () => {
     await sql`delete from artifact where "sessionId" = ${SESSION_ID}`
   })
 
+  test("P14: a captured report's referenced media is captured too, under the same session, while a source file it links is not", async () => {
+    // No --project-slug override: artifact capture needs the real resolver's project root, and
+    // the tracked-reference filter needs the real `git ls-files` against this fixture repo.
+    const { writer, sql, cwd } = await useHarness({ projectOverride: false, enabled: true })
+
+    const verification = join(cwd, "verification")
+    const report = join(verification, "proof-report.html")
+    const video = join(verification, "run.mp4")
+    const shot = join(verification, "shot.png")
+    const source = join(cwd, "src", "driver.ts")
+    await mkdir(verification, { recursive: true })
+    await mkdir(join(cwd, "src"), { recursive: true })
+
+    // Written by agent-browser driven from Bash: nothing in the transcript names them, which is
+    // exactly why the write-tool path cannot see them.
+    await writeFile(video, Buffer.from("000000186674797069736f6d", "hex"))
+    await writeFile(shot, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+
+    // Committed, so the real `git ls-files` reports it tracked and the reference is rejected.
+    await writeFile(source, "export const drive = () => {}\n", "utf8")
+    await execFileAsync("git", ["add", "src/driver.ts"], { cwd })
+    await execFileAsync(
+      "git",
+      [
+        "-c",
+        "user.email=e2e@example.com",
+        "-c",
+        "user.name=e2e",
+        "commit",
+        "-q",
+        "-m",
+        "add driver",
+      ],
+      { cwd },
+    )
+
+    await writeFile(
+      report,
+      [
+        "<h1>Verification</h1>",
+        '<video src="run.mp4" poster="shot.png"></video>',
+        '<a href="../src/driver.ts">driver.ts</a>',
+        '<img src="https://example.com/remote.png">',
+      ].join("\n"),
+      "utf8",
+    )
+
+    // Only the report is declared. Everything else has to be reached through its references.
+    await writer.append([
+      userLine("Verify the feature and write the report.", 0),
+      toolCallLine("tool-write-report", "Write", { file_path: report }, 1),
+    ])
+
+    await pollUntil(
+      () => sql<{ count: string }[]>`
+        select count(*)::text as count from messages where "sessionId" = ${SESSION_ID}
+      `,
+      (r) => Number(r[0]?.count ?? 0) >= 2,
+      (r) => `${r[0]?.count ?? 0} message rows`,
+    )
+
+    // Three rows: the declared report plus the two files it references. The referenced pair
+    // arrives on a later worker pass, after the report's own upload has settled.
+    const rows = await pollUntil(
+      () => sql<{ path: string; relativePath: string; changeKind: string; mimeType: string }[]>`
+        select path, "relativePath", "changeKind", "mimeType"
+        from artifact where "sessionId" = ${SESSION_ID}
+      `,
+      (r) => r.length >= 3,
+      (r) => `${r.length} artifact rows`,
+    )
+
+    const byRelative = new Map(rows.map((row) => [row.relativePath, row]))
+    expect([...byRelative.keys()].sort()).toEqual([
+      join("verification", "proof-report.html"),
+      join("verification", "run.mp4"),
+      join("verification", "shot.png"),
+    ])
+
+    // Inherited attribution, never inferred: the media carries the report's own session.
+    expect(byRelative.get(join("verification", "run.mp4"))?.changeKind).toBe("created")
+    expect(byRelative.get(join("verification", "run.mp4"))?.mimeType).toBe("video/mp4")
+    expect(byRelative.get(join("verification", "shot.png"))?.changeKind).toBe("created")
+
+    // The tracked source file and the remote URL are both absent, and neither is a near miss:
+    // the assertion above pins the row set exactly.
+    expect(rows.some((row) => row.path === source)).toBe(false)
+
+    await sql`delete from artifact where "sessionId" = ${SESSION_ID}`
+  })
+
   test("A1: a file the agent edits during a captured session arrives in Postgres with its pre-session content and a diff, without delaying message capture", async () => {
     // No --project-slug: the override path supplies no project root, so it would enqueue nothing.
     const { writer, sql, cwd, home } = await useHarness({
