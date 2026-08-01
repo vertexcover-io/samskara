@@ -301,14 +301,6 @@ const Conversation = ({ detail, inlineTools }: { detail: Detail; inlineTools: bo
     focus.open(next, trigger instanceof HTMLElement ? trigger : null)
   }
 
-  const missing =
-    target !== null && site === null ? (
-      <Notice>
-        The linked message is not part of this session. It may have been shared from another
-        transcript.
-      </Notice>
-    ) : null
-
   const stream = (
     <RecordStream
       records={view.records}
@@ -324,22 +316,14 @@ const Conversation = ({ detail, inlineTools }: { detail: Detail; inlineTools: bo
   )
 
   if (entries.length === 1) {
-    return (
-      <>
-        {missing}
-        {stream}
-      </>
-    )
+    return stream
   }
 
   return (
-    <>
-      {missing}
-      <div className="grid items-start gap-6 min-[900px]:grid-cols-[232px_minmax(0,1fr)]">
-        <AgentRail entries={entries} selectedId={agentId} onSelect={select} />
-        <div className="min-w-0">{stream}</div>
-      </div>
-    </>
+    <div className="grid items-start gap-6 min-[900px]:grid-cols-[232px_minmax(0,1fr)]">
+      <AgentRail entries={entries} selectedId={agentId} onSelect={select} />
+      <div className="min-w-0">{stream}</div>
+    </div>
   )
 }
 

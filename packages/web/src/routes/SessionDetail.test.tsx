@@ -400,12 +400,13 @@ test("S65: a link to a message inside a branch opens that branch on arrival, so 
   expect(within(branch).getByText(/Checked the three tables/)).toBeInTheDocument()
 })
 
-test("S66: a link naming a message this transcript does not hold says so instead of silently showing the top of the session", async () => {
+test("S66: a link naming a message this transcript does not hold is ignored, leaving the session reading as it would without one", async () => {
   renderDetail(BRANCH_PAYLOAD, OK_EMPTY, "/sessions/s-1?m=not-in-this-session")
 
   await waitFor(() => expect(tabs()).toHaveLength(3))
 
-  expect(await screen.findByText(/linked message is not part of this session/i)).toBeInTheDocument()
+  expect(screen.queryByText(/not part of this session/i)).not.toBeInTheDocument()
+  expect(within(panelOf()).getByRole("button", { name: /open branch/i })).toBeInTheDocument()
 })
 
 test("S67: the linked record inside a branch is marked as the reader's location, so the shared line is identifiable among its neighbours", async () => {
