@@ -683,12 +683,20 @@ describe("artifact workers", () => {
   })
 
   test("a scan-body exception is caught and never turns a succeeded upload into a retry", async () => {
-    const reportPath = join(dir, "notes.md")
+    // Two documents, both due: if the catch inside the scan ever bubbled up instead of staying
+    // local, `processOne` would throw, the outer `runWorker` catch would swallow it and report
+    // `worked: false`, and `drainOnce` would return before the second entry was ever claimed --
+    // a silent stall the single-entry version of this test could not observe.
+    const firstPath = join(dir, "notes.md")
+    const secondPath = join(dir, "notes2.md")
     await writeFile(join(dir, "a.png"), "a bytes", "utf8")
-    await writeFile(reportPath, '<img src="a.png">', "utf8")
+    await writeFile(join(dir, "b.png"), "b bytes", "utf8")
+    await writeFile(firstPath, '<img src="a.png">', "utf8")
+    await writeFile(secondPath, '<img src="b.png">', "utf8")
 
-    const report = entry({ path: reportPath, relativePath: "notes.md" })
-    await enqueue(queuePath, [report])
+    const first = entry({ path: firstPath, relativePath: "notes.md" })
+    const second = entry({ path: secondPath, relativePath: "notes2.md" })
+    await enqueue(queuePath, [first, second])
     const sink = scriptedSink([200])
     const throwingRunGit: GitRunner = async () => {
       throw new Error("boom")
@@ -699,10 +707,12 @@ describe("artifact workers", () => {
       deps(sink, 1_800_000_000_000, throwingRunGit),
     )
 
-    expect(sink.sent.map((payload) => payload.path)).toEqual([reportPath])
+    expect(sink.sent.map((payload) => payload.path).sort()).toEqual([firstPath, secondPath].sort())
     const state = await readArtifactState(statePath)
-    expect(state.artifacts[stateKey(report.sessionId, reportPath)]?.currentHash).toBeDefined()
+    expect(state.artifacts[stateKey(first.sessionId, firstPath)]?.currentHash).toBeDefined()
+    expect(state.artifacts[stateKey(second.sessionId, secondPath)]?.currentHash).toBeDefined()
     expect((await readQueue(queuePath)).entries).toHaveLength(0)
+    expect(recorder.warn.length).toBeGreaterThanOrEqual(2)
   })
 
   test("A1: a verification report seeds its own generated media and nothing from the repo", async () => {
