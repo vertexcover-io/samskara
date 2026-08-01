@@ -2,11 +2,12 @@
 name: Samskara
 description: Process provenance for AI-assisted software development.
 colors:
-  paper: "#e9ebef"
-  paper-2: "#eef0f3"
-  panel: "#f6f7f9"
-  panel-2: "#fbfcfd"
-  rule: "#cfd4db"
+  paper: "#e3e6ea"
+  paper-2: "#eaedf1"
+  panel: "#f4f6f8"
+  panel-2: "#ffffff"
+  rule: "#b0b9c6"
+  rule-soft: "#d2d8e0"
   ink: "#1a1c20"
   ink-2: "#2f343c"
   ink-soft: "#545b64"
@@ -57,16 +58,26 @@ spacing:
   md: "1rem"
   lg: "1.5rem"
 components:
-  status-stamp:
-    border: "1.5px solid currentColor"
-    rounded: "{rounded.sm}"
-    transform: "rotate(-2deg)"
+  outcome-stamp:
+    textColor: "{colors.ok}"
     typography: "{typography.label}"
   subagent-annex:
     backgroundColor: "{colors.panel}"
     border: "1px solid {colors.rule}"
     borderTop: "2px solid <lane>"
     rounded: "{rounded.sm}"
+  record-user:
+    backgroundColor: "{colors.panel-2}"
+    borderLeft: "2px solid {colors.ink}"
+    rounded: "{rounded.xs}"
+  record-assistant:
+    backgroundColor: "{colors.panel-2}"
+    borderLeft: "2px solid {colors.custody}"
+    rounded: "{rounded.xs}"
+  record-aside:
+    backgroundColor: "{colors.panel-2}"
+    borderLeft: "2px solid {colors.rule}"
+    rounded: "{rounded.xs}"
 ---
 
 # Design System: Samskara
@@ -101,8 +112,11 @@ avoids). One official stamp-red and one custody-ink indigo do the semantic work;
 tints distinguish subagent lanes without turning saturated.
 
 ### Ground & structure
-- **Ledger paper** (`#e9ebef`) — page canvas, cool gray. Panels lift to `#f6f7f9` / `#fbfcfd`.
-- **Hairline rule** (`#cfd4db`) — the default divider; 1px, never a colored side-rail above 1px.
+- **Ledger paper** — page canvas, cool gray and the darkest surface in the system. Panels lift
+  through `panel` to a true-white `panel-2`, so a card reads as resting *on* the page rather than
+  dissolving into it.
+- **Hairline rule** — the default divider, 1px, held near **2:1 against white**. A lighter rule
+  reads as a suggestion rather than a boundary. `rule-soft` is the within-group divider.
 - **Ink** (`#1a1c20`) solid/known · **Ink-soft** (`#545b64`) secondary · **Faded** (`#5b616b`)
   inferred/missing, always paired with dotted underline or italic so status is never color-only.
 
@@ -142,41 +156,84 @@ IDs, token counts, paths, code, and diffs. Monospace is used for *measurement an
 weight, case, tracked small-caps, color, and the sans/mono split — not by size contrast. A wide
 type ramp would add noise to a dense evidence surface.
 **The Read-First Rule.** Text answers *what this is* and *what to do next* before supporting context.
+A commit's subject leads its row; the sha, branch, and diffstat are the evidence beneath it.
+**The One Clock Rule.** Every stamp in the app renders in the reader's own timezone, through one
+module. Recency reads relative (`3 hours ago`, `yesterday`) with the exact moment one hover away on
+`title`; past thirty days it becomes a date, because "5 weeks ago" locates nothing. A stamp from the
+future reads as *just now* rather than counting backwards — clock skew between the capturing machine
+and the reader is ordinary. Unparseable reads `--`, never an invented distance.
 
 ## Layout
 
-- **Masthead file-cover** → **divider tabs** (Overview / Timeline / Files / Tools) → **filter+search
-  toolbar** → **agent rail + custody-spine timeline**. No permanent metadata inspector.
-- The **custody spine** is a 2px indigo vertical line; each record marks it with a rotated diamond
-  **fold node** (agent tinted), or a filled square for events.
+- **Masthead file-cover** → **divider tabs** (Conversation / Tool Calls / Artifacts / Commits /
+  Pull Requests) → **agent rail + custody-spine timeline**. No permanent metadata inspector. The
+  masthead and the tab strip both pin; everything they cover reads a published `--sticky-head` to
+  clear them, so a permalinked record lands below the bars rather than behind them.
+- The **custody spine** is a 2px hairline running down the centre of a 2rem gutter, marked at each
+  record by a 10px round **node**: filled for what the human sent, hollow for everything else.
+  Line and node are sized in **px, not rem** — the root font scales on wide viewports, and a
+  rem-sized node drifts off a px-positioned line.
 - **Agent navigator rail** (232px) lists the main agent and bounded subagent spans; it focuses an
   agent, it is not an inspector. Collapses to a responsive grid under 900px.
+- A **parked panel** (the agent rail, the artifact index) sticks below `--sticky-head`, ends at its
+  own content, and scrolls internally only once it outgrows the viewport. It never stretches to a
+  sibling's height — an unbounded tinted column with no bottom edge is the failure this prevents.
 - Responsive behavior is **structural**: rail → grid, dividers scroll, facts reflow 6→3→2 columns,
   cards go full-width. Type stays on the fixed rem ramp.
 
+## Elevation & Depth
+
+Depth is carried by **tonal layering first** — the page is the darkest surface, panels lift toward
+white, and a 2:1 hairline draws the boundary. Shadow is the exception, not the method, and the
+system holds exactly **two steps**:
+
+### Shadow vocabulary
+- **Card** (`0 1px 2px -1px rgb(26 28 32 / 0.1), 0 3px 10px -4px rgb(26 28 32 / 0.16)`) — a
+  surface resting on the page: project cards, the sign-in panel.
+- **Overlay** (`0 12px 32px -14px rgb(26 28 32 / 0.5)`) — a surface floating above it: the account
+  menu, the pairing dialog.
+
+### Named rules
+**The Two-Step Rule.** Depth is a choice between `card` and `overlay`. A per-component `rgba()`
+guess is how three different shadows once meant the same thing; if neither step fits, the surface
+does not need a shadow.
+
 ## Shapes
 
-Small radii only (`2px` / `3px`), pill for chips. Flat, lightweight surfaces with a single soft
-elevation (`0 1px 2px`, `0 6px 18px -8px`) reserved for the **subagent annex** — the one card that
-must read as lifted from the file. Stamps and exhibit numbers use a slight `rotate(-2deg…-4deg)` to
-read as pressed ink.
+Small radii only (`2px` / `3px`), pill for chips. Flat, lightweight surfaces throughout; the
+**subagent annex** reads as lifted from the file through its folder-tab top edge rather than
+through elevation.
 
 ## Components
 
-- **Status stamp** — outlined, tracked small-caps, rotated; carries capture state and outcomes.
-- **Custody line** — mono, `agent / tool / timestamp`, indigo keys.
-- **Message renderers (one system, distinct treatments):** user prompt (ink left-rule panel),
-  assistant prose/code, thinking (dashed disclosure, collapsed), tool call (procedure log with
-  structured input), tool result (Cleared/Failed outcome + disclosure preview), subagent
-  spawn/return events, system event, artifact/exhibit (numbered, provenance link), error (red flag
-  box + recovery). Records are never flattened into identical chat bubbles.
+- **Outcome stamp** — tracked small-caps in the semantic ink (`Cleared` / `Failed`); the word
+  carries the state, the color only reinforces it. Not outlined and not rotated.
+- **Custody line** — one mono line carrying a record's provenance, custody-indigo on the
+  identifier: `sha · branch · diffstat · repo · when`. Commits and pull requests file their
+  evidence on this line beneath the subject rather than stacking it into separate rows.
+- **Actor tone** — every transcript record resolves to one of three tones, and the tone drives its
+  **gutter, spine node, and label color together** so they read as one signal rather than three
+  decorations: **user** (ink, filled node), **assistant** (custody, hollow node), **aside** —
+  injections, branch events, system records — (rule, hollow node). The tone is published on a
+  `data-actor` attribute as well as the classes, so attribution is assertable without pinning the
+  styling that expresses it.
+- **Message renderers (one system, distinct treatments):** user prompt, assistant prose/code,
+  thinking (dashed disclosure, collapsed), tool call (procedure log with structured input), tool
+  result (Cleared/Failed outcome + disclosure preview), subagent spawn/return events, system event,
+  artifact (provenance link), error (red flag box + recovery). Records are never flattened into
+  identical chat bubbles.
 - **Subagent annex** — a sealed sub-dossier filed inline on the spine: seal, status, task summary,
   counts, parent link. Lane identity is a **folder-tab top edge** (2px), never a >1px side-rail.
 - **Focus mode (memorable moment)** — opening an annex isolates its full filed conversation and
   dims the rest of the spine while preserving the return point; the main narrative is never removed.
-- **States** — every interactive control has hover, focus-visible (2px stamp-red ring), active,
-  disabled. Surface states: loading skeleton, live/partial, completed, capture-failed, empty,
-  no-filter-results. Reduced-motion disables all animation.
+- **Artifact index** — the parked left panel of the Artifacts tab: filename filter, four kind chips
+  on a two-column grid carrying their own counts, an `A added · M modified` legend for the margin
+  marks, and the tree. It takes no heading — the tab above already names it.
+- **States** — every interactive control has hover, focus-visible, active, disabled. The focus ring
+  is a 2px stamp-red outline **plus a panel-2 halo filling its offset**, because the ring alone
+  disappears wherever focus lands on an ink or custody fill. Surface states: loading skeleton,
+  live/partial, completed, capture-failed, empty, no-filter-results. Reduced-motion disables all
+  animation.
 
 ## Motion
 
@@ -190,15 +247,25 @@ orchestrated page-load sequences. `prefers-reduced-motion` removes all animation
 - Use mono for data/code/measurement and sans for prose.
 - Keep the main-agent narrative present even when a subagent is focused.
 - Say "missing / permission-denied" in words, with dotted faded ink.
+- Carry an actor's identity on all three of its marks at once — gutter, spine node, label.
+- Reach for `card` or `overlay` when a surface needs depth, and for neither when it doesn't.
+- Let a side panel end at its own content and park; the page is the scroll region.
 
 ### Don't
 - Don't use warm-cream + serif editorial styling (the register this world rejects).
-- Don't add colored side-rails above 1px on cards; lane identity is a folder-tab top edge + seal.
+- Don't mark **lane** identity with a colored side-rail: a subagent's lane is a folder-tab top edge
+  (2px) + seal. The 2px left gutter is reserved for **actor** identity on a transcript record — a
+  different signal, and the only sanctioned left rule.
+- Don't write a per-component `rgba()` shadow, or stack scroll regions inside the page.
 - Don't build a permanent metadata sidebar or a multi-level nav maze.
 - Don't flatten records into uniform chat bubbles or communicate status by color alone.
+- Don't restate in a panel what the tab above it already names.
 
-## Provisional / to settle in the React port
+## Provisional / still to settle
 
-- Exact mono/sans faces (currently system stacks) may be pinned during the React extraction.
+- Exact mono/sans faces. The React surface ships on system stacks; pinning real faces is open.
 - Whether the parallel-map (time-aligned lanes) view is a default tab or a focused secondary mode.
 - Live-session update behavior and how much raw tool input shows by default.
+- A dark scheme. The tokens are structured for it, but the surface has not been audited for the
+  hardcoded escapes that would fight it — the artifact preview's white iframe, Shiki pinned to a
+  light theme, and every ink-fill/panel-text inversion pair.
