@@ -294,8 +294,6 @@ describe("conversationView", () => {
   })
 
   test("S61: each branch anchors to the call that launched it, not to the next one in order", () => {
-    // Two branches carry a spawn id; one was started by a human and carries none. Pairing by
-    // position hands the second call to the human-started branch and displaces its real owner.
     const payload = buildPayload({
       subagents: [
         {
@@ -339,8 +337,6 @@ describe("conversationView", () => {
   })
 
   test("S62: a branch with no spawning call is placed by when it ran, not by its own line numbers", () => {
-    // Every track numbers its lines from 1, so anchoring on lineNumber puts a branch that ran an
-    // hour in at the very top of the session.
     const payload = buildPayload({
       subagents: [
         {

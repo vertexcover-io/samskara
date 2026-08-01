@@ -325,10 +325,8 @@ export const toDetail = (payload: SessionDetailPayload): SessionDetail => {
   const branches = new Map<string, Array<TimelineRecord>>()
   const spawned = new Set<string>()
 
-  // Capture does not always emit a spawn event, but each branch records the id of the call that
-  // launched it, so a branch anchors to its own call rather than to whichever came next. Counting
-  // instead would assume one call per branch, and a human-started branch never has one -- every
-  // branch after it would then wear the wrong call's label.
+  // Matched by id rather than counted: a human-started branch has no call at all, so counting
+  // would leave every branch after it wearing the wrong call's label.
   const bySpawnCall = new Map<string, RawSubagent>()
   const unattached: Array<RawSubagent> = []
   for (const agent of payload.subagents) {
@@ -373,13 +371,9 @@ export const toDetail = (payload: SessionDetailPayload): SessionDetail => {
     }
   }
 
-  // Branches no call claimed: one a human started, so no call exists, and one whose call never
-  // reached the timeline. An annex renders only from a spawn record, so without a marker the
-  // branch's messages sit in the payload with nothing able to reach them and `?agent=` opens
-  // nothing.
-  //
-  // Placed by when the branch ran. Every track numbers its lines from 1, so a lineNumber anchor
-  // would put a branch that started an hour in at the very top of the session.
+  // An annex renders only from a spawn record, so a branch no call claimed needs one anyway or its
+  // messages are unreachable. Placed by time: every track numbers its lines from 1, so a lineNumber
+  // anchor would put a branch that started an hour in at the top of the session.
   for (const agent of [...unattached, ...bySpawnCall.values()]) {
     if (spawned.has(agent.agentId)) continue
     spawned.add(agent.agentId)
