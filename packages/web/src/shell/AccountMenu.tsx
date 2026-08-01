@@ -116,7 +116,7 @@ export const AccountMenu = ({ user }: { user: CurrentUser }) => {
           ref={menuRef}
           role="menu"
           aria-label="Account"
-          className="absolute right-0 z-20 mt-1 w-56 border border-rule bg-panel-2 py-1 shadow-[0_12px_32px_-14px_rgba(26,28,32,0.5)]"
+          className="absolute right-0 z-20 mt-1 w-56 border border-rule bg-panel-2 py-1 shadow-overlay"
         >
           <p className="border-b border-rule-soft px-3 py-2 font-mono text-[0.78rem] text-ink-soft">
             {user.githubLogin}

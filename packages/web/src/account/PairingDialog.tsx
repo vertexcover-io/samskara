@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { requestPairingCode } from "../api/account.js"
 import type { ApiError } from "../api/types.js"
+import { absoluteTime } from "../time.js"
 import { copyText } from "./copyText.js"
 import { useFocusTrap } from "./useFocusTrap.js"
 
@@ -14,9 +15,6 @@ type State =
   | { readonly phase: "failed"; readonly error: ApiError }
 
 const READY: State = { phase: "ready" }
-
-const formatExpiry = (expiresAt: number): string =>
-  new Date(expiresAt).toISOString().replace("T", " ").slice(0, 19)
 
 const Label = ({ children }: { children: string }) => (
   <p className="text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-ink-soft">
@@ -42,7 +40,7 @@ const CodePanel = ({ code, expiresAt }: { code: string; expiresAt: number }) => 
       </p>
       <p className="mt-2 text-ink-soft">
         Expires{" "}
-        <span className="font-mono text-[0.78rem] tabular-nums">{formatExpiry(expiresAt)}</span>
+        <span className="font-mono text-[0.78rem] tabular-nums">{absoluteTime(expiresAt)}</span>
       </p>
       <button
         type="button"
@@ -111,7 +109,7 @@ export const PairingDialog = ({ open, onClose, restoreFocusTo }: Props) => {
         open
         aria-modal="true"
         aria-labelledby="pairing-dialog-title"
-        className="relative w-full max-w-md border border-rule bg-panel-2 p-6 text-ink shadow-[0_18px_48px_-16px_rgba(26,28,32,0.55)]"
+        className="relative w-full max-w-md border border-rule bg-panel-2 p-6 text-ink shadow-overlay"
       >
         <h2 id="pairing-dialog-title" className="text-[1.375rem] font-semibold leading-tight">
           Pair the CLI

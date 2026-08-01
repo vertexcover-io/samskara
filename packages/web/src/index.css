@@ -1,12 +1,15 @@
 @import "tailwindcss";
 
 @theme {
-  --color-paper: #e9ebef;
-  --color-paper-2: #eef0f3;
-  --color-panel: #f6f7f9;
-  --color-panel-2: #fbfcfd;
-  --color-rule: #cfd4db;
-  --color-rule-soft: #dde1e7;
+  /* The page is the darkest surface and cards are true white, so a card reads as sitting on the
+     page rather than dissolving into it. `rule` is held near 2:1 against white -- the old #cfd4db
+     was ~1.4:1, which is what made every border look like a suggestion. */
+  --color-paper: #e3e6ea;
+  --color-paper-2: #eaedf1;
+  --color-panel: #f4f6f8;
+  --color-panel-2: #ffffff;
+  --color-rule: #b0b9c6;
+  --color-rule-soft: #d2d8e0;
   --color-ink: #1a1c20;
   --color-ink-2: #2f343c;
   --color-ink-soft: #545b64;
@@ -40,6 +43,12 @@
   --radius-xs: 2px;
   --radius-sm: 3px;
   --radius-pill: 999px;
+
+  /* Two steps, and nothing else: `card` is a surface resting on the page, `overlay` is one
+     floating above it (menus, dialogs). Depth is a choice between these, never a per-component
+     rgba() guess. */
+  --shadow-card: 0 1px 2px -1px rgb(26 28 32 / 0.1), 0 3px 10px -4px rgb(26 28 32 / 0.16);
+  --shadow-overlay: 0 12px 32px -14px rgb(26 28 32 / 0.5);
 }
 
 /* Type is rem-based, so scaling the root lifts the whole system proportionally
@@ -68,9 +77,20 @@ body {
   line-height: 1.5;
 }
 
+/* The light halo fills the offset gap, so the dark ring stays legible where focus lands on an
+   ink or custody surface rather than on paper. */
 :focus-visible {
   outline: 2px solid var(--color-stamp);
   outline-offset: 2px;
+  box-shadow: 0 0 0 2px var(--color-panel-2);
+}
+
+/* Shiki emits its own <pre>, so wrapping has to reach inside it -- setting white-space on the
+   wrapper alone leaves the highlighted markup scrolling sideways regardless. */
+.artifact-wrap pre,
+.artifact-wrap code {
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 @media (prefers-reduced-motion: reduce) {
