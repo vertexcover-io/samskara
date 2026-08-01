@@ -391,44 +391,41 @@ describe("artifact workers", () => {
     )
   })
 
-  test("S9: only text .html/.htm/.md artifacts are scanned for references", async () => {
-    const targets = {
-      md: join(dir, "target-md.dat"),
-      html: join(dir, "target-html.dat"),
-      txt: join(dir, "target-txt.dat"),
-      ts: join(dir, "target-ts.dat"),
-      png: join(dir, "target-png.dat"),
+  test("S9: an artifact is scanned when its own classified type is html or markdown", async () => {
+    // Driven by the extension the upload classifies from, so every markup extension the MIME map
+    // knows is scanned and nothing else is -- the two lists cannot drift apart.
+    const scanned = { md: "doc.md", markdown: "doc.markdown", html: "doc.html", htm: "doc.htm" }
+    const skipped = { txt: "doc.txt", ts: "doc.ts", png: "doc.png" }
+
+    const targetOf = (key: string) => join(dir, `target-${key}.dat`)
+    const all = { ...scanned, ...skipped }
+    await Promise.all(
+      Object.keys(all).map((key) => writeFile(targetOf(key), "target bytes", "utf8")),
+    )
+
+    let session = 0
+    for (const [key, name] of Object.entries(all)) {
+      const doc = join(dir, name)
+      const body = `href="target-${key}.dat"`
+      // The png is binary, so it must be skipped on encoding even though its body would match.
+      await writeFile(
+        doc,
+        key === "png" ? Buffer.concat([Buffer.from(body), Buffer.from([0])]) : body,
+      )
+      session += 1
+      await enqueue(queuePath, [
+        entry({ path: doc, relativePath: name, sessionId: `s-${session}` }),
+      ])
     }
-    await Promise.all(Object.values(targets).map((path) => writeFile(path, "target bytes", "utf8")))
-
-    const docMd = join(dir, "doc.md")
-    const docHtml = join(dir, "doc.html")
-    const docTxt = join(dir, "doc.txt")
-    const docTs = join(dir, "doc.ts")
-    const docPng = join(dir, "doc.png")
-    await writeFile(docMd, 'href="target-md.dat"', "utf8")
-    await writeFile(docHtml, 'href="target-html.dat"', "utf8")
-    await writeFile(docTxt, 'href="target-txt.dat"', "utf8")
-    await writeFile(docTs, 'href="target-ts.dat"', "utf8")
-    await writeFile(docPng, Buffer.concat([Buffer.from('href="target-png.dat"'), Buffer.from([0])]))
-
-    await enqueue(queuePath, [
-      entry({ path: docMd, relativePath: "doc.md" }),
-      entry({ path: docHtml, relativePath: "doc.html", sessionId: "sess-2" }),
-      entry({ path: docTxt, relativePath: "doc.txt", sessionId: "sess-3" }),
-      entry({ path: docTs, relativePath: "doc.ts", sessionId: "sess-4" }),
-      entry({ path: docPng, relativePath: "doc.png", sessionId: "sess-5" }),
-    ])
 
     const sink = scriptedSink([200])
     await runArtifactWorkers({ queuePath, statePath, workers: 1, drainOnce: true }, deps(sink))
 
     const sentPaths = new Set(sink.sent.map((payload) => payload.path))
-    expect(sentPaths.has(targets.md)).toBe(true)
-    expect(sentPaths.has(targets.html)).toBe(true)
-    expect(sentPaths.has(targets.txt)).toBe(false)
-    expect(sentPaths.has(targets.ts)).toBe(false)
-    expect(sentPaths.has(targets.png)).toBe(false)
+    for (const key of Object.keys(scanned))
+      expect([key, sentPaths.has(targetOf(key))]).toEqual([key, true])
+    for (const key of Object.keys(skipped))
+      expect([key, sentPaths.has(targetOf(key))]).toEqual([key, false])
   })
 
   test("S10: a failed upload seeds nothing", async () => {

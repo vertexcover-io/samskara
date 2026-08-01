@@ -40,6 +40,7 @@ const MIME_BY_EXTENSION: Record<string, string> = {
   ".toml": "text/toml",
   ".csv": "text/csv",
   ".html": "text/html",
+  ".htm": "text/html",
   ".css": "text/css",
   ".js": "text/javascript",
   ".mjs": "text/javascript",

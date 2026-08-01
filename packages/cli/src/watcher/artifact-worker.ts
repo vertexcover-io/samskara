@@ -6,7 +6,7 @@ import { atomicWriteJson, readJson, withFileLock } from "../config/atomic.js"
 import { referencedPaths } from "./artifact-extract.js"
 import { type ArtifactQueue, type QueueEntry, enqueue, keyOf, readQueue } from "./artifact-queue.js"
 import { type ArtifactUpload, type ArtifactUploadDeps, prepareUpload } from "./artifact-upload.js"
-import { isCapturable } from "./containment.js"
+import { capturableRealpath } from "./containment.js"
 import type { GitRunner } from "./resolveProject.js"
 
 // --- upload state: the worker's own record of what already landed --------------------------
@@ -155,12 +155,8 @@ const outcomeFor = (result: ArtifactSinkResult): Outcome => {
   return "drop"
 }
 
-const REFERENCE_SCAN_EXTENSIONS = [".html", ".htm", ".md"]
-
-const isReferenceScannable = (path: string): boolean => {
-  const lower = path.toLowerCase()
-  return REFERENCE_SCAN_EXTENSIONS.some((ext) => lower.endsWith(ext))
-}
+/** Derived from the upload's own classification, so the two never drift apart. */
+const REFERENCE_SCAN_TYPES = new Set(["text/html", "text/markdown"])
 
 /**
  * `entry.relativePath` is always a suffix of `entry.path` (both required by the queue schema),
@@ -171,30 +167,19 @@ const projectRootOf = (entry: QueueEntry): string => {
   return withoutRelative.endsWith(sep) ? withoutRelative.slice(0, -1) : withoutRelative
 }
 
-/**
- * Resolves symlinks before containment is judged, mirroring `driver.ts`'s enqueue path:
- * `isCapturable` is a lexical check, so a symlink inside the project root pointing outside it
- * would otherwise pass containment on its own path while the read that follows resolves the
- * link and reads the true, out-of-root target.
- */
 const realCapturablePath = async (ref: string, projectRoot: string): Promise<string | null> => {
-  const resolved = await realpath(ref).catch(() => ref)
+  const resolved = await capturableRealpath(ref, projectRoot, realpath)
+  if (resolved === null) return null
   const info = await stat(resolved).catch(() => null)
-  if (!info?.isFile()) return null
-  if (!isCapturable(resolved, projectRoot)) return null
-  return resolved
+  return info?.isFile() === true ? resolved : null
 }
 
 const capturableReferences = async (
   refs: ReadonlyArray<string>,
   projectRoot: string,
 ): Promise<ReadonlyArray<string>> => {
-  const survivors: string[] = []
-  for (const ref of refs) {
-    const resolved = await realCapturablePath(ref, projectRoot)
-    if (resolved !== null) survivors.push(resolved)
-  }
-  return survivors
+  const resolved = await Promise.all(refs.map((ref) => realCapturablePath(ref, projectRoot)))
+  return resolved.filter((path): path is string => path !== null)
 }
 
 /**
@@ -254,7 +239,7 @@ const enqueueReferences = async (
 ): Promise<void> => {
   try {
     if (upload.encoding !== "utf8") return
-    if (!isReferenceScannable(entry.path)) return
+    if (!REFERENCE_SCAN_TYPES.has(upload.mimeType)) return
 
     const refs = referencedPaths(upload.currentContent, dirname(entry.path))
     if (refs.length === 0) return
