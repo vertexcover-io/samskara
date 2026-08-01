@@ -12,12 +12,6 @@ const OUTCOME_LABEL: Readonly<Record<string, string>> = {
 const outcomeClass = (status: string | null): string =>
   status === "failure" ? "text-err" : status === null ? "text-faded" : "text-ok"
 
-export const summarize = (value: unknown): string => {
-  if (value === null || value === undefined) return "no payload captured"
-  if (typeof value === "string") return value
-  return JSON.stringify(value, null, 2)
-}
-
 const MARKDOWN_HINT = /^#{1,6}\s|^\s*[-*]\s+\S|```|\|.*\|/m
 
 const looksMarkdown = (value: unknown): value is string =>

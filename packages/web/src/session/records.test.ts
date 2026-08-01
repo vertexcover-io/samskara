@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest"
 import type { SessionDetailPayload } from "../api/types.js"
 import { buildPayload, message } from "../tests/session-fixtures.js"
-import { artifactsOf, toDetail } from "./records.js"
+import { artifactsOf, conversationView, locate, toDetail } from "./records.js"
 
 const kindsOf = (payload: SessionDetailPayload): ReadonlyArray<string> =>
   toDetail(payload).records.map((record) => record.kind)
@@ -136,6 +136,145 @@ describe("toDetail", () => {
         status: "success",
       },
     ])
+  })
+})
+
+const AGENT = { agentId: "a1", agentType: "auditor", description: "Audit", parentAgentId: null }
+
+// The same run of messages, once for the main spine and once inside a branch: a system event,
+// two assistant turns either side of a tool call.
+const run = (from: number, agentId: string | null) => {
+  const owned = agentId === null ? {} : { agentId, isSubagent: true }
+  return [
+    message({ id: `sys-${from}`, lineNumber: from, msgType: "systemEvent", ...owned }),
+    message({
+      id: `say-${from}`,
+      lineNumber: from + 1,
+      msgType: "message",
+      role: "assistant",
+      ...owned,
+    }),
+    message({ id: `call-${from}`, lineNumber: from + 2, msgType: "toolCall", ...owned }),
+    message({
+      id: `then-${from}`,
+      lineNumber: from + 3,
+      msgType: "message",
+      role: "assistant",
+      ...owned,
+    }),
+  ]
+}
+
+const call = (messageId: string) => ({
+  toolId: `t-${messageId}`,
+  messageId,
+  toolName: "Grep",
+  toolInput: { pattern: "x" },
+  result: { hits: 1 },
+  status: "success",
+})
+
+const shapedPayload = () =>
+  buildPayload({
+    subagents: [AGENT],
+    messages: [
+      ...run(1, null),
+      message({
+        id: "spawn-msg",
+        lineNumber: 5,
+        msgType: "turnEvent",
+        subType: "agentSpawn",
+        agentId: "a1",
+      }),
+      ...run(6, "a1"),
+    ],
+    toolCalls: [call("call-1"), call("call-6")],
+  })
+
+describe("conversationView", () => {
+  test("S56: a branch is shaped exactly like the main spine - its system events are dropped and its assistant run merges into one block", () => {
+    const view = conversationView(toDetail(shapedPayload()), false)
+
+    expect(view.records.map((record) => record.kind)).toEqual(["assistant", "agentSpawn"])
+    expect(view.branches.get("a1")?.map((record) => record.kind)).toEqual(["assistant"])
+  })
+
+  test("S57: a merged block claims every message folded into it, so the ids the merge swallowed stay addressable", () => {
+    const view = conversationView(toDetail(shapedPayload()), false)
+
+    expect(view.records[0]?.sources).toEqual(["say-1", "then-1"])
+    expect(view.branches.get("a1")?.[0]?.sources).toEqual(["say-6", "then-6"])
+  })
+
+  test("S58: a spawn marker synthesised from an Agent tool call claims no messages, so the call it was built from stays owned by the tool record alone", () => {
+    const payload = buildPayload({
+      subagents: [AGENT],
+      messages: [message({ id: "agent-call", lineNumber: 1, msgType: "toolCall" })],
+      toolCalls: [{ ...call("agent-call"), toolName: "Agent" }],
+    })
+
+    const view = conversationView(toDetail(payload), true)
+
+    expect(view.records.map((record) => record.kind)).toEqual(["tool", "agentSpawn"])
+    expect(view.records[0]?.sources).toEqual(["agent-call"])
+    expect(view.records[1]?.sources).toEqual([])
+  })
+})
+
+// A branch can spawn its own branches. Its marker belongs on the track that launched it -- the
+// parent's, not the main spine's -- or the agent is listed in the rail with nothing to open.
+test("S76: an agent spawned by another agent gets its marker inside the parent's branch, so a nested branch is reachable rather than orphaned", () => {
+  const payload = buildPayload({
+    subagents: [
+      { agentId: "a1", agentType: "explorer", description: "Top", parentAgentId: null },
+      { agentId: "a2", agentType: "explorer", description: "Nested", parentAgentId: "a1" },
+    ],
+    messages: [
+      message({ id: "top-call", lineNumber: 1, msgType: "toolCall" }),
+      message({
+        id: "nested-call",
+        lineNumber: 2,
+        msgType: "toolCall",
+        agentId: "a1",
+        isSubagent: true,
+      }),
+      message({
+        id: "nested-say",
+        lineNumber: 3,
+        msgType: "message",
+        role: "assistant",
+        agentId: "a2",
+        isSubagent: true,
+      }),
+    ],
+    toolCalls: [
+      { ...call("top-call"), toolName: "Agent" },
+      { ...call("nested-call"), toolName: "Agent" },
+    ],
+  })
+
+  const detail = toDetail(payload)
+
+  expect(detail.records.map((record) => record.kind)).toEqual(["tool", "agentSpawn"])
+  expect(detail.branches.get("a1")?.map((record) => record.kind)).toEqual(["tool", "agentSpawn"])
+  expect(detail.branches.get("a2")?.map((record) => record.kind)).toEqual(["assistant"])
+})
+
+describe("locate", () => {
+  test("S59: a message the merge swallowed resolves to the block that renders it, and a branch message names the agent whose annex holds it", () => {
+    const sites = locate(conversationView(toDetail(shapedPayload()), false))
+
+    expect(sites.get("say-1")).toEqual({ agentId: null, anchor: "r-say-1" })
+    expect(sites.get("then-1")).toEqual({ agentId: null, anchor: "r-say-1" })
+    expect(sites.get("then-6")).toEqual({ agentId: "a1", anchor: "r-say-6" })
+    expect(sites.get("spawn-msg")).toEqual({ agentId: null, anchor: "spawn-a1" })
+  })
+
+  test("S60: a message resolves in both inline-tool modes even though the tool call splits the block in one of them", () => {
+    const detail = toDetail(shapedPayload())
+
+    expect(locate(conversationView(detail, false)).get("then-6")?.anchor).toBe("r-say-6")
+    expect(locate(conversationView(detail, true)).get("then-6")?.anchor).toBe("r-then-6")
   })
 })
 

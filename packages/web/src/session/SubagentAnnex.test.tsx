@@ -12,7 +12,7 @@ const AGENT = {
   parentAgentId: null,
 }
 
-const branchRecords = () => {
+const branchesOf = () => {
   const detail = toDetail(
     buildPayload({
       subagents: [AGENT],
@@ -29,21 +29,27 @@ const branchRecords = () => {
       ],
     }),
   )
-  return detail.branches.get("a1") ?? []
+  return detail.branches
 }
+
+const props = (open: boolean, overrides: Record<string, unknown> = {}) => ({
+  agent: AGENT,
+  branches: branchesOf(),
+  openIds: new Set(open ? ["a1"] : []),
+  onOpen: vi.fn(),
+  onExit: vi.fn(),
+  showTools: true,
+  linkFor: () => undefined,
+  linkedAnchor: null,
+  ...overrides,
+})
 
 test("S42: activating Open branch reveals the branch conversation and flips the trigger to aria-expanded true", async () => {
   const user = userEvent.setup()
   const onOpen = vi.fn()
 
   const { rerender } = render(
-    <SubagentAnnex
-      agent={AGENT}
-      records={branchRecords()}
-      open={false}
-      onOpen={onOpen}
-      onExit={vi.fn()}
-    />,
+    <SubagentAnnex {...props(false, { onOpen: onOpen, onExit: vi.fn() })} />,
   )
 
   const trigger = screen.getByRole("button", { name: /open branch/i })
@@ -53,15 +59,7 @@ test("S42: activating Open branch reveals the branch conversation and flips the 
   await user.click(trigger)
   expect(onOpen).toHaveBeenCalledWith("a1", trigger)
 
-  rerender(
-    <SubagentAnnex
-      agent={AGENT}
-      records={branchRecords()}
-      open={true}
-      onOpen={onOpen}
-      onExit={vi.fn()}
-    />,
-  )
+  rerender(<SubagentAnnex {...props(true, { onOpen: onOpen, onExit: vi.fn() })} />)
 
   const expanded = screen.getByRole("button", { name: /close branch/i })
   expect(expanded).toHaveAttribute("aria-expanded", "true")
@@ -70,15 +68,7 @@ test("S42: activating Open branch reveals the branch conversation and flips the 
 })
 
 test("S42b: an open annex trigger reads 'Close branch' so its label matches the action it performs", () => {
-  render(
-    <SubagentAnnex
-      agent={AGENT}
-      records={branchRecords()}
-      open={true}
-      onOpen={vi.fn()}
-      onExit={vi.fn()}
-    />,
-  )
+  render(<SubagentAnnex {...props(true, { onOpen: vi.fn(), onExit: vi.fn() })} />)
 
   const trigger = screen.getByRole("button", { name: /close branch/i })
   expect(trigger).toHaveAttribute("aria-expanded", "true")
@@ -86,15 +76,7 @@ test("S42b: an open annex trigger reads 'Close branch' so its label matches the 
 })
 
 test("S42: an annex names its agent type and task so the branch stays traceable to what spawned it", () => {
-  render(
-    <SubagentAnnex
-      agent={AGENT}
-      records={branchRecords()}
-      open={false}
-      onOpen={vi.fn()}
-      onExit={vi.fn()}
-    />,
-  )
+  render(<SubagentAnnex {...props(false, { onOpen: vi.fn(), onExit: vi.fn() })} />)
 
   expect(screen.getByText("db-schema-auditor")).toBeInTheDocument()
   expect(screen.getByText(/Audit unique constraints/)).toBeInTheDocument()
@@ -104,15 +86,7 @@ test("S42: the annex trigger exits the branch when it is already open, without n
   const user = userEvent.setup()
   const onExit = vi.fn()
 
-  render(
-    <SubagentAnnex
-      agent={AGENT}
-      records={branchRecords()}
-      open={true}
-      onOpen={vi.fn()}
-      onExit={onExit}
-    />,
-  )
+  render(<SubagentAnnex {...props(true, { onOpen: vi.fn(), onExit: onExit })} />)
 
   await user.click(screen.getByRole("button", { name: /close branch/i }))
 

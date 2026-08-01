@@ -61,6 +61,70 @@ const PAYLOAD: SessionDetailPayload = buildPayload({
   ],
 })
 
+const BRANCH_PAYLOAD: SessionDetailPayload = buildPayload({
+  subagents: [
+    { agentId: "a1", agentType: "auditor", description: "Audit keys", parentAgentId: null },
+  ],
+  messages: [
+    message({ lineNumber: 1, msgType: "turnEvent", subType: "agentSpawn", agentId: "a1" }),
+    message({ lineNumber: 2, msgType: "systemEvent", agentId: "a1", isSubagent: true }),
+    message({
+      id: "branch-say",
+      lineNumber: 3,
+      msgType: "message",
+      role: "assistant",
+      agentId: "a1",
+      isSubagent: true,
+      content: text("Checked the three tables"),
+    }),
+    message({
+      id: "branch-then",
+      lineNumber: 4,
+      msgType: "message",
+      role: "assistant",
+      agentId: "a1",
+      isSubagent: true,
+      content: text("No unique constraints anywhere"),
+    }),
+  ],
+})
+
+const agentCall = (messageId: string, toolId: string) => ({
+  toolId,
+  messageId,
+  toolName: "Agent",
+  toolInput: { description: "go" },
+  result: null,
+  status: "success",
+})
+
+const NESTED_PAYLOAD: SessionDetailPayload = buildPayload({
+  subagents: [
+    { agentId: "a1", agentType: "explorer", description: "Top task", parentAgentId: null },
+    { agentId: "a2", agentType: "researcher", description: "Nested task", parentAgentId: "a1" },
+  ],
+  messages: [
+    message({ id: "top-call", lineNumber: 1, msgType: "toolCall" }),
+    message({
+      id: "nested-call",
+      lineNumber: 2,
+      msgType: "toolCall",
+      agentId: "a1",
+      isSubagent: true,
+    }),
+    message({
+      id: "nested-say",
+      lineNumber: 3,
+      msgType: "message",
+      role: "assistant",
+      agentId: "a2",
+      isSubagent: true,
+      content: text("Nested branch findings"),
+    }),
+  ],
+  toolCalls: [agentCall("top-call", "t-top"), agentCall("nested-call", "t-nested")],
+})
+
 type ArtifactsReply = { readonly status: number; readonly body: unknown }
 
 const OK_EMPTY: ArtifactsReply = { status: 200, body: { artifacts: [] } }
@@ -68,6 +132,7 @@ const OK_EMPTY: ArtifactsReply = { status: 200, body: { artifacts: [] } }
 const renderDetail = (
   payload: SessionDetailPayload = PAYLOAD,
   artifacts: ArtifactsReply = OK_EMPTY,
+  entry = "/sessions/s-1",
 ) => {
   vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
     const url = typeof input === "string" ? input : String(input)
@@ -83,7 +148,7 @@ const renderDetail = (
   })
 
   return render(
-    <TestRouter initialEntries={["/sessions/s-1"]}>
+    <TestRouter initialEntries={[entry]}>
       <Routes>
         <Route path="/sessions/:sessionId" element={<SessionDetail />} />
       </Routes>
@@ -295,6 +360,200 @@ test("S54: a 200 whose artifact rows are malformed is refused at the parse bound
   // unaffected, so the count reflects it alone.
   expect(screen.queryByText("docs/notes.md")).not.toBeInTheDocument()
   expect(screen.getByRole("tab", { name: /Artifacts/ })).toHaveTextContent("1")
+})
+
+test("S63: a branch reads like the main spine - its system events are dropped and its two assistant turns merge into a single block", async () => {
+  const user = userEvent.setup()
+  renderDetail(BRANCH_PAYLOAD)
+
+  await waitFor(() => expect(tabs()).toHaveLength(3))
+  await user.click(screen.getByRole("button", { name: /open branch/i }))
+
+  const branch = screen.getByRole("region", { name: /auditor conversation/i })
+  expect(within(branch).queryByText(/systemEvent/)).not.toBeInTheDocument()
+  expect(within(branch).getAllByRole("listitem")).toHaveLength(1)
+  expect(within(branch).getByText(/Checked the three tables/)).toBeInTheDocument()
+  expect(within(branch).getByText(/No unique constraints anywhere/)).toBeInTheDocument()
+})
+
+test("S64: copying a record's link yields a URL naming that message and the branch holding it, so a reader lands on it rather than at the top of the transcript", async () => {
+  const user = userEvent.setup()
+  renderDetail(BRANCH_PAYLOAD)
+
+  await waitFor(() => expect(tabs()).toHaveLength(3))
+  await user.click(screen.getByRole("button", { name: /open branch/i }))
+
+  const branch = screen.getByRole("region", { name: /auditor conversation/i })
+  await user.click(within(branch).getByRole("button", { name: /copy link to this message/i }))
+
+  expect(await navigator.clipboard.readText()).toBe(
+    `${window.location.origin}/sessions/s-1?agent=a1&m=branch-say`,
+  )
+})
+
+test("S65: a link to a message inside a branch opens that branch on arrival, so the shared line is on screen rather than folded away", async () => {
+  renderDetail(BRANCH_PAYLOAD, OK_EMPTY, "/sessions/s-1?m=branch-say")
+
+  await waitFor(() => expect(tabs()).toHaveLength(3))
+
+  const branch = await screen.findByRole("region", { name: /auditor conversation/i })
+  expect(within(branch).getByText(/Checked the three tables/)).toBeInTheDocument()
+})
+
+test("S66: a link naming a message this transcript does not hold says so instead of silently showing the top of the session", async () => {
+  renderDetail(BRANCH_PAYLOAD, OK_EMPTY, "/sessions/s-1?m=not-in-this-session")
+
+  await waitFor(() => expect(tabs()).toHaveLength(3))
+
+  expect(await screen.findByText(/linked message is not part of this session/i)).toBeInTheDocument()
+})
+
+test("S67: the linked record inside a branch is marked as the reader's location, so the shared line is identifiable among its neighbours", async () => {
+  renderDetail(BRANCH_PAYLOAD, OK_EMPTY, "/sessions/s-1?m=branch-say")
+
+  await waitFor(() => expect(tabs()).toHaveLength(3))
+
+  const branch = await screen.findByRole("region", { name: /auditor conversation/i })
+  const marked = within(branch)
+    .getByText(/Checked the three tables/)
+    .closest("article")
+  expect(marked).toHaveAttribute("aria-current", "location")
+})
+
+test("S68: a session with no branches marks its linked record too - the mark is not something only the rail layout gets", async () => {
+  const solo = buildPayload({
+    messages: [
+      message({ lineNumber: 1, msgType: "message", role: "user", content: text("Only prompt") }),
+      message({
+        id: "solo-say",
+        lineNumber: 2,
+        msgType: "message",
+        role: "assistant",
+        content: text("Only answer"),
+      }),
+    ],
+  })
+  renderDetail(solo, OK_EMPTY, "/sessions/s-1?m=solo-say")
+
+  await waitFor(() => expect(tabs()).toHaveLength(3))
+
+  expect(screen.getByText(/Only answer/).closest("article")).toHaveAttribute(
+    "aria-current",
+    "location",
+  )
+  expect(screen.getByText(/Only prompt/).closest("article")).not.toHaveAttribute("aria-current")
+})
+
+test("S69: opening a branch records it in the query, so the branch a reader is looking at is itself shareable", async () => {
+  const user = userEvent.setup()
+  renderDetail(BRANCH_PAYLOAD)
+
+  await waitFor(() => expect(tabs()).toHaveLength(3))
+  await user.click(screen.getByRole("button", { name: /open branch/i }))
+
+  expect(screen.getByTestId("location")).toHaveTextContent("/sessions/s-1?agent=a1")
+})
+
+test("S70: closing a branch drops it from the query rather than leaving a link that reopens it", async () => {
+  const user = userEvent.setup()
+  renderDetail(BRANCH_PAYLOAD, OK_EMPTY, "/sessions/s-1?agent=a1")
+
+  await waitFor(() => expect(tabs()).toHaveLength(3))
+  await user.click(await screen.findByRole("button", { name: /close branch/i }))
+
+  expect(screen.getByTestId("location")).not.toHaveTextContent("agent=a1")
+})
+
+test("S71: arriving on a shared branch link opens that branch, so its records and their own links are reachable at once", async () => {
+  renderDetail(BRANCH_PAYLOAD, OK_EMPTY, "/sessions/s-1?agent=a1")
+
+  await waitFor(() => expect(tabs()).toHaveLength(3))
+
+  const branch = await screen.findByRole("region", { name: /auditor conversation/i })
+  expect(within(branch).getByText(/Checked the three tables/)).toBeInTheDocument()
+  expect(
+    within(branch).getAllByRole("button", { name: /copy link to this message/i }).length,
+  ).toBeGreaterThan(0)
+})
+
+type Scroll = { readonly id: string; readonly block: string | undefined }
+
+const recordScrolls = (): ReadonlyArray<Scroll> => {
+  const seen: Array<Scroll> = []
+  vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
+    this: Element,
+    options?: boolean | ScrollIntoViewOptions,
+  ) {
+    seen.push({ id: this.id, block: typeof options === "object" ? options.block : undefined })
+  })
+  return seen
+}
+
+// An open annex lives inside its spawn record, so that record runs the height of the whole
+// branch. Centring it lands thousands of pixels past the marker the reader asked for.
+test("S72: arriving on a shared branch link lands on that branch's spawn point, not centred somewhere inside the branch", async () => {
+  const scrolled = recordScrolls()
+
+  renderDetail(BRANCH_PAYLOAD, OK_EMPTY, "/sessions/s-1?agent=a1")
+
+  await waitFor(() => expect(tabs()).toHaveLength(3))
+  await waitFor(() => expect(scrolled).toContainEqual({ id: "spawn-a1", block: "start" }))
+})
+
+test("S73: a message permalink lands on the top of the record it names, so a tall merged block does not scroll past its own beginning", async () => {
+  const scrolled = recordScrolls()
+
+  renderDetail(BRANCH_PAYLOAD, OK_EMPTY, "/sessions/s-1?agent=a1&m=branch-say")
+
+  await waitFor(() => expect(tabs()).toHaveLength(3))
+  await waitFor(() => expect(scrolled).toContainEqual({ id: "r-branch-say", block: "start" }))
+})
+
+// Most branches share one agentType, so the type alone renders a column of identical rows. The
+// description is the task the branch was given, which is what actually tells them apart.
+test("S74: the rail names each branch by the task it was given, keeping its type as the secondary label", async () => {
+  renderDetail(BRANCH_PAYLOAD)
+
+  await waitFor(() => expect(tabs()).toHaveLength(3))
+
+  const rail = screen.getByRole("complementary", { name: /agents in this session/i })
+  const branch = within(rail).getByRole("button", { name: /audit keys/i })
+  expect(branch).toHaveTextContent("Audit keys")
+  expect(branch).toHaveTextContent("auditor")
+})
+
+test("S75: the rail reports no run status, so a branch is never labelled interrupted on evidence the capture does not have", async () => {
+  renderDetail(BRANCH_PAYLOAD)
+
+  await waitFor(() => expect(tabs()).toHaveLength(3))
+
+  const rail = screen.getByRole("complementary", { name: /agents in this session/i })
+  expect(within(rail).queryByText(/interrupted/i)).not.toBeInTheDocument()
+  expect(within(rail).queryByText(/^done$/i)).not.toBeInTheDocument()
+})
+
+// A subagent can spawn its own subagents. Its annex is nested inside the parent's, so reaching it
+// means opening the whole ancestry, not just the branch that was named.
+test("S77: a link to a nested branch opens the parent branch holding it, so a subagent spawned by a subagent is reachable", async () => {
+  renderDetail(NESTED_PAYLOAD, OK_EMPTY, "/sessions/s-1?agent=a2")
+
+  await waitFor(() => expect(tabs()).toHaveLength(3))
+
+  const nested = await screen.findByRole("region", { name: /researcher conversation/i })
+  expect(within(nested).getByText(/Nested branch findings/)).toBeInTheDocument()
+})
+
+test("S78: the rail opens a nested branch too, so every agent it lists leads somewhere", async () => {
+  const user = userEvent.setup()
+  renderDetail(NESTED_PAYLOAD)
+
+  await waitFor(() => expect(tabs()).toHaveLength(3))
+
+  const rail = screen.getByRole("complementary", { name: /agents in this session/i })
+  await user.click(within(rail).getByRole("button", { name: /nested task/i }))
+
+  const nested = await screen.findByRole("region", { name: /researcher conversation/i })
+  expect(within(nested).getByText(/Nested branch findings/)).toBeInTheDocument()
 })
 
 test("EDGE-008: a 404 from the detail endpoint renders a not-found state with a way back, not a blank panel", async () => {

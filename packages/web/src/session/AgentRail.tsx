@@ -12,12 +12,11 @@ export const laneFor = (index: number): string => LANES[index % LANES.length] ??
 export type AgentEntry = {
   readonly id: string | null
   readonly name: string
-  readonly description: string | null
+  readonly kind: string | null
   readonly lane: string
   readonly messages: number
   readonly toolCalls: number
   readonly durationMs: number | null
-  readonly status: "completed" | "interrupted"
 }
 
 export const formatSpan = (ms: number): string => {
@@ -55,45 +54,33 @@ export const agentEntries = (
   branches: ReadonlyMap<string, ReadonlyArray<TimelineRecord>>,
 ): ReadonlyArray<AgentEntry> => {
   const main = countsOf(records)
-  const returned = new Set(
-    records.flatMap((record) => (record.kind === "agentReturn" ? [record.agent.agentId] : [])),
-  )
 
+  // Branches usually share one agentType, so the task it was given is what names a branch; the
+  // type is the fallback only when the capture recorded no description.
   return [
     {
       id: null,
       name: "Claude",
-      description: null,
+      kind: null,
       lane: "var(--color-custody)",
       messages: main.messages,
       toolCalls: main.toolCalls,
       durationMs: main.durationMs,
-      status: "completed" as const,
     },
     ...agents.map((agent, index) => {
-      const branch = branches.get(agent.agentId) ?? []
-      const counts = countsOf(branch)
+      const counts = countsOf(branches.get(agent.agentId) ?? [])
       return {
         id: agent.agentId,
-        name: agent.agentType ?? agent.agentId,
-        description: agent.description,
+        name: agent.description ?? agent.agentType ?? agent.agentId,
+        kind: agent.description === null ? null : agent.agentType,
         lane: laneFor(index),
         messages: counts.messages,
         toolCalls: counts.toolCalls,
         durationMs: counts.durationMs,
-        status: returned.has(agent.agentId) ? ("completed" as const) : ("interrupted" as const),
       }
     }),
   ]
 }
-
-const STATUS_LABEL: Readonly<Record<AgentEntry["status"], string>> = {
-  completed: "Done",
-  interrupted: "Interrupted",
-}
-
-const statusClass = (status: AgentEntry["status"]): string =>
-  status === "completed" ? "text-ok" : "text-warn"
 
 type Props = {
   readonly entries: ReadonlyArray<AgentEntry>
@@ -124,22 +111,20 @@ export const AgentRail = ({ entries, selectedId, onSelect }: Props) => (
               active ? "border-ink" : "border-rule"
             }`}
           >
-            <span className="flex items-center justify-between gap-2">
-              <span className="flex min-w-0 items-center gap-2 text-[0.78rem] font-semibold">
-                <span
-                  aria-hidden="true"
-                  className="size-2.5 shrink-0 rounded-xs"
-                  style={{ background: entry.lane }}
-                />
-                <span className="truncate">{entry.name}</span>
+            <span className="flex min-w-0 items-start gap-2 text-[0.78rem] font-semibold">
+              <span
+                aria-hidden="true"
+                className="mt-1 size-2.5 shrink-0 rounded-xs"
+                style={{ background: entry.lane }}
+              />
+              <span className="min-w-0">
+                <span className="block leading-snug">{entry.name}</span>
+                {entry.kind === null ? null : (
+                  <span className="mt-0.5 block truncate font-mono text-[0.6875rem] font-normal text-faded">
+                    {entry.kind}
+                  </span>
+                )}
               </span>
-              {entry.id === null ? null : (
-                <span
-                  className={`shrink-0 text-[0.625rem] font-semibold uppercase tracking-[0.1em] ${statusClass(entry.status)}`}
-                >
-                  {STATUS_LABEL[entry.status]}
-                </span>
-              )}
             </span>
             <span className="mt-1.5 flex flex-wrap gap-x-3 font-mono text-[0.6875rem] text-ink-soft">
               <span>{entry.messages} msg</span>

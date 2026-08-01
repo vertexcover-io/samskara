@@ -14,6 +14,8 @@ type RecordBase = {
   readonly lineNumber: number
   readonly timestamp: string | null
   readonly agentId: string | null
+  /** The captured messages this record stands for. Merging folds several into one block. */
+  readonly sources: ReadonlyArray<string>
 }
 
 export type TimelineRecord = RecordBase &
@@ -127,6 +129,7 @@ const base = (raw: RawMessage): RecordBase => ({
   lineNumber: raw.lineNumber,
   timestamp: raw.timestamp,
   agentId: raw.agentId,
+  sources: [raw.id],
 })
 
 const eventLabel = (raw: RawMessage): string => raw.subType ?? raw.msgType
@@ -217,33 +220,50 @@ export const toDetail = (payload: SessionDetailPayload): SessionDetail => {
   const branches = new Map<string, Array<TimelineRecord>>()
   const spawned = new Set<string>()
 
-  // Capture does not always emit a spawn event, but the Agent tool call that
-  // launched each branch is in the main record. Pair them in order so a branch
-  // anchors to the call that actually started it.
-  const pendingAgents = payload.subagents.filter((agent) => agent.parentAgentId === null)
-  const claimAgent = (): RawSubagent | undefined => pendingAgents.shift()
+  // Capture does not always emit a spawn event, but the Agent tool call that launched each branch
+  // is on the track that made it -- the main spine for a top-level agent, the parent's branch for
+  // a nested one. Pair them per track, in order, so a branch anchors to the call that started it.
+  const pending = new Map<string | null, Array<RawSubagent>>()
+  for (const agent of payload.subagents) {
+    const siblings = pending.get(agent.parentAgentId)
+    if (siblings) siblings.push(agent)
+    else pending.set(agent.parentAgentId, [agent])
+  }
+
+  const trackOf = (track: string | null): Array<TimelineRecord> => {
+    if (track === null) return records
+    const existing = branches.get(track)
+    if (existing) return existing
+    const created: Array<TimelineRecord> = []
+    branches.set(track, created)
+    return created
+  }
 
   for (const raw of payload.messages) {
     const record = toRecord(raw, callsByMessage, agents, payload.session.userLogin)
     if (record === null) continue
 
-    if (belongsToBranch(raw, agents) && raw.agentId !== null) {
-      const existing = branches.get(raw.agentId)
-      if (existing) existing.push(record)
-      else branches.set(raw.agentId, [record])
-      continue
-    }
+    const track = belongsToBranch(raw, agents) ? raw.agentId : null
+    const into = trackOf(track)
 
     if (record.kind === "agentSpawn") spawned.add(record.agent.agentId)
-    records.push(record)
+    into.push(record)
 
     if (record.kind !== "tool") continue
     for (const call of record.calls) {
       if (!SPAWN_TOOLS.has(call.toolName)) continue
-      const agent = claimAgent()
+      const agent = pending.get(track)?.shift()
       if (agent === undefined || spawned.has(agent.agentId)) continue
       spawned.add(agent.agentId)
-      records.push({ ...base(raw), id: `spawn-${agent.agentId}`, kind: "agentSpawn", agent })
+      // No sources: this marker is synthesised from the tool call rendered just above it, and
+      // that message must resolve to the tool record rather than to whichever came last.
+      into.push({
+        ...base(raw),
+        id: `spawn-${agent.agentId}`,
+        sources: [],
+        kind: "agentSpawn",
+        agent,
+      })
     }
   }
 
@@ -275,7 +295,7 @@ const statsFor = (
   messages,
 })
 
-export const mergeAssistantRuns = (
+const mergeAssistantRuns = (
   records: ReadonlyArray<TimelineRecord>,
   breakOnTools = false,
 ): ReadonlyArray<TimelineRecord> => {
@@ -329,6 +349,7 @@ export const mergeAssistantRuns = (
     merged[anchor] = {
       ...block,
       body,
+      sources: [...block.sources, ...record.sources],
       model: block.model ?? record.model,
       thinking: block.thinking ?? record.thinking,
       block: statsFor(start, record, messages, toolCalls),
@@ -336,6 +357,75 @@ export const mergeAssistantRuns = (
   }
 
   return merged
+}
+
+export type ConversationView = {
+  readonly records: ReadonlyArray<TimelineRecord>
+  readonly branches: ReadonlyMap<string, ReadonlyArray<TimelineRecord>>
+}
+
+const shape = (
+  records: ReadonlyArray<TimelineRecord>,
+  withTools: boolean,
+): ReadonlyArray<TimelineRecord> => {
+  const merged = mergeAssistantRuns(
+    records.filter((record) => record.kind !== "event"),
+    withTools,
+  )
+  return withTools ? merged : merged.filter((record) => record.kind !== "tool")
+}
+
+/**
+ * The single path from captured records to rendered ones. Branches go through the same `shape`
+ * as the main spine so a subagent's transcript can never drift from how the session reads.
+ */
+export const conversationView = (detail: SessionDetail, withTools: boolean): ConversationView => ({
+  records: shape(detail.records, withTools),
+  branches: new Map(
+    [...detail.branches].map(([agentId, records]) => [agentId, shape(records, withTools)]),
+  ),
+})
+
+/**
+ * An agent and every agent above it. A nested branch renders inside its parent's annex, so
+ * reaching one means opening the whole ancestry rather than the single branch that was named.
+ */
+export const ancestryOf = (
+  agentId: string | null,
+  agents: ReadonlyArray<RawSubagent>,
+): ReadonlySet<string> => {
+  const byId = new Map(agents.map((agent) => [agent.agentId, agent]))
+  const chain = new Set<string>()
+  let current = agentId
+  while (current !== null && !chain.has(current)) {
+    chain.add(current)
+    current = byId.get(current)?.parentAgentId ?? null
+  }
+  return chain
+}
+
+export const anchorOf = (record: TimelineRecord): string =>
+  record.kind === "agentSpawn" ? `spawn-${record.agent.agentId}` : `r-${record.id}`
+
+export type MessageSite = {
+  readonly agentId: string | null
+  readonly anchor: string
+}
+
+/**
+ * Where each captured message ended up on screen. Built per view, so a link resolves whether or
+ * not inline tools are on -- the two modes merge assistant runs differently.
+ */
+export const locate = (view: ConversationView): ReadonlyMap<string, MessageSite> => {
+  const sited = (records: ReadonlyArray<TimelineRecord>, agentId: string | null) =>
+    records.flatMap((record) =>
+      record.sources.map((source) => [source, { agentId, anchor: anchorOf(record) }] as const),
+    )
+
+  return new Map([
+    ...sited(view.records, null),
+    ...[...view.branches].flatMap(([agentId, records]) => sited(records, agentId)),
+  ])
 }
 
 export const artifactsOf = (records: ReadonlyArray<TimelineRecord>): ReadonlyArray<Artifact> =>

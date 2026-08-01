@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react"
-import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import { fetchSessionArtifacts } from "../api/artifacts.js"
 import { getJson } from "../api/client.js"
 import { parseSessionDetail } from "../api/parse.js"
@@ -17,10 +17,15 @@ import { RecordStream } from "../session/RecordStream.js"
 import { type Tab, type TabId, Tabs } from "../session/Tabs.js"
 import { ToolCallsView } from "../session/ToolCallsView.js"
 import { useFocusMode } from "../session/focus.js"
+import { AGENT_PARAM, MESSAGE_PARAM, messageLink } from "../session/permalink.js"
 import {
   type SessionDetail as Detail,
+  type MessageSite,
+  type TimelineRecord,
+  ancestryOf,
   artifactsOf,
-  mergeAssistantRuns,
+  conversationView,
+  locate,
   toDetail,
 } from "../session/records.js"
 import { LoadingShell } from "../shell/LoadingShell.js"
@@ -182,14 +187,6 @@ const agentLabelOf = (detail: Detail) => {
   return (call: { readonly messageId: string }) => byMessage.get(call.messageId) ?? null
 }
 
-const conversationRecords = (detail: Detail, withTools: boolean) => {
-  const merged = mergeAssistantRuns(
-    detail.records.filter((record) => record.kind !== "event"),
-    withTools,
-  )
-  return withTools ? merged : merged.filter((record) => record.kind !== "tool")
-}
-
 const tabsFor = (
   detail: Detail,
   artifactCount: number,
@@ -198,7 +195,7 @@ const tabsFor = (
   {
     id: "conversation",
     label: "Conversation",
-    count: conversationRecords(detail, inlineTools).length,
+    count: conversationView(detail, inlineTools).records.length,
   },
   { id: "tools", label: "Tool Calls", count: detail.toolCalls.length },
   { id: "artifacts", label: "Artifacts", count: artifactCount },
@@ -220,10 +217,72 @@ const InlineToolsToggle = ({
 )
 
 const Conversation = ({ detail, inlineTools }: { detail: Detail; inlineTools: boolean }) => {
-  const focus = useFocusMode()
-  const [agentId, setAgentId] = useState<string | null>(null)
+  // Which branch is open lives in the URL alongside the tab and the tool toggle, so a reader can
+  // share the branch they are in -- and so it has exactly one source of truth.
+  const [params, setParams] = useSearchParams()
+  const { pathname } = useLocation()
+  const agentId = params.get(AGENT_PARAM)
 
-  const records = useMemo(() => conversationRecords(detail, inlineTools), [detail, inlineTools])
+  const setAgent = useCallback(
+    (next: string | null, replace = false): void => {
+      const merged = new URLSearchParams(params)
+      if (next === null) merged.delete(AGENT_PARAM)
+      else merged.set(AGENT_PARAM, next)
+      setParams(merged, { replace })
+    },
+    [params, setParams],
+  )
+
+  const focus = useFocusMode(agentId, setAgent)
+
+  const view = useMemo(() => conversationView(detail, inlineTools), [detail, inlineTools])
+  const sites = useMemo(() => locate(view), [view])
+
+  const target = params.get(MESSAGE_PARAM)
+  const site = target === null ? null : (sites.get(target) ?? null)
+
+  const linkFor = useCallback(
+    (record: TimelineRecord): string | undefined => {
+      const [source] = record.sources
+      return source === undefined
+        ? undefined
+        : messageLink(window.location.origin, pathname, params, source)
+    },
+    [pathname, params],
+  )
+
+  // Restoring a link takes two passes when it points into a branch: the first opens the annex,
+  // the second scrolls once the record exists. The ref stops a later pass reopening a branch the
+  // reader has since closed.
+  const restored = useRef<MessageSite | null>(null)
+  useEffect(() => {
+    if (site === null || restored.current === site) return
+    if (site.agentId !== null && agentId !== site.agentId) {
+      // Replaced, not pushed: arriving on a link should not leave a Back step nobody took.
+      setAgent(site.agentId, true)
+      return
+    }
+    restored.current = site
+    document.getElementById(site.anchor)?.scrollIntoView({ behavior: "smooth", block: "start" })
+  }, [site, agentId, setAgent])
+
+  // Opening a branch brings its spawn point into view however the open came from -- the rail, the
+  // annex trigger, or a shared link. A ?m= target is more specific, so it does the scrolling.
+  // Aligned to the top, never centred: an open annex lives inside its spawn record, so that
+  // record runs the height of the whole branch and centring it lands far below the marker.
+  const shown = useRef<string | null>(null)
+  useEffect(() => {
+    if (agentId === null) {
+      shown.current = null
+      return
+    }
+    if (shown.current === agentId || site !== null) return
+    shown.current = agentId
+    document
+      .getElementById(`spawn-${agentId}`)
+      ?.scrollIntoView({ behavior: "smooth", block: "start" })
+  }, [agentId, site])
+
   // Counts come from the full record set: hiding inline tools must not make the
   // rail report zero of them.
   const entries = useMemo(
@@ -231,57 +290,56 @@ const Conversation = ({ detail, inlineTools }: { detail: Detail; inlineTools: bo
     [detail],
   )
 
-  // Selecting an agent scrolls its spawn point into view and opens the annex
-  // in place, so a branch always stays anchored to where it was called.
+  // A branch always stays anchored to where it was called, so selecting an agent opens the annex
+  // in place rather than replacing the spine.
   const select = (next: string | null): void => {
-    setAgentId(next)
     if (next === null) {
       focus.exit()
       return
     }
-    const spawn = document.getElementById(`spawn-${next}`)
-    const trigger = spawn?.querySelector("button")
-    if (trigger instanceof HTMLElement) {
-      focus.open(next, trigger)
-      spawn?.scrollIntoView({ behavior: "smooth", block: "center" })
-    }
+    const trigger = document.getElementById(`spawn-${next}`)?.querySelector("button")
+    focus.open(next, trigger instanceof HTMLElement ? trigger : null)
   }
+
+  const missing =
+    target !== null && site === null ? (
+      <Notice>
+        The linked message is not part of this session. It may have been shared from another
+        transcript.
+      </Notice>
+    ) : null
+
+  const stream = (
+    <RecordStream
+      records={view.records}
+      branches={view.branches}
+      showTools={inlineTools}
+      spine={false}
+      openIds={ancestryOf(agentId, detail.agents)}
+      onOpen={focus.open}
+      onExit={focus.exit}
+      linkFor={linkFor}
+      linkedAnchor={site?.anchor ?? null}
+    />
+  )
 
   if (entries.length === 1) {
     return (
-      <RecordStream
-        records={records}
-        branches={detail.branches}
-        showTools={inlineTools}
-        spine={false}
-        focusedId={focus.focusedId}
-        onOpen={focus.open}
-        onExit={focus.exit}
-      />
+      <>
+        {missing}
+        {stream}
+      </>
     )
   }
 
   return (
-    <div className="grid items-start gap-6 min-[900px]:grid-cols-[232px_minmax(0,1fr)]">
-      <AgentRail entries={entries} selectedId={agentId} onSelect={select} />
-      <div className="min-w-0">
-        <RecordStream
-          records={records}
-          branches={detail.branches}
-          showTools={inlineTools}
-          spine={false}
-          focusedId={focus.focusedId}
-          onOpen={(id, trigger) => {
-            setAgentId(id)
-            focus.open(id, trigger)
-          }}
-          onExit={() => {
-            setAgentId(null)
-            focus.exit()
-          }}
-        />
+    <>
+      {missing}
+      <div className="grid items-start gap-6 min-[900px]:grid-cols-[232px_minmax(0,1fr)]">
+        <AgentRail entries={entries} selectedId={agentId} onSelect={select} />
+        <div className="min-w-0">{stream}</div>
       </div>
-    </div>
+    </>
   )
 }
 

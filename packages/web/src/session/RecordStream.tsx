@@ -1,33 +1,21 @@
-import type { RawSubagent } from "../api/types.js"
 import { RecordItem } from "./RecordItem.js"
-import { SubagentAnnex } from "./SubagentAnnex.js"
-import type { TimelineRecord } from "./records.js"
+import { type AnnexContext, annexFor } from "./SubagentAnnex.js"
+import { type TimelineRecord, anchorOf } from "./records.js"
 
-type Props = {
+type Props = AnnexContext & {
   readonly records: ReadonlyArray<TimelineRecord>
-  readonly branches: ReadonlyMap<string, ReadonlyArray<TimelineRecord>>
-  readonly showTools: boolean
   readonly spine: boolean
-  readonly focusedId: string | null
-  readonly onOpen: (id: string, trigger: HTMLElement) => void
-  readonly onExit: () => void
 }
 
-const annexFor = (
-  agent: RawSubagent,
-  props: Props,
-): { readonly records: ReadonlyArray<TimelineRecord>; readonly open: boolean } => ({
-  records: props.branches.get(agent.agentId) ?? [],
-  open: props.focusedId === agent.agentId,
-})
-
-const dimmed = (record: TimelineRecord, focusedId: string | null): boolean => {
-  if (focusedId === null) return false
-  return !(record.kind === "agentSpawn" && record.agent.agentId === focusedId)
+// Focus mode leaves the ancestry of the open branch lit and dims the rest, so a nested branch
+// stays visible through the annexes that contain it.
+const dimmed = (record: TimelineRecord, openIds: ReadonlySet<string>): boolean => {
+  if (openIds.size === 0) return false
+  return !(record.kind === "agentSpawn" && openIds.has(record.agent.agentId))
 }
 
-export const RecordStream = (props: Props) => {
-  const { records, showTools, spine, focusedId, onOpen, onExit } = props
+export const RecordStream = ({ records, spine, ...context }: Props) => {
+  const { openIds, showTools, linkFor, linkedAnchor } = context
 
   if (records.length === 0) {
     return (
@@ -49,7 +37,7 @@ export const RecordStream = (props: Props) => {
         <li
           key={record.id}
           className={`relative border-rule-soft [&+&]:border-t ${
-            dimmed(record, focusedId) ? "opacity-30 saturate-50" : ""
+            dimmed(record, openIds) ? "opacity-30 saturate-50" : ""
           } ${
             spine
               ? "before:absolute before:-left-[1.4rem] before:top-[1.35rem] before:size-1.5 before:rounded-pill before:border before:border-custody before:bg-paper"
@@ -59,17 +47,9 @@ export const RecordStream = (props: Props) => {
           <RecordItem
             record={record}
             showTools={showTools}
-            annex={
-              record.kind === "agentSpawn" ? (
-                <SubagentAnnex
-                  agent={record.agent}
-                  showTools={showTools}
-                  onOpen={onOpen}
-                  onExit={onExit}
-                  {...annexFor(record.agent, props)}
-                />
-              ) : undefined
-            }
+            link={linkFor(record)}
+            linked={anchorOf(record) === linkedAnchor}
+            annex={annexFor(record, context)}
           />
         </li>
       ))}

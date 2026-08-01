@@ -1,7 +1,8 @@
-import type { ReactNode } from "react"
+import { type ReactNode, useEffect, useState } from "react"
+import { copyText } from "../account/copyText.js"
 import { Markdown } from "./Markdown.js"
 import { ToolCallItem } from "./ToolCallItem.js"
-import type { Artifact, BlockStats, TimelineRecord } from "./records.js"
+import { type Artifact, type BlockStats, type TimelineRecord, anchorOf } from "./records.js"
 
 const clockOf = (iso: string | null): string => {
   if (iso === null) return "--:--:--"
@@ -13,18 +14,66 @@ const Unavailable = () => (
   <span className="text-faded italic underline decoration-dotted">unavailable</span>
 )
 
+const CopyLink = ({ url }: { url: string }) => {
+  const [copied, setCopied] = useState(false)
+
+  useEffect(() => {
+    if (!copied) return
+    const settle = setTimeout(() => setCopied(false), 1500)
+    return () => clearTimeout(settle)
+  }, [copied])
+
+  return (
+    <button
+      type="button"
+      aria-label="Copy link to this message"
+      title="Copy link to this message"
+      onClick={() => {
+        copyText(url).then(setCopied)
+      }}
+      className={`inline-flex shrink-0 items-center rounded-xs p-1 opacity-0 transition-opacity hover:bg-panel focus-visible:opacity-100 group-hover:opacity-100 ${
+        copied ? "text-ok opacity-100" : "text-ink-soft"
+      }`}
+    >
+      <svg
+        viewBox="0 0 16 16"
+        aria-hidden="true"
+        className="size-3.5 fill-none stroke-current stroke-[1.5]"
+      >
+        {copied ? (
+          <path d="m3.5 8.5 3 3 6-6" strokeLinecap="round" strokeLinejoin="round" />
+        ) : (
+          <>
+            <path d="M6.6 9.4a2.5 2.5 0 0 0 3.54 0l2.12-2.12a2.5 2.5 0 0 0-3.54-3.54l-.7.7" />
+            <path d="M9.4 6.6a2.5 2.5 0 0 0-3.54 0L3.74 8.72a2.5 2.5 0 0 0 3.54 3.54l.7-.7" />
+          </>
+        )}
+      </svg>
+    </button>
+  )
+}
+
+const Stamp = ({ timestamp, link }: { timestamp: string | null; link?: string }) => (
+  <span className="ml-auto flex items-center gap-1">
+    <time className="font-mono text-[0.72rem] text-ink-soft">{clockOf(timestamp)}</time>
+    {link === undefined ? null : <CopyLink url={link} />}
+  </span>
+)
+
 const Head = ({
   actor,
   kind,
   timestamp,
   model,
   stats,
+  link,
 }: {
   actor: string
   kind?: string
   timestamp: string | null
   model?: string | null
   stats?: ReactNode
+  link?: string
 }) => (
   <div className="flex flex-wrap items-baseline gap-2">
     <span className="text-[0.75rem] font-semibold">{actor}</span>
@@ -35,7 +84,7 @@ const Head = ({
       </span>
     ) : null}
     {stats}
-    <time className="ml-auto font-mono text-[0.72rem] text-ink-soft">{clockOf(timestamp)}</time>
+    <Stamp timestamp={timestamp} link={link} />
   </div>
 )
 
@@ -79,8 +128,16 @@ const Exhibit = ({ artifact }: { artifact: Artifact }) => (
   </div>
 )
 
-const Shell = ({ children, id }: { children: ReactNode; id?: string }) => (
-  <article id={id} className="relative py-3">
+type ShellProps = { readonly anchor: string; readonly linked: boolean }
+
+const Shell = ({ children, anchor, linked }: ShellProps & { children: ReactNode }) => (
+  <article
+    id={anchor}
+    aria-current={linked ? "location" : undefined}
+    className={`group relative scroll-mt-4 py-3 ${
+      linked ? "-mx-3 rounded-xs bg-stamp/5 px-3 shadow-[inset_3px_0_0_var(--color-stamp)]" : ""
+    }`}
+  >
     {children}
   </article>
 )
@@ -110,13 +167,17 @@ type Props = {
   readonly record: TimelineRecord
   readonly showTools?: boolean
   readonly annex?: ReactNode
+  readonly link?: string
+  readonly linked?: boolean
 }
 
-export const RecordItem = ({ record, showTools = true, annex }: Props) => {
+export const RecordItem = ({ record, showTools = true, annex, link, linked = false }: Props) => {
+  const shell: ShellProps = { anchor: anchorOf(record), linked }
+
   if (record.kind === "prompt") {
     return (
-      <Shell>
-        <Head actor={record.actor} timestamp={record.timestamp} />
+      <Shell {...shell}>
+        <Head actor={record.actor} timestamp={record.timestamp} link={link} />
         <div className="mt-2 w-fit max-w-[104ch] rounded-xs border border-rule border-l-2 border-l-ink bg-panel-2 px-3 py-3">
           <Prose body={record.body} />
         </div>
@@ -126,12 +187,13 @@ export const RecordItem = ({ record, showTools = true, annex }: Props) => {
 
   if (record.kind === "assistant") {
     return (
-      <Shell>
+      <Shell {...shell}>
         <Head
           actor={record.actor}
           timestamp={record.timestamp}
           model={record.model}
           stats={record.block === undefined ? undefined : <BlockSummary block={record.block} />}
+          link={link}
         />
         <div className="mt-2 w-fit max-w-[104ch] rounded-xs border border-rule bg-panel-2 px-3 py-3">
           {record.thinking === null ? null : <Thinking thinking={record.thinking} />}
@@ -144,8 +206,8 @@ export const RecordItem = ({ record, showTools = true, annex }: Props) => {
   if (record.kind === "tool") {
     if (!showTools) return null
     return (
-      <Shell>
-        <Head actor="Claude" kind="Tool call" timestamp={record.timestamp} />
+      <Shell {...shell}>
+        <Head actor="Claude" kind="Tool call" timestamp={record.timestamp} link={link} />
         <div className="mt-2 grid min-w-0 grid-cols-[minmax(0,1fr)] gap-2">
           {record.calls.length === 0 ? (
             <p className="text-[0.78rem] italic text-faded">
@@ -161,7 +223,7 @@ export const RecordItem = ({ record, showTools = true, annex }: Props) => {
 
   if (record.kind === "agentSpawn") {
     return (
-      <Shell id={`spawn-${record.agent.agentId}`}>
+      <Shell {...shell}>
         <div className="flex flex-wrap items-baseline gap-2">
           <span className="rounded-sm bg-custody px-2 py-1 text-[0.5625rem] font-bold uppercase tracking-[0.09em] text-panel-2">
             Subagent spawned
@@ -169,9 +231,7 @@ export const RecordItem = ({ record, showTools = true, annex }: Props) => {
           <span className="font-mono text-[0.75rem]">
             {record.agent.agentType ?? record.agent.agentId}
           </span>
-          <time className="ml-auto font-mono text-[0.72rem] text-ink-soft">
-            {clockOf(record.timestamp)}
-          </time>
+          <Stamp timestamp={record.timestamp} link={link} />
         </div>
         {annex ? <div className="mt-2">{annex}</div> : null}
       </Shell>
@@ -180,7 +240,7 @@ export const RecordItem = ({ record, showTools = true, annex }: Props) => {
 
   if (record.kind === "agentReturn") {
     return (
-      <Shell>
+      <Shell {...shell}>
         <div className="flex flex-wrap items-baseline gap-2">
           <span className="rounded-sm border border-custody px-2 py-1 text-[0.5625rem] font-bold uppercase tracking-[0.09em] text-custody">
             Subagent returned
@@ -188,9 +248,7 @@ export const RecordItem = ({ record, showTools = true, annex }: Props) => {
           <span className="font-mono text-[0.75rem]">
             {record.agent.agentType ?? record.agent.agentId} → Claude
           </span>
-          <time className="ml-auto font-mono text-[0.72rem] text-ink-soft">
-            {clockOf(record.timestamp)}
-          </time>
+          <Stamp timestamp={record.timestamp} link={link} />
         </div>
         <p className="mt-2 font-mono text-[0.75rem] text-ink-soft">
           <span aria-hidden="true" className="text-custody">
@@ -204,8 +262,8 @@ export const RecordItem = ({ record, showTools = true, annex }: Props) => {
 
   if (record.kind === "artifact") {
     return (
-      <Shell>
-        <Head actor="Claude" kind="Artifact filed" timestamp={record.timestamp} />
+      <Shell {...shell}>
+        <Head actor="Claude" kind="Artifact filed" timestamp={record.timestamp} link={link} />
         <div className="mt-2">
           <Exhibit artifact={record.artifact} />
         </div>
@@ -214,8 +272,8 @@ export const RecordItem = ({ record, showTools = true, annex }: Props) => {
   }
 
   return (
-    <Shell>
-      <Head actor="System" kind={record.label} timestamp={record.timestamp} />
+    <Shell {...shell}>
+      <Head actor="System" kind={record.label} timestamp={record.timestamp} link={link} />
       <p className="mt-2 font-mono text-[0.75rem] text-ink-soft">
         <span aria-hidden="true" className="text-custody">
           ◆

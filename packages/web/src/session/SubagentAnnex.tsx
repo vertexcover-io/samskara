@@ -1,27 +1,34 @@
+import type { ReactNode } from "react"
 import type { RawSubagent } from "../api/types.js"
 import { formatSpan, spanOf } from "./AgentRail.js"
 import { RecordItem } from "./RecordItem.js"
-import type { TimelineRecord } from "./records.js"
+import { type TimelineRecord, anchorOf } from "./records.js"
 
-type Props = {
-  readonly agent: RawSubagent
-  readonly records: ReadonlyArray<TimelineRecord>
-  readonly open: boolean
+/**
+ * Everything an annex needs to draw the branches nested inside it. A subagent can spawn its own
+ * subagents, so an annex renders annexes; this context is what recurses.
+ */
+export type AnnexContext = {
+  readonly branches: ReadonlyMap<string, ReadonlyArray<TimelineRecord>>
+  readonly openIds: ReadonlySet<string>
   readonly onOpen: (id: string, trigger: HTMLElement) => void
   readonly onExit: () => void
-  readonly showTools?: boolean
+  readonly showTools: boolean
+  readonly linkFor: (record: TimelineRecord) => string | undefined
+  readonly linkedAnchor: string | null
 }
+
+type Props = AnnexContext & { readonly agent: RawSubagent }
 
 const nameOf = (agent: RawSubagent): string => agent.agentType ?? agent.agentId
 
-export const SubagentAnnex = ({
-  agent,
-  records,
-  open,
-  onOpen,
-  onExit,
-  showTools = true,
-}: Props) => {
+export const annexFor = (record: TimelineRecord, context: AnnexContext): ReactNode =>
+  record.kind === "agentSpawn" ? <SubagentAnnex agent={record.agent} {...context} /> : undefined
+
+export const SubagentAnnex = ({ agent, ...context }: Props) => {
+  const { branches, openIds, onOpen, onExit, showTools, linkFor, linkedAnchor } = context
+  const records = branches.get(agent.agentId) ?? []
+  const open = openIds.has(agent.agentId)
   const name = nameOf(agent)
   const span = spanOf(records)
   const branchId = `annex-${agent.agentId}`
@@ -75,7 +82,13 @@ export const SubagentAnnex = ({
             <ol className="grid gap-3">
               {records.map((record) => (
                 <li key={record.id}>
-                  <RecordItem record={record} showTools={showTools} />
+                  <RecordItem
+                    record={record}
+                    showTools={showTools}
+                    link={linkFor(record)}
+                    linked={anchorOf(record) === linkedAnchor}
+                    annex={annexFor(record, context)}
+                  />
                 </li>
               ))}
             </ol>

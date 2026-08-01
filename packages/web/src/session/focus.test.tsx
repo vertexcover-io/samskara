@@ -1,10 +1,12 @@
 import { act, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
+import { useState } from "react"
 import { expect, test } from "vitest"
 import { useFocusMode } from "./focus.js"
 
 const Harness = () => {
-  const focus = useFocusMode()
+  const [focusedId, setFocusedId] = useState<string | null>(null)
+  const focus = useFocusMode(focusedId, setFocusedId)
 
   return (
     <div>
@@ -12,13 +14,13 @@ const Harness = () => {
         <button
           key={id}
           type="button"
-          aria-expanded={focus.focusedId === id}
+          aria-expanded={focusedId === id}
           onClick={(event) => focus.open(id, event.currentTarget)}
         >
           Open {id}
         </button>
       ))}
-      <output>{focus.focusedId ?? "none"}</output>
+      <output>{focusedId ?? "none"}</output>
       <button type="button" onClick={focus.exit}>
         Return to spine
       </button>
