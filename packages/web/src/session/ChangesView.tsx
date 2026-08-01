@@ -11,10 +11,39 @@ const Empty = ({ title, children }: { title: string; children: React.ReactNode }
   </div>
 )
 
-const stamp = (iso: string): string => {
+const exact = (iso: string): string => {
   const parsed = new Date(iso)
-  return Number.isNaN(parsed.getTime()) ? "--" : parsed.toISOString().replace("T", " ").slice(0, 19)
+  return Number.isNaN(parsed.getTime()) ? "--" : `${parsed.toISOString().slice(0, 19)}Z`
 }
+
+const MINUTE = 60_000
+const HOUR = 60 * MINUTE
+const DAY = 24 * HOUR
+
+/**
+ * A transcript is read soon after it is written, so "2 hours ago" places a commit against the
+ * session far better than a timestamp does. The exact time stays one hover away.
+ */
+export const timeAgo = (iso: string, now: number = Date.now()): string => {
+  const parsed = new Date(iso).getTime()
+  if (Number.isNaN(parsed)) return "--"
+
+  const elapsed = now - parsed
+  if (elapsed < 0) return "just now"
+  if (elapsed < MINUTE) return "just now"
+
+  const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"} ago`
+  if (elapsed < HOUR) return plural(Math.floor(elapsed / MINUTE), "minute")
+  if (elapsed < DAY) return plural(Math.floor(elapsed / HOUR), "hour")
+  if (elapsed < 30 * DAY) return plural(Math.floor(elapsed / DAY), "day")
+  return exact(iso).slice(0, 10)
+}
+
+const Stamp = ({ iso }: { iso: string }) => (
+  <time dateTime={iso} title={exact(iso)} className="font-mono text-[0.6875rem] text-ink-soft">
+    {timeAgo(iso)}
+  </time>
+)
 
 /** Only github.com is addressable from here; anything else is shown without a link. */
 const webUrl = (repo: SessionRepo, path: string): string | null =>
@@ -86,9 +115,7 @@ const CommitRow = ({
         <DiffStat commit={commit} />
         <span className="ml-auto flex items-center gap-2">
           {messageId === null ? null : <JumpToMessage onJump={() => onJump(messageId)} />}
-          <time className="font-mono text-[0.6875rem] text-ink-soft">
-            {stamp(commit.recordedAt)}
-          </time>
+          <Stamp iso={commit.recordedAt} />
         </span>
       </div>
       <p className="mt-1 max-w-[104ch] text-[0.82rem]">{commit.subject ?? <Unavailable />}</p>
@@ -145,7 +172,7 @@ const PullRequestRow = ({
         </span>
         <span className="ml-auto flex items-center gap-2">
           {messageId === null ? null : <JumpToMessage onJump={() => onJump(messageId)} />}
-          <time className="font-mono text-[0.6875rem] text-ink-soft">{stamp(pr.recordedAt)}</time>
+          <Stamp iso={pr.recordedAt} />
         </span>
       </div>
       <p className="mt-1 max-w-[104ch] text-[0.82rem]">{pr.title ?? <Unavailable />}</p>
