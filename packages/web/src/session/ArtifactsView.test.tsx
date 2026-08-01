@@ -425,7 +425,7 @@ test("S53: a filter that matches nothing keeps its own controls on screen rather
 
   await user.type(screen.getByRole("searchbox", { name: /filter by filename/i }), "nothingmatches")
 
-  expect(screen.getByText(/no filed exhibit matches these filters/i)).toBeInTheDocument()
+  expect(screen.getByText(/no artifact matches these filters/i)).toBeInTheDocument()
   // The way back must still be reachable: the input that caused the emptiness is still there.
   expect(screen.getByRole("searchbox", { name: /filter by filename/i })).toBeInTheDocument()
 })

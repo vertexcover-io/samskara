@@ -645,6 +645,7 @@ const Tree = ({ nodes, depth, selectedId, openFolders, onToggle, onSelect }: Tre
               aria-expanded={open}
               onClick={() => onToggle(node.path)}
               style={indent}
+              title={node.path}
               className="flex w-full items-center gap-1.5 py-1 pr-2 text-left font-mono text-[0.6875rem] text-ink-soft transition-colors hover:bg-panel-2"
             >
               <Chevron open={open} />
@@ -671,6 +672,7 @@ const Tree = ({ nodes, depth, selectedId, openFolders, onToggle, onSelect }: Tre
             aria-current={node.item.id === selectedId}
             onClick={() => onSelect(node.item.id)}
             style={indent}
+            title={node.item.relativePath ?? node.item.label ?? node.name}
             className={`flex w-full items-center gap-1.5 py-1 pr-2 text-left font-mono text-[0.6875rem] transition-colors hover:bg-panel-2 ${
               node.item.id === selectedId
                 ? "bg-panel-2 font-semibold text-custody shadow-[inset_2px_0_0_var(--color-stamp)]"
@@ -806,9 +808,30 @@ export const ArtifactsView = ({
 
   return (
     <div className="grid grid-cols-1 border border-rule bg-panel-2 min-[720px]:grid-cols-[minmax(0,272px)_minmax(0,1fr)]">
-      <aside className="border-b border-rule bg-panel min-[720px]:border-b-0 min-[720px]:border-r">
+      {/* Parked, not stretched. Left to fill the row the panel ran the full height of whatever file
+          is open -- hundreds of pixels of tinted column below the last file, with no bottom edge.
+          It now ends where its contents end and stays put while the viewer scrolls, so switching
+          files never means scrolling back up. The same parking the agent rail already uses. */}
+      <aside
+        aria-label="Artifact index"
+        className="border-b border-rule bg-panel min-[720px]:sticky min-[720px]:top-[calc(var(--sticky-head,0px)_+_1rem)] min-[720px]:max-h-[calc(100dvh_-_var(--sticky-head,0px)_-_2rem)] min-[720px]:self-start min-[720px]:overflow-y-auto min-[720px]:border-r min-[720px]:border-b-0"
+      >
         <div className="border-b border-rule px-3 py-3">
-          <h3 className="text-[0.8125rem] font-semibold">Filed exhibits</h3>
+          {/* No heading: the tab above already reads Artifacts, and a tree of filenames beside a
+              viewer is self-evidently its index. The download acts on the whole panel, so it takes
+              that row -- as a full-width block under the filters it read as a fourth filter. */}
+          {exhibits.some((exhibit) => exhibit.downloadUrl !== null) ? (
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={downloadAll}
+                disabled={zipping}
+                className="shrink-0 font-mono text-[0.625rem] uppercase tracking-[0.08em] text-custody transition-colors hover:underline disabled:opacity-40"
+              >
+                {zipping ? "Preparing…" : "Download all"}
+              </button>
+            </div>
+          ) : null}
           <label className="mt-2 block">
             <span className="sr-only">Filter by filename</span>
             <input
@@ -819,7 +842,9 @@ export const ArtifactsView = ({
               className="h-8 w-full rounded-xs border border-rule bg-panel-2 px-2 font-mono text-[0.6875rem] text-ink transition-colors hover:border-ink-soft focus-visible:border-custody"
             />
           </label>
-          <fieldset className="mt-2 flex flex-wrap gap-1">
+          {/* Four chips on a two-column grid rather than wrapping: flex left MEDIA stranded on a
+              row of its own, and the counts no longer lined up to be compared. */}
+          <fieldset className="mt-2 grid grid-cols-2 gap-1">
             <legend className="sr-only">Filter by type</legend>
             {(["all", "code", "docs", "media"] as const).map((option) => (
               <button
@@ -828,31 +853,20 @@ export const ArtifactsView = ({
                 aria-pressed={option === kind}
                 disabled={counts[option] === 0 && option !== "all"}
                 onClick={() => update({ kind: option })}
-                className={`border px-2 py-1 font-mono text-[0.625rem] uppercase tracking-[0.08em] transition-colors disabled:opacity-40 ${
+                className={`flex items-baseline justify-between gap-2 border px-2 py-1 font-mono text-[0.625rem] uppercase tracking-[0.08em] transition-colors disabled:opacity-40 ${
                   option === kind
                     ? "border-custody bg-panel-2 text-custody"
                     : "border-rule text-ink-soft hover:bg-panel-2"
                 }`}
               >
-                {option} {counts[option]}
+                <span>{option}</span>
+                <span className="tabular-nums">{counts[option]}</span>
               </button>
             ))}
           </fieldset>
-          {exhibits.some((exhibit) => exhibit.downloadUrl !== null) ? (
-            <button
-              type="button"
-              onClick={downloadAll}
-              disabled={zipping}
-              className="mt-2 w-full border border-rule px-2 py-1 font-mono text-[0.625rem] uppercase tracking-[0.08em] text-ink-soft transition-colors hover:bg-panel-2 disabled:opacity-40"
-            >
-              {zipping ? "Preparing…" : "Download all"}
-            </button>
-          ) : null}
-          <p className="mt-1 font-mono text-[0.6875rem] text-faded">
-            {exhibits.length} {exhibits.length === 1 ? "exhibit" : "exhibits"}
-          </p>
-          {/* The margin marks are the only unexplained notation in this panel. */}
-          <p className="mt-1 hidden font-mono text-[0.625rem] text-faded min-[720px]:block">
+          {/* The margin marks are the only unexplained notation in this panel. The exhibit count
+              is not repeated here -- the active chip above already carries it. */}
+          <p className="mt-2 hidden font-mono text-[0.625rem] text-faded min-[720px]:block">
             <span className="font-semibold text-ok">A</span> added ·{" "}
             <span className="font-semibold text-custody">M</span> modified
           </p>
@@ -893,7 +907,7 @@ export const ArtifactsView = ({
         <Viewer exhibit={selected} wrap={wrap} onWrapChange={setWrap} />
       ) : (
         <p className="p-6 text-center text-ink-soft">
-          No filed exhibit matches these filters. Clear the name filter, or choose a different type.
+          No artifact matches these filters. Clear the name filter, or choose a different type.
         </p>
       )}
     </div>

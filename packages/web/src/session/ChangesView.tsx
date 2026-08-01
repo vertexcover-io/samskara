@@ -34,8 +34,34 @@ const Row = ({ children }: { children: React.ReactNode }) => (
   <li className="border-rule border-b py-3 last:border-b-0">{children}</li>
 )
 
+/** What the row is reads first; everything below it is the evidence for that claim. */
+const Subject = ({ children }: { children: React.ReactNode }) => (
+  <p className="max-w-[104ch] text-[0.875rem] font-semibold leading-snug">{children}</p>
+)
+
+/**
+ * One mono line carrying the record's provenance -- identifier, branch, diffstat, repo, when.
+ * Filed as a single line because these are read together or not at all; as three stacked rows they
+ * pushed the subject into fifth place on a narrow screen.
+ */
+const Custody = ({ children }: { children: React.ReactNode }) => (
+  <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[0.6875rem] text-ink-soft">
+    {children}
+  </div>
+)
+
+const Sep = () => (
+  <span aria-hidden="true" className="text-rule">
+    ·
+  </span>
+)
+
+const Chip = ({ children }: { children: React.ReactNode }) => (
+  <span className="rounded-pill border border-rule px-2 py-0.5">{children}</span>
+)
+
 const RepoName = ({ repo }: { repo: SessionRepo }) => (
-  <span className="font-mono text-[0.6875rem] text-faded">
+  <span className="text-faded">
     {repo.owner}/{repo.repoName}
   </span>
 )
@@ -44,7 +70,7 @@ const JumpToMessage = ({ onJump }: { onJump: () => void }) => (
   <button
     type="button"
     onClick={onJump}
-    className="rounded-xs border border-rule px-2 py-0.5 font-mono text-[0.6875rem] text-ink-soft hover:bg-panel"
+    className="rounded-xs border border-rule px-2 py-0.5 text-ink-soft transition-colors hover:border-ink-soft hover:bg-panel"
   >
     Jump to transcript
   </button>
@@ -64,7 +90,7 @@ const DiffStat = ({ commit }: { commit: SessionCommit }) => {
   ].filter((part): part is string => part !== null)
 
   if (parts.length === 0) return null
-  return <span className="font-mono text-[0.6875rem] text-faded">{parts.join(" · ")}</span>
+  return <span className="text-faded">{parts.join(" · ")}</span>
 }
 
 const CommitRow = ({
@@ -75,34 +101,29 @@ const CommitRow = ({
   const messageId = commit.messageId
   return (
     <Row>
-      <div className="flex flex-wrap items-baseline gap-2">
+      <Subject>{commit.subject ?? <Unavailable />}</Subject>
+      <Custody>
         {url === null ? (
-          <span className="font-mono text-[0.78rem] font-semibold">{commit.sha}</span>
+          <span className="font-semibold text-custody">{commit.sha}</span>
         ) : (
           <a
             href={url}
             target="_blank"
             rel="noreferrer"
-            className="font-mono text-[0.78rem] font-semibold underline decoration-dotted"
+            className="font-semibold text-custody underline decoration-dotted"
           >
             {commit.sha}
           </a>
         )}
-        {commit.branch === null ? null : (
-          <span className="rounded-pill border border-rule px-2 py-0.5 font-mono text-[0.6875rem] text-ink-soft">
-            {commit.branch}
-          </span>
-        )}
+        {commit.branch === null ? null : <Chip>{commit.branch}</Chip>}
         <DiffStat commit={commit} />
+        <Sep />
+        <RepoName repo={commit.repo} />
         <span className="ml-auto flex items-center gap-2">
           {messageId === null ? null : <JumpToMessage onJump={() => onJump(messageId)} />}
           <Stamp iso={commit.recordedAt} />
         </span>
-      </div>
-      <p className="mt-1 max-w-[104ch] text-[0.82rem]">{commit.subject ?? <Unavailable />}</p>
-      <p className="mt-1">
-        <RepoName repo={commit.repo} />
-      </p>
+      </Custody>
     </Row>
   )
 }
@@ -135,36 +156,33 @@ const PullRequestRow = ({
   const messageId = pr.messageId
   return (
     <Row>
-      <div className="flex flex-wrap items-baseline gap-2">
+      <Subject>{pr.title ?? <Unavailable />}</Subject>
+      <Custody>
         {url === null ? (
-          <span className="font-mono text-[0.78rem] font-semibold">#{pr.number}</span>
+          <span className="font-semibold text-custody">#{pr.number}</span>
         ) : (
           <a
             href={url}
             target="_blank"
             rel="noreferrer"
-            className="font-mono text-[0.78rem] font-semibold underline decoration-dotted"
+            className="font-semibold text-custody underline decoration-dotted"
           >
             #{pr.number}
           </a>
         )}
-        <span className="text-[0.625rem] font-semibold uppercase tracking-[0.1em] text-faded">
-          Opened here
-        </span>
+        <span className="text-faded">opened here</span>
         {pr.headBranch === null && pr.baseBranch === null ? null : (
-          <span className="rounded-pill border border-rule px-2 py-0.5 font-mono text-[0.6875rem] text-ink-soft">
+          <Chip>
             {pr.headBranch ?? "?"} → {pr.baseBranch ?? "?"}
-          </span>
+          </Chip>
         )}
+        <Sep />
+        <RepoName repo={pr.repo} />
         <span className="ml-auto flex items-center gap-2">
           {messageId === null ? null : <JumpToMessage onJump={() => onJump(messageId)} />}
           <Stamp iso={pr.recordedAt} />
         </span>
-      </div>
-      <p className="mt-1 max-w-[104ch] text-[0.82rem]">{pr.title ?? <Unavailable />}</p>
-      <p className="mt-1">
-        <RepoName repo={pr.repo} />
-      </p>
+      </Custody>
     </Row>
   )
 }
