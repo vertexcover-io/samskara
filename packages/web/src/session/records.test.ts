@@ -274,6 +274,37 @@ describe("conversationView", () => {
     expect(view.records[0]?.sources).toEqual(["agent-call"])
     expect(view.records[1]?.sources).toEqual([])
   })
+
+  test("S59: a branch whose spawning call was never captured still gets a marker, so its messages stay reachable", () => {
+    // Observed live: a session held four subagent rows but only three Agent calls on the spine.
+    // Positional pairing shifted the queue three times and the surplus branch fell out of the
+    // timeline entirely -- its messages were in the database with nothing able to reach them.
+    const payload = buildPayload({
+      subagents: [
+        AGENT,
+        { agentId: "a2", agentType: "auditor", description: null, parentAgentId: null },
+      ],
+      messages: [
+        message({ id: "agent-call", lineNumber: 1, msgType: "toolCall" }),
+        message({
+          lineNumber: 2,
+          msgType: "message",
+          role: "assistant",
+          agentId: "a2",
+          isSubagent: true,
+        }),
+      ],
+      toolCalls: [{ ...call("agent-call"), toolName: "Agent" }],
+    })
+
+    const view = conversationView(toDetail(payload), true)
+    const spawned = view.records
+      .filter((record) => record.kind === "agentSpawn")
+      .map((record) => (record.kind === "agentSpawn" ? record.agent.agentId : null))
+
+    expect(spawned).toEqual(["a1", "a2"])
+    expect(view.branches.get("a2")).toHaveLength(1)
+  })
 })
 
 // One transcript line whose content array holds several blocks is captured as one row per block,
@@ -399,7 +430,9 @@ describe("prompt turns", () => {
 
     const view = conversationView(toDetail(payload), true)
 
-    expect(view.records.map((r) => r.kind)).toEqual(["prompt"])
+    // The spawn marker trails the prompt because this fixture's branch has no Agent call to pair
+    // with, so it is surfaced as an unspawned branch rather than dropped.
+    expect(view.records.map((r) => r.kind)).toEqual(["prompt", "agentSpawn"])
     expect(view.records[0]?.sources).toEqual(["spine-ask"])
     expect(view.branches.get("a1")?.[0]?.sources).toEqual(["branch-ask"])
   })
