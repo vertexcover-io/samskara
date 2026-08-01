@@ -23,11 +23,7 @@ type GitRecorder = {
   readonly runGit: GitRunner
 }
 
-/**
- * Mirrors `git ls-files -z`: only tracked paths appear, each NUL-terminated, and the order is
- * git's own rather than the caller's. `null` stands for every failure the real runner collapses
- * into one -- not a repo, git absent, non-zero exit.
- */
+/** Mirrors `git ls-files -z`: tracked paths only, NUL-terminated, in git's order not the caller's. */
 const gitFake = (tracked: ReadonlyArray<string> | null): GitRecorder => {
   const calls: Array<{ args: ReadonlyArray<string>; cwd: string }> = []
   return {
@@ -40,13 +36,9 @@ const gitFake = (tracked: ReadonlyArray<string> | null): GitRecorder => {
 }
 
 /**
- * `isCapturable` always excludes `/tmp` and `/private/tmp` outright (containment.ts), and
- * `os.tmpdir()` falls back to exactly that root whenever `$TMPDIR` is unset. `/var/tmp` is the same
- * kind of OS-provided scratch space without colliding with that exclusion.
- *
- * Turbo's strict env mode used to strip `$TMPDIR`, which made this fire under `bun run test` but
- * not under a direct `vitest run`; turbo.json now declares it in the test task's `passThroughEnv`.
- * This guard remains for environments where `$TMPDIR` is genuinely unset, such as CI containers.
+ * `isCapturable` excludes `/tmp` and `/private/tmp` outright, and `os.tmpdir()` falls back to
+ * exactly that root when `$TMPDIR` is unset. `/var/tmp` is equivalent scratch space without the
+ * collision.
  */
 const scratchRoot = (): string =>
   ["/tmp", "/private/tmp"].includes(tmpdir()) ? "/var/tmp" : tmpdir()
@@ -639,8 +631,7 @@ describe("artifact workers", () => {
       deps(sink, 1_800_000_000_000, git.runGit),
     )
 
-    // One escaping path would make the real `git ls-files` exit 128 and print nothing for the
-    // whole batch, so the filter order is what keeps this call answerable.
+    // One escaping path makes the real `git ls-files` exit 128 and print nothing for the batch.
     const passed = (git.calls[0]?.args ?? []).filter((arg) => !arg.startsWith("-") && arg !== "--")
     expect(passed.some((arg) => arg.startsWith(".."))).toBe(false)
     expect(sink.sent.map((payload) => payload.path)).toContain(join(dir, "pages", "inside.mp4"))
@@ -676,7 +667,6 @@ describe("artifact workers", () => {
     const git = gitFake(["src/driver.ts"])
     const config = { queuePath, statePath, workers: 1, drainOnce: true }
 
-    // Drain repeatedly: each pass claims what the previous pass enqueued, until nothing is due.
     for (let pass = 0; pass < 4; pass += 1) {
       await runArtifactWorkers(config, deps(sink, 1_800_000_000_000, git.runGit))
     }
@@ -694,7 +684,6 @@ describe("artifact workers", () => {
       expect(payload.changeKind).toBe("created")
     }
 
-    // Quiescent: the queue drained and nothing was uploaded twice.
     expect((await readQueue(queuePath)).entries).toHaveLength(0)
     expect(new Set(sent).size).toBe(sent.length)
   })
