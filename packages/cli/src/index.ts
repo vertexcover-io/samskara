@@ -13,7 +13,7 @@ import { statusCommand } from "./commands/status.js"
 import { watchCommand } from "./commands/watch.js"
 import { apiBase } from "./config.js"
 import { readToken } from "./config/credentials.js"
-import { startWatcherDaemon, stopWatcherDaemon, watcherPid } from "./config/daemon.js"
+import { startWatcherDaemon, stopWatcherDaemon } from "./config/daemon.js"
 import { artifactQueuePath, artifactStatePath, statePath } from "./config/paths.js"
 import { login } from "./login.js"
 
@@ -64,7 +64,6 @@ program
         artifacts: artifactStatePath(),
         queue: artifactQueuePath(),
       },
-      watcherRunning: () => watcherPid() !== null,
       stopWatcher: stopWatcherDaemon,
       startWatcher: startWatcherDaemon,
     })

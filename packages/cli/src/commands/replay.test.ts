@@ -96,9 +96,9 @@ describe("replayCommand", () => {
     token: "tok",
     fetch: (async () => new Response(null, { status: 204 })) as typeof globalThis.fetch,
     paths,
-    watcherRunning: () => true,
     stopWatcher: async () => {
       stopped += 1
+      return true
     },
     startWatcher: async () => {
       started += 1
@@ -140,6 +140,7 @@ describe("replayCommand", () => {
         stopWatcher: async () => {
           stopped += 1
           stateWhenStopped = await readFile(paths.state, "utf8")
+          return true
         },
       }),
     )
@@ -152,9 +153,15 @@ describe("replayCommand", () => {
   })
 
   test("a watcher that was not running is not started by the replay", async () => {
-    expect(await replayCommand(SESSION, deps({ watcherRunning: () => false }))).toBe(0)
+    // The stop call is the only probe: it answers false when there was no daemon to stop, so the
+    // replay never reads the pid file separately and cannot race between checking and stopping.
+    const notRunning = async () => {
+      stopped += 1
+      return false
+    }
 
-    expect(stopped).toBe(0)
+    expect(await replayCommand(SESSION, deps({ stopWatcher: notRunning }))).toBe(0)
+
     expect(started).toBe(0)
   })
 

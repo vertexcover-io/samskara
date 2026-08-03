@@ -15,8 +15,8 @@ export type ReplayDeps = {
     readonly artifacts: string
     readonly queue: string
   }
-  readonly watcherRunning: () => boolean
-  readonly stopWatcher: () => Promise<unknown>
+  /** Answers whether it stopped anything, so the replay knows whether to bring it back. */
+  readonly stopWatcher: () => Promise<boolean>
   readonly startWatcher: () => Promise<unknown>
   readonly stdout?: Writer
 }
@@ -98,8 +98,7 @@ export const replayCommand = async (sessionId: string, deps: ReplayDeps): Promis
     return 1
   }
 
-  const wasRunning = deps.watcherRunning()
-  if (wasRunning) await deps.stopWatcher()
+  const wasRunning = await deps.stopWatcher()
 
   try {
     const failure = await deleteRemote(deps, sessionId)
