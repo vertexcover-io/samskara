@@ -299,29 +299,42 @@ test("S54: an agent-authored HTML file renders as a page, not as syntax-highligh
   expect(frame).toHaveAttribute("src", "/api/artifacts/c-html/raw?which=current")
 })
 
+const htmlPreview = () => (
+  <TestRouter initialEntries={["/s/1?tab=artifacts"]}>
+    <ArtifactsView
+      artifacts={[
+        captured({
+          id: "c-html",
+          relativePath: "reports/proof.html",
+          mimeType: "text/html",
+          changeKind: "created",
+          editCount: 0,
+        }),
+      ]}
+    />
+  </TestRouter>
+)
+
 test("S54: the preview frame is sandboxed without allow-same-origin, which would void the sandbox", () => {
   // `allow-scripts` plus `allow-same-origin` lets a script inside remove its own sandbox and
   // reload with full origin access. The server sends the same policy as a CSP header; the
   // attribute repeats it so a cached response cannot arrive unsandboxed.
-  render(
-    <TestRouter initialEntries={["/s/1?tab=artifacts"]}>
-      <ArtifactsView
-        artifacts={[
-          captured({
-            id: "c-html",
-            relativePath: "reports/proof.html",
-            mimeType: "text/html",
-            changeKind: "created",
-            editCount: 0,
-          }),
-        ]}
-      />
-    </TestRouter>,
-  )
+  vi.stubEnv("VITE_ARTIFACT_PREVIEW_SANDBOX", "on")
+  render(htmlPreview())
 
   const sandbox = screen.getByTitle(/rendered preview/i).getAttribute("sandbox") ?? ""
   expect(sandbox.split(/\s+/)).toContain("allow-scripts")
   expect(sandbox).not.toContain("allow-same-origin")
+  vi.unstubAllEnvs()
+})
+
+test("S54: the sandbox is off by default, so a captured report can load its own media", () => {
+  // Deliberate for an internal deployment: the frame keeps a real origin, so the report's relative
+  // references authenticate. It also means a script inside acts as the signed-in user.
+  vi.unstubAllEnvs()
+  render(htmlPreview())
+
+  expect(screen.getByTitle(/rendered preview/i)).not.toHaveAttribute("sandbox")
 })
 
 test("S54: an edited HTML file still opens on its diff, with the rendered page one click away", async () => {
