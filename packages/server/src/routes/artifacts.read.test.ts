@@ -91,6 +91,7 @@ const env: Env = {
   cookieSecure: false,
   jwtSecret: "test-secret-value",
   jwtExpiresIn: "7d",
+  artifactPreviewSandbox: true,
 }
 
 const sha256 = (content: Buffer): string => createHash("sha256").update(content).digest("hex")

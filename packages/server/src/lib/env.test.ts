@@ -21,7 +21,19 @@ describe("loadEnv", () => {
       cookieSecure: false,
       jwtSecret: "jwt",
       jwtExpiresIn: "7d",
+      artifactPreviewSandbox: true,
     })
+  })
+
+  test("the artifact preview sandbox is on unless a source explicitly turns it off", () => {
+    // The safe path must not depend on anyone remembering to set this.
+    expect(loadEnv(complete).artifactPreviewSandbox).toBe(true)
+    expect(loadEnv({ ...complete, ARTIFACT_PREVIEW_SANDBOX: "on" }).artifactPreviewSandbox).toBe(
+      true,
+    )
+    expect(loadEnv({ ...complete, ARTIFACT_PREVIEW_SANDBOX: "off" }).artifactPreviewSandbox).toBe(
+      false,
+    )
   })
 
   test("defaults JWT_EXPIRES_IN to 7d and honors an override", () => {

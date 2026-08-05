@@ -58,6 +58,7 @@ describe("loggingMiddleware", () => {
       cookieSecure: false,
       jwtSecret: "test-secret-value",
       jwtExpiresIn: "7d",
+      artifactPreviewSandbox: true,
     }
     const app = buildApp({} as Db, env, { rootLog: testLog() })
     app.get("/__boom", () => {
