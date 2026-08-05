@@ -14,9 +14,23 @@ export type ServeHeaders = {
  * Sent as a response header rather than an iframe attribute so it also applies to direct navigation
  * to the raw URL, where no iframe exists. `default-src 'none'` stops the page beaconing data out.
  */
-const SANDBOX_CSP =
-  "sandbox allow-scripts; default-src 'none'; img-src data: blob:; " +
-  "style-src 'unsafe-inline'; script-src 'unsafe-inline'"
+/**
+ * `mediaOrigin` widens `img-src`/`media-src` to exactly one origin -- ours -- so a captured report
+ * can display the screenshots and recordings it references. `'self'` cannot do this: the document
+ * sits in an opaque origin, where `'self'` matches nothing.
+ *
+ * Naming our own origin rather than `https:` is what keeps it a widening and not a hole. The page
+ * gains the ability to issue credential-less GETs to this API and nowhere else, so it cannot beacon
+ * to an attacker's server, and the responses it provokes are 401s it is not permitted to read --
+ * `connect-src` still falls through to `default-src 'none'`.
+ */
+const sandboxCsp = (mediaOrigin?: string): string => {
+  const media = mediaOrigin === undefined ? "" : ` ${mediaOrigin}`
+  return (
+    `sandbox allow-scripts; default-src 'none'; img-src${media} data: blob:; ` +
+    `media-src${media || " 'none'"}; style-src 'unsafe-inline'; script-src 'unsafe-inline'`
+  )
+}
 
 const TEXT_PLAIN = "text/plain; charset=utf-8"
 const TEXT_HTML = "text/html; charset=utf-8"
@@ -57,9 +71,13 @@ const MARKUP =
 
 const isMarkup = (bytes: Buffer): boolean => MARKUP.test(bytes.subarray(0, 512).toString("utf8"))
 
-export const serveHeadersFor = (bytes: Buffer, isBinary: boolean): ServeHeaders => {
+export const serveHeadersFor = (
+  bytes: Buffer,
+  isBinary: boolean,
+  mediaOrigin?: string,
+): ServeHeaders => {
   if (isMarkup(bytes)) {
-    return { contentType: TEXT_HTML, disposition: "inline", csp: SANDBOX_CSP }
+    return { contentType: TEXT_HTML, disposition: "inline", csp: sandboxCsp(mediaOrigin) }
   }
 
   if (!isBinary) return { contentType: TEXT_PLAIN, disposition: "attachment" }

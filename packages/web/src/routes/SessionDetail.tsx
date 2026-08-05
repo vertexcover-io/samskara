@@ -360,7 +360,10 @@ const ArtifactsPanel = ({ detail, captured }: { detail: Detail; captured: Captur
     {captured.phase === "failed" ? (
       <Notice>The captured artifacts could not be retrieved. {captured.error.message}</Notice>
     ) : null}
-    <ArtifactsView artifacts={artifactsFor(detail, capturedRows(captured))} />
+    <ArtifactsView
+      artifacts={artifactsFor(detail, capturedRows(captured))}
+      sessionId={detail.session.id}
+    />
   </div>
 )
 
