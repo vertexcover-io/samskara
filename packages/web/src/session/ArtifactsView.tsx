@@ -286,19 +286,30 @@ const FetchedText = ({ url, render }: { url: string; render: (text: string) => J
   return render(state.text)
 }
 
-/**
- * Agent-authored markup renders as a page rather than as source, but only ever sandboxed. The raw
- * route already sends `sandbox allow-scripts` as a response header; the attribute repeats it so a
- * cached or proxied response cannot arrive unsandboxed. `allow-same-origin` must never join it --
- * together the two let a script inside strip its own sandbox and reload with full origin access.
- */
 /** Prefers the path URL so relative references resolve; falls back to the uuid route. */
 const previewSrc = (exhibit: Exhibit): string | null => exhibit.previewUrl ?? exhibit.textUrl
 
+/**
+ * Must agree with the server's `ARTIFACT_PREVIEW_SANDBOX`: the frame is sandboxed if *either* the
+ * attribute or the response header says so, so turning one off alone changes nothing.
+ */
+const SANDBOXED = import.meta.env.VITE_ARTIFACT_PREVIEW_SANDBOX !== "off"
+
+/**
+ * Agent-authored markup renders as a page rather than as source. Sandboxed, the document sits in an
+ * opaque origin: scripts run, but with no cookies, no storage and no reach into this app. The
+ * attribute repeats the response header so a cached or proxied response cannot arrive unsandboxed,
+ * and `allow-same-origin` must never join `allow-scripts` -- together they let a script inside
+ * strip its own sandbox and act as the signed-in user.
+ *
+ * Unsandboxed, that protection is gone and the document is simply part of this app. It is a
+ * deliberate setting for a deployment where every agent whose output lands here is trusted, and it
+ * is what lets a report load its own screenshots and recordings over an authenticated session.
+ */
 const Preview = ({ url, name }: { url: string; name: string }) => (
   <iframe
     src={url}
-    sandbox="allow-scripts"
+    {...(SANDBOXED ? { sandbox: "allow-scripts" } : {})}
     title={`Rendered preview of ${name}`}
     className="h-[70vh] w-full border border-rule bg-white"
   />

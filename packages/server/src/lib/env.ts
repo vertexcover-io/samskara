@@ -8,6 +8,13 @@ const EnvSchema = z.object({
   COOKIE_SECURE: z.enum(["true", "false"]).transform((value) => value === "true"),
   JWT_SECRET: z.string().min(1),
   JWT_EXPIRES_IN: z.string().min(1).default("7d"),
+  /**
+   * Off renders captured markup with no sandbox and no CSP, so a report loads its own media over an
+   * authenticated session. It also lets any script inside that report act as the signed-in user --
+   * read every session and artifact they can see, and post it anywhere. Sound only where every
+   * agent whose output lands here is trusted, which is why the default stays on.
+   */
+  ARTIFACT_PREVIEW_SANDBOX: z.enum(["on", "off"]).default("on"),
 })
 
 export type Env = {
@@ -18,6 +25,7 @@ export type Env = {
   readonly cookieSecure: boolean
   readonly jwtSecret: string
   readonly jwtExpiresIn: string
+  readonly artifactPreviewSandbox: boolean
 }
 
 type Source = Record<string, string | undefined>
@@ -36,5 +44,6 @@ export const loadEnv = (source: Source = process.env): Env => {
     cookieSecure: parsed.data.COOKIE_SECURE,
     jwtSecret: parsed.data.JWT_SECRET,
     jwtExpiresIn: parsed.data.JWT_EXPIRES_IN,
+    artifactPreviewSandbox: parsed.data.ARTIFACT_PREVIEW_SANDBOX === "on",
   }
 }

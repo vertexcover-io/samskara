@@ -43,6 +43,7 @@ const env: Env = {
   cookieSecure: false,
   jwtSecret: "test-secret-value",
   jwtExpiresIn: "7d",
+  artifactPreviewSandbox: true,
 }
 
 const project = { name: "widget", slug: "acme-widget" } as const

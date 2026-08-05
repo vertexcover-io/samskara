@@ -71,13 +71,20 @@ const MARKUP =
 
 const isMarkup = (bytes: Buffer): boolean => MARKUP.test(bytes.subarray(0, 512).toString("utf8"))
 
+export type MarkupPolicy = {
+  readonly mediaOrigins?: ReadonlyArray<string>
+  /** False omits the policy entirely: the document renders as an ordinary same-origin page. */
+  readonly sandbox?: boolean
+}
+
 export const serveHeadersFor = (
   bytes: Buffer,
   isBinary: boolean,
-  mediaOrigins?: ReadonlyArray<string>,
+  policy: MarkupPolicy = {},
 ): ServeHeaders => {
   if (isMarkup(bytes)) {
-    return { contentType: TEXT_HTML, disposition: "inline", csp: sandboxCsp(mediaOrigins) }
+    if (policy.sandbox === false) return { contentType: TEXT_HTML, disposition: "inline" }
+    return { contentType: TEXT_HTML, disposition: "inline", csp: sandboxCsp(policy.mediaOrigins) }
   }
 
   if (!isBinary) return { contentType: TEXT_PLAIN, disposition: "attachment" }

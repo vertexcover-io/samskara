@@ -200,10 +200,10 @@ export const artifactRoutes = ({ db, env }: Deps): Hono<{ Variables: AuthVariabl
       // Both origins, because the page may be reached either directly or through the web app's
       // dev proxy -- and a subresource resolves against whichever one the document came from, so
       // naming only the API origin blocks every load behind the proxy.
-      const serve = serveHeadersFor(found.bytes, found.isBinary, [
-        env.publicBaseUrl,
-        env.webBaseUrl,
-      ])
+      const serve = serveHeadersFor(found.bytes, found.isBinary, {
+        mediaOrigins: [env.publicBaseUrl, env.webBaseUrl],
+        sandbox: env.artifactPreviewSandbox,
+      })
       const response = rangeResponse(found.bytes, serve, context.req.header("range"))
 
       if (response.kind === "unsatisfiable") return context.body(null, 416, response.headers)
@@ -227,7 +227,9 @@ export const artifactRoutes = ({ db, env }: Deps): Hono<{ Variables: AuthVariabl
 
       // `found.mimeType` is what the client claimed on upload and is never consulted here:
       // echoing it is the stored-XSS vector this route exists to close.
-      const serve = serveHeadersFor(found.bytes, found.isBinary)
+      const serve = serveHeadersFor(found.bytes, found.isBinary, {
+        sandbox: env.artifactPreviewSandbox,
+      })
       const response = rangeResponse(found.bytes, serve, context.req.header("range"))
 
       if (response.kind === "unsatisfiable") return context.body(null, 416, response.headers)

@@ -30,6 +30,7 @@ const env: Env = {
   cookieSecure: false,
   jwtSecret: "test-secret-value",
   jwtExpiresIn: "7d",
+  artifactPreviewSandbox: true,
 }
 
 const sha256 = (content: string | Buffer): string =>
@@ -353,6 +354,26 @@ describe.skipIf(!dockerAvailable())("artifacts route", () => {
 
     expect(csp).toContain("default-src 'none'")
     expect(csp).not.toContain(env.publicBaseUrl)
+  })
+
+  test("S34: opting the sandbox off serves the same markup with no policy at all", async () => {
+    await post(upload({ currentContent: "<!doctype html><p>hi</p>" }))
+
+    const opted = buildApp(
+      db,
+      { ...env, artifactPreviewSandbox: false },
+      {
+        rootLog: createLogger({ service: "test" }, { level: "silent" }),
+      },
+    )
+    const res = await opted.request(`/api/artifacts/session/${SESSION_ID}/files/docs/notes.md`, {
+      headers: { cookie: `session=${webToken}` },
+    })
+
+    // No policy rather than a relaxed one: the document becomes an ordinary same-origin page, so
+    // its media authenticates -- and any script in it acts as the signed-in user.
+    expect(res.status).toBe(200)
+    expect(res.headers.get("content-security-policy")).toBeNull()
   })
 
   test("S34: a range request is honoured, so a captured video can seek inside the frame", async () => {

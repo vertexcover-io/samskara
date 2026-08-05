@@ -34,6 +34,7 @@ const env: Env = {
   cookieSecure: false,
   jwtSecret: "test-secret-value",
   jwtExpiresIn: "7d",
+  artifactPreviewSandbox: true,
 }
 
 describe.skipIf(!dockerAvailable())("cli login round-trip", () => {
