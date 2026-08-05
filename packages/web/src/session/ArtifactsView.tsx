@@ -290,10 +290,11 @@ const FetchedText = ({ url, render }: { url: string; render: (text: string) => J
 const previewSrc = (exhibit: Exhibit): string | null => exhibit.previewUrl ?? exhibit.textUrl
 
 /**
- * Must agree with the server's `ARTIFACT_PREVIEW_SANDBOX`: the frame is sandboxed if *either* the
- * attribute or the response header says so, so turning one off alone changes nothing.
+ * Must agree with the server's `ARTIFACT_PREVIEW_SANDBOX`, and defaults off the same way: the frame
+ * is sandboxed if *either* the attribute or the response header says so, so setting one alone
+ * changes nothing in either direction.
  */
-const SANDBOXED = import.meta.env.VITE_ARTIFACT_PREVIEW_SANDBOX !== "off"
+const sandboxed = (): boolean => import.meta.env.VITE_ARTIFACT_PREVIEW_SANDBOX === "on"
 
 /**
  * Agent-authored markup renders as a page rather than as source. Sandboxed, the document sits in an
@@ -309,7 +310,7 @@ const SANDBOXED = import.meta.env.VITE_ARTIFACT_PREVIEW_SANDBOX !== "off"
 const Preview = ({ url, name }: { url: string; name: string }) => (
   <iframe
     src={url}
-    {...(SANDBOXED ? { sandbox: "allow-scripts" } : {})}
+    {...(sandboxed() ? { sandbox: "allow-scripts" } : {})}
     title={`Rendered preview of ${name}`}
     className="h-[70vh] w-full border border-rule bg-white"
   />

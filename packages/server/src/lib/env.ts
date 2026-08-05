@@ -9,12 +9,18 @@ const EnvSchema = z.object({
   JWT_SECRET: z.string().min(1),
   JWT_EXPIRES_IN: z.string().min(1).default("7d"),
   /**
-   * Off renders captured markup with no sandbox and no CSP, so a report loads its own media over an
-   * authenticated session. It also lets any script inside that report act as the signed-in user --
-   * read every session and artifact they can see, and post it anywhere. Sound only where every
-   * agent whose output lands here is trusted, which is why the default stays on.
+   * Defaults off, for an internal deployment where every agent whose output lands here is trusted.
+   * A captured report then renders as an ordinary same-origin page, which is what lets it load its
+   * own screenshots and recordings over an authenticated session.
+   *
+   * The cost is the whole protection, and it is not partial. A script inside such a report acts as
+   * the signed-in user, can read every session and artifact they can see, and can post that
+   * anywhere. Prompt injection reaches it -- text the agent merely read can steer what it later
+   * writes -- so "we trust our agents" is a statement about every input those agents consume.
+   *
+   * Set to `on` before this is served to anyone whose artifacts you do not control.
    */
-  ARTIFACT_PREVIEW_SANDBOX: z.enum(["on", "off"]).default("on"),
+  ARTIFACT_PREVIEW_SANDBOX: z.enum(["on", "off"]).default("off"),
 })
 
 export type Env = {
