@@ -189,6 +189,18 @@ describe("replayCommand", () => {
     expect(started).toBe(1)
   })
 
+  test("the delete request is bounded, so a stalled server cannot hold the watcher down", async () => {
+    let seen: AbortSignal | undefined
+    const capturing = ((_url: string, init?: RequestInit) => {
+      seen = init?.signal ?? undefined
+      return Promise.resolve(new Response(null, { status: 204 }))
+    }) as unknown as typeof globalThis.fetch
+
+    await replayCommand(SESSION, deps({ fetch: capturing }))
+
+    expect(seen).toBeInstanceOf(AbortSignal)
+  })
+
   test("an unreachable server aborts, and the watcher still comes back up", async () => {
     const down = (async () => {
       throw new Error("ECONNREFUSED")

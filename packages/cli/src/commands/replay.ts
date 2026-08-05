@@ -68,11 +68,14 @@ const clearQueue = async (path: string, sessionId: string): Promise<number> =>
     return dropped
   })
 
+const DELETE_TIMEOUT_MS = 15_000
+
 const deleteRemote = async (deps: ReplayDeps, sessionId: string): Promise<string | null> => {
   const res = await deps
     .fetch(`${deps.apiBase}/api/sessions/${sessionId}`, {
       method: "DELETE",
       headers: { authorization: `Bearer ${deps.token}` },
+      signal: AbortSignal.timeout(DELETE_TIMEOUT_MS),
     })
     .catch((error: unknown) => {
       return { ok: false, status: 0, error } as const
