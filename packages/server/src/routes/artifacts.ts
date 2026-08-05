@@ -194,9 +194,16 @@ export const artifactRoutes = ({ db, env }: Deps): Hono<{ Variables: AuthVariabl
       )
       if (found === null) return context.json({ error: "artifactNotFound" } as const, 404)
 
-      // The one route that widens the markup CSP, and only to this origin: a document served here
-      // is expected to load the siblings it references, which the uuid route has no way to express.
-      const serve = serveHeadersFor(found.bytes, found.isBinary, env.publicBaseUrl)
+      // The one route that widens the markup CSP, and only to our own origins: a document served
+      // here is expected to load the siblings it references, which the uuid route cannot express.
+      //
+      // Both origins, because the page may be reached either directly or through the web app's
+      // dev proxy -- and a subresource resolves against whichever one the document came from, so
+      // naming only the API origin blocks every load behind the proxy.
+      const serve = serveHeadersFor(found.bytes, found.isBinary, [
+        env.publicBaseUrl,
+        env.webBaseUrl,
+      ])
       const response = rangeResponse(found.bytes, serve, context.req.header("range"))
 
       if (response.kind === "unsatisfiable") return context.body(null, 416, response.headers)

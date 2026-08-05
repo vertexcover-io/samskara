@@ -24,8 +24,8 @@ export type ServeHeaders = {
  * to an attacker's server, and the responses it provokes are 401s it is not permitted to read --
  * `connect-src` still falls through to `default-src 'none'`.
  */
-const sandboxCsp = (mediaOrigin?: string): string => {
-  const media = mediaOrigin === undefined ? "" : ` ${mediaOrigin}`
+const sandboxCsp = (mediaOrigins: ReadonlyArray<string> = []): string => {
+  const media = mediaOrigins.length === 0 ? "" : ` ${mediaOrigins.join(" ")}`
   return (
     `sandbox allow-scripts; default-src 'none'; img-src${media} data: blob:; ` +
     `media-src${media || " 'none'"}; style-src 'unsafe-inline'; script-src 'unsafe-inline'`
@@ -74,10 +74,10 @@ const isMarkup = (bytes: Buffer): boolean => MARKUP.test(bytes.subarray(0, 512).
 export const serveHeadersFor = (
   bytes: Buffer,
   isBinary: boolean,
-  mediaOrigin?: string,
+  mediaOrigins?: ReadonlyArray<string>,
 ): ServeHeaders => {
   if (isMarkup(bytes)) {
-    return { contentType: TEXT_HTML, disposition: "inline", csp: sandboxCsp(mediaOrigin) }
+    return { contentType: TEXT_HTML, disposition: "inline", csp: sandboxCsp(mediaOrigins) }
   }
 
   if (!isBinary) return { contentType: TEXT_PLAIN, disposition: "attachment" }
