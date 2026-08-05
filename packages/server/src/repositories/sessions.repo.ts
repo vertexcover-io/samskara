@@ -75,6 +75,20 @@ export const existsForUser = async (db: Querier, id: string, userId: string): Pr
   return row !== undefined
 }
 
+/**
+ * Everything a session owns -- messages and their tool calls, subagents, artifacts, commit and
+ * pull-request links -- is removed by the cascade, so the session row is the only delete needed.
+ * Returns false when the session is absent or owned by someone else; the caller cannot tell those
+ * apart, which is the same answer `getDetail` gives.
+ */
+export const remove = async (db: Querier, id: string, userId: string): Promise<boolean> => {
+  const deleted = await db
+    .delete(sessions)
+    .where(and(eq(sessions.id, id), eq(sessions.userId, userId)))
+    .returning({ id: sessions.id })
+  return deleted.length > 0
+}
+
 export type SessionRepo = {
   readonly host: string
   readonly owner: string

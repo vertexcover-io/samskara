@@ -8,8 +8,13 @@ import { initCommand } from "./commands/init.js"
 import { installHooksCommand, uninstallHooksCommand } from "./commands/install-hooks.js"
 import { logoutCommand } from "./commands/logout.js"
 import { logsCommand } from "./commands/logs.js"
+import { replayCommand } from "./commands/replay.js"
 import { statusCommand } from "./commands/status.js"
 import { watchCommand } from "./commands/watch.js"
+import { apiBase } from "./config.js"
+import { readToken } from "./config/credentials.js"
+import { startWatcherDaemon, stopWatcherDaemon } from "./config/daemon.js"
+import { artifactQueuePath, artifactStatePath, statePath } from "./config/paths.js"
 import { login } from "./login.js"
 
 const isMain = process.argv[1] === fileURLToPath(import.meta.url)
@@ -42,6 +47,26 @@ program
   .description("Stop the watcher and remove stored CLI credentials")
   .action(async () => {
     process.exitCode = await logoutCommand()
+  })
+
+program
+  .command("replay <sessionId>")
+  .description(
+    "Re-capture a session from scratch: delete it server-side and locally, then re-ingest",
+  )
+  .action(async (sessionId: string) => {
+    process.exitCode = await replayCommand(sessionId, {
+      apiBase,
+      token: await readToken(),
+      fetch: globalThis.fetch,
+      paths: {
+        state: statePath(),
+        artifacts: artifactStatePath(),
+        queue: artifactQueuePath(),
+      },
+      stopWatcher: stopWatcherDaemon,
+      startWatcher: startWatcherDaemon,
+    })
   })
 
 program
