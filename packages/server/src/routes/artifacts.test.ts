@@ -335,8 +335,10 @@ describe.skipIf(!dockerAvailable())("artifacts route", () => {
     expect(csp).toContain("sandbox allow-scripts")
     expect(csp).not.toContain("allow-same-origin")
     expect(csp).toContain("default-src 'none'")
-    expect(csp).toContain(`img-src ${env.publicBaseUrl}`)
-    expect(csp).toContain(`media-src ${env.publicBaseUrl}`)
+    // Both of our origins: the page is reachable directly and through the web app's proxy, and a
+    // subresource resolves against whichever one served the document.
+    expect(csp).toContain(`img-src ${env.publicBaseUrl} ${env.webBaseUrl}`)
+    expect(csp).toContain(`media-src ${env.publicBaseUrl} ${env.webBaseUrl}`)
   })
 
   test("S34: the uuid route stays as strict as it was -- only the path route widens", async () => {
