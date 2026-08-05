@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import { useSearchParams } from "react-router-dom"
-import { rawArtifactUrl } from "../api/artifacts.js"
+import { artifactPathUrl, rawArtifactUrl } from "../api/artifacts.js"
 import type { CapturedArtifact } from "../api/types.js"
 import { absoluteTime } from "../time.js"
 import { Code } from "./Code.js"
@@ -59,6 +59,12 @@ type Exhibit = {
   readonly mediaUrl: string | null
   /** Set for captured text artifacts, whose body the list route withholds; fetched on demand. */
   readonly textUrl: string | null
+  /**
+   * Where a rendered document is framed from. Path-shaped rather than by id, so the screenshots and
+   * recordings it references resolve against it -- `textUrl` addresses the same bytes by uuid,
+   * where a relative reference has nothing to resolve against.
+   */
+  readonly previewUrl: string | null
   /** The pre-session copy, when one resolved. Absent for created files and editedUnknownBase. */
   readonly baseUrl: string | null
   /** Bytes as captured. Null for a frame-link, which points outside the capture. */
@@ -85,6 +91,7 @@ const fromFrameLink = (artifact: Artifact): Exhibit => ({
   content: artifact.content ?? null,
   mediaUrl: artifact.url,
   textUrl: null,
+  previewUrl: null,
   baseUrl: null,
   downloadUrl: null,
   isBinary: false,
@@ -95,7 +102,7 @@ const fromFrameLink = (artifact: Artifact): Exhibit => ({
   editCount: null,
 })
 
-const fromCaptured = (artifact: CapturedArtifact): Exhibit => ({
+const fromCaptured = (artifact: CapturedArtifact, sessionId: string | null): Exhibit => ({
   id: artifact.id,
   label: artifact.relativePath,
   title: null,
@@ -108,6 +115,10 @@ const fromCaptured = (artifact: CapturedArtifact): Exhibit => ({
   content: null,
   mediaUrl: artifact.isBinary ? rawArtifactUrl(artifact.id) : null,
   textUrl: artifact.isBinary ? null : rawArtifactUrl(artifact.id),
+  previewUrl:
+    artifact.isBinary || sessionId === null
+      ? null
+      : artifactPathUrl(sessionId, artifact.relativePath),
   baseUrl:
     artifact.isBinary || artifact.changeKind !== "edited"
       ? null
@@ -121,8 +132,8 @@ const fromCaptured = (artifact: CapturedArtifact): Exhibit => ({
   editCount: artifact.editCount,
 })
 
-const toExhibit = (artifact: Artifact | CapturedArtifact): Exhibit =>
-  isCaptured(artifact) ? fromCaptured(artifact) : fromFrameLink(artifact)
+const toExhibit = (artifact: Artifact | CapturedArtifact, sessionId: string | null): Exhibit =>
+  isCaptured(artifact) ? fromCaptured(artifact, sessionId) : fromFrameLink(artifact)
 
 const extensionOf = (exhibit: Exhibit): string => {
   const name = (exhibit.label ?? "").split("/").pop() ?? ""
@@ -281,6 +292,9 @@ const FetchedText = ({ url, render }: { url: string; render: (text: string) => J
  * cached or proxied response cannot arrive unsandboxed. `allow-same-origin` must never join it --
  * together the two let a script inside strip its own sandbox and reload with full origin access.
  */
+/** Prefers the path URL so relative references resolve; falls back to the uuid route. */
+const previewSrc = (exhibit: Exhibit): string | null => exhibit.previewUrl ?? exhibit.textUrl
+
 const Preview = ({ url, name }: { url: string; name: string }) => (
   <iframe
     src={url}
@@ -371,14 +385,15 @@ const EditedBody = ({ exhibit, wrap }: { exhibit: Exhibit; wrap: boolean }) => {
   const path = exhibit.relativePath ?? exhibit.label
 
   const views: Array<readonly [ArtifactViewId, string]> = [["diff", "Diff"]]
-  if (mediumOf(exhibit) === "html" && exhibit.textUrl !== null) views.push(["preview", "Preview"])
+  if (mediumOf(exhibit) === "html" && previewSrc(exhibit) !== null)
+    views.push(["preview", "Preview"])
   if (exhibit.baseUrl !== null) views.push(["split", "Side by side"])
   if (exhibit.textUrl !== null) views.push(["current", "Current"])
   if (exhibit.baseUrl !== null) views.push(["base", "Base"])
 
   const pane = () => {
-    if (view === "preview" && exhibit.textUrl !== null) {
-      return <Preview url={exhibit.textUrl} name={nameOf(exhibit)} />
+    if (view === "preview" && previewSrc(exhibit) !== null) {
+      return <Preview url={previewSrc(exhibit) ?? ""} name={nameOf(exhibit)} />
     }
     if (view === "current" && exhibit.textUrl !== null) {
       return (
@@ -463,7 +478,7 @@ const Body = ({ exhibit, wrap }: { exhibit: Exhibit; wrap: boolean }) => {
 
   // A created page has no before to compare against, so the rendered page is the whole story.
   if (medium === "html" && exhibit.textUrl !== null) {
-    return <Preview url={exhibit.textUrl} name={nameOf(exhibit)} />
+    return <Preview url={previewSrc(exhibit) ?? ""} name={nameOf(exhibit)} />
   }
 
   const asMedium = (text: string) => {
@@ -693,7 +708,11 @@ const Tree = ({ nodes, depth, selectedId, openFolders, onToggle, onSelect }: Tre
 
 export const ArtifactsView = ({
   artifacts,
-}: { artifacts: ReadonlyArray<Artifact | CapturedArtifact> }) => {
+  sessionId = null,
+}: {
+  artifacts: ReadonlyArray<Artifact | CapturedArtifact>
+  sessionId?: string | null
+}) => {
   // Selection and filter live in the URL so an artifact view is shareable and survives reload.
   const [params, setParams] = useSearchParams()
   const listRef = useRef<HTMLUListElement | null>(null)
@@ -701,7 +720,7 @@ export const ArtifactsView = ({
 
   const [wrap, setWrap] = useState(false)
 
-  const all = artifacts.map(toExhibit)
+  const all = artifacts.map((artifact) => toExhibit(artifact, sessionId))
   const rawKind = params.get("kind")
   const kind: ArtifactKind = isArtifactKind(rawKind) ? rawKind : "all"
   const query = params.get("file") ?? ""

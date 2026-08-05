@@ -77,6 +77,7 @@ describe.skipIf(!dockerAvailable())("artifacts route", () => {
   let db: Db
   let app: ReturnType<typeof buildApp>
   let cliToken: string
+  let webToken: string
 
   /** `as: "none"` sends no Authorization header at all; omitting it uses the CLI token. */
   const post = (payload: unknown, as: string | "none" = "") =>
@@ -119,6 +120,7 @@ describe.skipIf(!dockerAvailable())("artifacts route", () => {
     await seedSession(OTHER_SESSION_ID, user.id, project.id)
 
     cliToken = await signToken(env, { sub: user.id, aud: "cli" })
+    webToken = await signToken(env, { sub: user.id, aud: "web" })
     app = buildApp(db, env, {
       rootLog: createLogger({ service: "test" }, { level: "silent" }),
     })
@@ -304,6 +306,83 @@ describe.skipIf(!dockerAvailable())("artifacts route", () => {
     expect(await db.select().from(artifact).where(eq(artifact.sessionId, SESSION_ID))).toHaveLength(
       0,
     )
+  })
+
+  const byPath = (path: string, as: string | "none" = "", headers: Record<string, string> = {}) =>
+    app.request(`/api/artifacts/session/${SESSION_ID}/files/${path}`, {
+      headers: {
+        ...(as === "none" ? {} : { cookie: `session=${as === "" ? webToken : as}` }),
+        ...headers,
+      },
+    })
+
+  test("S34: an artifact is served by the path it had on disk, so a document resolves its own siblings", async () => {
+    await post(upload({ currentContent: "# notes\n" }))
+
+    const res = await byPath("docs/notes.md")
+
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe("# notes\n")
+  })
+
+  test("S34: the path route serves markup sandboxed, widened to this origin and nothing else", async () => {
+    await post(upload({ currentContent: "<!doctype html><p>hi</p>" }))
+
+    const csp = (await byPath("docs/notes.md")).headers.get("content-security-policy") ?? ""
+
+    // Scripts run so an agent-authored report still renders, but the document stays origin-less
+    // and can only reach back to us -- never an attacker's collector.
+    expect(csp).toContain("sandbox allow-scripts")
+    expect(csp).not.toContain("allow-same-origin")
+    expect(csp).toContain("default-src 'none'")
+    expect(csp).toContain(`img-src ${env.publicBaseUrl}`)
+    expect(csp).toContain(`media-src ${env.publicBaseUrl}`)
+  })
+
+  test("S34: the uuid route stays as strict as it was -- only the path route widens", async () => {
+    await post(upload({ currentContent: "<!doctype html><p>hi</p>" }))
+    const [row] = await db.select({ id: artifact.id }).from(artifact)
+    if (!row) throw new Error("upload did not store a row")
+
+    const res = await app.request(`/api/artifacts/${row.id}/raw`, {
+      headers: { cookie: `session=${webToken}` },
+    })
+    const csp = res.headers.get("content-security-policy") ?? ""
+
+    expect(csp).toContain("default-src 'none'")
+    expect(csp).not.toContain(env.publicBaseUrl)
+  })
+
+  test("S34: a range request is honoured, so a captured video can seek inside the frame", async () => {
+    await post(upload({ currentContent: "0123456789" }))
+
+    const res = await byPath("docs/notes.md", "", { range: "bytes=2-5" })
+
+    expect(res.status).toBe(206)
+    expect(await res.text()).toBe("2345")
+  })
+
+  test("S34: a path naming no captured artifact is 404, and a traversal reaches no filesystem", async () => {
+    await post(upload())
+
+    expect((await byPath("docs/missing.md")).status).toBe(404)
+    // Nothing is opened by name here -- the segment simply fails to equal a captured path.
+    expect((await byPath("../../../../etc/passwd")).status).toBe(404)
+  })
+
+  test("S34: a stranger cannot read another user's artifact by guessing its path", async () => {
+    await post(upload())
+    const [other] = await db
+      .insert(users)
+      .values({ githubId: 9192, githubLogin: "artifact-stranger" })
+      .returning()
+    if (!other) throw new Error("seed stranger failed")
+    const stranger = await signToken(env, { sub: other.id, aud: "web" })
+
+    // A real, authenticated account that simply does not own this project. 404 rather than 403,
+    // so the reply never confirms the path exists.
+    expect((await byPath("docs/notes.md", stranger)).status).toBe(404)
+    expect((await byPath("docs/notes.md", "none")).status).toBe(401)
   })
 
   test("S33: an unauthenticated caller cannot upload", async () => {

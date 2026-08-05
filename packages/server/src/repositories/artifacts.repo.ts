@@ -215,3 +215,47 @@ export const getArtifactBytes = async (
 
   return { bytes, isBinary: row.isBinary, mimeType: row.mimeType }
 }
+
+/**
+ * The same bytes, addressed the way a captured document addresses its own siblings. A report links
+ * `screenshots/01.png`, not a uuid, so serving it from a path-shaped URL is what lets the browser
+ * resolve those references against the document rather than requiring the html be rewritten.
+ *
+ * `relativePath` is unique within a session -- one session belongs to one project and every path is
+ * made relative to that single root -- so this matches at most one row without a tie-break.
+ *
+ * There is no filesystem here: a `..` segment cannot traverse anywhere, it simply fails to equal a
+ * captured path. Visibility is the same join the uuid route uses.
+ */
+export const getArtifactBytesByPath = async (
+  db: Querier,
+  userId: string,
+  sessionId: string,
+  relativePath: string,
+  which: ArtifactSide,
+): Promise<ArtifactBytes | null> => {
+  const [row] = await db
+    .select({
+      baseContent: artifact.baseContent,
+      currentContent: artifact.currentContent,
+      isBinary: artifact.isBinary,
+      mimeType: artifact.mimeType,
+    })
+    .from(artifact)
+    .innerJoin(sessions, eq(sessions.id, artifact.sessionId))
+    .innerJoin(projects, eq(projects.id, sessions.projectId))
+    .where(
+      and(
+        eq(artifact.sessionId, sessionId),
+        eq(artifact.relativePath, relativePath),
+        visibleToUser(db, userId),
+      ),
+    )
+    .limit(1)
+  if (!row) return null
+
+  const bytes = which === "base" ? row.baseContent : row.currentContent
+  if (!bytes) return null
+
+  return { bytes, isBinary: row.isBinary, mimeType: row.mimeType }
+}

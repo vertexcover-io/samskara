@@ -17,6 +17,7 @@ import {
   type ArtifactSummaryRow,
   getArtifact,
   getArtifactBytes,
+  getArtifactBytesByPath,
   upsertArtifact,
 } from "../repositories/artifacts.repo.js"
 import * as sessionsRepo from "../repositories/sessions.repo.js"
@@ -166,6 +167,42 @@ export const artifactRoutes = ({ db, env }: Deps): Hono<{ Variables: AuthVariabl
     if (row === null) return context.json({ error: "artifactNotFound" } as const, 404)
     return context.json({ artifact: serializeArtifact<ArtifactDetailRow>(row) })
   })
+
+  /**
+   * The same bytes as `/:artifactId/raw`, addressed by the path the artifact had on disk. A
+   * captured report links its screenshots and recordings relatively, so serving the document from a
+   * path-shaped URL is what lets the browser resolve those references -- no html is rewritten.
+   *
+   * Registered before `/:artifactId` so the static `session` segment wins the match.
+   */
+  app.get(
+    "/session/:sessionId/files/*",
+    requireAuth({ db, env }, ["web"]),
+    zValidator("query", rawQuerySchema),
+    async (context) => {
+      const { which } = context.req.valid("query")
+      const marker = "/files/"
+      const at = context.req.path.indexOf(marker)
+      const relativePath = decodeURIComponent(context.req.path.slice(at + marker.length))
+
+      const found = await getArtifactBytesByPath(
+        db,
+        context.get("user").id,
+        context.req.param("sessionId"),
+        relativePath,
+        which,
+      )
+      if (found === null) return context.json({ error: "artifactNotFound" } as const, 404)
+
+      // The one route that widens the markup CSP, and only to this origin: a document served here
+      // is expected to load the siblings it references, which the uuid route has no way to express.
+      const serve = serveHeadersFor(found.bytes, found.isBinary, env.publicBaseUrl)
+      const response = rangeResponse(found.bytes, serve, context.req.header("range"))
+
+      if (response.kind === "unsatisfiable") return context.body(null, 416, response.headers)
+      return context.body(response.body, response.kind === "partial" ? 206 : 200, response.headers)
+    },
+  )
 
   app.get(
     "/:artifactId/raw",
