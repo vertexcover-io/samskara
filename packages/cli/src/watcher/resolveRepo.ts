@@ -1,5 +1,5 @@
 import type { RepoIdentity } from "@samskara/core"
-import { runGit } from "../git.js"
+import { runGitOrNull } from "../git.js"
 import { basename, gitRootOf, parseRemote } from "./resolveProject.js"
 
 export type ResolvedRepo = RepoIdentity & { readonly root: string }
@@ -13,7 +13,7 @@ const LOCAL_HOST = "local"
 const identityFor = async (cwd: string): Promise<ResolvedRepo | null> => {
   const root = await gitRootOf(cwd)
   if (root === null) return null
-  const remote = await runGit(["config", "--get", "remote.origin.url"], root)
+  const remote = await runGitOrNull(["config", "--get", "remote.origin.url"], root)
   const parsed = remote ? parseRemote(remote) : null
   // `ownerType` is deliberately absent: a remote URL cannot tell a user repo from an org one, and
   // it is not part of the repo's identity, so leaving it unknown never splits one repo in two.
@@ -27,7 +27,7 @@ const identityFor = async (cwd: string): Promise<ResolvedRepo | null> => {
  * after the fact, so a later read returns a sha the session never ran on.
  */
 export const resolveHeadSha = (cwd: string): Promise<string | null> =>
-  runGit(["rev-parse", "HEAD"], cwd)
+  runGitOrNull(["rev-parse", "HEAD"], cwd)
 
 /**
  * Caches by cwd for the daemon's lifetime, negative results included: a repo's remote identity

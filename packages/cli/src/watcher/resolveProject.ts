@@ -1,7 +1,7 @@
 import { realpath } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
 import type { ProjectIdentity } from "@samskara/core"
-import { runGit } from "../git.js"
+import { runGitOrNull } from "../git.js"
 
 export type ParsedRemote = {
   readonly host: string
@@ -32,7 +32,7 @@ export const basename = (dir: string): string => {
  * to a repo of its own. Null when the directory is not inside a git repo at all.
  */
 export const gitRootOf = async (startDir: string): Promise<string | null> => {
-  const commonDir = await runGit(
+  const commonDir = await runGitOrNull(
     ["rev-parse", "--path-format=absolute", "--git-common-dir"],
     startDir,
   )
@@ -48,7 +48,7 @@ export const gitRootOf = async (startDir: string): Promise<string | null> => {
 export const resolveProject = async (startDir: string): Promise<ProjectIdentity> => {
   const declared = (await gitRootOf(startDir)) ?? resolve(startDir)
   const root = await realpath(declared).catch(() => declared)
-  const remote = await runGit(["config", "--get", "remote.origin.url"], root)
+  const remote = await runGitOrNull(["config", "--get", "remote.origin.url"], root)
   const parsed = remote ? parseRemote(remote) : null
   if (parsed) {
     return { name: parsed.repoName, slug: `${parsed.owner}-${parsed.repoName}`, root }
