@@ -2,11 +2,8 @@ import type { ProjectIdentity } from "@samskara/core"
 import { startWatcherDaemon, watcherPid } from "../config/daemon.js"
 import { createWatchLogger } from "../config/log.js"
 import { watchLogDir } from "../config/paths.js"
+import { type Writer, reportError, resolveIo } from "../io.js"
 import { watch } from "../watcher/index.js"
-
-interface Writer {
-  write(text: string): unknown
-}
 
 export type WatchCommandOptions = {
   readonly foreground?: boolean
@@ -16,11 +13,8 @@ export type WatchCommandOptions = {
   readonly stderr?: Writer
 }
 
-const message = (error: unknown): string => (error instanceof Error ? error.message : String(error))
-
 export const watchCommand = async (options: WatchCommandOptions = {}): Promise<number> => {
-  const stdout = options.stdout ?? process.stdout
-  const stderr = options.stderr ?? process.stderr
+  const { stdout, stderr } = resolveIo(options)
 
   if (options.foreground) {
     try {
@@ -33,8 +27,7 @@ export const watchCommand = async (options: WatchCommandOptions = {}): Promise<n
       })
       return 0
     } catch (error) {
-      stderr.write(`${message(error)}\n`)
-      return 1
+      return reportError(stderr, error)
     }
   }
 
@@ -51,7 +44,6 @@ export const watchCommand = async (options: WatchCommandOptions = {}): Promise<n
     )
     return 0
   } catch (error) {
-    stderr.write(`${message(error)}\n`)
-    return 1
+    return reportError(stderr, error)
   }
 }

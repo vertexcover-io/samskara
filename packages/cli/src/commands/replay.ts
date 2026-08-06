@@ -1,10 +1,7 @@
 import { basename, sep } from "node:path"
 import { checkpointStoreSchema } from "@samskara/core"
 import { atomicWriteJson, readJson, withFileLock } from "../config/atomic.js"
-
-interface Writer {
-  write(text: string): unknown
-}
+import { type Writer, resolveIo } from "../io.js"
 
 export type ReplayDeps = {
   readonly apiBase: string
@@ -94,7 +91,7 @@ const deleteRemote = async (deps: ReplayDeps, sessionId: string): Promise<string
  * begin with.
  */
 export const replayCommand = async (sessionId: string, deps: ReplayDeps): Promise<number> => {
-  const stdout = deps.stdout ?? process.stdout
+  const { stdout } = resolveIo(deps)
 
   if (!deps.token) {
     stdout.write("Not logged in. Run `samskara login` first.\n")

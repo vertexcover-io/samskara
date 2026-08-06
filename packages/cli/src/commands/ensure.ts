@@ -2,11 +2,8 @@ import { readToken } from "../config/credentials.js"
 import { reviveWatcher, watcherPid } from "../config/daemon.js"
 import { watchLogDir } from "../config/paths.js"
 import { isProjectEnabled } from "../config/projects.js"
+import { type Writer, errorMessage, resolveIo } from "../io.js"
 import { resolveProject } from "../watcher/resolveProject.js"
-
-interface Writer {
-  write(text: string): unknown
-}
 
 export type EnsureOptions = {
   readonly cwd?: string
@@ -27,8 +24,7 @@ const emitContext = (stdout: Writer, lines: ReadonlyArray<string>): void => {
 }
 
 export const ensureCommand = async (options: EnsureOptions = {}): Promise<number> => {
-  const stdout = options.stdout ?? process.stdout
-  const stderr = options.stderr ?? process.stderr
+  const { stdout, stderr } = resolveIo(options)
   try {
     const token = await readToken()
     if (!token) {
@@ -56,7 +52,7 @@ export const ensureCommand = async (options: EnsureOptions = {}): Promise<number
     }
     emitContext(stdout, context)
   } catch (error) {
-    stderr.write(`samskara ensure: ${error instanceof Error ? error.message : String(error)}\n`)
+    stderr.write(`samskara ensure: ${errorMessage(error)}\n`)
   }
   return 0
 }

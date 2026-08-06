@@ -5,7 +5,6 @@ import { z } from "zod"
 
 export type PotentialArtifact = {
   readonly path: string
-  readonly origin: "toolCall" | "fileEvent"
   readonly changeKind: "created" | "edited"
   readonly oldFragment?: string
   readonly backupFileName?: string
@@ -87,7 +86,6 @@ const fromToolCall = (
     kind: "write" as const,
     candidate: {
       path: absolute(write.path, cwd),
-      origin: "toolCall" as const,
       changeKind,
       ...(write.oldFragment === undefined ? {} : { oldFragment: write.oldFragment }),
     },
@@ -103,7 +101,7 @@ const fromFileEvent = (
     return [
       {
         kind: "write",
-        candidate: { path: absolute(details.path, cwd), origin: "fileEvent", changeKind: "edited" },
+        candidate: { path: absolute(details.path, cwd), changeKind: "edited" },
       },
     ]
   }

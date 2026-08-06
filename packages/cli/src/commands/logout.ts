@@ -1,9 +1,6 @@
 import { deleteToken } from "../config/credentials.js"
 import { stopWatcherDaemon } from "../config/daemon.js"
-
-interface Writer {
-  write(text: string): unknown
-}
+import { type Writer, resolveIo } from "../io.js"
 
 export type LogoutOptions = {
   readonly stdout?: Writer
@@ -12,7 +9,7 @@ export type LogoutOptions = {
 export const logoutCommand = async (options: LogoutOptions = {}): Promise<number> => {
   await stopWatcherDaemon()
   await deleteToken()
-  const stdout = options.stdout ?? process.stdout
+  const { stdout } = resolveIo(options)
   stdout.write(
     "Logged out. The stored access token was removed and the capture watcher was stopped.\n",
   )

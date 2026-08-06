@@ -57,7 +57,7 @@ export const sliceByMessages = (
   cap: number,
 ): ReadonlyArray<Chunk> => {
   const chunks: Chunk[] = []
-  let current: ReadonlyArray<ParsedRecord> = []
+  let current: ParsedRecord[] = []
   let count = 0
 
   for (const record of records) {
@@ -67,7 +67,7 @@ export const sliceByMessages = (
       current = []
       count = 0
     }
-    current = [...current, record]
+    current.push(record)
     count += recordCount
     if (count >= cap) {
       chunks.push(chunk(current))

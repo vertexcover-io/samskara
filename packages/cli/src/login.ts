@@ -3,10 +3,7 @@ import { type PublicUser, publicUserSchema } from "@samskara/core"
 import { z } from "zod"
 import { apiBase, webBase } from "./config.js"
 import { storeToken } from "./config/credentials.js"
-
-interface Writer {
-  write(text: string): unknown
-}
+import { type Writer, errorMessage, resolveIo } from "./io.js"
 
 export type LoginOptions = {
   readonly code?: string
@@ -80,8 +77,7 @@ export const verifyToken = async (token: string): Promise<PublicUser> => {
 }
 
 export const login = async (options: LoginOptions): Promise<number> => {
-  const stdout = options.stdout ?? process.stdout
-  const stderr = options.stderr ?? process.stderr
+  const { stdout, stderr } = resolveIo(options)
   const readCode = options.promptForCode ?? promptForCode
   const code = options.code ?? (await readCode())
   if (!code) {
@@ -96,7 +92,7 @@ export const login = async (options: LoginOptions): Promise<number> => {
     stdout.write(`Logged in as ${identity.githubLogin}. The access token was saved to ${path}.\n`)
     return 0
   } catch (error) {
-    stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
+    stderr.write(`${errorMessage(error)}\n`)
     stderr.write(`${pairingInstructions()}\n`)
     return 1
   }

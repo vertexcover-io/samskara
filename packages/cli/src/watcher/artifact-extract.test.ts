@@ -62,7 +62,6 @@ describe("collectArtifacts", () => {
     expect(candidates.map((candidate) => candidate.path).sort()).toEqual(
       writeFamily.map((tool) => tool.path).sort(),
     )
-    expect(candidates.every((candidate) => candidate.origin === "toolCall")).toBe(true)
   })
 
   test("S1: a Read tool call yields no candidate", () => {
@@ -177,7 +176,6 @@ describe("collectArtifacts", () => {
     ])
 
     expect(candidates.map((candidate) => candidate.path)).toEqual(["/work/app/docs/a.md"])
-    expect(candidates[0]?.origin).toBe("fileEvent")
   })
 })
 

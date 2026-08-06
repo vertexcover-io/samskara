@@ -3,10 +3,7 @@ import { stat } from "node:fs/promises"
 import { createInterface } from "node:readline"
 import { prettyFactory } from "pino-pretty"
 import { currentLogPath, watchLogDir } from "../config/paths.js"
-
-interface Writer {
-  write(text: string): unknown
-}
+import { type Writer, resolveIo } from "../io.js"
 
 export type LogsOptions = {
   readonly follow?: boolean
@@ -45,8 +42,7 @@ const sizeOf = (path: string): Promise<number> =>
     .catch(() => 0)
 
 export const logsCommand = async (options: LogsOptions = {}): Promise<number> => {
-  const stdout = options.stdout ?? process.stdout
-  const stderr = options.stderr ?? process.stderr
+  const { stdout, stderr } = resolveIo(options)
   const path = currentLogPath()
 
   if (!existsSync(path)) {
