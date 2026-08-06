@@ -8,6 +8,7 @@ import {
   enqueue,
   keyOf,
   readQueue,
+  readQueueOrReset,
 } from "./artifact-queue.js"
 import { spyLogger } from "./test-logger.js"
 
@@ -63,19 +64,27 @@ describe("artifact queue", () => {
     expect((await readQueue(queuePath)).entries).toEqual([full])
   })
 
-  test("S12: a queue file whose version is not 1 reads back empty", async () => {
-    await writeFile(queuePath, JSON.stringify({ version: 2, entries: [entry()] }), "utf8")
-
-    expect(await readQueue(queuePath)).toEqual({ version: 1, entries: [] })
-  })
-
   test("S12: a missing queue file reads back empty", async () => {
     expect(await readQueue(queuePath)).toEqual({ version: 1, entries: [] })
   })
 
-  test("S12: a corrupt queue file reads back empty rather than throwing", async () => {
+  test("S12: a queue file whose version is not 1 throws rather than reading as empty", async () => {
+    await writeFile(queuePath, JSON.stringify({ version: 2, entries: [entry()] }), "utf8")
+
+    await expect(readQueue(queuePath)).rejects.toThrow()
+  })
+
+  test("S12: a corrupt queue file throws rather than reading as empty", async () => {
     await writeFile(queuePath, "{not json", "utf8")
 
+    await expect(readQueue(queuePath)).rejects.toThrow()
+  })
+
+  test("S12: the reset helper absorbs a corrupt file and repairs it for the next read", async () => {
+    await writeFile(queuePath, "{not json", "utf8")
+
+    expect(await readQueueOrReset(queuePath)).toEqual({ version: 1, entries: [] })
+    // Repaired on disk, so the throwing form now succeeds too.
     expect(await readQueue(queuePath)).toEqual({ version: 1, entries: [] })
   })
 

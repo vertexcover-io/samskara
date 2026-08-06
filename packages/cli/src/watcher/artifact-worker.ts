@@ -2,7 +2,7 @@ import { dirname, relative, resolve, sep } from "node:path"
 import type { ArtifactUploadPayload } from "@samskara/core"
 import type pino from "pino"
 import { z } from "zod"
-import { atomicWriteJson, readJson, withFileLock } from "../config/atomic.js"
+import { atomicWriteJson, readOrReset, readValidated, withFileLock } from "../config/atomic.js"
 import { runGitOrNull } from "../git.js"
 import { referencedPaths } from "./artifact-extract.js"
 import {
@@ -10,7 +10,7 @@ import {
   type ArtifactQueueEntry,
   enqueue,
   keyOf,
-  readQueue,
+  readQueueOrReset,
 } from "./artifact-queue.js"
 import { type ArtifactUpload, type ArtifactUploadDeps, prepareUpload } from "./artifact-upload.js"
 import { shouldCaptureArtifacts } from "./containment.js"
@@ -35,10 +35,17 @@ const emptyState = (): ArtifactState => ({ version: 1, artifacts: {} })
 /** A UUID holds no colon and a Windows path does, so only the first colon separates the two. */
 export const stateKey = (sessionId: string, path: string): string => `${sessionId}:${path}`
 
-export const readArtifactState = async (path: string): Promise<ArtifactState> => {
-  const parsed = artifactStateSchema.safeParse(await readJson(path))
-  return parsed.success ? parsed.data : emptyState()
-}
+export const readArtifactState = async (path: string): Promise<ArtifactState> =>
+  (await readValidated(path, artifactStateSchema)) ?? emptyState()
+
+export const readArtifactStateOrReset = (path: string, log?: pino.Logger): Promise<ArtifactState> =>
+  readOrReset(
+    path,
+    artifactStateSchema,
+    emptyState,
+    "artifact state file did not parse; resetting it, so every artifact re-uploads once",
+    log,
+  )
 
 /**
  * `baseCaptured` records a completed upload, never an optimistic one. Losing this file entirely is
@@ -49,9 +56,10 @@ export const advanceArtifactState = async (
   path: string,
   key: string,
   next: ArtifactRecord,
+  log?: pino.Logger,
 ): Promise<void> => {
   await withFileLock(path, async () => {
-    const current = await readArtifactState(path)
+    const current = await readArtifactStateOrReset(path, log)
     await atomicWriteJson(path, {
       version: 1,
       artifacts: { ...current.artifacts, [key]: next },
@@ -108,9 +116,10 @@ const claim = async (
   config: ArtifactWorkerConfig,
   now: number,
   inFlight: Set<string>,
+  log: pino.Logger,
 ): Promise<ArtifactQueueEntry | null> =>
   withFileLock(config.queuePath, async () => {
-    const queue = await readQueue(config.queuePath)
+    const queue = await readQueueOrReset(config.queuePath, log)
     const entry = queue.entries.find((row) => !inFlight.has(keyOf(row)) && isDue(row, now))
     if (entry) inFlight.add(keyOf(entry))
     return entry ?? null
@@ -124,9 +133,10 @@ const settle = async (
   config: ArtifactWorkerConfig,
   claimed: ArtifactQueueEntry,
   next: ArtifactQueueEntry | null,
+  log: pino.Logger,
 ): Promise<void> => {
   await withFileLock(config.queuePath, async () => {
-    const queue = await readQueue(config.queuePath)
+    const queue = await readQueueOrReset(config.queuePath, log)
     const key = keyOf(claimed)
     const queued = queue.entries.find((row) => keyOf(row) === key)
 
@@ -256,27 +266,27 @@ const processOne = async (
   inFlight: Set<string>,
 ): Promise<boolean> => {
   const now = deps.clock.now()
-  const entry = await claim(config, now, inFlight)
+  const entry = await claim(config, now, inFlight, deps.log)
   if (!entry) return false
 
   try {
     const upload = await prepareUpload(deps, entry)
     // A vanished or oversize file: not an error, and no state to advance.
     if (!upload) {
-      await settle(config, entry, null)
+      await settle(config, entry, null, deps.log)
       return true
     }
 
     // The authoritative churn layer: the cycle's mtime+size check is cheap but lies when a file
     // is rewritten with identical bytes.
-    const state = await readArtifactState(config.statePath)
+    const state = await readArtifactStateOrReset(config.statePath, deps.log)
     const key = stateKey(entry.sessionId, entry.path)
     if (state.artifacts[key]?.currentHash === upload.currentHash) {
       deps.log.debug(
         { path: entry.path, hash: upload.currentHash },
         "artifact bytes unchanged since the last upload; skipping",
       )
-      await settle(config, entry, null)
+      await settle(config, entry, null, deps.log)
       return true
     }
 
@@ -296,7 +306,7 @@ const processOne = async (
         },
         "artifact uploaded",
       )
-      await settle(config, entry, null)
+      await settle(config, entry, null, deps.log)
       await advanceArtifactState(config.statePath, key, {
         currentHash: upload.currentHash,
         baseCaptured: upload.baseContent !== undefined,
@@ -314,7 +324,7 @@ const processOne = async (
 
     if (retryable && entry.attempts + 1 < MAX_ATTEMPTS) {
       deps.log.debug(context, "artifact upload failed; retrying after backoff")
-      await settle(config, entry, retried(entry, now))
+      await settle(config, entry, retried(entry, now), deps.log)
       return true
     }
 
@@ -326,7 +336,7 @@ const processOne = async (
       // The server refused this payload: a bug or an expired token, not something time repairs.
       deps.log.error(context, "artifact upload rejected; dropped without retrying")
     }
-    await settle(config, entry, null)
+    await settle(config, entry, null, deps.log)
     return true
   } finally {
     inFlight.delete(keyOf(entry))

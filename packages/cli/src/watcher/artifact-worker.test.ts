@@ -5,8 +5,13 @@ import { basename, dirname, join } from "node:path"
 import type { ArtifactUploadPayload } from "@samskara/core"
 import { beforeEach, describe, expect, test, vi } from "vitest"
 import { runGitOrNull } from "../git.js"
-import { type ArtifactQueueEntry, enqueue, readQueue } from "./artifact-queue.js"
-import { advanceArtifactState, readArtifactState, stateKey } from "./artifact-worker.js"
+import { type ArtifactQueueEntry, enqueue, readQueue, readQueueOrReset } from "./artifact-queue.js"
+import {
+  advanceArtifactState,
+  readArtifactState,
+  readArtifactStateOrReset,
+  stateKey,
+} from "./artifact-worker.js"
 import {
   type ArtifactSink,
   type ArtifactSinkResult,
@@ -210,6 +215,46 @@ describe("artifact workers", () => {
     // No request reaches the sink at all -- the hash check runs before the network call.
     expect(sink.sent).toHaveLength(0)
     expect((await readQueue(queuePath)).entries).toHaveLength(0)
+  })
+
+  test("a corrupt queue file is reported with its content and reset, so it stops failing", async () => {
+    const corrupt = '{"version":1,"entries":[{"nonsense":true}]}'
+    await writeFile(queuePath, corrupt, "utf8")
+
+    await runArtifactWorkers(
+      { queuePath, statePath, workers: 3, drainOnce: true },
+      deps(scriptedSink([200])),
+    )
+
+    const reports = recorder.error.filter((call) =>
+      call.message.includes("queue file did not parse"),
+    )
+    // Three workers, one report: the first reset leaves a file the others parse.
+    expect(reports).toHaveLength(1)
+    expect(reports[0]?.details).toMatchObject({ path: queuePath, content: corrupt })
+    expect(await readQueue(queuePath)).toEqual({ version: 1, entries: [] })
+  })
+
+  test("malformed JSON is reported too, not read as an absent file", async () => {
+    await writeFile(queuePath, "{ this is not json", "utf8")
+
+    await runArtifactWorkers(
+      { queuePath, statePath, workers: 1, drainOnce: true },
+      deps(scriptedSink([200])),
+    )
+
+    expect(
+      recorder.error.filter((call) => call.message.includes("queue file did not parse")),
+    ).toHaveLength(1)
+  })
+
+  test("a queue file that is merely absent is not reported", async () => {
+    await runArtifactWorkers(
+      { queuePath, statePath, workers: 1, drainOnce: true },
+      deps(scriptedSink([200])),
+    )
+
+    expect(recorder.error).toHaveLength(0)
   })
 
   test("S37: queued work survives a restart", async () => {
@@ -824,13 +869,20 @@ describe("artifact state", () => {
     statePath = join(await mkdtemp(join(tmpdir(), "samskara-artstate-")), "artifacts.json")
   })
 
-  test("S36: a missing or corrupt state file reads back empty rather than throwing", async () => {
+  test("S36: a missing state file reads back empty, a corrupt one throws", async () => {
     expect(await readArtifactState(statePath)).toEqual({ version: 1, artifacts: {} })
 
     await writeFile(statePath, "{not json", "utf8")
-    expect(await readArtifactState(statePath)).toEqual({ version: 1, artifacts: {} })
+    await expect(readArtifactState(statePath)).rejects.toThrow()
 
     await writeFile(statePath, JSON.stringify({ version: 2, artifacts: {} }), "utf8")
+    await expect(readArtifactState(statePath)).rejects.toThrow()
+  })
+
+  test("S36: the reset helper absorbs a corrupt state file and repairs it", async () => {
+    await writeFile(statePath, "{not json", "utf8")
+
+    expect(await readArtifactStateOrReset(statePath)).toEqual({ version: 1, artifacts: {} })
     expect(await readArtifactState(statePath)).toEqual({ version: 1, artifacts: {} })
   })
 
