@@ -1,7 +1,7 @@
-import { createHash } from "node:crypto"
-import { mkdir, mkdtemp, realpath, symlink, writeFile } from "node:fs/promises"
+import { createHash, randomUUID } from "node:crypto"
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { dirname, join } from "node:path"
+import { basename, dirname, join } from "node:path"
 import type { ArtifactUploadPayload } from "@samskara/core"
 import { beforeEach, describe, expect, test, vi } from "vitest"
 import { runGit } from "../git.js"
@@ -67,6 +67,7 @@ describe("artifact workers", () => {
     sessionId: "0b9d4c1e-7f3a-4c22-9a6e-1d5f8b2c3e40",
     path: filePath,
     relativePath: "docs/notes.md",
+    projectRoot: dir,
     changeKind: "created",
     observedAt: "2026-07-28T12:00:00.000Z",
     attempts: 0,
@@ -624,6 +625,39 @@ describe("artifact workers", () => {
     )
     expect(passed.some((arg) => arg.startsWith(".."))).toBe(false)
     expect(sink.sent.map((payload) => payload.path)).toContain(join(dir, "pages", "inside.mp4"))
+  })
+
+  test("S20: a scratch document's references are measured against the carried project root", async () => {
+    const scratch = await realpath(tmpdir())
+    const reportPath = join(scratch, `samskara-report-${randomUUID()}.md`)
+    const sibling = join(scratch, `samskara-sibling-${randomUUID()}.png`)
+    const inProject = join(dir, "clips", "run.mp4")
+
+    await mkdir(dirname(inProject), { recursive: true })
+    await writeFile(inProject, "video bytes", "utf8")
+    await writeFile(sibling, "sibling bytes", "utf8")
+    await writeFile(reportPath, `![a](${inProject})\n![b](${sibling})\n`, "utf8")
+
+    // Without the carried root, subtraction would yield the scratch root and the sibling would
+    // sit "inside the project", which is the whole reason the field exists.
+    await enqueue(queuePath, [
+      entry({
+        path: reportPath,
+        relativePath: basename(reportPath),
+        projectRoot: dir,
+        sessionId: "scratch-session",
+      }),
+    ])
+
+    const sink = scriptedSink([200])
+    await runArtifactWorkers({ queuePath, statePath, workers: 1, drainOnce: true }, deps(sink))
+
+    const paths = sink.sent.map((payload) => payload.path)
+    expect(paths).toContain(inProject)
+    expect(paths).not.toContain(sibling)
+
+    await rm(reportPath, { force: true })
+    await rm(sibling, { force: true })
   })
 
   test("a symlink inside the project root pointing outside it is never captured", async () => {

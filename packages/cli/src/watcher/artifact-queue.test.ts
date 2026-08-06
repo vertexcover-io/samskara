@@ -15,6 +15,7 @@ const entry = (over: Partial<ArtifactQueueEntry> = {}): ArtifactQueueEntry => ({
   sessionId: "sess-1",
   path: "/work/app/docs/a.md",
   relativePath: "docs/a.md",
+  projectRoot: "/work/app",
   changeKind: "edited",
   observedAt: "2026-07-28T12:00:00.000Z",
   attempts: 0,

@@ -9,6 +9,7 @@ const queueEntrySchema = z
     sessionId: z.string().min(1),
     path: z.string().min(1),
     relativePath: z.string().min(1),
+    projectRoot: z.string().min(1),
     changeKind: z.enum(["created", "edited", "editedUnknownBase"]),
     backupFileName: z.string().min(1).optional(),
     oldFragment: z.string().optional(),
