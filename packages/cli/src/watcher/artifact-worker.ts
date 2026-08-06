@@ -4,6 +4,7 @@ import type pino from "pino"
 import { z } from "zod"
 import { atomicWriteJson, readOrReset, readValidated, withFileLock } from "../config/atomic.js"
 import { runGitOrNull } from "../git.js"
+import { sleep } from "../io.js"
 import { referencedPaths } from "./artifact-extract.js"
 import {
   type ArtifactQueue,
@@ -153,8 +154,6 @@ const retried = (entry: ArtifactQueueEntry, now: number): ArtifactQueueEntry => 
   return { ...entry, attempts, nextAttemptAt: new Date(now + backoffMs(attempts)).toISOString() }
 }
 
-const toPayload = (upload: ArtifactUpload): ArtifactUploadPayload => upload
-
 const REFERENCE_SCAN_TYPES = new Set(["text/html", "text/markdown"])
 
 /**
@@ -290,9 +289,7 @@ const processOne = async (
       return true
     }
 
-    const { status } = await deps.sink
-      .send(toPayload(upload))
-      .catch((): ArtifactSinkResult => ({ status: 0 }))
+    const { status } = await deps.sink.send(upload).catch((): ArtifactSinkResult => ({ status: 0 }))
 
     if (status >= 200 && status < 300) {
       deps.log.debug(
@@ -342,8 +339,6 @@ const processOne = async (
     inFlight.delete(keyOf(entry))
   }
 }
-
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
 const runWorker = async (
   config: ArtifactWorkerConfig,

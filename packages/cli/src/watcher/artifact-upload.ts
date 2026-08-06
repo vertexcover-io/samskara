@@ -6,8 +6,6 @@ import { createTwoFilesPatch } from "diff"
 import type pino from "pino"
 import type { ArtifactQueueEntry } from "./artifact-queue.js"
 
-export { MAX_BINARY_BYTES, MAX_DIFF_BYTES, MAX_TEXT_BYTES }
-
 export type ArtifactUploadDeps = {
   readonly fileHistoryDir: string
   readonly log: pino.Logger

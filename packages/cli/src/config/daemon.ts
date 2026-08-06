@@ -12,6 +12,7 @@ import {
 import { dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import * as lockfile from "proper-lockfile"
+import { sleep } from "../io.js"
 import { configHome, watchPidPath, watcherCrashLogPath } from "./paths.js"
 
 const START_LOCK_TIMEOUT_MS = 5_000
@@ -144,8 +145,6 @@ export const startWatcherDaemon = (cliEntry: string = resolveCliEntry()): Promis
     child.unref()
     return child.pid
   })
-
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
 export const stopWatcherDaemon = async (): Promise<boolean> => {
   const pid = watcherPid()

@@ -4,15 +4,10 @@ import { join } from "node:path"
 import { type FileSystem, type ProjectIdentity, createClaudePlugin } from "@samskara/core"
 import type pino from "pino"
 import { apiBase } from "../config.js"
-import {
-  artifactQueuePath,
-  artifactStatePath,
-  fileHistoryDir,
-  statePath,
-  tokenPath,
-} from "../config/paths.js"
+import { readToken } from "../config/credentials.js"
+import { artifactQueuePath, artifactStatePath, fileHistoryDir, statePath } from "../config/paths.js"
 import { isProjectEnabled, syncFromFor } from "../config/projects.js"
-
+import { sleep } from "../io.js"
 import { runArtifactWorkers } from "./artifact-worker.js"
 import { type WatcherConfig, type WatcherDeps, runCycle } from "./driver.js"
 import { resolveProject } from "./resolveProject.js"
@@ -24,14 +19,18 @@ const SHUTDOWN_GRACE_MS = 5_000
 const expandHome = (pattern: string): string =>
   pattern.startsWith("~/") ? join(homedir(), pattern.slice(2)) : pattern
 
+const statOf = async (
+  path: string,
+): Promise<{ readonly size: number; readonly mtimeMs: number }> => {
+  const { size, mtimeMs } = await stat(path)
+  return { size, mtimeMs }
+}
+
 const nodeFs: FileSystem = {
   readFile: (path) => readFile(path, "utf8"),
   writeFile: (path, data) => writeFile(path, data, "utf8"),
   rename,
-  stat: async (path) => {
-    const s = await stat(path)
-    return { size: s.size, mtimeMs: s.mtimeMs }
-  },
+  stat: statOf,
 }
 
 const listJsonl = async (dir: string): Promise<ReadonlyArray<string>> => {
@@ -61,14 +60,6 @@ export const globAll = async (pattern: string): Promise<ReadonlyArray<string>> =
   return matches
 }
 
-const readToken = async (): Promise<string> => {
-  const token = (await readFile(tokenPath(), "utf8")).trim()
-  if (!token) throw new Error("no token found; run `samskara login` first")
-  return token
-}
-
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
-
 export type WatchOptions = {
   readonly projectOverride?: ProjectIdentity
   readonly log: pino.Logger
@@ -90,6 +81,7 @@ export const drainWorkers = (
 export const watch = async (options: WatchOptions): Promise<void> => {
   const { log, projectOverride } = options
   const token = await readToken()
+  if (!token) throw new Error("no token found; run `samskara login` first")
   // Read at call time, not module load: SAMSKARA_HOME decides where the queue lives, and the
   // daemon must write under whichever home the process was started with.
   const config: WatcherConfig = { statePath: statePath(), artifactQueuePath: artifactQueuePath() }

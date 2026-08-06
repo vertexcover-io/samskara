@@ -2,11 +2,8 @@ import { resolve } from "node:path"
 import { reviveWatcher } from "../config/daemon.js"
 import { watchLogDir } from "../config/paths.js"
 import { getProject, upsertProject } from "../config/projects.js"
+import { type Writer, resolveIo } from "../io.js"
 import { resolveProject } from "../watcher/resolveProject.js"
-
-interface Writer {
-  write(text: string): unknown
-}
 
 export type EnableOptions = {
   readonly path?: string
@@ -34,14 +31,13 @@ export const enableCommand = async (options: EnableOptions = {}): Promise<number
   const path = resolve(cwd, options.path ?? cwd)
   const project = await resolveProject(path)
   const existing = await getProject(project.slug)
-  const stdout = options.stdout ?? process.stdout
+  const { stdout, stderr } = resolveIo(options)
   const enabledAt = (options.now ?? (() => new Date()))().toISOString()
   const syncFrom = cutoffFor(options, enabledAt)
 
   // Validate before branching on enabled state: the already-enabled path changes nothing,
   // so accepting an unreadable date there would silently discard what the user asked for.
   if (syncFrom === null) {
-    const stderr = options.stderr ?? process.stderr
     stderr.write(
       `Could not read "${options.syncFrom}" as a date, so "${project.slug}" was not enabled. Pass a date like 2026-07-01 or 2026-07-01T00:00:00Z.\n`,
     )
@@ -71,7 +67,6 @@ export const enableCommand = async (options: EnableOptions = {}): Promise<number
   // afterwards rather than claiming this call started it.
   const pid = await reviveWatcher()
   if (pid === null) {
-    const stderr = options.stderr ?? process.stderr
     stderr.write(
       `The capture watcher could not be started, so sessions will not be recorded. See the logs in ${watchLogDir()} for the reason.\n`,
     )

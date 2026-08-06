@@ -3,10 +3,7 @@ import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { z } from "zod"
 import { resolveCliEntry } from "../config/daemon.js"
-
-interface Writer {
-  write(text: string): unknown
-}
+import { type Writer, reportError, resolveIo } from "../io.js"
 
 const hookCommandSchema = z
   .object({ type: z.string().optional(), command: z.string().optional() })
@@ -32,7 +29,7 @@ const defaultSettingsPath = (): string => join(homedir(), ".claude", "settings.j
 
 const parseError = (path: string): Error => new Error(`failed to parse ${path}`)
 
-const parsed = <T>(schema: z.ZodType<T>, value: unknown, path: string): T => {
+const parseOrThrow = <T>(schema: z.ZodType<T>, value: unknown, path: string): T => {
   const result = schema.safeParse(value)
   if (!result.success) throw parseError(path)
   return result.data
@@ -46,7 +43,7 @@ const readSettings = (path: string): JsonRecord => {
   } catch {
     throw parseError(path)
   }
-  return parsed(recordSchema, raw, path)
+  return parseOrThrow(recordSchema, raw, path)
 }
 
 const writeSettings = (path: string, settings: JsonRecord): void => {
@@ -66,7 +63,7 @@ const statusOf = (matchers: ReadonlyArray<Matcher>, want: string): Status => {
   return found.every((hook) => hook.command === want) ? "current" : "stale"
 }
 
-const pointedAt = (matchers: ReadonlyArray<Matcher>, command: string): ReadonlyArray<Matcher> =>
+const withCommand = (matchers: ReadonlyArray<Matcher>, command: string): ReadonlyArray<Matcher> =>
   matchers.map((matcher) => ({
     ...matcher,
     hooks: matcher.hooks.map((hook) => (isManaged(hook) ? { ...hook, command } : hook)),
@@ -85,25 +82,24 @@ type Current = {
 
 const readCurrent = (path: string): Current => {
   const settings = readSettings(path)
-  const hooks = settings.hooks === undefined ? {} : parsed(recordSchema, settings.hooks, path)
+  const hooks = settings.hooks === undefined ? {} : parseOrThrow(recordSchema, settings.hooks, path)
   const sessionStart =
     hooks.SessionStart === undefined
       ? []
-      : parsed(z.array(hookMatcherSchema), hooks.SessionStart, path)
+      : parseOrThrow(z.array(hookMatcherSchema), hooks.SessionStart, path)
   return { settings, hooks, sessionStart }
 }
 
-const saved = (path: string, current: Current, sessionStart: ReadonlyArray<Matcher>): void => {
+const saveSessionStart = (
+  path: string,
+  current: Current,
+  sessionStart: ReadonlyArray<Matcher>,
+): void => {
   const hooks =
     sessionStart.length === 0
       ? Object.fromEntries(Object.entries(current.hooks).filter(([key]) => key !== "SessionStart"))
       : { ...current.hooks, SessionStart: sessionStart }
   writeSettings(path, { ...current.settings, hooks })
-}
-
-const failed = (error: unknown, stderr: Writer): number => {
-  stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
-  return 1
 }
 
 export const isManagedHookInstalled = (options: HookCommandOptions = {}): boolean => {
@@ -117,7 +113,7 @@ export const isManagedHookInstalled = (options: HookCommandOptions = {}): boolea
 
 export const installHooksCommand = (options: HookCommandOptions = {}): number => {
   const path = options.settingsPath ?? defaultSettingsPath()
-  const stdout = options.stdout ?? process.stdout
+  const { stdout, stderr } = resolveIo(options)
 
   try {
     const current = readCurrent(path)
@@ -129,23 +125,23 @@ export const installHooksCommand = (options: HookCommandOptions = {}): number =>
       return 0
     }
 
-    saved(
+    saveSessionStart(
       path,
       current,
       status === "stale"
-        ? pointedAt(current.sessionStart, command)
+        ? withCommand(current.sessionStart, command)
         : [...current.sessionStart, { hooks: [{ type: "command", command }] }],
     )
     stdout.write(`${status === "stale" ? "repaired" : "installed"} SessionStart hook in ${path}\n`)
     return 0
   } catch (error) {
-    return failed(error, options.stderr ?? process.stderr)
+    return reportError(stderr, error)
   }
 }
 
 export const uninstallHooksCommand = (options: HookCommandOptions = {}): number => {
   const path = options.settingsPath ?? defaultSettingsPath()
-  const stdout = options.stdout ?? process.stdout
+  const { stdout, stderr } = resolveIo(options)
   if (!existsSync(path)) {
     stdout.write("nothing to uninstall\n")
     return 0
@@ -153,10 +149,10 @@ export const uninstallHooksCommand = (options: HookCommandOptions = {}): number 
 
   try {
     const current = readCurrent(path)
-    saved(path, current, withoutManaged(current.sessionStart))
+    saveSessionStart(path, current, withoutManaged(current.sessionStart))
     stdout.write(`removed samskara hook from ${path}\n`)
     return 0
   } catch (error) {
-    return failed(error, options.stderr ?? process.stderr)
+    return reportError(stderr, error)
   }
 }

@@ -1,12 +1,9 @@
 import { readToken } from "../config/credentials.js"
 import { startWatcherDaemon, watcherPid } from "../config/daemon.js"
 import { watchLogDir } from "../config/paths.js"
+import { type Writer, reportError, resolveIo } from "../io.js"
 import { login } from "../login.js"
 import { installHooksCommand, isManagedHookInstalled } from "./install-hooks.js"
-
-interface Writer {
-  write(text: string): unknown
-}
 
 export type InitOptions = {
   readonly stdout?: Writer
@@ -14,8 +11,7 @@ export type InitOptions = {
 }
 
 export const initCommand = async (options: InitOptions = {}): Promise<number> => {
-  const stdout = options.stdout ?? process.stdout
-  const stderr = options.stderr ?? process.stderr
+  const { stdout, stderr } = resolveIo(options)
 
   const hadToken = (await readToken()) !== null
   if (!hadToken) {
@@ -35,8 +31,7 @@ export const initCommand = async (options: InitOptions = {}): Promise<number> =>
         `Started the capture watcher (process ${pid}). Its logs are in ${watchLogDir()}.\n`,
       )
     } catch (error) {
-      stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
-      return 1
+      return reportError(stderr, error)
     }
   }
 
