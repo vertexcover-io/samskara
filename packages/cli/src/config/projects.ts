@@ -1,5 +1,5 @@
 import { z } from "zod"
-import { atomicWriteJson, readJson, withFileLock } from "./atomic.js"
+import { atomicWriteJson, readValidated, withFileLock } from "./atomic.js"
 import { projectsPath } from "./paths.js"
 
 const projectEntrySchema = z
@@ -30,18 +30,25 @@ export type RegisteredProject = {
 
 const emptyProjects = (): ProjectsFile => ({ version: 1, projects: {} })
 
-const readProjects = async (): Promise<ProjectsFile> => {
-  const parsed = projectsFileSchema.safeParse(await readJson(projectsPath()))
-  return parsed.success ? parsed.data : emptyProjects()
-}
+/**
+ * Throws on a registry that will not parse, which is what the writers below need: each reads the
+ * whole file, spreads it and writes it back, so answering "empty" would delete every project the
+ * file still held. Never resets it either -- this is what the user configured, not something the
+ * daemon can rebuild.
+ */
+const readProjects = async (): Promise<ProjectsFile> =>
+  (await readValidated(projectsPath(), projectsFileSchema)) ?? emptyProjects()
+
+/** Queries answer empty instead, since a reader that cannot see a project is the same as no project. */
+const queryProjects = async (): Promise<ProjectsFile> => readProjects().catch(() => emptyProjects())
 
 export const listProjects = async (): Promise<ReadonlyArray<RegisteredProject>> => {
-  const file = await readProjects()
+  const file = await queryProjects()
   return Object.entries(file.projects).map(([slug, entry]) => ({ slug, entry }))
 }
 
 export const getProject = async (slug: string): Promise<ProjectEntry | null> => {
-  const file = await readProjects()
+  const file = await queryProjects()
   return file.projects[slug] ?? null
 }
 

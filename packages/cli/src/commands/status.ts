@@ -1,6 +1,6 @@
 import { homedir } from "node:os"
 import { checkpointStoreSchema } from "@samskara/core"
-import { readJson } from "../config/atomic.js"
+import { readValidated } from "../config/atomic.js"
 import { readToken } from "../config/credentials.js"
 import { watcherPid } from "../config/daemon.js"
 import { statePath, watchLogDir } from "../config/paths.js"
@@ -44,10 +44,9 @@ const authLine = async (): Promise<string> => {
 }
 
 const latestSyncBySlug = async (): Promise<ReadonlyMap<string, string>> => {
-  const parsed = checkpointStoreSchema.safeParse(await readJson(statePath()))
-  if (!parsed.success) return new Map()
+  const store = (await readValidated(statePath(), checkpointStoreSchema)) ?? { checkpoints: {} }
   const latest = new Map<string, string>()
-  for (const checkpoint of Object.values(parsed.data.checkpoints)) {
+  for (const checkpoint of Object.values(store.checkpoints)) {
     if (!checkpoint.projectSlug) continue
     const current = latest.get(checkpoint.projectSlug)
     if (!current || checkpoint.lastUpdatedAt > current) {
@@ -61,7 +60,14 @@ export const statusCommand = async (options: StatusOptions = {}): Promise<number
   const stdout = options.stdout ?? process.stdout
   const now = (options.now ?? (() => new Date()))()
   const projects = [...(await listProjects())].sort((a, b) => a.slug.localeCompare(b.slug))
-  const lastSync = await latestSyncBySlug()
+  // Reported inline rather than thrown: `status` is the command someone runs to find out what is
+  // wrong, so it has to keep printing everything else it knows.
+  const lastSync = await latestSyncBySlug().catch(() => {
+    stdout.write(
+      `Sync state ${shortenPath(statePath())} is unreadable -- times below are omitted\n`,
+    )
+    return new Map<string, string>()
+  })
 
   const pid = watcherPid()
   stdout.write(
