@@ -1,12 +1,4 @@
-import {
-  glob as nodeGlob,
-  readFile,
-  readdir,
-  realpath,
-  rename,
-  stat,
-  writeFile,
-} from "node:fs/promises"
+import { glob as nodeGlob, readFile, readdir, rename, stat, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { type FileSystem, type ProjectIdentity, createClaudePlugin } from "@samskara/core"
@@ -20,9 +12,10 @@ import {
   tokenPath,
 } from "../config/paths.js"
 import { isProjectEnabled, syncFromFor } from "../config/projects.js"
-import { resolveLocalProject, runGit } from "../project-resolver.js"
+
 import { runArtifactWorkers } from "./artifact-worker.js"
-import { type ArtifactCycleDeps, type WatcherConfig, type WatcherDeps, runCycle } from "./driver.js"
+import { type WatcherConfig, type WatcherDeps, runCycle } from "./driver.js"
+import { resolveProject } from "./resolveProject.js"
 import { createArtifactSink, createHttpSink } from "./sink.js"
 
 const CYCLE_MS = 10_000
@@ -76,20 +69,6 @@ const readToken = async (): Promise<string> => {
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
-/**
- * Resolved per run rather than at module load: SAMSKARA_HOME is read at call time, so the
- * daemon writes its queue under whichever home the process was started with.
- */
-export const artifactDeps = (): ArtifactCycleDeps => ({
-  queuePath: artifactQueuePath(),
-  seen: new Map(),
-  realpath,
-  stat: async (path) => {
-    const s = await stat(path)
-    return { size: s.size, mtimeMs: s.mtimeMs }
-  },
-})
-
 export type WatchOptions = {
   readonly projectOverride?: ProjectIdentity
   readonly log: pino.Logger
@@ -111,7 +90,9 @@ export const drainWorkers = (
 export const watch = async (options: WatchOptions): Promise<void> => {
   const { log, projectOverride } = options
   const token = await readToken()
-  const config: WatcherConfig = { statePath: statePath() }
+  // Read at call time, not module load: SAMSKARA_HOME decides where the queue lives, and the
+  // daemon must write under whichever home the process was started with.
+  const config: WatcherConfig = { statePath: statePath(), artifactQueuePath: artifactQueuePath() }
   // An explicit override captures unconditionally; otherwise only enabled projects, and only
   // sessions started after the project's cutoff.
   const shouldCapture = projectOverride
@@ -126,10 +107,9 @@ export const watch = async (options: WatchOptions): Promise<void> => {
     sink: createHttpSink({ apiBase, token, fetch: globalThis.fetch }),
     glob: globAll,
     plugin: createClaudePlugin(nodeFs),
-    resolveProject: projectOverride ? async () => projectOverride : resolveLocalProject,
+    resolveProject: projectOverride ? async () => projectOverride : resolveProject,
     ...(shouldCapture ? { shouldCapture } : {}),
     ...(cutoffFor ? { syncFromFor: cutoffFor } : {}),
-    artifacts: artifactDeps(),
     log,
   }
 
@@ -144,7 +124,6 @@ export const watch = async (options: WatchOptions): Promise<void> => {
       log,
       sink: createArtifactSink({ apiBase, token, fetch: globalThis.fetch }),
       clock: { now: () => Date.now() },
-      runGit,
       stopped: () => stopping,
     },
   ).catch((err: unknown) => {

@@ -1,6 +1,7 @@
-import { mkdir, mkdtemp, readFile, rename, stat, writeFile } from "node:fs/promises"
+import { randomUUID } from "node:crypto"
+import { mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { basename, dirname, join } from "node:path"
 import {
   type FileSystem,
   type NormalizedMessage,
@@ -28,10 +29,10 @@ const repoMocks = vi.hoisted(() => ({
   resolveHead: vi.fn<(cwd: string) => Promise<string | null>>(async () => null),
 }))
 
-vi.mock("../project-resolver.js", async (importOriginal) => ({
+vi.mock("./resolveRepo.js", async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  createLocalRepoResolver: () => repoMocks.resolveRepo,
-  resolveLocalHeadSha: repoMocks.resolveHead,
+  createRepoResolver: () => repoMocks.resolveRepo,
+  resolveHeadSha: repoMocks.resolveHead,
 }))
 
 const nodeFs: FileSystem = {
@@ -495,15 +496,31 @@ describe("watcher driver", () => {
   })
 
   describe("artifact enqueue", () => {
-    // The transcript's cwd is /work/app, so the project root must contain it for the written
-    // file to be judged in scope.
-    const rooted: ProjectIdentity = { ...project, root: "/work/app" }
+    // A real directory with real files: every candidate is realpath'd and stat'd before it is
+    // queued, so a fictional path is indistinguishable from one that was filtered out.
+    let app: string
+    let rooted: ProjectIdentity
+
+    beforeEach(async () => {
+      app = join(dir, "app")
+      await mkdir(app, { recursive: true })
+      // macOS puts the temp dir behind /private, which is what the candidate resolves to.
+      app = await realpath(app)
+      rooted = { ...project, root: app }
+    })
+
+    const artifact = async (relativePath: string): Promise<string> => {
+      const path = join(app, relativePath)
+      await mkdir(dirname(path), { recursive: true })
+      await writeFile(path, "bytes\n", "utf8")
+      return path
+    }
 
     const writeLine = (uuid: string, sessionId: string, filePath: string) =>
       JSON.stringify({
         uuid,
         sessionId,
-        cwd: "/work/app",
+        cwd: app,
         timestamp: "2026-07-23T00:00:00.000Z",
         message: {
           role: "assistant",
@@ -519,19 +536,18 @@ describe("watcher driver", () => {
         },
       })
 
-    const artifactDeps = (queuePath: string, over: Partial<WatcherDeps> = {}) => ({
+    const withQueue = (queuePath: string): WatcherConfig => ({
+      ...config,
+      artifactQueuePath: queuePath,
+    })
+    const rootedDeps = (over: Partial<WatcherDeps> = {}) => ({
       resolveProject: async () => rooted,
-      artifacts: {
-        queuePath,
-        seen: new Map<string, string>(),
-        realpath: async (path: string) => path,
-        stat: async () => ({ size: 10, mtimeMs: 1 }),
-      },
       ...over,
     })
 
     test("S9: a cycle enqueues an in-scope write without ever reading the artifact", async () => {
       const main = join(projects, "sess-1.jsonl")
+      const target = await artifact("src/a.ts")
       await writeFile(main, `${writeLine("l1", "sess-1", "src/a.ts")}\n`, "utf8")
       const queuePath = join(dir, "artifact-queue.json")
 
@@ -545,29 +561,30 @@ describe("watcher driver", () => {
       }
       const sink = createInMemorySink()
       await runCycle(
-        config,
-        deps({ sink, glob: async () => [main], fs: watched, ...artifactDeps(queuePath) }),
+        withQueue(queuePath),
+        deps({ sink, glob: async () => [main], fs: watched, ...rootedDeps() }),
       )
 
       const queue = JSON.parse(await readFile(queuePath, "utf8")) as {
         entries: Array<{ path: string; relativePath: string; changeKind: string }>
       }
-      expect(queue.entries.map((e) => e.path)).toEqual(["/work/app/src/a.ts"])
+      expect(queue.entries.map((e) => e.path)).toEqual([target])
       expect(queue.entries[0]?.relativePath).toBe("src/a.ts")
       expect(queue.entries[0]?.changeKind).toBe("created")
 
       // The artifact's own bytes are never read during a cycle -- only the transcript is.
-      expect(reads).not.toContain("/work/app/src/a.ts")
+      expect(reads).not.toContain(target)
       // Nothing uploaded the artifact: the sink only ever saw the transcript payload.
       expect(sink.received).toHaveLength(1)
     })
 
     test("S16: a delta's backupFileName reaches the queue so the base can be resolved", async () => {
       const main = join(projects, "sess-1.jsonl")
+      await artifact("src/a.ts")
       const deltaLine = JSON.stringify({
         uuid: "l2",
         sessionId: "sess-1",
-        cwd: "/work/app",
+        cwd: app,
         timestamp: "2026-07-23T00:00:01.000Z",
         type: "file-history-delta",
         // `trackingPath` is what Claude Code emits; `path` here silently resolved no bases at all.
@@ -577,7 +594,7 @@ describe("watcher driver", () => {
       await writeFile(main, `${writeLine("l1", "sess-1", "src/a.ts")}\n${deltaLine}\n`, "utf8")
       const queuePath = join(dir, "artifact-queue.json")
 
-      await runCycle(config, deps({ glob: async () => [main], ...artifactDeps(queuePath) }))
+      await runCycle(withQueue(queuePath), deps({ glob: async () => [main], ...rootedDeps() }))
 
       const queue = JSON.parse(await readFile(queuePath, "utf8")) as {
         entries: Array<{ backupFileName?: string }>
@@ -587,16 +604,31 @@ describe("watcher driver", () => {
 
     test("S9: an out-of-scope write is filtered out before it reaches the queue", async () => {
       const main = join(projects, "sess-1.jsonl")
-      await writeFile(
-        main,
-        `${writeLine("l1", "sess-1", "/work/app/node_modules/pkg/index.js")}\n`,
-        "utf8",
-      )
+      const excluded = await artifact("node_modules/pkg/index.js")
+      await writeFile(main, `${writeLine("l1", "sess-1", excluded)}\n`, "utf8")
       const queuePath = join(dir, "artifact-queue.json")
 
-      await runCycle(config, deps({ glob: async () => [main], ...artifactDeps(queuePath) }))
+      await runCycle(withQueue(queuePath), deps({ glob: async () => [main], ...rootedDeps() }))
 
       expect(await readFile(queuePath, "utf8").catch(() => null)).toBeNull()
+    })
+
+    test("S9: a scratch write is enqueued named against its scratch root", async () => {
+      const main = join(projects, "sess-1.jsonl")
+      const scratch = join(await realpath(tmpdir()), `samskara-driver-${randomUUID()}.md`)
+      await writeFile(scratch, "scratch bytes\n", "utf8")
+      await writeFile(main, `${writeLine("l1", "sess-1", scratch)}\n`, "utf8")
+      const queuePath = join(dir, "artifact-queue.json")
+
+      await runCycle(withQueue(queuePath), deps({ glob: async () => [main], ...rootedDeps() }))
+
+      const queue = JSON.parse(await readFile(queuePath, "utf8")) as {
+        entries: Array<{ path: string; relativePath: string }>
+      }
+      expect(queue.entries).toEqual([
+        expect.objectContaining({ path: scratch, relativePath: basename(scratch) }),
+      ])
+      await rm(scratch, { force: true })
     })
 
     test("S13: a project with no resolved root enqueues nothing but still checkpoints", async () => {
@@ -605,10 +637,9 @@ describe("watcher driver", () => {
       const queuePath = join(dir, "artifact-queue.json")
 
       const store = await runCycle(
-        config,
+        withQueue(queuePath),
         deps({
           glob: async () => [main],
-          ...artifactDeps(queuePath, {}),
           // The --project-slug override path synthesizes an identity carrying no root.
           resolveProject: async () => project,
         }),
@@ -624,6 +655,7 @@ describe("watcher driver", () => {
       const statePath = join(dir, "artifacts.json")
       const artifactFile = join(dir, "slow.md")
       await writeFile(artifactFile, "slow bytes\n", "utf8")
+      await artifact("docs/a.md")
       await writeFile(main, `${writeLine("l1", "sess-1", "docs/a.md")}\n`, "utf8")
 
       // A sink slower than a cycle: it only resolves once the test releases it, so anything
@@ -659,7 +691,6 @@ describe("watcher driver", () => {
           log: createLogger({ service: "test" }, { level: "silent" }),
           sink: slowSink,
           clock: { now: () => Date.now() },
-          runGit: async () => "",
         },
       )
 
@@ -667,8 +698,8 @@ describe("watcher driver", () => {
       while (!inFlight) await new Promise((resolve) => setTimeout(resolve, 5))
 
       const store = await runCycle(
-        config,
-        deps({ glob: async () => [main], ...artifactDeps(queuePath) }),
+        withQueue(queuePath),
+        deps({ glob: async () => [main], ...rootedDeps() }),
       )
 
       // The cycle finished and checkpointed while the upload was still held open.
@@ -683,16 +714,17 @@ describe("watcher driver", () => {
       const main = join(projects, "sess-1.jsonl")
       const queuePath = join(dir, "artifact-queue.json")
       const cycleDeps = (over: Partial<WatcherDeps> = {}) =>
-        deps({ glob: async () => [main], ...artifactDeps(queuePath), ...over })
+        deps({ glob: async () => [main], ...rootedDeps(), ...over })
 
+      await artifact("docs/a.md")
       await writeFile(main, `${writeLine("l1", "sess-1", "docs/a.md")}\n`, "utf8")
-      await runCycle(config, cycleDeps({ clock: { now: () => 1000 } }))
+      await runCycle(withQueue(queuePath), cycleDeps({ clock: { now: () => 1000 } }))
 
       await writeFile(main, `${writeLine("l2", "sess-1", "docs/a.md")}\n`, { flag: "a" })
-      await runCycle(config, cycleDeps({ clock: { now: () => 2000 } }))
+      await runCycle(withQueue(queuePath), cycleDeps({ clock: { now: () => 2000 } }))
 
       await writeFile(main, `${writeLine("l3", "sess-1", "docs/a.md")}\n`, { flag: "a" })
-      await runCycle(config, cycleDeps({ clock: { now: () => 3000 } }))
+      await runCycle(withQueue(queuePath), cycleDeps({ clock: { now: () => 3000 } }))
 
       const queue = JSON.parse(await readFile(queuePath, "utf8")) as {
         entries: Array<{ path: string; observedAt: string }>
@@ -701,73 +733,25 @@ describe("watcher driver", () => {
       expect(queue.entries[0]?.observedAt).toBe(new Date(3000).toISOString())
     })
 
-    test("an unchanged file is not re-enqueued on a later cycle", async () => {
+    test("S10: a file whose enqueue failed is queued by the next cycle", async () => {
+      // A failed enqueue throws before the checkpoint is written, so the next cycle re-reads the
+      // same line. Nothing records the file as handled ahead of the write that handles it.
       const main = join(projects, "sess-1.jsonl")
-      const queuePath = join(dir, "artifact-queue.json")
-      // One deps object across both cycles, as the daemon does: `artifactDeps()` is built once and
-      // the loop reuses it, so the seen map is what carries across cycles.
-      const shared = artifactDeps(queuePath)
-
+      await artifact("docs/a.md")
       await writeFile(main, `${writeLine("l1", "sess-1", "docs/a.md")}\n`, "utf8")
-      await runCycle(config, deps({ glob: async () => [main], ...shared }))
-
-      const first = JSON.parse(await readFile(queuePath, "utf8")) as { entries: unknown[] }
-      expect(first.entries).toHaveLength(1)
-
-      // A second cycle over the same unchanged file must not re-observe it.
-      await writeFile(main, `${writeLine("l2", "sess-1", "docs/a.md")}\n`, { flag: "a" })
-      await runCycle(
-        config,
-        deps({ glob: async () => [main], clock: { now: () => 9999 }, ...shared }),
-      )
-
-      const second = JSON.parse(await readFile(queuePath, "utf8")) as {
-        entries: Array<{ observedAt: string }>
-      }
-      expect(second.entries).toHaveLength(1)
-      expect(second.entries[0]?.observedAt).not.toBe(new Date(9999).toISOString())
-    })
-
-    test("S10: a file whose enqueue failed is retried, not remembered as already queued", async () => {
-      // The seen map must only ever record what actually reached the queue. Recording it before
-      // the write succeeds would skip the file on every later cycle -- a silent, permanent drop.
-      const main = join(projects, "sess-1.jsonl")
-      await writeFile(main, `${writeLine("l1", "sess-1", "docs/a.md")}\n`, "utf8")
-
-      const seen = new Map<string, string>()
-      const artifacts = {
-        seen,
-        realpath: async (path: string) => path,
-        stat: async () => ({ size: 10, mtimeMs: 1 }),
-      }
 
       // A directory cannot be written as a file, so the enqueue throws.
       const blocked = join(dir, "blocked-queue")
       await mkdir(blocked, { recursive: true })
-      await runCycle(
-        config,
-        deps({
-          glob: async () => [main],
-          resolveProject: async () => rooted,
-          artifacts: { ...artifacts, queuePath: blocked },
-        }),
-      ).catch(() => undefined)
-
-      expect(seen.size).toBe(0)
+      await runCycle(withQueue(blocked), deps({ glob: async () => [main], ...rootedDeps() })).catch(
+        () => undefined,
+      )
 
       const queuePath = join(dir, "retry-queue.json")
-      await runCycle(
-        config,
-        deps({
-          glob: async () => [main],
-          resolveProject: async () => rooted,
-          artifacts: { ...artifacts, queuePath },
-        }),
-      )
+      await runCycle(withQueue(queuePath), deps({ glob: async () => [main], ...rootedDeps() }))
 
       const queue = JSON.parse(await readFile(queuePath, "utf8")) as { entries: unknown[] }
       expect(queue.entries).toHaveLength(1)
-      expect(seen.size).toBe(1)
     })
   })
 

@@ -4,7 +4,8 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import type { ArtifactUploadPayload } from "@samskara/core"
 import { beforeEach, describe, expect, test, vi } from "vitest"
-import { type QueueEntry, enqueue, readQueue } from "./artifact-queue.js"
+import { runGit } from "../git.js"
+import { type ArtifactQueueEntry, enqueue, readQueue } from "./artifact-queue.js"
 import { advanceArtifactState, readArtifactState, stateKey } from "./artifact-worker.js"
 import {
   type ArtifactSink,
@@ -13,26 +14,21 @@ import {
   MAX_ATTEMPTS,
   runArtifactWorkers,
 } from "./artifact-worker.js"
-import type { GitRunner } from "./resolveProject.js"
 import { spyLogger } from "./test-logger.js"
+
+// Empty output means "nothing tracked", which is what most tests want. `restoreMocks`
+// restores this implementation between tests, so only tests needing something else program it.
+vi.mock("../git.js", () => ({ runGit: vi.fn(async () => "") }))
+
+const git = vi.mocked(runGit)
 
 const sha256 = (content: string): string => createHash("sha256").update(content).digest("hex")
 
-type GitRecorder = {
-  readonly calls: ReadonlyArray<{ readonly args: ReadonlyArray<string>; readonly cwd: string }>
-  readonly runGit: GitRunner
-}
-
 /** Mirrors `git ls-files -z`: tracked paths only, NUL-terminated, in git's order not the caller's. */
-const gitFake = (tracked: ReadonlyArray<string> | null): GitRecorder => {
-  const calls: Array<{ args: ReadonlyArray<string>; cwd: string }> = []
-  return {
-    calls,
-    runGit: async (args, cwd) => {
-      calls.push({ args, cwd })
-      return tracked === null ? null : tracked.map((path) => `${path}\0`).join("")
-    },
-  }
+const gitTracking = (tracked: ReadonlyArray<string> | null): void => {
+  git.mockImplementation(async () =>
+    tracked === null ? null : tracked.map((path) => `${path}\0`).join(""),
+  )
 }
 
 /**
@@ -67,7 +63,7 @@ describe("artifact workers", () => {
   let statePath: string
   let filePath: string
 
-  const entry = (over: Partial<QueueEntry> = {}): QueueEntry => ({
+  const entry = (over: Partial<ArtifactQueueEntry> = {}): ArtifactQueueEntry => ({
     sessionId: "0b9d4c1e-7f3a-4c22-9a6e-1d5f8b2c3e40",
     path: filePath,
     relativePath: "docs/notes.md",
@@ -77,16 +73,11 @@ describe("artifact workers", () => {
     ...over,
   })
 
-  const deps = (
-    sink: ArtifactSink,
-    now = 1_800_000_000_000,
-    runGit: GitRunner = async () => "",
-  ): ArtifactWorkerDeps => ({
+  const deps = (sink: ArtifactSink, now = 1_800_000_000_000): ArtifactWorkerDeps => ({
     fileHistoryDir: join(dir, "file-history"),
     log: recorder.log,
     sink,
     clock: { now: () => now },
-    runGit,
   })
 
   beforeEach(async () => {
@@ -157,7 +148,8 @@ describe("artifact workers", () => {
     await runArtifactWorkers({ queuePath, statePath, workers: 1, drainOnce: true }, deps(sink))
 
     expect((await readQueue(queuePath)).entries).toHaveLength(0)
-    expect(recorder.warn.length).toBeGreaterThan(0)
+    // A refused payload is an error, not an operational warning: no retry can repair it.
+    expect(recorder.error.length).toBeGreaterThan(0)
     // State untouched, so a later edit of the same path re-enqueues and re-uploads it.
     expect(
       (await readArtifactState(statePath)).artifacts[stateKey(target.sessionId, target.path)],
@@ -509,12 +501,9 @@ describe("artifact workers", () => {
 
     await enqueue(queuePath, [entry({ path: reportPath, relativePath: "notes.md" })])
     const sink = scriptedSink([200])
-    const git = gitFake(["src/driver.ts"])
+    gitTracking(["src/driver.ts"])
 
-    await runArtifactWorkers(
-      { queuePath, statePath, workers: 1, drainOnce: true },
-      deps(sink, 1_800_000_000_000, git.runGit),
-    )
+    await runArtifactWorkers({ queuePath, statePath, workers: 1, drainOnce: true }, deps(sink))
 
     const sent = sink.sent.map((payload) => payload.path)
     expect(sent).toContain(join(dir, "clips", "run.mp4"))
@@ -533,16 +522,18 @@ describe("artifact workers", () => {
     )
 
     await enqueue(queuePath, [entry({ path: reportPath, relativePath: "notes.md" })])
-    const git = gitFake([])
+    gitTracking([])
 
     await runArtifactWorkers(
       { queuePath, statePath, workers: 1, drainOnce: true },
-      deps(scriptedSink([200]), 1_800_000_000_000, git.runGit),
+      deps(scriptedSink([200])),
     )
 
-    expect(git.calls).toHaveLength(1)
-    expect(git.calls[0]?.args).toEqual(expect.arrayContaining(["a.png", "b.png", "c.png", "d.png"]))
-    expect(git.calls[0]?.cwd).toBe(dir)
+    expect(git.mock.calls).toHaveLength(1)
+    expect(git.mock.calls[0]?.[0]).toEqual(
+      expect.arrayContaining(["a.png", "b.png", "c.png", "d.png"]),
+    )
+    expect(git.mock.calls[0]?.[1]).toBe(dir)
   })
 
   test("S16: the git invocation disables pathspec magic", async () => {
@@ -552,15 +543,17 @@ describe("artifact workers", () => {
 
     await enqueue(queuePath, [entry({ path: reportPath, relativePath: "notes.md" })])
     const sink = scriptedSink([200])
-    const git = gitFake([])
+    gitTracking([])
 
-    await runArtifactWorkers(
-      { queuePath, statePath, workers: 1, drainOnce: true },
-      deps(sink, 1_800_000_000_000, git.runGit),
-    )
+    await runArtifactWorkers({ queuePath, statePath, workers: 1, drainOnce: true }, deps(sink))
 
     // A top-level git option: after the subcommand git rejects it as unknown.
-    expect(git.calls[0]?.args.slice(0, 4)).toEqual(["--literal-pathspecs", "ls-files", "-z", "--"])
+    expect(git.mock.calls[0]?.[0].slice(0, 4)).toEqual([
+      "--literal-pathspecs",
+      "ls-files",
+      "-z",
+      "--",
+    ])
     expect(sink.sent.map((payload) => payload.path)).toContain(join(dir, "shot[1].png"))
   })
 
@@ -577,11 +570,11 @@ describe("artifact workers", () => {
 
     await enqueue(queuePath, [entry({ path: reportPath, relativePath: "notes.md" })])
     const sink = scriptedSink([200])
+    // Git answers with only the third path, and in its own order: a positional pairing would
+    // discard `a.png` instead.
+    gitTracking(["c.png"])
 
-    await runArtifactWorkers(
-      { queuePath, statePath, workers: 1, drainOnce: true },
-      deps(sink, 1_800_000_000_000, gitFake(["c.png"]).runGit),
-    )
+    await runArtifactWorkers({ queuePath, statePath, workers: 1, drainOnce: true }, deps(sink))
 
     const sent = sink.sent.map((payload) => payload.path)
     expect(sent).toContain(join(dir, "a.png"))
@@ -598,11 +591,9 @@ describe("artifact workers", () => {
     const report = entry({ path: reportPath, relativePath: "notes.md" })
     await enqueue(queuePath, [report])
     const sink = scriptedSink([200])
+    gitTracking(null)
 
-    await runArtifactWorkers(
-      { queuePath, statePath, workers: 1, drainOnce: true },
-      deps(sink, 1_800_000_000_000, gitFake(null).runGit),
-    )
+    await runArtifactWorkers({ queuePath, statePath, workers: 1, drainOnce: true }, deps(sink))
 
     expect(sink.sent.map((payload) => payload.path)).toEqual([reportPath])
     // The document's own upload still succeeded -- a scan failure never undoes it.
@@ -623,15 +614,14 @@ describe("artifact workers", () => {
 
     await enqueue(queuePath, [entry({ path: reportPath, relativePath: "pages/report.md" })])
     const sink = scriptedSink([200])
-    const git = gitFake([])
+    gitTracking([])
 
-    await runArtifactWorkers(
-      { queuePath, statePath, workers: 1, drainOnce: true },
-      deps(sink, 1_800_000_000_000, git.runGit),
-    )
+    await runArtifactWorkers({ queuePath, statePath, workers: 1, drainOnce: true }, deps(sink))
 
     // One escaping path makes the real `git ls-files` exit 128 and print nothing for the batch.
-    const passed = (git.calls[0]?.args ?? []).filter((arg) => !arg.startsWith("-") && arg !== "--")
+    const passed = (git.mock.calls[0]?.[0] ?? []).filter(
+      (arg) => !arg.startsWith("-") && arg !== "--",
+    )
     expect(passed.some((arg) => arg.startsWith(".."))).toBe(false)
     expect(sink.sent.map((payload) => payload.path)).toContain(join(dir, "pages", "inside.mp4"))
   })
@@ -646,12 +636,9 @@ describe("artifact workers", () => {
 
     await enqueue(queuePath, [entry({ path: reportPath, relativePath: "notes.md" })])
     const sink = scriptedSink([200])
-    const git = gitFake([])
+    gitTracking([])
 
-    await runArtifactWorkers(
-      { queuePath, statePath, workers: 1, drainOnce: true },
-      deps(sink, 1_800_000_000_000, git.runGit),
-    )
+    await runArtifactWorkers({ queuePath, statePath, workers: 1, drainOnce: true }, deps(sink))
 
     expect(sink.sent.map((payload) => payload.path)).toEqual([reportPath])
   })
@@ -666,12 +653,9 @@ describe("artifact workers", () => {
 
     await enqueue(queuePath, [entry({ path: reportPath, relativePath: "notes.md" })])
     const sink = scriptedSink([200])
-    const git = gitFake([])
+    gitTracking([])
 
-    await runArtifactWorkers(
-      { queuePath, statePath, workers: 1, drainOnce: true },
-      deps(sink, 1_800_000_000_000, git.runGit),
-    )
+    await runArtifactWorkers({ queuePath, statePath, workers: 1, drainOnce: true }, deps(sink))
 
     const sent = sink.sent.map((payload) => payload.path)
     expect(sent).toContain(join(dir, "clips", "run.mp4"))
@@ -694,14 +678,11 @@ describe("artifact workers", () => {
     const second = entry({ path: secondPath, relativePath: "notes2.md" })
     await enqueue(queuePath, [first, second])
     const sink = scriptedSink([200])
-    const throwingRunGit: GitRunner = async () => {
+    git.mockImplementation(async () => {
       throw new Error("boom")
-    }
+    })
 
-    await runArtifactWorkers(
-      { queuePath, statePath, workers: 1, drainOnce: true },
-      deps(sink, 1_800_000_000_000, throwingRunGit),
-    )
+    await runArtifactWorkers({ queuePath, statePath, workers: 1, drainOnce: true }, deps(sink))
 
     expect(sink.sent.map((payload) => payload.path).sort()).toEqual([firstPath, secondPath].sort())
     const state = await readArtifactState(statePath)
@@ -738,11 +719,11 @@ describe("artifact workers", () => {
     await enqueue(queuePath, [report])
 
     const sink = scriptedSink([200])
-    const git = gitFake(["src/driver.ts"])
+    gitTracking(["src/driver.ts"])
     const config = { queuePath, statePath, workers: 1, drainOnce: true }
 
     for (let pass = 0; pass < 4; pass += 1) {
-      await runArtifactWorkers(config, deps(sink, 1_800_000_000_000, git.runGit))
+      await runArtifactWorkers(config, deps(sink))
     }
 
     const sent = sink.sent.map((payload) => payload.path)

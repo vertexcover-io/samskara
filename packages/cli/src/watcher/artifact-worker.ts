@@ -1,13 +1,18 @@
-import { realpath, stat } from "node:fs/promises"
 import { dirname, relative, resolve, sep } from "node:path"
 import type { ArtifactUploadPayload } from "@samskara/core"
 import { z } from "zod"
 import { atomicWriteJson, readJson, withFileLock } from "../config/atomic.js"
+import { runGit } from "../git.js"
 import { referencedPaths } from "./artifact-extract.js"
-import { type ArtifactQueue, type QueueEntry, enqueue, keyOf, readQueue } from "./artifact-queue.js"
+import {
+  type ArtifactQueue,
+  type ArtifactQueueEntry,
+  enqueue,
+  keyOf,
+  readQueue,
+} from "./artifact-queue.js"
 import { type ArtifactUpload, type ArtifactUploadDeps, prepareUpload } from "./artifact-upload.js"
-import { capturableRealpath } from "./containment.js"
-import type { GitRunner } from "./resolveProject.js"
+import { shouldCaptureArtifacts } from "./containment.js"
 
 // --- upload state: the worker's own record of what already landed --------------------------
 
@@ -26,10 +31,7 @@ export type ArtifactState = z.infer<typeof artifactStateSchema>
 
 const emptyState = (): ArtifactState => ({ version: 1, artifacts: {} })
 
-/**
- * Session ids are UUIDs, so no colon appears in the first component -- but an absolute path on
- * Windows does, which is why the key splits on the first colon rather than the last.
- */
+/** A UUID holds no colon and a Windows path does, so only the first colon separates the two. */
 export const stateKey = (sessionId: string, path: string): string => `${sessionId}:${path}`
 
 export const readArtifactState = async (path: string): Promise<ArtifactState> => {
@@ -38,9 +40,9 @@ export const readArtifactState = async (path: string): Promise<ArtifactState> =>
 }
 
 /**
- * `baseCaptured` records a completed action, never an optimistic one: it is written only after an
- * upload that carried a base succeeded. Losing this file entirely is harmless -- everything
- * re-uploads once, and the server's base-freeze rule ignores the redundant base.
+ * `baseCaptured` records a completed upload, never an optimistic one. Losing this file entirely is
+ * harmless: everything re-uploads once, and the server ignores a base for an artifact that already
+ * has one.
  */
 export const advanceArtifactState = async (
   path: string,
@@ -55,8 +57,6 @@ export const advanceArtifactState = async (
     } satisfies ArtifactState)
   })
 }
-
-// --- queue processing ----------------------------------------------------------------------
 
 export const DEFAULT_WORKER_COUNT = 3
 export const MAX_ATTEMPTS = 5
@@ -73,7 +73,7 @@ export type ArtifactWorkerConfig = {
   readonly queuePath: string
   readonly statePath: string
   readonly workers?: number
-  /** Drain once and return, rather than looping until stopped. Used by tests and by shutdown. */
+  /** Return as soon as nothing is due -- entries still in backoff stay queued. Tests and shutdown. */
   readonly drainOnce?: boolean
   readonly idlePollMs?: number
 }
@@ -81,29 +81,33 @@ export type ArtifactWorkerConfig = {
 export type ArtifactWorkerDeps = ArtifactUploadDeps & {
   readonly sink: ArtifactSink
   readonly clock: { now(): number }
-  readonly runGit: GitRunner
   readonly stopped?: () => boolean
 }
 
-const isDue = (entry: QueueEntry, now: number): boolean =>
+const isDue = (entry: ArtifactQueueEntry, now: number): boolean =>
   entry.nextAttemptAt === undefined || Date.parse(entry.nextAttemptAt) <= now
 
 /** Exponential from the attempt count already recorded: 5s, 10s, 20s, 40s. */
 const backoffMs = (attempts: number): number => BACKOFF_BASE_MS * 2 ** Math.max(0, attempts - 1)
 
-const writeQueue = (path: string, entries: ReadonlyArray<QueueEntry>): Promise<void> =>
+const writeQueue = (path: string, entries: ReadonlyArray<ArtifactQueueEntry>): Promise<void> =>
   atomicWriteJson(path, { version: 1, entries } satisfies ArtifactQueue)
 
 /**
- * Claiming happens under the queue's file lock and marks the entry in-flight, so two workers never
- * take the same one. The queue's `(sessionId, path)` dedup key then guarantees at most one
- * in-flight upload per path, which is what keeps the base-freeze rule from racing with itself.
+ * Marks the entry in-flight without removing it: the queue file is the crash record, so an entry
+ * only leaves it once `settle` confirms the upload finished.
+ *
+ * That is also why `inFlight` exists rather than the queue's dedup key alone. The key gives at most
+ * one *queued* entry per path, but that entry stays queued while it uploads, so a second worker
+ * would otherwise find it still due and claim it too. Two concurrent uploads of one path would race
+ * to set its base, and the server keeps whichever lands first -- permanently, since every diff for
+ * that artifact is rendered from it.
  */
 const claim = async (
   config: ArtifactWorkerConfig,
   now: number,
   inFlight: Set<string>,
-): Promise<QueueEntry | null> =>
+): Promise<ArtifactQueueEntry | null> =>
   withFileLock(config.queuePath, async () => {
     const queue = await readQueue(config.queuePath)
     const entry = queue.entries.find((row) => !inFlight.has(keyOf(row)) && isDue(row, now))
@@ -112,26 +116,20 @@ const claim = async (
   })
 
 /**
- * Replaces the claimed entry, or removes it when `next` is null. Never touches other entries.
- *
- * The entry stays queued for the whole upload, so the cycle can re-enqueue the same path while it
- * is in flight -- meaning the file was edited again. That entry is a strictly newer observation and
- * must survive: removing it on success would drop an edit nobody ever uploads, and overwriting it
- * on retry would resurrect content the agent has already replaced. Both are silent data loss, so a
- * settle only applies when the queued entry is still the one this worker claimed.
+ * Applies only when the queued entry is still the one this worker claimed. Settling against a
+ * newer one discards the edit that produced it, in both directions and without a symptom.
  */
 const settle = async (
   config: ArtifactWorkerConfig,
-  claimed: QueueEntry,
-  next: QueueEntry | null,
+  claimed: ArtifactQueueEntry,
+  next: ArtifactQueueEntry | null,
 ): Promise<void> => {
   await withFileLock(config.queuePath, async () => {
     const queue = await readQueue(config.queuePath)
     const key = keyOf(claimed)
     const queued = queue.entries.find((row) => keyOf(row) === key)
 
-    // Re-enqueued mid-upload: the cycle observed a newer edit, so this settle is stale. Leave it
-    // queued -- the next claim picks up the fresh entry and uploads what the file says now.
+    // Stale: the queue holds a newer observation, so leave it for the next claim.
     if (queued && queued.observedAt !== claimed.observedAt) return
 
     const kept = queue.entries.filter((row) => keyOf(row) !== key)
@@ -139,64 +137,41 @@ const settle = async (
   })
 }
 
-const retried = (entry: QueueEntry, now: number): QueueEntry => {
+const retried = (entry: ArtifactQueueEntry, now: number): ArtifactQueueEntry => {
   const attempts = entry.attempts + 1
   return { ...entry, attempts, nextAttemptAt: new Date(now + backoffMs(attempts)).toISOString() }
 }
 
 const toPayload = (upload: ArtifactUpload): ArtifactUploadPayload => upload
 
-type Outcome = "done" | "retry" | "drop"
-
-const outcomeFor = (result: ArtifactSinkResult): Outcome => {
-  if (result.status >= 200 && result.status < 300) return "done"
-  if (result.status === 409) return "retry"
-  if (result.status >= 500 || result.status === 0) return "retry"
-  return "drop"
-}
-
-/** Derived from the upload's own classification, so the two never drift apart. */
 const REFERENCE_SCAN_TYPES = new Set(["text/html", "text/markdown"])
 
 /**
- * `entry.relativePath` is always a suffix of `entry.path` (both required by the queue schema),
- * so the project root is what remains once that suffix and its separator are trimmed off.
+ * `entry.relativePath` is always a suffix of `entry.path` (both required by the queue schema), so
+ * the root is what remains once that suffix and its separator are trimmed off. It comes out
+ * canonical because both fields were built from a canonical root -- `resolveProject` resolves it
+ * once, and every enqueuer computes `relativePath` against that.
  */
-const projectRootOf = (entry: QueueEntry): string => {
-  const withoutRelative = entry.path.slice(0, entry.path.length - entry.relativePath.length)
-  return withoutRelative.endsWith(sep) ? withoutRelative.slice(0, -1) : withoutRelative
-}
-
-const realCapturablePath = async (ref: string, projectRoot: string): Promise<string | null> => {
-  const resolved = await capturableRealpath(ref, projectRoot, realpath)
-  if (resolved === null) return null
-  const info = await stat(resolved).catch(() => null)
-  return info?.isFile() === true ? resolved : null
-}
-
-const capturableReferences = async (
-  refs: ReadonlyArray<string>,
-  projectRoot: string,
-): Promise<ReadonlyArray<string>> => {
-  const resolved = await Promise.all(refs.map((ref) => realCapturablePath(ref, projectRoot)))
-  return resolved.filter((path): path is string => path !== null)
+const projectRootOf = (entry: ArtifactQueueEntry): string => {
+  const trimmed = entry.path.slice(0, entry.path.length - entry.relativePath.length)
+  return trimmed.endsWith(sep) ? trimmed.slice(0, -1) : trimmed
 }
 
 /**
  * `--literal-pathspecs` is a top-level git option and has to precede the subcommand -- placed after
  * it, git rejects it as unknown. Without it pathspec magic is on, and a file named `shot[1].png` is
- * read as a character class. Git answers repo-relative and omits untracked paths entirely, so the
- * answer is a set rather than a positional mapping.
+ * read as a character class. Git answers relative to the directory it ran in -- the project root
+ * here, not necessarily the repo root -- and omits untracked paths entirely, so the answer is a set
+ * rather than a positional mapping.
  *
  * Callers must pass a non-empty set: `git ls-files` with no pathspec lists the entire repository.
  */
 const trackedAmong = async (
-  deps: ArtifactWorkerDeps,
   projectRoot: string,
   paths: ReadonlyArray<string>,
 ): Promise<ReadonlySet<string> | null> => {
   const relatives = paths.map((path) => relative(projectRoot, path))
-  const output = await deps.runGit(
+  const output = await runGit(
     ["--literal-pathspecs", "ls-files", "-z", "--", ...relatives],
     projectRoot,
   )
@@ -209,20 +184,6 @@ const trackedAmong = async (
   return new Set(tracked)
 }
 
-const referenceEntry = (
-  ref: string,
-  projectRoot: string,
-  entry: QueueEntry,
-  now: number,
-): QueueEntry => ({
-  sessionId: entry.sessionId,
-  path: ref,
-  relativePath: relative(projectRoot, ref),
-  changeKind: "created",
-  observedAt: new Date(now).toISOString(),
-  attempts: 0,
-})
-
 /**
  * Runs on the branch where `entry`'s upload just succeeded and its hash is already recorded, so a
  * document that links back to itself (directly or through another document) short-circuits on the
@@ -234,7 +195,7 @@ const referenceEntry = (
 const enqueueReferences = async (
   config: ArtifactWorkerConfig,
   deps: ArtifactWorkerDeps,
-  entry: QueueEntry,
+  entry: ArtifactQueueEntry,
   upload: ArtifactUpload,
 ): Promise<void> => {
   try {
@@ -244,34 +205,37 @@ const enqueueReferences = async (
     const refs = referencedPaths(upload.currentContent, dirname(entry.path))
     if (refs.length === 0) return
 
-    // Realpath'd so it agrees with `capturableReferences`' resolved candidates -- on macOS
-    // `/var` is itself a symlink to `/private/var`, so an un-resolved root would reject every
-    // in-root reference once the candidate side is resolved.
-    const rawRoot = projectRootOf(entry)
-    const projectRoot = await realpath(rawRoot).catch(() => rawRoot)
-    const survivors = await capturableReferences(refs, projectRoot)
+    const projectRoot = projectRootOf(entry)
+    const decisions = await shouldCaptureArtifacts(refs, { projectRoot, allowScratch: false })
+    const survivors = decisions.flatMap((decision) => (decision.ok ? [decision.path] : []))
     if (survivors.length === 0) return
 
-    // Must follow `capturableReferences`: one path outside the root makes `git ls-files` exit 128
-    // and print nothing for the whole batch, discarding every valid reference with it.
-    const tracked = await trackedAmong(deps, projectRoot, survivors)
+    // Must follow the capture check: one path outside the root makes `git ls-files` exit 128 and
+    // print nothing for the whole batch, discarding every valid reference with it.
+    const tracked = await trackedAmong(projectRoot, survivors)
     if (tracked === null) return
 
     const kept = survivors.filter((ref) => !tracked.has(ref))
     if (kept.length === 0) return
 
-    const now = deps.clock.now()
-    const entries = kept.map((ref) => referenceEntry(ref, projectRoot, entry, now))
+    const observedAt = new Date(deps.clock.now()).toISOString()
+    const entries = kept.map(
+      (ref): ArtifactQueueEntry => ({
+        sessionId: entry.sessionId,
+        path: ref,
+        relativePath: relative(projectRoot, ref),
+        changeKind: "created",
+        observedAt,
+        attempts: 0,
+      }),
+    )
     await enqueue(config.queuePath, entries, deps.log)
   } catch (error) {
     deps.log.warn({ path: entry.path, err: error }, "artifact reference scan failed")
   }
 }
 
-/**
- * Processes at most one entry. Returns false when nothing was due, so the caller can idle rather
- * than spin.
- */
+/** Returns false when nothing was due, so the caller can idle rather than spin. */
 const processOne = async (
   config: ArtifactWorkerConfig,
   deps: ArtifactWorkerDeps,
@@ -298,13 +262,11 @@ const processOne = async (
       return true
     }
 
-    const result = await deps.sink
+    const { status } = await deps.sink
       .send(toPayload(upload))
       .catch((): ArtifactSinkResult => ({ status: 0 }))
 
-    const outcome = outcomeFor(result)
-
-    if (outcome === "done") {
+    if (status >= 200 && status < 300) {
       await settle(config, entry, null)
       await advanceArtifactState(config.statePath, key, {
         currentHash: upload.currentHash,
@@ -314,17 +276,27 @@ const processOne = async (
       return true
     }
 
-    if (outcome === "retry" && entry.attempts + 1 < MAX_ATTEMPTS) {
+    // Retryable for reasons the statuses would not usually suggest: 409 is the session row not
+    // existing *yet*, since artifacts can reach the server before the transcript that owns them,
+    // and 0 is the sink's marker for a network error rather than any HTTP reply. The rest of 4xx
+    // is the server refusing this payload, which no amount of retrying changes.
+    const retryable = status === 409 || status >= 500 || status === 0
+    const context = { path: entry.path, status, attempts: entry.attempts + 1 }
+
+    if (retryable && entry.attempts + 1 < MAX_ATTEMPTS) {
+      deps.log.debug(context, "artifact upload failed; retrying after backoff")
       await settle(config, entry, retried(entry, now))
       return true
     }
 
-    // Permanent, or out of attempts. State is not advanced, so a later edit of the same file
-    // re-enqueues it and the artifact gets another chance.
-    deps.log.warn(
-      { path: entry.path, status: result.status, attempts: entry.attempts + 1 },
-      "artifact upload dropped",
-    )
+    // State is not advanced either way, so a later edit of the same file re-enqueues it and the
+    // artifact gets another chance.
+    if (retryable) {
+      deps.log.warn(context, "artifact upload exhausted its attempts; dropped")
+    } else {
+      // The server refused this payload: a bug or an expired token, not something time repairs.
+      deps.log.error(context, "artifact upload rejected; dropped without retrying")
+    }
     await settle(config, entry, null)
     return true
   } finally {
@@ -342,8 +314,9 @@ const runWorker = async (
   const stopped = deps.stopped ?? (() => false)
   for (;;) {
     if (stopped()) return
+    // Every expected failure is already a status code, so anything thrown here is unexpected.
     const worked = await processOne(config, deps, inFlight).catch((err: unknown) => {
-      deps.log.warn({ err }, "artifact worker iteration failed")
+      deps.log.error({ err }, "artifact worker iteration failed")
       return false
     })
     if (worked) continue
@@ -353,8 +326,8 @@ const runWorker = async (
 }
 
 /**
- * A fixed pool running as an independent loop in the daemon process. Artifact failure never rolls
- * back a message checkpoint -- the two states advance independently, in separate files.
+ * An independent loop in the daemon process: an artifact failure never rolls back a message
+ * checkpoint -- the two states advance separately, in separate files.
  */
 export const runArtifactWorkers = async (
   config: ArtifactWorkerConfig,

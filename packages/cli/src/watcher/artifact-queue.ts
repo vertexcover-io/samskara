@@ -24,7 +24,7 @@ const artifactQueueSchema = z
   .strict()
   .readonly()
 
-export type QueueEntry = z.infer<typeof queueEntrySchema>
+export type ArtifactQueueEntry = z.infer<typeof queueEntrySchema>
 export type ArtifactQueue = z.infer<typeof artifactQueueSchema>
 
 const emptyQueue = (): ArtifactQueue => ({ version: 1, entries: [] })
@@ -34,21 +34,11 @@ export const readQueue = async (path: string): Promise<ArtifactQueue> => {
   return parsed.success ? parsed.data : emptyQueue()
 }
 
-/**
- * Shared with the worker so cycle-side dedup and worker-side claiming agree on identity, and the
- * same shape as `stateKey`. A colon separates because a session id is a UUID and can never hold
- * one, so the first colon is always the split even when the path carries its own.
- */
-export const keyOf = (entry: QueueEntry): string => `${entry.sessionId}:${entry.path}`
+export const keyOf = (entry: ArtifactQueueEntry): string => `${entry.sessionId}:${entry.path}`
 
-/**
- * Merges by `(sessionId, path)` rather than appending: a file edited across three cycles must
- * cost one upload, not three. Nothing is ever evicted -- oldest-first eviction would discard the
- * entry whose base is most likely to still resolve, exactly when uploads are already failing.
- */
 export const enqueue = async (
   path: string,
-  entries: ReadonlyArray<QueueEntry>,
+  entries: ReadonlyArray<ArtifactQueueEntry>,
   log?: pino.Logger,
 ): Promise<void> => {
   if (entries.length === 0) return

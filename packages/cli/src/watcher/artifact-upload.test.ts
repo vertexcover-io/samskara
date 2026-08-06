@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
-import type { QueueEntry } from "./artifact-queue.js"
+import type { ArtifactQueueEntry } from "./artifact-queue.js"
 import {
   classifyContentType,
   computeArtifactDiff,
@@ -39,7 +39,9 @@ const backupFile = async (name: string, content: string | Buffer): Promise<void>
   await writeFile(join(fileHistory, SESSION, name), content)
 }
 
-const entryFor = (over: Partial<QueueEntry> & { readonly path: string }): QueueEntry => ({
+const entryFor = (
+  over: Partial<ArtifactQueueEntry> & { readonly path: string },
+): ArtifactQueueEntry => ({
   sessionId: SESSION,
   relativePath: "docs/notes.md",
   changeKind: "edited",

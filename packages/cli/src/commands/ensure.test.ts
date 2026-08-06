@@ -3,13 +3,13 @@ import { beforeEach, describe, expect, test, vi } from "vitest"
 import { readToken } from "../config/credentials.js"
 import { reviveWatcher, watcherPid } from "../config/daemon.js"
 import { isProjectEnabled } from "../config/projects.js"
-import { resolveLocalProject } from "../project-resolver.js"
+import { resolveProject } from "../watcher/resolveProject.js"
 import { ensureCommand } from "./ensure.js"
 
 vi.mock("../config/credentials.js", () => ({ readToken: vi.fn() }))
 vi.mock("../config/daemon.js", () => ({ reviveWatcher: vi.fn(), watcherPid: vi.fn() }))
 vi.mock("../config/projects.js", () => ({ isProjectEnabled: vi.fn() }))
-vi.mock("../project-resolver.js", () => ({ resolveLocalProject: vi.fn() }))
+vi.mock("../watcher/resolveProject.js", () => ({ resolveProject: vi.fn() }))
 
 const project: ProjectIdentity = { name: "widget", slug: "acme-widget" }
 
@@ -30,7 +30,7 @@ beforeEach(() => {
   vi.mocked(readToken).mockResolvedValue("token")
   vi.mocked(watcherPid).mockReturnValue(321)
   vi.mocked(reviveWatcher).mockResolvedValue(321)
-  vi.mocked(resolveLocalProject).mockResolvedValue(project)
+  vi.mocked(resolveProject).mockResolvedValue(project)
   vi.mocked(isProjectEnabled).mockResolvedValue(true)
 })
 

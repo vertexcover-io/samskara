@@ -3,15 +3,15 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { beforeEach, describe, expect, test, vi } from "vitest"
 import {
+  type ArtifactQueueEntry,
   QUEUE_DEPTH_WARN_THRESHOLD,
-  type QueueEntry,
   enqueue,
   keyOf,
   readQueue,
 } from "./artifact-queue.js"
 import { spyLogger } from "./test-logger.js"
 
-const entry = (over: Partial<QueueEntry> = {}): QueueEntry => ({
+const entry = (over: Partial<ArtifactQueueEntry> = {}): ArtifactQueueEntry => ({
   sessionId: "sess-1",
   path: "/work/app/docs/a.md",
   relativePath: "docs/a.md",

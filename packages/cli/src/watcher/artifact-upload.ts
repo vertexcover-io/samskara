@@ -4,7 +4,7 @@ import { extname, join } from "node:path"
 import { MAX_BINARY_BYTES, MAX_DIFF_BYTES, MAX_TEXT_BYTES } from "@samskara/core"
 import { createTwoFilesPatch } from "diff"
 import type pino from "pino"
-import type { QueueEntry } from "./artifact-queue.js"
+import type { ArtifactQueueEntry } from "./artifact-queue.js"
 
 export { MAX_BINARY_BYTES, MAX_DIFF_BYTES, MAX_TEXT_BYTES }
 
@@ -109,7 +109,7 @@ const versionOf = (name: string, hash: string): number | null => {
  */
 export const resolveBase = async (
   deps: ArtifactUploadDeps,
-  entry: QueueEntry,
+  entry: ArtifactQueueEntry,
 ): Promise<{ readonly baseContent: Buffer; readonly backupPath: string } | null> => {
   if (!entry.backupFileName) return null
 
@@ -157,7 +157,7 @@ type ResolvedBase = {
 
 const baseFieldsFor = async (
   deps: ArtifactUploadDeps,
-  entry: QueueEntry,
+  entry: ArtifactQueueEntry,
   current: Buffer,
   isBinary: boolean,
 ): Promise<ResolvedBase> => {
@@ -181,13 +181,9 @@ const baseFieldsFor = async (
   }
 }
 
-/**
- * The seam where a future redaction policy would transform content: everything the upload
- * carries is derived here, between reading the bytes and building the payload.
- */
 export const prepareUpload = async (
   deps: ArtifactUploadDeps,
-  entry: QueueEntry,
+  entry: ArtifactQueueEntry,
 ): Promise<ArtifactUpload | null> => {
   const current = await readFile(entry.path).catch((error: unknown) => {
     deps.log.debug({ path: entry.path, err: error }, "artifact vanished before upload; skipping")

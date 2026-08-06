@@ -1,4 +1,3 @@
-import { relative } from "node:path"
 import type {
   AgentPlugin,
   Checkpoint,
@@ -15,32 +14,20 @@ import type {
 } from "@samskara/core"
 import { readCheckpoints, writeCheckpoints } from "@samskara/core"
 import type pino from "pino"
-import { createLocalRepoResolver, resolveLocalHeadSha } from "../project-resolver.js"
-import { collectArtifacts } from "./artifact-extract.js"
-import { type QueueEntry, enqueue } from "./artifact-queue.js"
-import { capturableRealpath } from "./containment.js"
+import { type PotentialArtifact, collectArtifacts } from "./artifact-extract.js"
+import { type ArtifactQueueEntry, enqueue } from "./artifact-queue.js"
+import { shouldCaptureArtifacts } from "./containment.js"
 import { collectGitEvents } from "./gitEvents.js"
+import { createRepoResolver, resolveHeadSha } from "./resolveRepo.js"
 
 export const MESSAGE_CAP = 2000
 
 export type Clock = { now(): number }
-export type WatcherConfig = { readonly statePath: string }
 
-/**
- * The cycle's only disk contact with an artifact: `realpath` to judge a symlink by its target,
- * and `stat` to skip a file whose bytes have not moved since the last cycle. Absent, the cycle
- * does no artifact work at all.
- */
-export type ArtifactCycleDeps = {
-  readonly queuePath: string
-  /**
-   * Which files were queued, and at what `mtime:size`. Held for the daemon's lifetime rather than
-   * on disk: its only job is to stop a stuck flush re-queueing the same bytes every cycle, which
-   * matters within a run and not across restarts. The worker's content hash remains the authority.
-   */
-  readonly seen: Map<string, string>
-  readonly realpath: (path: string) => Promise<string>
-  readonly stat: (path: string) => Promise<{ readonly size: number; readonly mtimeMs: number }>
+export type WatcherConfig = {
+  readonly statePath: string
+  /** Absent means the cycle does no artifact work at all. */
+  readonly artifactQueuePath?: string
 }
 
 export type WatcherDeps = {
@@ -53,7 +40,6 @@ export type WatcherDeps = {
   readonly log: pino.Logger
   readonly shouldCapture?: (project: ProjectIdentity) => Promise<boolean>
   readonly syncFromFor?: (project: ProjectIdentity) => Promise<string | undefined>
-  readonly artifacts?: ArtifactCycleDeps
 }
 
 export type Chunk = {
@@ -119,7 +105,7 @@ const payloadFor = (
 }
 
 // One resolver for the daemon's whole life, so its cwd cache outlives a cycle.
-const resolveRepo = createLocalRepoResolver()
+const resolveRepo = createRepoResolver()
 
 /**
  * Attributes each message to the repo of the cwd it happened in — per message, not per track,
@@ -197,7 +183,7 @@ const originFor = async (track: SessionTrack, prev: CheckpointStore): Promise<Se
     .flatMap((record) => record.messages)
     .find((message) => message.cwd !== undefined)?.cwd
   if (!startCwd) return {}
-  const startCommit = await resolveLocalHeadSha(startCwd)
+  const startCommit = await resolveHeadSha(startCwd)
   return { startCwd, ...(startCommit ? { startCommit } : {}) }
 }
 
@@ -214,35 +200,55 @@ const syncSession = async (
   return updated
 }
 
-/** `mtimeMs:size` — an artifact whose stamp is unchanged since the last cycle is already queued. */
+type TrackedCandidate = {
+  readonly sessionId: string
+  readonly candidate: PotentialArtifact
+}
+
+const candidatesOf = (
+  batch: SessionBatch,
+  root: string,
+  log: pino.Logger,
+): ReadonlyArray<TrackedCandidate> =>
+  batch.tracks.flatMap((track) =>
+    collectArtifacts(track.records, track.project.root ?? root, log).map((candidate) => ({
+      sessionId: track.sessionId,
+      candidate,
+    })),
+  )
+
+/**
+ * A file already queued this run is queued again rather than remembered: the worker settles
+ * duplicates on the content hash it already holds, so a second entry costs a queue write and
+ * nothing more.
+ */
 const enqueueArtifacts = async (
   batch: SessionBatch,
   root: string,
+  queuePath: string,
   deps: WatcherDeps,
-  artifacts: ArtifactCycleDeps,
 ): Promise<void> => {
   const observedAt = new Date(deps.clock.now()).toISOString()
-  const entries: QueueEntry[] = []
-  // Staged, not committed: a file counts as seen only once its entry reaches the queue. Recording
-  // it before the write succeeds would skip it on every later cycle -- a silent, permanent drop.
-  const pending: Array<readonly [string, string]> = []
+  const candidates = candidatesOf(batch, root, deps.log)
+  const decisions = await shouldCaptureArtifacts(
+    candidates.map(({ candidate }) => candidate.path),
+    { projectRoot: root, allowScratch: true },
+  )
 
-  for (const track of batch.tracks) {
-    const cwd = track.project.root ?? root
-    for (const candidate of collectArtifacts(track.records, cwd, deps.log)) {
-      const resolved = await capturableRealpath(candidate.path, root, artifacts.realpath)
-      if (resolved === null) continue
-
-      const stat = await artifacts.stat(resolved).catch(() => null)
-      if (!stat) continue
-      const stamp = `${stat.mtimeMs}:${stat.size}`
-      if (artifacts.seen.get(resolved) === stamp) continue
-      pending.push([resolved, stamp])
-
-      entries.push({
-        sessionId: track.sessionId,
-        path: resolved,
-        relativePath: relative(root, resolved),
+  const entries = candidates.flatMap(({ sessionId, candidate }, index): ArtifactQueueEntry[] => {
+    const decision = decisions[index]
+    if (!decision?.ok) {
+      deps.log.debug(
+        { path: candidate.path, reason: decision?.reason },
+        "artifact candidate skipped",
+      )
+      return []
+    }
+    return [
+      {
+        sessionId,
+        path: decision.path,
+        relativePath: decision.relativePath,
         changeKind: candidate.changeKind,
         ...(candidate.backupFileName === undefined
           ? {}
@@ -250,13 +256,12 @@ const enqueueArtifacts = async (
         ...(candidate.oldFragment === undefined ? {} : { oldFragment: candidate.oldFragment }),
         observedAt,
         attempts: 0,
-      })
-    }
-  }
+      },
+    ]
+  })
 
   if (entries.length === 0) return
-  await enqueue(artifacts.queuePath, entries, deps.log)
-  for (const [path, stamp] of pending) artifacts.seen.set(path, stamp)
+  await enqueue(queuePath, entries, deps.log)
 }
 
 export const runCycle = async (
@@ -277,14 +282,14 @@ export const runCycle = async (
 
   // After the flush, before the checkpoint write: enqueuing earlier would queue artifacts for
   // records that never reached the server, and the worker would 409 on every one.
-  const { artifacts } = deps
-  if (artifacts) {
+  const { artifactQueuePath } = config
+  if (artifactQueuePath !== undefined) {
     for (const batch of batches) {
       const root = batch.tracks[0]?.project.root
       // No root means the --project-slug override path, which synthesizes an identity without
       // one. Silent by design: it recurs every cycle for the whole run.
       if (root === undefined) continue
-      await enqueueArtifacts(batch, root, deps, artifacts)
+      await enqueueArtifacts(batch, root, artifactQueuePath, deps)
     }
   }
 

@@ -2,7 +2,7 @@ import { resolve } from "node:path"
 import { reviveWatcher, watcherPid } from "../config/daemon.js"
 import { watchLogDir } from "../config/paths.js"
 import { getProject, upsertProject } from "../config/projects.js"
-import { resolveLocalProject } from "../project-resolver.js"
+import { resolveProject } from "../watcher/resolveProject.js"
 
 interface Writer {
   write(text: string): unknown
@@ -32,7 +32,7 @@ const cutoffFor = (options: EnableOptions, enabledAt: string): string | undefine
 export const enableCommand = async (options: EnableOptions = {}): Promise<number> => {
   const cwd = options.cwd ?? process.cwd()
   const path = resolve(cwd, options.path ?? cwd)
-  const project = await resolveLocalProject(path)
+  const project = await resolveProject(path)
   const existing = await getProject(project.slug)
   const stdout = options.stdout ?? process.stdout
   const enabledAt = (options.now ?? (() => new Date()))().toISOString()

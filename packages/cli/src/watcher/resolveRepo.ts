@@ -1,9 +1,8 @@
 import type { RepoIdentity } from "@samskara/core"
-import { type GitRunner, basename, gitRootOf, parseRemote } from "./resolveProject.js"
+import { runGit } from "../git.js"
+import { basename, gitRootOf, parseRemote } from "./resolveProject.js"
 
 export type ResolvedRepo = RepoIdentity & { readonly root: string }
-
-export type ResolveRepoDeps = { readonly runGit: GitRunner }
 
 /**
  * A repo with no remote still needs a stable identity, so its root stands in for the remote.
@@ -11,8 +10,8 @@ export type ResolveRepoDeps = { readonly runGit: GitRunner }
  */
 const LOCAL_HOST = "local"
 
-const identityFor = async (cwd: string, runGit: GitRunner): Promise<ResolvedRepo | null> => {
-  const root = await gitRootOf(cwd, runGit)
+const identityFor = async (cwd: string): Promise<ResolvedRepo | null> => {
+  const root = await gitRootOf(cwd)
   if (root === null) return null
   const remote = await runGit(["config", "--get", "remote.origin.url"], root)
   const parsed = remote ? parseRemote(remote) : null
@@ -27,7 +26,7 @@ const identityFor = async (cwd: string, runGit: GitRunner): Promise<ResolvedRepo
  * checkout and rebase, so it is only correct at the moment a session starts. The watcher polls
  * after the fact, so a later read returns a sha the session never ran on.
  */
-export const resolveHeadSha = (cwd: string, { runGit }: ResolveRepoDeps): Promise<string | null> =>
+export const resolveHeadSha = (cwd: string): Promise<string | null> =>
   runGit(["rev-parse", "HEAD"], cwd)
 
 /**
@@ -35,14 +34,12 @@ export const resolveHeadSha = (cwd: string, { runGit }: ResolveRepoDeps): Promis
  * does not change under us, and a scratch directory must not re-shell on every message it
  * appears on. HEAD deliberately has no place here — see `resolveHeadSha`.
  */
-export const createRepoResolver = ({
-  runGit,
-}: ResolveRepoDeps): ((cwd: string) => Promise<ResolvedRepo | null>) => {
+export const createRepoResolver = (): ((cwd: string) => Promise<ResolvedRepo | null>) => {
   const byCwd = new Map<string, Promise<ResolvedRepo | null>>()
   return (cwd) => {
     const hit = byCwd.get(cwd)
     if (hit) return hit
-    const pending = identityFor(cwd, runGit)
+    const pending = identityFor(cwd)
     byCwd.set(cwd, pending)
     return pending
   }
