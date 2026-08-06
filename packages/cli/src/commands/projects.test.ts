@@ -201,7 +201,10 @@ describe("enable command", () => {
     const { output } = await setup()
     const daemon = { runningPid: initialPid as number | null }
     vi.mocked(watcherPid).mockImplementation(() => daemon.runningPid)
+    // Mirrors the real one, which returns the running pid without starting anything. The double
+    // used to skip that because the caller checked first, so it never saw an already-running case.
     vi.mocked(reviveWatcher).mockImplementation(async () => {
+      if (daemon.runningPid !== null) return daemon.runningPid
       daemon.runningPid = revivedPid
       return revivedPid
     })

@@ -1,5 +1,5 @@
 import { resolve } from "node:path"
-import { reviveWatcher, watcherPid } from "../config/daemon.js"
+import { reviveWatcher } from "../config/daemon.js"
 import { watchLogDir } from "../config/paths.js"
 import { getProject, upsertProject } from "../config/projects.js"
 import { resolveProject } from "../watcher/resolveProject.js"
@@ -67,18 +67,18 @@ export const enableCommand = async (options: EnableOptions = {}): Promise<number
     )
   }
 
-  if (watcherPid() === null) {
-    const pid = await reviveWatcher()
+  // `reviveWatcher` returns the running pid when there is one, so the message says what is true
+  // afterwards rather than claiming this call started it.
+  const pid = await reviveWatcher()
+  if (pid === null) {
     const stderr = options.stderr ?? process.stderr
-    if (pid === null) {
-      stderr.write(
-        `The capture watcher could not be started, so sessions will not be recorded. See the logs in ${watchLogDir()} for the reason.\n`,
-      )
-    } else {
-      stdout.write(
-        `Started the capture watcher (process ${pid}). Its logs are in ${watchLogDir()}.\n`,
-      )
-    }
+    stderr.write(
+      `The capture watcher could not be started, so sessions will not be recorded. See the logs in ${watchLogDir()} for the reason.\n`,
+    )
+  } else {
+    stdout.write(
+      `The capture watcher is running (process ${pid}). Its logs are in ${watchLogDir()}.\n`,
+    )
   }
   return 0
 }
