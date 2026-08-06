@@ -30,7 +30,6 @@ const env: Env = {
   cookieSecure: false,
   jwtSecret: "test-secret-value",
   jwtExpiresIn: "7d",
-  artifactPreviewSandbox: true,
 }
 
 const sha256 = (content: string | Buffer): string =>
@@ -326,54 +325,21 @@ describe.skipIf(!dockerAvailable())("artifacts route", () => {
     expect(await res.text()).toBe("# notes\n")
   })
 
-  test("S34: the path route serves markup sandboxed, widened to this origin and nothing else", async () => {
-    await post(upload({ currentContent: "<!doctype html><p>hi</p>" }))
-
-    const csp = (await byPath("docs/notes.md")).headers.get("content-security-policy") ?? ""
-
-    // Scripts run so an agent-authored report still renders, but the document stays origin-less
-    // and can only reach back to us -- never an attacker's collector.
-    expect(csp).toContain("sandbox allow-scripts")
-    expect(csp).not.toContain("allow-same-origin")
-    expect(csp).toContain("default-src 'none'")
-    // Both of our origins: the page is reachable directly and through the web app's proxy, and a
-    // subresource resolves against whichever one served the document.
-    expect(csp).toContain(`img-src ${env.publicBaseUrl} ${env.webBaseUrl}`)
-    expect(csp).toContain(`media-src ${env.publicBaseUrl} ${env.webBaseUrl}`)
-  })
-
-  test("S34: the uuid route stays as strict as it was -- only the path route widens", async () => {
+  test("S34: markup is served with no content policy, so a report can load its own media", async () => {
     await post(upload({ currentContent: "<!doctype html><p>hi</p>" }))
     const [row] = await db.select({ id: artifact.id }).from(artifact)
     if (!row) throw new Error("upload did not store a row")
 
-    const res = await app.request(`/api/artifacts/${row.id}/raw`, {
-      headers: { cookie: `session=${webToken}` },
-    })
-    const csp = res.headers.get("content-security-policy") ?? ""
-
-    expect(csp).toContain("default-src 'none'")
-    expect(csp).not.toContain(env.publicBaseUrl)
-  })
-
-  test("S34: opting the sandbox off serves the same markup with no policy at all", async () => {
-    await post(upload({ currentContent: "<!doctype html><p>hi</p>" }))
-
-    const opted = buildApp(
-      db,
-      { ...env, artifactPreviewSandbox: false },
-      {
-        rootLog: createLogger({ service: "test" }, { level: "silent" }),
-      },
-    )
-    const res = await opted.request(`/api/artifacts/session/${SESSION_ID}/files/docs/notes.md`, {
+    const byUuid = await app.request(`/api/artifacts/${row.id}/raw`, {
       headers: { cookie: `session=${webToken}` },
     })
 
-    // No policy rather than a relaxed one: the document becomes an ordinary same-origin page, so
-    // its media authenticates -- and any script in it acts as the signed-in user.
-    expect(res.status).toBe(200)
-    expect(res.headers.get("content-security-policy")).toBeNull()
+    // No policy rather than a relaxed one: the document is an ordinary same-origin page, so its
+    // relative references authenticate -- and any script in it acts as the signed-in user.
+    for (const res of [await byPath("docs/notes.md"), byUuid]) {
+      expect(res.status).toBe(200)
+      expect(res.headers.get("content-security-policy")).toBeNull()
+    }
   })
 
   test("S34: a range request is honoured, so a captured video can seek inside the frame", async () => {

@@ -1,35 +1,6 @@
 export type ServeHeaders = {
   readonly contentType: string
   readonly disposition: "inline" | "attachment"
-  readonly csp?: string
-}
-
-/**
- * `allow-scripts` without `allow-same-origin` puts the document in an opaque origin: scripts run,
- * so an agent-authored diagram still renders, but the document has no cookies, no localStorage, no
- * `parent`, and no same-origin API access. Granting `allow-same-origin` alongside it would cancel
- * the sandbox outright -- a script inside could strip its own sandbox and reload with full origin
- * access -- so the two must never appear together here or in any iframe rendering this response.
- *
- * Sent as a response header rather than an iframe attribute so it also applies to direct navigation
- * to the raw URL, where no iframe exists. `default-src 'none'` stops the page beaconing data out.
- */
-/**
- * `mediaOrigin` widens `img-src`/`media-src` to exactly one origin -- ours -- so a captured report
- * can display the screenshots and recordings it references. `'self'` cannot do this: the document
- * sits in an opaque origin, where `'self'` matches nothing.
- *
- * Naming our own origin rather than `https:` is what keeps it a widening and not a hole. The page
- * gains the ability to issue credential-less GETs to this API and nowhere else, so it cannot beacon
- * to an attacker's server, and the responses it provokes are 401s it is not permitted to read --
- * `connect-src` still falls through to `default-src 'none'`.
- */
-const sandboxCsp = (mediaOrigins: ReadonlyArray<string> = []): string => {
-  const media = mediaOrigins.length === 0 ? "" : ` ${mediaOrigins.join(" ")}`
-  return (
-    `sandbox allow-scripts; default-src 'none'; img-src${media} data: blob:; ` +
-    `media-src${media || " 'none'"}; style-src 'unsafe-inline'; script-src 'unsafe-inline'`
-  )
 }
 
 const TEXT_PLAIN = "text/plain; charset=utf-8"
@@ -63,29 +34,16 @@ const INERT: ReadonlyArray<Sniffer> = [
 ]
 
 /**
- * Detected by content rather than by the claimed mime type: SVG can carry `<script>`, so it must
- * take the sandbox path however it was uploaded -- including base64, which arrives flagged binary.
+ * Detected by content rather than by the claimed mime type, so an SVG renders as the page it is
+ * however it was uploaded -- including base64, which arrives flagged binary.
  */
 const MARKUP =
   /^\s*(?:<\?xml[^>]*\?>\s*(?:<!--[\s\S]*?-->\s*)*)?(?:<!doctype\s+html|<html\b|<svg\b)/i
 
 const isMarkup = (bytes: Buffer): boolean => MARKUP.test(bytes.subarray(0, 512).toString("utf8"))
 
-export type MarkupPolicy = {
-  readonly mediaOrigins?: ReadonlyArray<string>
-  /** False omits the policy entirely: the document renders as an ordinary same-origin page. */
-  readonly sandbox?: boolean
-}
-
-export const serveHeadersFor = (
-  bytes: Buffer,
-  isBinary: boolean,
-  policy: MarkupPolicy = {},
-): ServeHeaders => {
-  if (isMarkup(bytes)) {
-    if (policy.sandbox === false) return { contentType: TEXT_HTML, disposition: "inline" }
-    return { contentType: TEXT_HTML, disposition: "inline", csp: sandboxCsp(policy.mediaOrigins) }
-  }
+export const serveHeadersFor = (bytes: Buffer, isBinary: boolean): ServeHeaders => {
+  if (isMarkup(bytes)) return { contentType: TEXT_HTML, disposition: "inline" }
 
   if (!isBinary) return { contentType: TEXT_PLAIN, disposition: "attachment" }
 

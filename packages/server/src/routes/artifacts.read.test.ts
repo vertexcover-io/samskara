@@ -91,7 +91,6 @@ const env: Env = {
   cookieSecure: false,
   jwtSecret: "test-secret-value",
   jwtExpiresIn: "7d",
-  artifactPreviewSandbox: true,
 }
 
 const sha256 = (content: Buffer): string => createHash("sha256").update(content).digest("hex")
@@ -434,7 +433,7 @@ describe.skipIf(!dockerAvailable())("artifact read routes", () => {
     expect(res.headers.get("x-content-type-options")).toBe("nosniff")
   })
 
-  test("S44: HTML is served as text/html in an opaque origin, with its script body unmodified", async () => {
+  test("S44: HTML is served as text/html with its script body unmodified", async () => {
     const id = await seedArtifact({
       path: "/work/report.html",
       relativePath: "report.html",
@@ -447,18 +446,11 @@ describe.skipIf(!dockerAvailable())("artifact read routes", () => {
     expect(res.status).toBe(200)
     expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8")
 
-    const csp = res.headers.get("content-security-policy") ?? ""
-    expect(csp).toContain("sandbox allow-scripts")
-    expect(csp).toContain("default-src 'none'")
-    // `allow-scripts` + `allow-same-origin` cancels the sandbox: a script inside could strip its
-    // own sandbox attribute and reload with full origin access.
-    expect(csp).not.toContain("allow-same-origin")
-
-    // The protection is the origin, not rewriting the body -- an agent's diagram must still render.
+    // The body is never rewritten -- an agent's diagram must still render as authored.
     expect(await res.text()).toBe(HTML)
   })
 
-  test("S45: SVG claiming image/svg+xml takes the sandboxed HTML path, never the image path", async () => {
+  test("S45: SVG claiming image/svg+xml takes the markup path, never the image path", async () => {
     const id = await seedArtifact({
       path: "/work/diagram.svg",
       relativePath: "diagram.svg",
@@ -473,11 +465,6 @@ describe.skipIf(!dockerAvailable())("artifact read routes", () => {
     const contentType = res.headers.get("content-type") ?? ""
     expect(contentType).not.toContain("svg")
     expect(contentType).toBe("text/html; charset=utf-8")
-
-    const csp = res.headers.get("content-security-policy") ?? ""
-    expect(csp).toContain("sandbox allow-scripts")
-    expect(csp).toContain("default-src 'none'")
-    expect(csp).not.toContain("allow-same-origin")
     expect(res.headers.get("x-content-type-options")).toBe("nosniff")
   })
 

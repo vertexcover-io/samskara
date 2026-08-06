@@ -21,21 +21,7 @@ describe("loadEnv", () => {
       cookieSecure: false,
       jwtSecret: "jwt",
       jwtExpiresIn: "7d",
-      artifactPreviewSandbox: false,
     })
-  })
-
-  test("the artifact preview sandbox is off unless a source explicitly turns it on", () => {
-    // Deliberately unsafe by default, for an internal deployment: captured markup renders as an
-    // ordinary same-origin page so it can load its own media. Anything serving artifacts it does
-    // not control has to set this to `on`.
-    expect(loadEnv(complete).artifactPreviewSandbox).toBe(false)
-    expect(loadEnv({ ...complete, ARTIFACT_PREVIEW_SANDBOX: "off" }).artifactPreviewSandbox).toBe(
-      false,
-    )
-    expect(loadEnv({ ...complete, ARTIFACT_PREVIEW_SANDBOX: "on" }).artifactPreviewSandbox).toBe(
-      true,
-    )
   })
 
   test("defaults JWT_EXPIRES_IN to 7d and honors an override", () => {

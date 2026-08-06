@@ -20,7 +20,6 @@ describe("serveHeadersFor", () => {
     const headers = serveHeadersFor(Buffer.from("console.log('hi')\n", "utf8"), false)
 
     expect(headers.contentType).toBe("text/plain; charset=utf-8")
-    expect(headers.csp).toBeUndefined()
   })
 
   test("S42: binary bytes matching no inert signature fall through to an octet-stream attachment", () => {
@@ -62,33 +61,17 @@ describe("serveHeadersFor", () => {
     expect(serveHeadersFor(riff("WAVE"), true).contentType).toBe("application/octet-stream")
   })
 
-  test("S44: HTML is served as text/html inside a scripts-only sandbox", () => {
+  test("S44: HTML is served inline as text/html with its script body unmodified", () => {
     const headers = serveHeadersFor(
       Buffer.from("<!doctype html><html><body><script>alert(1)</script></body></html>", "utf8"),
       false,
     )
 
     expect(headers.contentType).toBe("text/html; charset=utf-8")
-    expect(headers.csp).toContain("sandbox allow-scripts")
-    expect(headers.csp).toContain("default-src 'none'")
     expect(headers.disposition).toBe("inline")
   })
 
-  test("S44: the sandbox directive never grants allow-same-origin, which would cancel it", () => {
-    // `allow-scripts` plus `allow-same-origin` lets a script inside remove its own sandbox and
-    // reload with full origin access -- the two together are equivalent to no sandbox at all.
-    const html = serveHeadersFor(Buffer.from("<html><script>x</script></html>", "utf8"), false)
-    const svg = serveHeadersFor(
-      Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>', "utf8"),
-      false,
-    )
-
-    for (const headers of [html, svg]) {
-      expect(headers.csp).not.toContain("allow-same-origin")
-    }
-  })
-
-  test("S45: SVG takes the sandboxed HTML path rather than being served as an image", () => {
+  test("S45: SVG takes the markup path rather than being served as an image", () => {
     const headers = serveHeadersFor(
       Buffer.from(
         '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>',
@@ -99,7 +82,6 @@ describe("serveHeadersFor", () => {
 
     expect(headers.contentType).not.toContain("svg")
     expect(headers.contentType).toBe("text/html; charset=utf-8")
-    expect(headers.csp).toContain("sandbox allow-scripts")
   })
 
   test("S45: an XML-prologued SVG is detected by content, not by its declaration", () => {
@@ -109,10 +91,9 @@ describe("serveHeadersFor", () => {
     )
 
     expect(headers.contentType).toBe("text/html; charset=utf-8")
-    expect(headers.csp).toContain("sandbox allow-scripts")
   })
 
-  test("S45: bytes flagged binary that begin with <svg still take the sandbox path", () => {
+  test("S45: bytes flagged binary that begin with <svg still take the markup path", () => {
     // isBinary is derived from the upload's encoding, so an SVG sent base64 arrives flagged
     // binary. It must not reach the sniffed image allow-list on that basis.
     const headers = serveHeadersFor(
@@ -121,7 +102,6 @@ describe("serveHeadersFor", () => {
     )
 
     expect(headers.contentType).toBe("text/html; charset=utf-8")
-    expect(headers.csp).toContain("sandbox allow-scripts")
   })
 
   test("S42: text that merely mentions html is not promoted to the HTML path", () => {
