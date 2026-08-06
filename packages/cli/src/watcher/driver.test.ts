@@ -678,6 +678,7 @@ describe("watcher driver", () => {
           sessionId: "sess-1",
           path: artifactFile,
           relativePath: "docs/a.md",
+          projectRoot: dir,
           changeKind: "created" as const,
           observedAt: "2026-07-28T12:00:00.000Z",
           attempts: 0,

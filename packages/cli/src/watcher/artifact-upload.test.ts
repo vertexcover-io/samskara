@@ -44,6 +44,7 @@ const entryFor = (
 ): ArtifactQueueEntry => ({
   sessionId: SESSION,
   relativePath: "docs/notes.md",
+  projectRoot: "/work/app",
   changeKind: "edited",
   observedAt: "2026-07-28T10:00:00.000Z",
   attempts: 0,

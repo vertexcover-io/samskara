@@ -133,16 +133,18 @@ const deniedBy = (path: string, zoneRoot: string): string | null => {
   return null
 }
 
-type Zone = { readonly root: string; readonly scratch: boolean }
-
 /**
  * The project root wins over an enclosing scratch root, so a project living under the temp dir is
  * still measured against itself.
  */
-const zoneOf = async (path: string, projectRoot: string): Promise<Zone | null> => {
-  if (isInside(path, projectRoot)) return { root: projectRoot, scratch: false }
-  const root = (await SCRATCH_ROOTS).find((candidate) => isInside(path, candidate))
-  return root === undefined ? null : { root, scratch: true }
+const rootFor = async (
+  path: string,
+  projectRoot: string,
+  allowScratch: boolean,
+): Promise<string | undefined> => {
+  if (isInside(path, projectRoot)) return projectRoot
+  if (!allowScratch) return undefined
+  return (await SCRATCH_ROOTS).find((root) => isInside(path, root))
 }
 
 /**
@@ -158,18 +160,16 @@ const decide = async (
   const path = await realpath(resolve(input)).catch(() => null)
   if (path === null) return { ok: false, reason: "path does not resolve" }
 
-  const zone = await zoneOf(path, projectRoot)
-  if (zone === null || (zone.scratch && !allowScratch)) {
-    return { ok: false, reason: "outside the project root" }
-  }
+  const root = await rootFor(path, projectRoot, allowScratch)
+  if (root === undefined) return { ok: false, reason: "outside the project root" }
 
-  const denial = deniedBy(path, zone.root)
+  const denial = deniedBy(path, root)
   if (denial !== null) return { ok: false, reason: denial }
 
   const info = await stat(path).catch(() => null)
   if (info?.isFile() !== true) return { ok: false, reason: "not a regular file" }
 
-  return { ok: true, path, relativePath: relative(zone.root, path) }
+  return { ok: true, path, relativePath: relative(root, path) }
 }
 
 /**

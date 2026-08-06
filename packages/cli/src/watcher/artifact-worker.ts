@@ -152,11 +152,6 @@ const REFERENCE_SCAN_TYPES = new Set(["text/html", "text/markdown"])
  * canonical because both fields were built from a canonical root -- `resolveProject` resolves it
  * once, and every enqueuer computes `relativePath` against that.
  */
-const projectRootOf = (entry: ArtifactQueueEntry): string => {
-  const trimmed = entry.path.slice(0, entry.path.length - entry.relativePath.length)
-  return trimmed.endsWith(sep) ? trimmed.slice(0, -1) : trimmed
-}
-
 /**
  * `--literal-pathspecs` is a top-level git option and has to precede the subcommand -- placed after
  * it, git rejects it as unknown. Without it pathspec magic is on, and a file named `shot[1].png` is
@@ -205,7 +200,7 @@ const enqueueReferences = async (
     const refs = referencedPaths(upload.currentContent, dirname(entry.path))
     if (refs.length === 0) return
 
-    const projectRoot = projectRootOf(entry)
+    const projectRoot = entry.projectRoot
     const decisions = await shouldCaptureArtifacts(refs, { projectRoot, allowScratch: false })
     const survivors = decisions.flatMap((decision) => (decision.ok ? [decision.path] : []))
     if (survivors.length === 0) return
@@ -224,6 +219,7 @@ const enqueueReferences = async (
         sessionId: entry.sessionId,
         path: ref,
         relativePath: relative(projectRoot, ref),
+        projectRoot,
         changeKind: "created",
         observedAt,
         attempts: 0,

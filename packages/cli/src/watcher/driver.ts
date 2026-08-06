@@ -249,6 +249,7 @@ const enqueueArtifacts = async (
         sessionId,
         path: decision.path,
         relativePath: decision.relativePath,
+        projectRoot: root,
         changeKind: candidate.changeKind,
         ...(candidate.backupFileName === undefined
           ? {}
