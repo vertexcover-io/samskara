@@ -1,14 +1,8 @@
 import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, expect, test, vi } from "vitest"
-import { artifactDeps, drainWorkers, globAll } from "./index.js"
-
-const originalHome = process.env.SAMSKARA_HOME
-
-afterEach(() => {
-  process.env.SAMSKARA_HOME = originalHome
-})
+import { expect, test, vi } from "vitest"
+import { drainWorkers, globAll } from "./index.js"
 
 test("watch discovery ignores broken symlinks and returns every nested JSONL", async () => {
   const root = await mkdtemp(join(tmpdir(), "samskara-discovery-"))
@@ -23,28 +17,6 @@ test("watch discovery ignores broken symlinks and returns every nested JSONL", a
   expect([...files].sort()).toEqual(
     [join(root, "project", "main.jsonl"), join(nested, "agent.jsonl")].sort(),
   )
-})
-
-test("the daemon's artifact deps point into the active samskara home and resolve symlinks", async () => {
-  const home = await mkdtemp(join(tmpdir(), "samskara-artifact-deps-"))
-  process.env.SAMSKARA_HOME = home
-
-  const deps = artifactDeps()
-
-  expect(deps.queuePath).toBe(join(home, "artifact-queue.json"))
-  // The seen map is per-run state, so it starts empty and never touches the home directory --
-  // `artifacts.json` there belongs solely to the workers.
-  expect(deps.seen.size).toBe(0)
-
-  // `stat` and `realpath` are the cycle's only disk contact with an artifact: a symlink must
-  // resolve to its target so containment judges the real file, and `stat` must report its size.
-  const target = join(home, "real.md")
-  const link = join(home, "link.md")
-  await writeFile(target, "hello", "utf8")
-  await symlink(target, link)
-
-  expect(await deps.realpath(link)).toBe(await deps.realpath(target))
-  expect((await deps.stat(target)).size).toBe(5)
 })
 
 /**

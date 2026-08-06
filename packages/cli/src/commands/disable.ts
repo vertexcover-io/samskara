@@ -1,7 +1,7 @@
 import { resolve } from "node:path"
 import type { ProjectIdentity } from "@samskara/core"
 import { setProjectEnabled } from "../config/projects.js"
-import { resolveLocalProject } from "../project-resolver.js"
+import { resolveProject } from "../watcher/resolveProject.js"
 
 interface Writer {
   write(text: string): unknown
@@ -17,7 +17,7 @@ export type DisableOptions = {
 export const disableCommand = async (options: DisableOptions = {}): Promise<number> => {
   const cwd = options.cwd ?? process.cwd()
   const path = resolve(cwd, options.path ?? cwd)
-  const project = await (options.resolveProject ?? resolveLocalProject)(path)
+  const project = await (options.resolveProject ?? resolveProject)(path)
   const updated = await setProjectEnabled(project.slug, false)
   const stdout = options.stdout ?? process.stdout
   if (updated === null) {

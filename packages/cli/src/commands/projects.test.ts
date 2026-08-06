@@ -5,7 +5,7 @@ import type { ProjectIdentity } from "@samskara/core"
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
 import { reviveWatcher, watcherPid } from "../config/daemon.js"
 import { getProject, upsertProject } from "../config/projects.js"
-import { resolveLocalProject } from "../project-resolver.js"
+import { resolveProject } from "../watcher/resolveProject.js"
 import { disableCommand } from "./disable.js"
 import { enableCommand } from "./enable.js"
 
@@ -21,12 +21,12 @@ vi.mock("../config/daemon.js", () => ({
   reviveWatcher: vi.fn(() => 4321),
   watcherPid: vi.fn(() => 999),
 }))
-vi.mock("../project-resolver.js", () => ({ resolveLocalProject: vi.fn() }))
+vi.mock("../watcher/resolveProject.js", () => ({ resolveProject: vi.fn() }))
 
 const identity: ProjectIdentity = { name: "widget", slug: "acme-widget" }
 
 beforeEach(() => {
-  vi.mocked(resolveLocalProject).mockResolvedValue(identity)
+  vi.mocked(resolveProject).mockResolvedValue(identity)
   vi.mocked(watcherPid).mockReturnValue(999)
   vi.mocked(reviveWatcher).mockResolvedValue(4321)
 })
@@ -181,7 +181,7 @@ describe("enable command", () => {
 
   test("EDGE-003: normalizes a relative non-git path before resolving", async () => {
     const { output } = await setup()
-    vi.mocked(resolveLocalProject).mockResolvedValue({ name: "nested", slug: "-work-nested" })
+    vi.mocked(resolveProject).mockResolvedValue({ name: "nested", slug: "-work-nested" })
 
     await enableCommand({
       path: "nested",
@@ -189,7 +189,7 @@ describe("enable command", () => {
       stdout: { write: (text) => output.push(text) },
     })
 
-    expect(resolveLocalProject).toHaveBeenCalledWith("/work/nested")
+    expect(resolveProject).toHaveBeenCalledWith("/work/nested")
     expect((await getProject("-work-nested"))?.path).toBe("/work/nested")
   })
 

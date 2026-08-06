@@ -2,7 +2,7 @@ import { readToken } from "../config/credentials.js"
 import { reviveWatcher, watcherPid } from "../config/daemon.js"
 import { watchLogDir } from "../config/paths.js"
 import { isProjectEnabled } from "../config/projects.js"
-import { resolveLocalProject } from "../project-resolver.js"
+import { resolveProject } from "../watcher/resolveProject.js"
 
 interface Writer {
   write(text: string): unknown
@@ -48,7 +48,7 @@ export const ensureCommand = async (options: EnsureOptions = {}): Promise<number
       }
     }
 
-    const project = await resolveLocalProject(options.cwd ?? process.cwd())
+    const project = await resolveProject(options.cwd ?? process.cwd())
     if (!(await isProjectEnabled(project.slug))) {
       context.push(
         `This project (${project.slug}) is not enabled for Samskara capture. Ask the user whether to enable it; if they agree, run \`samskara enable\`.`,
