@@ -4,7 +4,7 @@ import type { IngestPayload, NormalizedMessage, ParsedRecord, RepoIdentity } fro
 import { createLogger } from "@samskara/core"
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql"
 import { and, eq, inArray } from "drizzle-orm"
-import { afterAll, beforeAll, describe, expect, test } from "vitest"
+import { afterAll, beforeAll, describe, expect, test, vi } from "vitest"
 import { type Db, createDb } from "../db/client.js"
 import {
   commits,
@@ -12,6 +12,7 @@ import {
   projects,
   pullRequests,
   repos,
+  sessionChunk,
   sessionPullRequests,
   sessions,
   subagents,
@@ -20,6 +21,7 @@ import {
   toolResult,
   users,
 } from "../db/schema.js"
+import * as sessionChunksRepo from "../repositories/sessionChunks.repo.js"
 import { type Ctx, ingest } from "./ingest.js"
 
 const dockerAvailable = () => {
@@ -271,6 +273,110 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
       .orderBy(messages.lineNumber)
 
     expect(rows.map((row) => row.subType)).toEqual(["toolInjection", null])
+  })
+
+  test("ingest chunks a session's closed turn immediately after flushing its messages", async () => {
+    const sessionId = "sess-chunked-on-ingest"
+    const base = {
+      sessionId,
+      source: "claude_code" as const,
+      sourceSchemaVersion: 1,
+      trackId: "main",
+    }
+    const items: ReadonlyArray<TestMessage> = [
+      {
+        lineUuid: "0191d942-3ba5-7dba-9a7d-22d65b302600",
+        lineNumber: 1,
+        message: {
+          ...base,
+          subIndex: 0,
+          msgType: "message",
+          role: "user",
+          content: { type: "text", value: "find the flaky test" },
+        },
+      },
+      {
+        lineUuid: "0191d942-3ba5-7dba-9a7d-22d65b302601",
+        lineNumber: 2,
+        message: {
+          ...base,
+          subIndex: 0,
+          msgType: "message",
+          role: "user",
+          content: { type: "text", value: "second turn opens, closing the first" },
+        },
+      },
+    ]
+
+    await ingest(ctx, mainPayload(sessionId, items))
+
+    const rows = await db.select().from(sessionChunk).where(eq(sessionChunk.sessionId, sessionId))
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.searchText).toContain("find the flaky test")
+  })
+
+  test("ingest derives a title chunk once the flush carries a title, and replaces it when the title changes", async () => {
+    const sessionId = "sess-title-on-ingest"
+    const item = customMessage({
+      sessionId,
+      lineUuid: "0191d942-3ba5-7dba-9a7d-22d65b302700",
+    })
+    const titleChunkRows = () =>
+      db
+        .select()
+        .from(sessionChunk)
+        .where(and(eq(sessionChunk.sessionId, sessionId), eq(sessionChunk.kind, "title")))
+
+    await ingest(ctx, { ...mainPayload(sessionId, [item]), title: "Original title" })
+    const firstPass = await titleChunkRows()
+    expect(firstPass).toHaveLength(1)
+    expect(firstPass[0]?.searchText).toBe("Original title")
+
+    await ingest(ctx, { ...mainPayload(sessionId, [item]), title: "Renamed title" })
+    const secondPass = await titleChunkRows()
+    expect(secondPass).toHaveLength(1)
+    expect(secondPass[0]?.searchText).toBe("Renamed title")
+    expect(secondPass[0]?.id).not.toBe(firstPass[0]?.id)
+  })
+
+  test("a chunking failure is swallowed: the messages still land and ingest still reports success", async () => {
+    // Chunk rows are derived state and the next flush recomputes them, so a chunker fault must
+    // not cost the caller its messages. Asserting the messages persisted as well as the response,
+    // because "returns success" alone would also be true if the whole write had rolled back.
+    const sessionId = "sess-chunk-failure"
+    const spy = vi
+      .spyOn(sessionChunksRepo, "writeChunksForSession")
+      .mockRejectedValue(new Error("string is too long for tsvector"))
+
+    try {
+      const result = await ingest(
+        ctx,
+        mainPayload(sessionId, [
+          {
+            lineUuid: "0191d942-3ba5-7dba-9a7d-22d65b302700",
+            lineNumber: 1,
+            message: {
+              sessionId,
+              source: "claude_code" as const,
+              sourceSchemaVersion: 1,
+              trackId: "main",
+              subIndex: 0,
+              msgType: "message",
+              role: "user",
+              content: { type: "text", value: "this must survive a chunker fault" },
+            },
+          },
+        ]),
+      )
+
+      expect(result).toEqual({ ingested: 1, deduped: 0 })
+      expect(spy).toHaveBeenCalled()
+
+      const rows = await db.select().from(messages).where(eq(messages.sessionId, sessionId))
+      expect(rows).toHaveLength(1)
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   test("a subagent payload naming another user's session is refused, not attached to", async () => {

@@ -41,4 +41,18 @@ describe("loadEnv", () => {
   test("throws when a required key is present but empty", () => {
     expect(() => loadEnv({ ...complete, GITHUB_CLIENT_ID: "" })).toThrow(/GITHUB_CLIENT_ID/)
   })
+
+  test("reads optional EMBEDDING_* fields through when present, and leaves them undefined otherwise", () => {
+    expect(loadEnv(complete).embeddingBaseUrl).toBeUndefined()
+
+    const withEmbedding = loadEnv({
+      ...complete,
+      EMBEDDING_BASE_URL: "https://api.voyageai.com/v1",
+      EMBEDDING_API_KEY: "key",
+      EMBEDDING_MODEL: "voyage-4-large",
+    })
+    expect(withEmbedding.embeddingBaseUrl).toBe("https://api.voyageai.com/v1")
+    expect(withEmbedding.embeddingApiKey).toBe("key")
+    expect(withEmbedding.embeddingModel).toBe("voyage-4-large")
+  })
 })

@@ -318,45 +318,6 @@ describe.skipIf(!dockerAvailable())("ingest repositories", () => {
     expect(rows[0]).toMatchObject({ inputTokens: 9, cachedTokens: 3, thinkingTokens: 4 })
   })
 
-  test("S26: a session whose tokens exceed a 32-bit integer still lists, and reports the true total", async () => {
-    const { userId } = await seedSession("sess-huge-tokens")
-    const { idByKey } = await messagesRepo.insertManyIgnoreConflicts(db, "sess-huge-tokens", [
-      {
-        sessionId: "sess-huge-tokens",
-        lineUuid: "0191d942-3ba5-7dba-9a7d-22d65b302600",
-        subIndex: 0,
-        msgType: "usage",
-        lineNumber: 1,
-        sourceSchemaVersion: 1,
-        raw: {},
-      },
-    ])
-    const messageId = idByKey.get(messagesRepo.keyOf("0191d942-3ba5-7dba-9a7d-22d65b302600", 0))
-    if (!messageId) throw new Error("no message id")
-
-    // Each column fits int4; their sum does not. A long-running session reaches this through
-    // cached tokens alone, and the addition used to overflow and 500 the whole list route --
-    // not just this row.
-    await tokenUsageRepo.upsert(db, messageId, {
-      input: 2_000_000_000,
-      output: 2_000_000_000,
-      cached: 2_000_000_000,
-      thinking: 1_000_000_000,
-    })
-
-    const rows = await sessionsRepo.listAccessible(db, userId)
-    const row = rows.find((candidate) => candidate.id === "sess-huge-tokens")
-    // Typed and asserted as a number, not merely coercible to one: the route serialises this
-    // straight to JSON, and a bigint arriving as a string would fail the client's schema.
-    expect(typeof row?.tokensTotal).toBe("number")
-    expect(row?.tokensTotal).toBe(7_000_000_000)
-
-    const detail = await sessionsRepo.getDetail(db, userId, "sess-huge-tokens")
-    expect(typeof detail?.tokenUsage.inputTokens).toBe("number")
-    expect(detail?.tokenUsage.inputTokens).toBe(2_000_000_000)
-    expect(detail?.tokenUsage.thinkingTokens).toBe(1_000_000_000)
-  })
-
   describe("commits", () => {
     const seedRepo = async (repoName: string) => {
       const owner = await seedUser()

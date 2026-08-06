@@ -64,13 +64,6 @@ export type Filterable = {
 export const matchesKind = (artifact: Filterable, kind: ArtifactKind): boolean =>
   kind === "all" || kindOfPath(artifact.relativePath ?? artifact.label, artifact.isBinary) === kind
 
-/** Matched against the whole path, not just the basename: `cli/src` is how you narrow to a folder. */
-export const matchesQuery = (artifact: Filterable, query: string): boolean => {
-  const needle = query.trim().toLowerCase()
-  if (needle === "") return true
-  return (artifact.relativePath ?? artifact.label ?? "").toLowerCase().includes(needle)
-}
-
 export const countByKind = (
   artifacts: ReadonlyArray<Filterable>,
 ): Readonly<Record<ArtifactKind, number>> => ({

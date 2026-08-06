@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react"
 import { useSearchParams } from "react-router-dom"
 import { artifactPathUrl, rawArtifactUrl } from "../api/artifacts.js"
 import type { CapturedArtifact } from "../api/types.js"
-import { absoluteTime } from "../time.js"
 import { Code } from "./Code.js"
 import { Markdown } from "./Markdown.js"
 import { fileNameOf, saveBlob, zipArtifacts } from "./artifact-download.js"
@@ -15,7 +14,6 @@ import {
   folderPaths,
   isArtifactKind,
   matchesKind,
-  matchesQuery,
 } from "./artifact-filter.js"
 import type { Artifact } from "./records.js"
 
@@ -205,12 +203,8 @@ const Notice = ({
   </div>
 )
 
-const DiffBody = ({ content, wrap }: { content: string; wrap: boolean }) => (
-  <pre
-    className={`border border-rule bg-panel p-3 font-mono text-[0.72rem] leading-relaxed ${
-      wrap ? "" : "overflow-x-auto"
-    }`}
-  >
+const DiffBody = ({ content }: { content: string }) => (
+  <pre className="overflow-x-auto border border-rule bg-panel p-3 font-mono text-[0.72rem] leading-relaxed">
     {content.split("\n").map((line, index) => {
       const tone = line.startsWith("+")
         ? "bg-ok/10 text-ok"
@@ -219,10 +213,9 @@ const DiffBody = ({ content, wrap }: { content: string; wrap: boolean }) => (
           : line.startsWith("@@")
             ? "text-custody"
             : "text-ink-2"
-      const flow = wrap ? "whitespace-pre-wrap break-words" : "whitespace-pre"
       return (
         // biome-ignore lint/suspicious/noArrayIndexKey: diff lines have no stable identity
-        <div key={index} className={`${flow} ${tone}`}>
+        <div key={index} className={`whitespace-pre-wrap break-words ${tone}`}>
           {line === "" ? " " : line}
         </div>
       )
@@ -310,20 +303,19 @@ const SideBySide = ({
   base,
   current,
   path,
-  wrap,
-}: { base: string; current: string; path: string | null; wrap: boolean }) => (
+}: { base: string; current: string; path: string | null }) => (
   <div className="grid grid-cols-1 gap-3 min-[900px]:grid-cols-2">
     <section className="min-w-0">
       <h4 className="mb-1 text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-ink-soft">
         Before
       </h4>
-      <Code source={base} path={path} wrap={wrap} />
+      <Code source={base} path={path} />
     </section>
     <section className="min-w-0">
       <h4 className="mb-1 text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-ink-soft">
         After
       </h4>
-      <Code source={current} path={path} wrap={wrap} />
+      <Code source={current} path={path} />
     </section>
   </div>
 )
@@ -333,14 +325,13 @@ const SideBySideLoader = ({
   baseUrl,
   currentUrl,
   path,
-  wrap,
-}: { baseUrl: string; currentUrl: string; path: string | null; wrap: boolean }) => (
+}: { baseUrl: string; currentUrl: string; path: string | null }) => (
   <FetchedText
     url={baseUrl}
     render={(base) => (
       <FetchedText
         url={currentUrl}
-        render={(current) => <SideBySide base={base} current={current} path={path} wrap={wrap} />}
+        render={(current) => <SideBySide base={base} current={current} path={path} />}
       />
     )}
   />
@@ -379,7 +370,7 @@ const ViewTabs = ({
  * An edited file opens on its diff -- that is what changed, and the whole reason the base was
  * captured. Everything else stays reachable rather than being the only thing on offer.
  */
-const EditedBody = ({ exhibit, wrap }: { exhibit: Exhibit; wrap: boolean }) => {
+const EditedBody = ({ exhibit }: { exhibit: Exhibit }) => {
   const [view, setView] = useState<ArtifactViewId>("diff")
   const path = exhibit.relativePath ?? exhibit.label
 
@@ -396,31 +387,18 @@ const EditedBody = ({ exhibit, wrap }: { exhibit: Exhibit; wrap: boolean }) => {
     }
     if (view === "current" && exhibit.textUrl !== null) {
       return (
-        <FetchedText
-          url={exhibit.textUrl}
-          render={(text) => <Code source={text} path={path} wrap={wrap} />}
-        />
+        <FetchedText url={exhibit.textUrl} render={(text) => <Code source={text} path={path} />} />
       )
     }
     if (view === "base" && exhibit.baseUrl !== null) {
       return (
-        <FetchedText
-          url={exhibit.baseUrl}
-          render={(text) => <Code source={text} path={path} wrap={wrap} />}
-        />
+        <FetchedText url={exhibit.baseUrl} render={(text) => <Code source={text} path={path} />} />
       )
     }
     if (view === "split" && exhibit.baseUrl !== null && exhibit.textUrl !== null) {
-      return (
-        <SideBySideLoader
-          baseUrl={exhibit.baseUrl}
-          currentUrl={exhibit.textUrl}
-          path={path}
-          wrap={wrap}
-        />
-      )
+      return <SideBySideLoader baseUrl={exhibit.baseUrl} currentUrl={exhibit.textUrl} path={path} />
     }
-    if (exhibit.diff !== null) return <DiffBody content={exhibit.diff} wrap={wrap} />
+    if (exhibit.diff !== null) return <DiffBody content={exhibit.diff} />
     if (exhibit.oldFragment !== null) return <ReplacedExcerpt fragment={exhibit.oldFragment} />
     return (
       <Notice tone="faded" title="No diff captured">
@@ -437,7 +415,7 @@ const EditedBody = ({ exhibit, wrap }: { exhibit: Exhibit; wrap: boolean }) => {
   )
 }
 
-const Body = ({ exhibit, wrap }: { exhibit: Exhibit; wrap: boolean }) => {
+const Body = ({ exhibit }: { exhibit: Exhibit }) => {
   if (exhibit.access === "denied") {
     return (
       <Notice tone="err" title="Permission denied">
@@ -472,7 +450,7 @@ const Body = ({ exhibit, wrap }: { exhibit: Exhibit; wrap: boolean }) => {
 
   // An edit carries a before AND an after, so it gets the switcher rather than one fixed pane.
   if (exhibit.diff !== null || exhibit.oldFragment !== null || exhibit.baseUrl !== null) {
-    return <EditedBody exhibit={exhibit} wrap={wrap} />
+    return <EditedBody exhibit={exhibit} />
   }
 
   // A created page has no before to compare against, so the rendered page is the whole story.
@@ -482,8 +460,8 @@ const Body = ({ exhibit, wrap }: { exhibit: Exhibit; wrap: boolean }) => {
 
   const asMedium = (text: string) => {
     if (medium === "markdown") return <Markdown source={text} />
-    if (medium === "diff") return <DiffBody content={text} wrap={wrap} />
-    return <Code source={text} path={exhibit.relativePath ?? exhibit.label} wrap={wrap} />
+    if (medium === "diff") return <DiffBody content={text} />
+    return <Code source={text} path={exhibit.relativePath ?? exhibit.label} />
   }
 
   if (exhibit.content === null && exhibit.textUrl !== null) {
@@ -499,10 +477,14 @@ const Body = ({ exhibit, wrap }: { exhibit: Exhibit; wrap: boolean }) => {
   }
 
   if (medium === "markdown") return <Markdown source={exhibit.content} />
-  if (medium === "diff") return <DiffBody content={exhibit.content} wrap={wrap} />
+  if (medium === "diff") return <DiffBody content={exhibit.content} />
 
-  return <Code source={exhibit.content} path={exhibit.relativePath ?? exhibit.label} wrap={wrap} />
+  return <Code source={exhibit.content} path={exhibit.relativePath ?? exhibit.label} />
 }
+
+/** UTC, minute precision -- the capture stamps ISO strings and the seconds carry no meaning here. */
+const formatStamp = (iso: string | null): string =>
+  iso === null ? "unavailable" : `${iso.slice(0, 16).replace("T", " ")} UTC`
 
 const Fact = ({ label, children }: { label: string; children: React.ReactNode }) => (
   <span className="border-r border-rule px-3 py-2 font-mono text-[0.6875rem] text-ink-soft">
@@ -517,9 +499,7 @@ const Fact = ({ label, children }: { label: string; children: React.ReactNode })
  */
 const Provenance = ({ exhibit }: { exhibit: Exhibit }) => (
   <div className="flex flex-wrap border-b border-rule">
-    <Fact label="Last written">
-      {exhibit.timestamp === null ? "unavailable" : absoluteTime(exhibit.timestamp)}
-    </Fact>
+    <Fact label="Last written">{formatStamp(exhibit.timestamp)}</Fact>
     <Fact label="By">{exhibit.agent ?? "Claude"}</Fact>
     <Fact label="Type">{displayType(exhibit.mimeType)}</Fact>
     {exhibit.editCount !== null && exhibit.editCount > 1 ? (
@@ -547,39 +527,24 @@ const Provenance = ({ exhibit }: { exhibit: Exhibit }) => (
   </div>
 )
 
-const Viewer = ({
-  exhibit,
-  wrap,
-  onWrapChange,
-}: { exhibit: Exhibit; wrap: boolean; onWrapChange: (next: boolean) => void }) => (
+const Viewer = ({ exhibit }: { exhibit: Exhibit }) => (
   <section aria-label="Artifact viewer" className="min-w-0 bg-panel-2">
-    <header className="flex flex-wrap items-start justify-between gap-3 border-b border-rule bg-panel px-4 py-3">
-      <div className="min-w-0">
-        <p className="text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-ink-soft">
-          {kindOf(exhibit)}
-        </p>
-        <h3 className="mt-1 break-all font-mono text-[0.8125rem] font-semibold">
-          {exhibit.label ?? <Unavailable />}
-        </h3>
-        {exhibit.title === null ? null : (
-          <p className="mt-1 font-mono text-[0.6875rem] text-faded">{exhibit.title}</p>
-        )}
-      </div>
-      <label className="flex shrink-0 cursor-pointer items-center gap-2 font-mono text-[0.6875rem] text-ink-soft">
-        <input
-          type="checkbox"
-          checked={wrap}
-          onChange={(event) => onWrapChange(event.target.checked)}
-          className="size-3.5 accent-ink"
-        />
-        Wrap lines
-      </label>
+    <header className="border-b border-rule bg-panel px-4 py-3">
+      <p className="text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-ink-soft">
+        {kindOf(exhibit)}
+      </p>
+      <h3 className="mt-1 break-all font-mono text-[0.8125rem] font-semibold">
+        {exhibit.label ?? <Unavailable />}
+      </h3>
+      {exhibit.title === null ? null : (
+        <p className="mt-1 font-mono text-[0.6875rem] text-faded">{exhibit.title}</p>
+      )}
     </header>
 
     <Provenance exhibit={exhibit} />
 
-    <div className="p-4">
-      <Body exhibit={exhibit} wrap={wrap} />
+    <div className="max-h-[70vh] overflow-auto p-4">
+      <Body exhibit={exhibit} />
     </div>
   </section>
 )
@@ -659,7 +624,6 @@ const Tree = ({ nodes, depth, selectedId, openFolders, onToggle, onSelect }: Tre
               aria-expanded={open}
               onClick={() => onToggle(node.path)}
               style={indent}
-              title={node.path}
               className="flex w-full items-center gap-1.5 py-1 pr-2 text-left font-mono text-[0.6875rem] text-ink-soft transition-colors hover:bg-panel-2"
             >
               <Chevron open={open} />
@@ -686,7 +650,6 @@ const Tree = ({ nodes, depth, selectedId, openFolders, onToggle, onSelect }: Tre
             aria-current={node.item.id === selectedId}
             onClick={() => onSelect(node.item.id)}
             style={indent}
-            title={node.item.relativePath ?? node.item.label ?? node.name}
             className={`flex w-full items-center gap-1.5 py-1 pr-2 text-left font-mono text-[0.6875rem] transition-colors hover:bg-panel-2 ${
               node.item.id === selectedId
                 ? "bg-panel-2 font-semibold text-custody shadow-[inset_2px_0_0_var(--color-stamp)]"
@@ -717,16 +680,11 @@ export const ArtifactsView = ({
   const listRef = useRef<HTMLUListElement | null>(null)
   const [zipping, setZipping] = useState(false)
 
-  const [wrap, setWrap] = useState(false)
-
   const all = artifacts.map((artifact) => toExhibit(artifact, sessionId))
   const rawKind = params.get("kind")
   const kind: ArtifactKind = isArtifactKind(rawKind) ? rawKind : "all"
-  const query = params.get("file") ?? ""
-  // Counts follow the name filter, so a kind button never advertises files the query has hidden.
-  const named = all.filter((exhibit) => matchesQuery(exhibit, query))
-  const counts = countByKind(named)
-  const exhibits = named.filter((exhibit) => matchesKind(exhibit, kind))
+  const counts = countByKind(all)
+  const exhibits = all.filter((exhibit) => matchesKind(exhibit, kind))
 
   const tree = buildTree(exhibits)
   // Open by default: a capture is usually a handful of files, and a collapsed tree hides them all.
@@ -747,21 +705,12 @@ export const ArtifactsView = ({
   )
   const selected = exhibits[selectedIndex]
 
-  const update = (next: {
-    artifact?: string | null
-    kind?: ArtifactKind
-    file?: string
-  }): void => {
+  const update = (next: { artifact?: string | null; kind?: ArtifactKind }): void => {
     const merged = new URLSearchParams(params)
     if (next.kind !== undefined) {
       if (next.kind === "all") merged.delete("kind")
       else merged.set("kind", next.kind)
       // The selected artifact may not survive the new filter; let it fall back to the first.
-      merged.delete("artifact")
-    }
-    if (next.file !== undefined) {
-      if (next.file === "") merged.delete("file")
-      else merged.set("file", next.file)
       merged.delete("artifact")
     }
     if (next.artifact !== undefined) {
@@ -770,8 +719,7 @@ export const ArtifactsView = ({
     }
     // Pushed, not replaced: opening a file is a navigation a reader expects Back to undo. Only the
     // implicit fallback to the first exhibit replaces, so Back never lands on a URL nobody chose.
-    // Typing replaces, so a filename filter costs one history entry rather than one per keystroke.
-    setParams(merged, next.file === undefined ? undefined : { replace: true })
+    setParams(merged)
   }
 
   const setSelectedId = (id: string): void => update({ artifact: id })
@@ -794,9 +742,7 @@ export const ArtifactsView = ({
     }
   }
 
-  // Only a session that filed nothing gets the bare notice. Once files exist, a filter that hides
-  // them all must keep its own controls on screen -- otherwise there is no way back to the files.
-  if (all.length === 0) {
+  if (exhibits.length === 0) {
     return (
       <p className="border border-dashed border-rule bg-panel p-6 text-center text-ink-soft">
         No artifacts were filed in this session.
@@ -826,43 +772,10 @@ export const ArtifactsView = ({
 
   return (
     <div className="grid grid-cols-1 border border-rule bg-panel-2 min-[720px]:grid-cols-[minmax(0,272px)_minmax(0,1fr)]">
-      {/* Parked, not stretched. Left to fill the row the panel ran the full height of whatever file
-          is open -- hundreds of pixels of tinted column below the last file, with no bottom edge.
-          It now ends where its contents end and stays put while the viewer scrolls, so switching
-          files never means scrolling back up. The same parking the agent rail already uses. */}
-      <aside
-        aria-label="Artifact index"
-        className="border-b border-rule bg-panel min-[720px]:sticky min-[720px]:top-[calc(var(--sticky-head,0px)_+_1rem)] min-[720px]:max-h-[calc(100dvh_-_var(--sticky-head,0px)_-_2rem)] min-[720px]:self-start min-[720px]:overflow-y-auto min-[720px]:border-r min-[720px]:border-b-0"
-      >
+      <aside className="border-b border-rule bg-panel min-[720px]:border-b-0 min-[720px]:border-r">
         <div className="border-b border-rule px-3 py-3">
-          {/* No heading: the tab above already reads Artifacts, and a tree of filenames beside a
-              viewer is self-evidently its index. The download acts on the whole panel, so it takes
-              that row -- as a full-width block under the filters it read as a fourth filter. */}
-          {exhibits.some((exhibit) => exhibit.downloadUrl !== null) ? (
-            <div className="flex justify-end">
-              <button
-                type="button"
-                onClick={downloadAll}
-                disabled={zipping}
-                className="shrink-0 font-mono text-[0.625rem] uppercase tracking-[0.08em] text-custody transition-colors hover:underline disabled:opacity-40"
-              >
-                {zipping ? "Preparing…" : "Download all"}
-              </button>
-            </div>
-          ) : null}
-          <label className="mt-2 block">
-            <span className="sr-only">Filter by filename</span>
-            <input
-              type="search"
-              value={query}
-              placeholder="Filter by name…"
-              onChange={(event) => update({ file: event.target.value })}
-              className="h-8 w-full rounded-xs border border-rule bg-panel-2 px-2 font-mono text-[0.6875rem] text-ink transition-colors hover:border-ink-soft focus-visible:border-custody"
-            />
-          </label>
-          {/* Four chips on a two-column grid rather than wrapping: flex left MEDIA stranded on a
-              row of its own, and the counts no longer lined up to be compared. */}
-          <fieldset className="mt-2 grid grid-cols-2 gap-1">
+          <h3 className="text-[0.8125rem] font-semibold">Filed exhibits</h3>
+          <fieldset className="mt-2 flex flex-wrap gap-1">
             <legend className="sr-only">Filter by type</legend>
             {(["all", "code", "docs", "media"] as const).map((option) => (
               <button
@@ -871,22 +784,28 @@ export const ArtifactsView = ({
                 aria-pressed={option === kind}
                 disabled={counts[option] === 0 && option !== "all"}
                 onClick={() => update({ kind: option })}
-                className={`flex items-baseline justify-between gap-2 border px-2 py-1 font-mono text-[0.625rem] uppercase tracking-[0.08em] transition-colors disabled:opacity-40 ${
+                className={`border px-2 py-1 font-mono text-[0.625rem] uppercase tracking-[0.08em] transition-colors disabled:opacity-40 ${
                   option === kind
                     ? "border-custody bg-panel-2 text-custody"
                     : "border-rule text-ink-soft hover:bg-panel-2"
                 }`}
               >
-                <span>{option}</span>
-                <span className="tabular-nums">{counts[option]}</span>
+                {option} {counts[option]}
               </button>
             ))}
           </fieldset>
-          {/* The margin marks are the only unexplained notation in this panel. The exhibit count
-              is not repeated here -- the active chip above already carries it. */}
-          <p className="mt-2 hidden font-mono text-[0.625rem] text-faded min-[720px]:block">
-            <span className="font-semibold text-ok">A</span> added ·{" "}
-            <span className="font-semibold text-custody">M</span> modified
+          {exhibits.some((exhibit) => exhibit.downloadUrl !== null) ? (
+            <button
+              type="button"
+              onClick={downloadAll}
+              disabled={zipping}
+              className="mt-2 w-full border border-rule px-2 py-1 font-mono text-[0.625rem] uppercase tracking-[0.08em] text-ink-soft transition-colors hover:bg-panel-2 disabled:opacity-40"
+            >
+              {zipping ? "Preparing…" : "Download all"}
+            </button>
+          ) : null}
+          <p className="mt-1 font-mono text-[0.6875rem] text-faded">
+            {exhibits.length} {exhibits.length === 1 ? "exhibit" : "exhibits"}
           </p>
           <label className="mt-2 block min-[720px]:hidden">
             <span className="sr-only">Choose an artifact</span>
@@ -908,7 +827,7 @@ export const ArtifactsView = ({
           ref={listRef}
           aria-label="Filed artifacts"
           onKeyDown={onKeyDown}
-          className="hidden py-1 min-[720px]:block"
+          className="hidden max-h-[70vh] overflow-auto py-1 min-[720px]:block"
         >
           <Tree
             nodes={tree}
@@ -921,13 +840,7 @@ export const ArtifactsView = ({
         </ul>
       </aside>
 
-      {selected ? (
-        <Viewer exhibit={selected} wrap={wrap} onWrapChange={setWrap} />
-      ) : (
-        <p className="p-6 text-center text-ink-soft">
-          No artifact matches these filters. Clear the name filter, or choose a different type.
-        </p>
-      )}
+      {selected ? <Viewer exhibit={selected} /> : null}
     </div>
   )
 }

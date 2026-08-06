@@ -1,6 +1,6 @@
 export const Login = () => (
   <main className="relative z-10 grid min-h-dvh place-items-center px-4 py-10">
-    <div className="w-full max-w-sm border border-rule bg-panel-2 p-6 shadow-card">
+    <div className="w-full max-w-sm border border-rule bg-panel-2 p-6 shadow-[0_1px_2px_rgba(26,28,32,0.06)]">
       <p className="text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-stamp">
         Case file access
       </p>

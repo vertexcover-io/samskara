@@ -24,6 +24,18 @@ export type SessionSummary = {
   readonly tokensTotal: number
   readonly status: string
   readonly lastActiveAt: string
+  // Present only on a `?q=` (ranked) response; absent -- not merely null -- from the plain list.
+  readonly snippet: string | null
+  // The winning chunk's anchor, so opening a search result lands on its matching turn.
+  // Present only on a `?q=` response; null when the winning chunk carries no anchor (a title hit).
+  readonly anchorMessageId: string | null
+}
+
+/** One ranked chunk from `GET /api/sessions/:id/search`. */
+export type SessionSearchChunk = {
+  readonly anchorMessageId: string | null
+  readonly snippet: string
+  readonly score: number
 }
 
 export type SessionFacts = {
@@ -69,8 +81,6 @@ export type RawSubagent = {
   readonly agentType: string | null
   readonly description: string | null
   readonly parentAgentId: string | null
-  /** The `Agent`/`Task` call that launched it. Null when a human started it, so no call exists. */
-  readonly spawnToolUseId: string | null
 }
 
 export type TokenTotals = {

@@ -85,6 +85,13 @@
       "when": 1785579281400,
       "tag": "0011_cool_rattler",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1785589749213,
+      "tag": "0012_volatile_microchip",
+      "breakpoints": true
     }
   ]
 }

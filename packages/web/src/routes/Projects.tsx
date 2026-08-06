@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react"
+import { useNavigate } from "react-router-dom"
 import { getJson } from "../api/client.js"
 import { parseProjectList } from "../api/parse.js"
 import type { ApiError, ProjectSummary } from "../api/types.js"
@@ -38,6 +39,7 @@ const ErrorState = ({ error }: { error: ApiError }) => (
 
 export const Projects = () => {
   const [state, setState] = useState<State>({ phase: "loading" })
+  const navigate = useNavigate()
 
   useEffect(() => {
     let active = true
@@ -71,7 +73,7 @@ export const Projects = () => {
           <li key={project.id}>
             <ProjectCard
               project={project}
-              to={`/sessions?project=${encodeURIComponent(project.slug)}`}
+              onOpen={({ slug }) => navigate(`/sessions?project=${encodeURIComponent(slug)}`)}
             />
           </li>
         ))}

@@ -10,6 +10,7 @@ import type {
   SessionFacts,
   SessionPullRequest,
   SessionRepo,
+  SessionSearchChunk,
   SessionSummary,
   TokenTotals,
 } from "./types.js"
@@ -25,6 +26,10 @@ const nullableStr = (value: unknown): string | null | undefined => {
   if (value === null) return null
   return typeof value === "string" ? value : undefined
 }
+
+// Unlike `nullableStr`, a missing key is not a parse failure -- it means "this response shape
+// never carries the field" (the plain session list has no `snippet`), not "malformed data".
+const optionalStr = (value: unknown): string | null => (typeof value === "string" ? value : null)
 
 const num = (value: unknown): number | null =>
   typeof value === "number" && Number.isFinite(value) ? value : null
@@ -117,6 +122,8 @@ const parseSessionSummary = (value: unknown): SessionSummary | null => {
     tokensTotal,
     status,
     lastActiveAt,
+    snippet: optionalStr(fields.snippet),
+    anchorMessageId: optionalStr(fields.anchorMessageId),
   }
 }
 
@@ -126,6 +133,30 @@ export const parseSessionList = (body: unknown): ReadonlyArray<SessionSummary> |
 
   const parsed = fields.sessions.map(parseSessionSummary)
   return parsed.every((session): session is SessionSummary => session !== null) ? parsed : null
+}
+
+const parseSessionSearchChunk = (value: unknown): SessionSearchChunk | null => {
+  const fields = asFields(value)
+  if (!fields) return null
+
+  const snippet = str(fields.snippet)
+  const score = num(fields.score)
+  if (snippet === null || score === null) return null
+
+  const anchorMessageId = nullableStr(fields.anchorMessageId)
+  if (anchorMessageId === undefined) return null
+
+  return { anchorMessageId, snippet, score }
+}
+
+export const parseSessionSearchChunks = (
+  body: unknown,
+): ReadonlyArray<SessionSearchChunk> | null => {
+  const fields = asFields(body)
+  if (!fields || !Array.isArray(fields.chunks)) return null
+
+  const parsed = fields.chunks.map(parseSessionSearchChunk)
+  return parsed.every((chunk): chunk is SessionSearchChunk => chunk !== null) ? parsed : null
 }
 
 const bool = (value: unknown): boolean => value === true
@@ -219,7 +250,6 @@ const parseSubagent = (value: unknown): RawSubagent | null => {
     agentType: nullableStr(fields.agentType) ?? null,
     description: nullableStr(fields.description) ?? null,
     parentAgentId: nullableStr(fields.parentAgentId) ?? null,
-    spawnToolUseId: nullableStr(fields.spawnToolUseId) ?? null,
   }
 }
 

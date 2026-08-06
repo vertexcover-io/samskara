@@ -1,4 +1,4 @@
-import { useId } from "react"
+import { useEffect, useId, useState } from "react"
 import {
   RANGES,
   RANGE_LABEL,
@@ -7,32 +7,19 @@ import {
   SORT_LABEL,
   type SessionFilters,
   type Sort,
+  withQuery,
 } from "../sessions/filters.js"
 
 const asRange = (value: string): Range => RANGES.find((range) => range === value) ?? "all"
 const asSort = (value: string): Sort => SORTS.find((sort) => sort === value) ?? "recent"
 
 // Native controls do not inherit type, so the font stack is set explicitly.
-const controlClass =
+export const controlClass =
   "mt-1 h-9 w-full min-w-0 rounded-xs border border-rule bg-panel-2 px-2 font-mono text-[0.78rem] leading-none text-ink transition-colors hover:border-ink-soft focus-visible:border-custody"
 
-const selectClass = `${controlClass} mt-0 cursor-pointer appearance-none pr-7`
+const selectClass = `${controlClass} cursor-pointer appearance-none bg-[length:0.7rem] bg-[right_0.5rem_center] bg-no-repeat pr-7 bg-[url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath fill='none' stroke='%235b6270' stroke-width='1.6' d='M1 1.5 6 6.5l5-5'/%3E%3C/svg%3E")]`
 
 const labelClass = "block text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-ink-soft"
-
-/**
- * A child rather than a background image: an inline `url()` cannot survive a Tailwind arbitrary
- * value (its spaces split the class list), and drawing it here lets the caret take `currentColor`.
- */
-const Caret = () => (
-  <svg
-    viewBox="0 0 12 8"
-    aria-hidden="true"
-    className="pointer-events-none absolute right-2 top-1/2 h-2 w-3 -translate-y-1/2 fill-none stroke-current stroke-[1.6] text-ink-soft"
-  >
-    <path d="M1 1.5 6 6.5l5-5" strokeLinecap="round" strokeLinejoin="round" />
-  </svg>
-)
 
 export type Option = { readonly value: string; readonly label: string }
 
@@ -47,25 +34,22 @@ const Choice = ({ label, value, options, onChange }: ChoiceProps) => {
   const id = useId()
 
   return (
-    <div className="min-w-0">
+    <div className="min-w-0 flex-1">
       <label className={labelClass} htmlFor={id}>
         {label}
       </label>
-      <div className="relative mt-1">
-        <select
-          id={id}
-          className={selectClass}
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-        >
-          {options.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-        <Caret />
-      </div>
+      <select
+        id={id}
+        className={selectClass}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      >
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
     </div>
   )
 }
@@ -75,9 +59,46 @@ const withAny = (options: ReadonlyArray<Option>, anyLabel: string): ReadonlyArra
   ...options,
 ]
 
-// Two date inputs need the room of two controls, and the range keeps that width in either state so
-// switching to a custom window does not reflow the bar around it.
-const RANGE_SPAN = "min-w-0 min-[560px]:col-span-2"
+const SEARCH_DEBOUNCE_MS = 300
+
+// Local draft state keeps the box responsive to every keystroke; `onChange` (which writes the
+// URL and refetches) only fires after typing pauses, and `withQuery` is what decides whether
+// this keystroke also flips the sort to relevance.
+const SearchBox = ({
+  filters,
+  onChange,
+}: {
+  filters: SessionFilters
+  onChange: (filters: SessionFilters) => void
+}) => {
+  const id = useId()
+  const [draft, setDraft] = useState(filters.q ?? "")
+
+  useEffect(() => setDraft(filters.q ?? ""), [filters.q])
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: filters/onChange re-identify every render in the caller; keying off draft alone stops an unrelated parent re-render from resetting the debounce timer.
+  useEffect(() => {
+    if (draft === (filters.q ?? "")) return
+    const timer = setTimeout(() => onChange(withQuery(filters, draft)), SEARCH_DEBOUNCE_MS)
+    return () => clearTimeout(timer)
+  }, [draft])
+
+  return (
+    <div className="min-w-0 flex-[2]">
+      <label className={labelClass} htmlFor={id}>
+        Search
+      </label>
+      <input
+        id={id}
+        type="search"
+        value={draft}
+        placeholder="Search sessions…"
+        className={`${controlClass} mt-1`}
+        onChange={(event) => setDraft(event.target.value)}
+      />
+    </div>
+  )
+}
 
 // Choosing a custom window replaces the range select in place rather than
 // appending a control, so the bar never reflows.
@@ -92,19 +113,17 @@ const RangeControl = ({
 
   if (filters.range !== "custom") {
     return (
-      <div className={RANGE_SPAN}>
-        <Choice
-          label="Last active"
-          value={filters.range}
-          options={RANGES.map((range) => ({ value: range, label: RANGE_LABEL[range] }))}
-          onChange={(range) => onChange({ ...filters, range: asRange(range) })}
-        />
-      </div>
+      <Choice
+        label="Last active"
+        value={filters.range}
+        options={RANGES.map((range) => ({ value: range, label: RANGE_LABEL[range] }))}
+        onChange={(range) => onChange({ ...filters, range: asRange(range) })}
+      />
     )
   }
 
   return (
-    <div className={RANGE_SPAN}>
+    <div className="min-w-0 flex-[2]">
       <div className="flex items-baseline justify-between gap-2">
         <label className={labelClass} htmlFor={id}>
           Last active
@@ -157,8 +176,9 @@ type Props = {
 export const FilterBar = ({ filters, projects, users, onChange }: Props) => (
   <section
     aria-label="Session filters"
-    className="grid grid-cols-1 items-end gap-3 border border-rule bg-panel p-3 min-[560px]:grid-cols-2 min-[900px]:grid-cols-5"
+    className="flex flex-wrap items-end gap-3 border border-rule bg-panel p-3"
   >
+    <SearchBox filters={filters} onChange={onChange} />
     <Choice
       label="Project"
       value={filters.project ?? ""}

@@ -1,7 +1,6 @@
-import { Link } from "react-router-dom"
 import { repoLabel } from "../api/repo.js"
 import type { SessionSummary } from "../api/types.js"
-import { absoluteTime, relativeTime } from "../time.js"
+import { HighlightedSnippet } from "../sessions/HighlightedSnippet.js"
 
 const Unavailable = () => (
   <span className="text-faded italic underline decoration-dotted">unavailable</span>
@@ -16,30 +15,41 @@ const formatDuration = (ms: number): string => {
   return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`
 }
 
-const TOKEN_UNITS = [
-  { scale: 1_000_000_000, suffix: "B" },
-  { scale: 1_000_000, suffix: "M" },
-  { scale: 1_000, suffix: "k" },
-] as const
+const formatTokens = (total: number): string =>
+  total >= 1000 ? `${(total / 1000).toFixed(1)}k tokens` : `${total} tokens`
 
-const formatTokens = (total: number): string => {
-  const unit = TOKEN_UNITS.find(({ scale }) => total >= scale)
-  if (unit === undefined) return `${total} tokens`
-  return `${(total / unit.scale).toFixed(1)}${unit.suffix} tokens`
+const MINUTE = 60_000
+const HOUR = 60 * MINUTE
+const DAY = 24 * HOUR
+
+export const relativeTime = (iso: string, now: number = Date.now()): string => {
+  const at = new Date(iso).getTime()
+  if (Number.isNaN(at)) return "unknown"
+
+  const elapsed = now - at
+  if (elapsed < MINUTE) return "just now"
+  if (elapsed < HOUR) return `${Math.floor(elapsed / MINUTE)} min ago`
+  if (elapsed < DAY) return `${Math.floor(elapsed / HOUR)} h ago`
+  if (elapsed < 2 * DAY) return "Yesterday"
+  if (elapsed < 7 * DAY) return `${Math.floor(elapsed / DAY)} d ago`
+  if (elapsed < 30 * DAY) return `${Math.floor(elapsed / (7 * DAY))} wk ago`
+  return new Date(at).toISOString().slice(0, 10)
 }
 
 type Props = {
   readonly session: SessionSummary
-  readonly to: string
+  readonly onOpen: (session: SessionSummary) => void
 }
 
-export const SessionRow = ({ session, to }: Props) => {
-  const { title, projectName, userLogin, repo, durationMs, tokensTotal, lastActiveAt } = session
+export const SessionRow = ({ session, onOpen }: Props) => {
+  const { title, projectName, userLogin, repo, durationMs, tokensTotal, lastActiveAt, snippet } =
+    session
 
   return (
-    <Link
-      to={to}
-      className="grid w-full grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 gap-y-0.5 border border-rule bg-panel-2 px-4 py-2 text-left transition-colors hover:border-ink-soft min-[900px]:grid-cols-[auto_minmax(0,1fr)_minmax(0,14rem)_auto]"
+    <button
+      type="button"
+      onClick={() => onOpen(session)}
+      className="grid w-full grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 gap-y-1 border border-rule bg-panel-2 px-4 py-3 text-left transition-colors hover:border-ink-soft min-[900px]:grid-cols-[auto_minmax(0,1fr)_minmax(0,14rem)_auto]"
     >
       <span
         aria-hidden="true"
@@ -50,24 +60,28 @@ export const SessionRow = ({ session, to }: Props) => {
         <span className="block truncate text-[0.875rem] font-semibold">
           {title ?? <span className="text-faded italic">untitled session</span>}
         </span>
-        <span className="block truncate font-mono text-[0.72rem] text-ink-soft">
+        <span className="mt-0.5 block truncate font-mono text-[0.72rem] text-ink-soft">
           {userLogin} · {repo === null ? null : `${repoLabel(repo)} · `}
           {durationMs === null ? <Unavailable /> : formatDuration(durationMs)} ·{" "}
           {formatTokens(tokensTotal)}
         </span>
+        {snippet !== null && (
+          <span
+            data-testid="session-snippet"
+            className="mt-1 block truncate text-[0.78rem] italic text-ink-soft"
+          >
+            <HighlightedSnippet snippet={snippet} />
+          </span>
+        )}
       </span>
 
       <span className="col-start-2 truncate font-mono text-[0.72rem] text-faded min-[900px]:col-start-3 min-[900px]:self-center">
         {projectName}
       </span>
 
-      <time
-        dateTime={lastActiveAt}
-        title={absoluteTime(lastActiveAt)}
-        className="col-start-2 font-mono text-[0.72rem] text-ink-soft min-[900px]:col-start-4 min-[900px]:self-center min-[900px]:text-right"
-      >
+      <span className="col-start-2 font-mono text-[0.72rem] text-ink-soft min-[900px]:col-start-4 min-[900px]:self-center min-[900px]:text-right">
         {relativeTime(lastActiveAt)}
-      </time>
-    </Link>
+      </span>
+    </button>
   )
 }

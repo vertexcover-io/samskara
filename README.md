@@ -133,6 +133,49 @@ packages/server/src/
   index.ts       Node server entry — logs "server listening" via the root logger
 ```
 
+## Search
+
+Sessions are searchable by what was said inside them, including tool output. A turn becomes a
+`sessionChunk` row at ingest; the in-flight turn of a live session is deliberately skipped, because
+its text would still be changing under an already-computed embedding.
+
+Ranking fuses three lists — keyword, semantic, and session title — with Reciprocal Rank Fusion.
+The keyword half works immediately. The semantic half needs an embedding provider; with none
+configured, search silently degrades to keyword-only, which is the default state of a fresh
+deployment.
+
+The provider is an HTTP contract rather than a dependency: anything speaking the OpenAI-shaped
+`POST /v1/embeddings` works by changing configuration alone. The shipped default is a **local**
+model, so no paid credential is needed:
+
+```sh
+ollama serve && ollama pull mxbai-embed-large
+```
+
+then, in `.env`:
+
+```sh
+EMBEDDING_BASE_URL=http://localhost:11434/v1
+EMBEDDING_API_KEY=ollama
+EMBEDDING_MODEL=mxbai-embed-large
+EMBEDDING_QUERY_PREFIX=Represent this sentence for searching relevant passages:
+```
+
+`EMBEDDING_QUERY_PREFIX` exists because open models express the query/document asymmetry as an
+instruction prefix, where Voyage expresses it as an `input_type` field; the client sends both and
+each provider ignores the one it does not understand. Omit the prefix for Voyage or OpenAI.
+
+Two caveats worth knowing before pointing this at a hosted provider:
+
+- **`VECTOR_MAX_DISTANCE` is model-specific.** It is the ceiling past which a chunk is not a match,
+  and it was measured against `mxbai-embed-large`: genuine matches sit at 0.14–0.31 and unrelated
+  text at 0.53–0.69, so the ceiling sits in the gap. A different model packs unrelated text
+  differently — re-measure by embedding a query that should match nothing and putting the ceiling
+  below the closest thing it returns.
+- **Chunk text leaves the machine.** The worker POSTs each chunk's embed text to the configured
+  provider, and that text includes tool names and their inputs. There is no per-project opt-out
+  yet, so with a hosted provider every captured session's content egresses.
+
 ## Web UI
 
 React Router routes, all but `/login` behind `RequireAuth` (which renders a loading shell while
@@ -176,6 +219,12 @@ The identity mesh (`users`, `orgs`, `repos`, `user_orgs`, `projects`, `user_proj
 `sessions`, `messages`, `tool_call`, `tool_result`, `subagents`, `token_usage`) is defined in
 `db/schema.ts` with drizzle-kit migrations under `packages/server/migrations/`. Apply them with
 `bun run db:migrate`. The auth system adds no new tables (pairing codes are in-memory).
+
+Search adds `sessionChunk`: one row per closed turn per track, carrying two text projections and a
+`vector(1024)` embedding. Two things in its migration are hand-written and will not survive a
+regeneration by `db:generate` alone — `CREATE EXTENSION vector` and the GIN index over
+`to_tsvector('english', "searchText")`. drizzle-kit emits neither, so if you regenerate the
+migration, add both back.
 
 The server package's Vitest suite spins up a real `pgvector/pgvector:pg16` container via
 testcontainers and runs the migrations against it, so the schema and the auth routes are

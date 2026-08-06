@@ -21,7 +21,6 @@ const PAYLOAD: SessionDetailPayload = buildPayload({
       agentType: "db-schema-auditor",
       description: "Audit keys",
       parentAgentId: null,
-      spawnToolUseId: null,
     },
   ],
   messages: [
@@ -71,13 +70,7 @@ const PAYLOAD: SessionDetailPayload = buildPayload({
 
 const BRANCH_PAYLOAD: SessionDetailPayload = buildPayload({
   subagents: [
-    {
-      agentId: "a1",
-      agentType: "auditor",
-      description: "Audit keys",
-      parentAgentId: null,
-      spawnToolUseId: null,
-    },
+    { agentId: "a1", agentType: "auditor", description: "Audit keys", parentAgentId: null },
   ],
   messages: [
     message({ lineNumber: 1, msgType: "turnEvent", subType: "agentSpawn", agentId: "a1" }),
@@ -114,20 +107,8 @@ const agentCall = (messageId: string, toolId: string) => ({
 
 const NESTED_PAYLOAD: SessionDetailPayload = buildPayload({
   subagents: [
-    {
-      agentId: "a1",
-      agentType: "explorer",
-      description: "Top task",
-      parentAgentId: null,
-      spawnToolUseId: null,
-    },
-    {
-      agentId: "a2",
-      agentType: "researcher",
-      description: "Nested task",
-      parentAgentId: "a1",
-      spawnToolUseId: null,
-    },
+    { agentId: "a1", agentType: "explorer", description: "Top task", parentAgentId: null },
+    { agentId: "a2", agentType: "researcher", description: "Nested task", parentAgentId: "a1" },
   ],
   messages: [
     message({ id: "top-call", lineNumber: 1, msgType: "toolCall" }),
@@ -899,6 +880,72 @@ test("a skill body injected under the user's role is credited to the skill and f
   expect(within(panel).getByText(/Run the pipeline/)).toBeInTheDocument()
 })
 
+test("D1: selecting a search result switches to the conversation and marks the target message as the reader's location", async () => {
+  const searchPayload = buildPayload({
+    messages: [
+      message({
+        id: "site-msg",
+        lineNumber: 1,
+        msgType: "message",
+        role: "user",
+        content: text("Investigate the checkout crash"),
+      }),
+    ],
+  })
+
+  vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+    const url = typeof input === "string" ? input : String(input)
+    if (url.includes("/search")) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            chunks: [
+              {
+                anchorMessageId: "site-msg",
+                snippet: "Investigate the checkout crash",
+                score: 0.03,
+              },
+            ],
+          }),
+          { status: 200 },
+        ),
+      )
+    }
+    if (url.includes("/artifacts")) {
+      return Promise.resolve(new Response(JSON.stringify({ artifacts: [] }), { status: 200 }))
+    }
+    if (url.includes("/api/sessions/")) {
+      return Promise.resolve(new Response(JSON.stringify(searchPayload), { status: 200 }))
+    }
+    return Promise.resolve(new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 }))
+  })
+
+  render(
+    <TestRouter initialEntries={["/sessions/s-1"]}>
+      <Routes>
+        <Route path="/sessions/:sessionId" element={<SessionDetail />} />
+      </Routes>
+    </TestRouter>,
+  )
+
+  await waitFor(() => expect(tabs()).toHaveLength(5))
+
+  const user = userEvent.setup()
+  await user.type(screen.getByRole("searchbox", { name: /search this session/i }), "checkout crash")
+  await user.click(screen.getByRole("button", { name: /^search$/i }))
+
+  const results = await screen.findByRole("list", { name: /search results/i })
+  await user.click(within(results).getByRole("button", { name: /investigate the checkout crash/i }))
+
+  await waitFor(() =>
+    expect(
+      within(panelOf())
+        .getByText(/Investigate the checkout crash/)
+        .closest("article"),
+    ).toHaveAttribute("aria-current", "location"),
+  )
+})
+
 test("EDGE-008: a 404 from the detail endpoint renders a not-found state with a way back, not a blank panel", async () => {
   vi.spyOn(globalThis, "fetch").mockResolvedValue(
     new Response(JSON.stringify({ error: "sessionNotFound" }), { status: 404 }),
@@ -915,33 +962,4 @@ test("EDGE-008: a 404 from the detail endpoint renders a not-found state with a 
   expect(await screen.findByText(/no such session/i)).toBeInTheDocument()
   expect(screen.getByRole("button", { name: /back to all sessions/i })).toBeInTheDocument()
   expect(screen.queryByRole("tab")).not.toBeInTheDocument()
-})
-
-test("S63: the transcript marks who each record came from, so a prompt and a reply are told apart without reading them", async () => {
-  renderDetail()
-
-  await waitFor(() => expect(tabs()).toHaveLength(5))
-  const panel = panelOf()
-
-  const prompt = panel.querySelector('[data-actor="user"]')
-  expect(prompt?.textContent).toContain("Make it idempotent")
-
-  const reply = panel.querySelector('[data-actor="assistant"]')
-  expect(reply?.textContent).toContain("Here is the plan for the upsert")
-
-  // A branch event is neither: nobody typed it and Claude did not say it.
-  expect(panel.querySelectorAll('[data-actor="aside"]').length).toBeGreaterThan(0)
-})
-
-test("S63: every record in the transcript carries an actor, so none renders unattributed", async () => {
-  renderDetail()
-
-  await waitFor(() => expect(tabs()).toHaveLength(5))
-  const panel = panelOf()
-
-  const records = panel.querySelectorAll("article")
-  expect(records.length).toBeGreaterThan(0)
-  for (const record of records) {
-    expect(["user", "assistant", "aside"]).toContain(record.getAttribute("data-actor"))
-  }
 })

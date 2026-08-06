@@ -114,13 +114,7 @@ describe("toDetail", () => {
   test("S38: a subagent's spawn and return produce agentSpawn and agentReturn records, not two identical events", () => {
     const payload = buildPayload({
       subagents: [
-        {
-          agentId: "a1",
-          agentType: "auditor",
-          description: "Audit",
-          parentAgentId: null,
-          spawnToolUseId: null,
-        },
+        { agentId: "a1", agentType: "auditor", description: "Audit", parentAgentId: null },
       ],
       messages: [
         message({ lineNumber: 1, msgType: "message", role: "user" }),
@@ -142,13 +136,7 @@ describe("toDetail", () => {
   test("S38: a subagent's own messages are filed under its branch, not left in the main spine", () => {
     const payload = buildPayload({
       subagents: [
-        {
-          agentId: "a1",
-          agentType: "auditor",
-          description: "Audit",
-          parentAgentId: null,
-          spawnToolUseId: null,
-        },
+        { agentId: "a1", agentType: "auditor", description: "Audit", parentAgentId: null },
       ],
       messages: [
         message({ lineNumber: 1, msgType: "turnEvent", subType: "agentSpawn", agentId: "a1" }),
@@ -206,13 +194,7 @@ describe("toDetail", () => {
   })
 })
 
-const AGENT = {
-  agentId: "a1",
-  agentType: "auditor",
-  description: "Audit",
-  parentAgentId: null,
-  spawnToolUseId: null,
-}
+const AGENT = { agentId: "a1", agentType: "auditor", description: "Audit", parentAgentId: null }
 
 // The same run of messages, once for the main spine and once inside a branch: a system event,
 // two assistant turns either side of a tool call.
@@ -281,7 +263,7 @@ describe("conversationView", () => {
 
   test("S58: a spawn marker synthesised from an Agent tool call claims no messages, so the call it was built from stays owned by the tool record alone", () => {
     const payload = buildPayload({
-      subagents: [{ ...AGENT, spawnToolUseId: "t-agent-call" }],
+      subagents: [AGENT],
       messages: [message({ id: "agent-call", lineNumber: 1, msgType: "toolCall" })],
       toolCalls: [{ ...call("agent-call"), toolName: "Agent" }],
     })
@@ -293,98 +275,6 @@ describe("conversationView", () => {
     expect(view.records[1]?.sources).toEqual([])
   })
 
-  test("S61: each branch anchors to the call that launched it, not to the next one in order", () => {
-    const payload = buildPayload({
-      subagents: [
-        {
-          agentId: "first",
-          agentType: "scout",
-          description: "one",
-          parentAgentId: null,
-          spawnToolUseId: "call-1",
-        },
-        {
-          agentId: "human",
-          agentType: "scout",
-          description: null,
-          parentAgentId: null,
-          spawnToolUseId: null,
-        },
-        {
-          agentId: "second",
-          agentType: "scout",
-          description: "two",
-          parentAgentId: null,
-          spawnToolUseId: "call-2",
-        },
-      ],
-      messages: [
-        message({ id: "m-call-1", lineNumber: 1, msgType: "toolCall" }),
-        message({ id: "m-call-2", lineNumber: 2, msgType: "toolCall" }),
-      ],
-      toolCalls: [
-        { ...call("m-call-1"), toolId: "call-1", toolName: "Agent" },
-        { ...call("m-call-2"), toolId: "call-2", toolName: "Agent" },
-      ],
-    })
-
-    const spawnedAt = conversationView(toDetail(payload), true)
-      .records.filter((record) => record.kind === "agentSpawn")
-      .map((record) => (record.kind === "agentSpawn" ? record.agent.agentId : null))
-
-    // "human" still appears -- it is simply not attached to a call it never had.
-    expect(spawnedAt).toEqual(["first", "second", "human"])
-  })
-
-  test("S62: a branch with no spawning call is placed by when it ran, not by its own line numbers", () => {
-    const payload = buildPayload({
-      subagents: [
-        {
-          agentId: "late",
-          agentType: "scout",
-          description: null,
-          parentAgentId: null,
-          spawnToolUseId: null,
-        },
-      ],
-      messages: [
-        message({
-          id: "at-10",
-          lineNumber: 1,
-          role: "user",
-          timestamp: "2026-03-01T10:00:00.000Z",
-        }),
-        message({
-          id: "at-11",
-          lineNumber: 2,
-          role: "user",
-          timestamp: "2026-03-01T11:00:00.000Z",
-        }),
-        message({
-          id: "at-12",
-          lineNumber: 3,
-          role: "user",
-          timestamp: "2026-03-01T12:00:00.000Z",
-        }),
-        message({
-          id: "branch",
-          lineNumber: 1,
-          timestamp: "2026-03-01T11:30:00.000Z",
-          msgType: "message",
-          role: "assistant",
-          agentId: "late",
-          isSubagent: true,
-        }),
-      ],
-    })
-
-    const kinds = conversationView(toDetail(payload), true).records.map((record) => record.kind)
-
-    // The branch ran at 11:30, so it belongs after the 11:00 record. Its own lineNumber is 1,
-    // which would put it second.
-    expect(kinds).toEqual(["prompt", "prompt", "agentSpawn", "prompt"])
-  })
-
   test("S59: a branch whose spawning call was never captured still gets a marker, so its messages stay reachable", () => {
     // Observed live: a session held four subagent rows but only three Agent calls on the spine.
     // Positional pairing shifted the queue three times and the surplus branch fell out of the
@@ -392,13 +282,7 @@ describe("conversationView", () => {
     const payload = buildPayload({
       subagents: [
         AGENT,
-        {
-          agentId: "a2",
-          agentType: "auditor",
-          description: null,
-          parentAgentId: null,
-          spawnToolUseId: null,
-        },
+        { agentId: "a2", agentType: "auditor", description: null, parentAgentId: null },
       ],
       messages: [
         message({ id: "agent-call", lineNumber: 1, msgType: "toolCall" }),
@@ -522,13 +406,7 @@ describe("prompt turns", () => {
   test("a user turn on a branch merges against that branch, not the prompt above it on the spine", () => {
     const payload = buildPayload({
       subagents: [
-        {
-          agentId: "a1",
-          agentType: "auditor",
-          description: "Audit",
-          parentAgentId: null,
-          spawnToolUseId: null,
-        },
+        { agentId: "a1", agentType: "auditor", description: "Audit", parentAgentId: null },
       ],
       messages: [
         message({
@@ -639,20 +517,8 @@ describe("slash commands", () => {
 test("S76: an agent spawned by another agent gets its marker inside the parent's branch, so a nested branch is reachable rather than orphaned", () => {
   const payload = buildPayload({
     subagents: [
-      {
-        agentId: "a1",
-        agentType: "explorer",
-        description: "Top",
-        parentAgentId: null,
-        spawnToolUseId: null,
-      },
-      {
-        agentId: "a2",
-        agentType: "explorer",
-        description: "Nested",
-        parentAgentId: "a1",
-        spawnToolUseId: null,
-      },
+      { agentId: "a1", agentType: "explorer", description: "Top", parentAgentId: null },
+      { agentId: "a2", agentType: "explorer", description: "Nested", parentAgentId: "a1" },
     ],
     messages: [
       message({ id: "top-call", lineNumber: 1, msgType: "toolCall" }),

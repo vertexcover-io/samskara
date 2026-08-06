@@ -39,6 +39,20 @@ export default defineConfig({
         PUBLIC_BASE_URL: API_BASE,
         WEB_BASE_URL: WEB_BASE,
         COOKIE_SECURE: "false",
+        // Passed through only when already set, never defaulted. With them the e2e stack ranks
+        // with the semantic half; without them it exercises D21's keyword-only degradation. Not
+        // defaulted to Ollama on purpose: e2e assertions must not depend on a model being
+        // installed, and a machine without one would otherwise look like a regression.
+        ...(process.env.EMBEDDING_BASE_URL === undefined
+          ? {}
+          : {
+              EMBEDDING_BASE_URL: process.env.EMBEDDING_BASE_URL,
+              EMBEDDING_API_KEY: process.env.EMBEDDING_API_KEY ?? "ollama",
+              EMBEDDING_MODEL: process.env.EMBEDDING_MODEL ?? "mxbai-embed-large",
+              ...(process.env.EMBEDDING_QUERY_PREFIX === undefined
+                ? {}
+                : { EMBEDDING_QUERY_PREFIX: process.env.EMBEDDING_QUERY_PREFIX }),
+            }),
       },
     },
     {

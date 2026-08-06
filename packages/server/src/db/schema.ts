@@ -26,6 +26,22 @@ const bytea = customType<{ data: Buffer; driverData: Buffer }>({
   dataType: () => "bytea",
 })
 
+/**
+ * pg-core has no `vector` either, and the same CJS-loader resolution failure documented above
+ * for `bytea` applies here -- `customTypes.ts`'s otherwise-identical `vector` cannot be imported
+ * into this file (plan, correction 3).
+ */
+const vector = (dimensions: number) =>
+  customType<{ data: number[]; driverData: string }>({
+    dataType: () => `vector(${dimensions})`,
+    toDriver: (value: number[]) => `[${value.join(",")}]`,
+    fromDriver: (value: string) =>
+      value
+        .slice(1, -1)
+        .split(",")
+        .map((n) => Number(n)),
+  })
+
 const msgTypeValues = MSG_TYPES.map((t) => `'${t}'`).join(", ")
 
 const createdAt = timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
@@ -369,5 +385,52 @@ export const artifact = pgTable(
       "artifact_changeKind_check",
       sql`${t.changeKind} in ('created', 'edited', 'editedUnknownBase')`,
     ),
+  ],
+)
+
+/**
+ * One row per closed, keyword- and (later) vector-searchable unit: most rows are one turn on one
+ * track, split into parts when the turn is too large; a session's title is one more row of the
+ * same shape (`kind = 'title'`, design D16). Chunks are immutable once written, which is why
+ * `searchText`'s GIN index is a hand-written expression index rather than a stored column -- see
+ * the migration.
+ *
+ * `anchorMessageId` is SET NULL rather than CASCADE, matching `commits.messageId`: losing the
+ * anchor must not delete a searchable chunk. A title chunk has a null anchor, trackId and line
+ * range.
+ */
+export const sessionChunk = pgTable(
+  "sessionChunk",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    sessionId: text("sessionId")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(),
+    trackId: text("trackId"),
+    agentId: text("agentId"),
+    partIndex: integer("partIndex").notNull().default(0),
+    startLineNumber: integer("startLineNumber"),
+    endLineNumber: integer("endLineNumber"),
+    anchorMessageId: uuid("anchorMessageId").references(() => messages.id, {
+      onDelete: "set null",
+    }),
+    searchText: text("searchText").notNull(),
+    embedText: text("embedText").notNull(),
+    embedding: vector(1024)("embedding"),
+    claimedAt: timestamp("claimedAt", { withTimezone: true }),
+    attempts: integer("attempts").notNull().default(0),
+    createdAt: createdAtCamel,
+  },
+  (t) => [
+    unique("sessionChunk_identity_unique").on(
+      t.sessionId,
+      t.kind,
+      t.trackId,
+      t.startLineNumber,
+      t.partIndex,
+    ),
+    index("sessionChunk_sessionId_idx").on(t.sessionId),
+    check("sessionChunk_kind_check", sql`${t.kind} in ('turn', 'title')`),
   ],
 )

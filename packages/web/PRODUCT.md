@@ -27,7 +27,7 @@ Samskara is a process-provenance layer for AI-assisted software development. Its
 - Sessions may include main-agent messages, subagents, tool calls, tool results, and planning or design material.
 - Users need to revisit context during code review, collaboration, handoff, debugging, and future maintenance.
 - GitHub identity and organization membership are part of the current access model.
-- The repository currently contains the capture CLI, server ingest API, database model, a read-only web API, and a web application for browsing captured work: projects, a filtered sessions index, and a session detail viewer with conversation, timeline, tool calls, and artifacts. Search, review workflows, and richer artifact rendering remain areas of development.
+- The repository currently contains the capture CLI, server ingest API, database model, a read-only web API, and a web application for browsing captured work: projects, a filtered sessions index with hybrid keyword + semantic search, and a session detail viewer with conversation, timeline, tool calls, artifacts, and search within the open session. Review workflows and richer artifact rendering remain areas of development.
 
 ## Capabilities and Constraints
 
@@ -74,7 +74,11 @@ Recommended constraints to confirm before production rollout:
   session boundary, `packages/web/src/shell/` the app shell and account menu,
   `packages/web/src/session/` the session detail viewer, and `packages/web/src/index.css` the
   Tailwind v4 design tokens.
-- Current implementation supports Claude Code first; additional agent adapters, summarization, search, embeddings, MCP, and artifact storage are not yet established as shipped capabilities.
+- Current implementation supports Claude Code first. Search and embeddings are shipped: sessions are
+  chunked by turn, indexed for keyword search, and ranked by a fusion of keyword and semantic
+  similarity. The semantic half needs an embedding provider configured; with none it degrades to
+  keyword-only, which is the default state of a fresh deployment. Additional agent adapters,
+  summarization, MCP, and artifact storage are not yet established as shipped capabilities.
 
 ## Product Principles
 
