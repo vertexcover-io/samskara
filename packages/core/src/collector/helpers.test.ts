@@ -81,7 +81,7 @@ describe("checkpoints", () => {
     expect(missing).toEqual({ checkpoints: {} })
   })
 
-  test("a malformed checkpoint entry falls back to empty", async () => {
+  test("a malformed checkpoint entry throws rather than resyncing everything silently", async () => {
     const dir = mkdtempSync(join(tmpdir(), "samskara-state-"))
     const path = join(dir, "state.json")
     await writeFile(
@@ -89,6 +89,6 @@ describe("checkpoints", () => {
       JSON.stringify({ checkpoints: { "/a.jsonl": { garbage: true } } }),
       "utf8",
     )
-    expect(await readCheckpoints(nodeFs, path)).toEqual({ checkpoints: {} })
+    await expect(readCheckpoints(nodeFs, path)).rejects.toThrow()
   })
 })
