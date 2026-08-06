@@ -14,9 +14,13 @@ const hookCommandSchema = z
 const hookMatcherSchema = z
   .object({ matcher: z.string().optional(), hooks: z.array(hookCommandSchema) })
   .passthrough()
-const settingsSchema = z.record(z.string(), z.unknown())
 const recordSchema = z.record(z.string(), z.unknown())
 const marker = "samskara:ensure"
+
+type Hook = z.infer<typeof hookCommandSchema>
+type Matcher = z.infer<typeof hookMatcherSchema>
+type JsonRecord = z.infer<typeof recordSchema>
+type Status = "missing" | "stale" | "current"
 
 export type HookCommandOptions = {
   readonly settingsPath?: string
@@ -28,7 +32,13 @@ const defaultSettingsPath = (): string => join(homedir(), ".claude", "settings.j
 
 const parseError = (path: string): Error => new Error(`failed to parse ${path}`)
 
-const readSettings = (path: string): z.infer<typeof settingsSchema> => {
+const parsed = <T>(schema: z.ZodType<T>, value: unknown, path: string): T => {
+  const result = schema.safeParse(value)
+  if (!result.success) throw parseError(path)
+  return result.data
+}
+
+const readSettings = (path: string): JsonRecord => {
   if (!existsSync(path)) return {}
   let raw: unknown
   try {
@@ -36,57 +46,70 @@ const readSettings = (path: string): z.infer<typeof settingsSchema> => {
   } catch {
     throw parseError(path)
   }
-  const parsed = settingsSchema.safeParse(raw)
-  if (!parsed.success) throw parseError(path)
-  return parsed.data
+  return parsed(recordSchema, raw, path)
 }
 
-const writeSettings = (path: string, settings: z.infer<typeof settingsSchema>): void => {
+const writeSettings = (path: string, settings: JsonRecord): void => {
   mkdirSync(dirname(path), { recursive: true })
   writeFileSync(path, `${JSON.stringify(settings, null, 2)}\n`)
-}
-
-const matchersFrom = (
-  value: unknown,
-  path: string,
-): ReadonlyArray<z.infer<typeof hookMatcherSchema>> => {
-  if (value === undefined) return []
-  const parsed = z.array(hookMatcherSchema).safeParse(value)
-  if (!parsed.success) throw parseError(path)
-  return parsed.data
-}
-
-const hooksRecordFrom = (value: unknown, path: string): z.infer<typeof recordSchema> => {
-  if (value === undefined) return {}
-  const parsed = recordSchema.safeParse(value)
-  if (!parsed.success) throw parseError(path)
-  return parsed.data
 }
 
 const managedCommand = (): string =>
   `${JSON.stringify(process.execPath)} ${JSON.stringify(resolveCliEntry())} ensure # ${marker}`
 
-const hasManagedHook = (matchers: ReadonlyArray<z.infer<typeof hookMatcherSchema>>): boolean =>
-  matchers.some((matcher) =>
-    (matcher.hooks ?? []).some((hook) => hook.command?.includes(marker) === true),
-  )
+const isManaged = (hook: Hook): hook is Hook & { command: string } =>
+  hook.command?.includes(marker) === true
 
-const readManagedHooks = (
-  path: string,
-): {
-  readonly settings: z.infer<typeof settingsSchema>
-  readonly hooks: z.infer<typeof recordSchema>
-  readonly sessionStart: ReadonlyArray<z.infer<typeof hookMatcherSchema>>
-} => {
+const statusOf = (matchers: ReadonlyArray<Matcher>, want: string): Status => {
+  const found = matchers.flatMap((matcher) => matcher.hooks.filter(isManaged))
+  if (found.length === 0) return "missing"
+  return found.every((hook) => hook.command === want) ? "current" : "stale"
+}
+
+const pointedAt = (matchers: ReadonlyArray<Matcher>, command: string): ReadonlyArray<Matcher> =>
+  matchers.map((matcher) => ({
+    ...matcher,
+    hooks: matcher.hooks.map((hook) => (isManaged(hook) ? { ...hook, command } : hook)),
+  }))
+
+const withoutManaged = (matchers: ReadonlyArray<Matcher>): ReadonlyArray<Matcher> =>
+  matchers
+    .map((matcher) => ({ ...matcher, hooks: matcher.hooks.filter((hook) => !isManaged(hook)) }))
+    .filter((matcher) => matcher.hooks.length > 0)
+
+type Current = {
+  readonly settings: JsonRecord
+  readonly hooks: JsonRecord
+  readonly sessionStart: ReadonlyArray<Matcher>
+}
+
+const readCurrent = (path: string): Current => {
   const settings = readSettings(path)
-  const hooks = hooksRecordFrom(settings.hooks, path)
-  return { settings, hooks, sessionStart: matchersFrom(hooks.SessionStart, path) }
+  const hooks = settings.hooks === undefined ? {} : parsed(recordSchema, settings.hooks, path)
+  const sessionStart =
+    hooks.SessionStart === undefined
+      ? []
+      : parsed(z.array(hookMatcherSchema), hooks.SessionStart, path)
+  return { settings, hooks, sessionStart }
+}
+
+const saved = (path: string, current: Current, sessionStart: ReadonlyArray<Matcher>): void => {
+  const hooks =
+    sessionStart.length === 0
+      ? Object.fromEntries(Object.entries(current.hooks).filter(([key]) => key !== "SessionStart"))
+      : { ...current.hooks, SessionStart: sessionStart }
+  writeSettings(path, { ...current.settings, hooks })
+}
+
+const failed = (error: unknown, stderr: Writer): number => {
+  stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
+  return 1
 }
 
 export const isManagedHookInstalled = (options: HookCommandOptions = {}): boolean => {
-  const path = options.settingsPath ?? defaultSettingsPath()
   try {
-    return hasManagedHook(readManagedHooks(path).sessionStart)
+    const path = options.settingsPath ?? defaultSettingsPath()
+    return statusOf(readCurrent(path).sessionStart, managedCommand()) !== "missing"
   } catch {
     return false
   }
@@ -95,62 +118,45 @@ export const isManagedHookInstalled = (options: HookCommandOptions = {}): boolea
 export const installHooksCommand = (options: HookCommandOptions = {}): number => {
   const path = options.settingsPath ?? defaultSettingsPath()
   const stdout = options.stdout ?? process.stdout
-  const stderr = options.stderr ?? process.stderr
-  let current: ReturnType<typeof readManagedHooks>
+
   try {
-    current = readManagedHooks(path)
-  } catch (error) {
-    stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
-    return 1
-  }
+    const current = readCurrent(path)
+    const command = managedCommand()
+    const status = statusOf(current.sessionStart, command)
 
-  if (hasManagedHook(current.sessionStart)) {
-    stdout.write(`hook already installed in ${path}\n`)
+    if (status === "current") {
+      stdout.write(`hook already installed in ${path}\n`)
+      return 0
+    }
+
+    saved(
+      path,
+      current,
+      status === "stale"
+        ? pointedAt(current.sessionStart, command)
+        : [...current.sessionStart, { hooks: [{ type: "command", command }] }],
+    )
+    stdout.write(`${status === "stale" ? "repaired" : "installed"} SessionStart hook in ${path}\n`)
     return 0
+  } catch (error) {
+    return failed(error, options.stderr ?? process.stderr)
   }
-
-  writeSettings(path, {
-    ...current.settings,
-    hooks: {
-      ...current.hooks,
-      SessionStart: [
-        ...current.sessionStart,
-        { hooks: [{ type: "command", command: managedCommand() }] },
-      ],
-    },
-  })
-  stdout.write(`installed SessionStart hook in ${path}\n`)
-  return 0
 }
 
 export const uninstallHooksCommand = (options: HookCommandOptions = {}): number => {
   const path = options.settingsPath ?? defaultSettingsPath()
   const stdout = options.stdout ?? process.stdout
-  const stderr = options.stderr ?? process.stderr
   if (!existsSync(path)) {
     stdout.write("nothing to uninstall\n")
     return 0
   }
 
-  let current: ReturnType<typeof readManagedHooks>
   try {
-    current = readManagedHooks(path)
+    const current = readCurrent(path)
+    saved(path, current, withoutManaged(current.sessionStart))
+    stdout.write(`removed samskara hook from ${path}\n`)
+    return 0
   } catch (error) {
-    stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
-    return 1
+    return failed(error, options.stderr ?? process.stderr)
   }
-
-  const filtered = current.sessionStart
-    .map((matcher) => ({
-      ...matcher,
-      hooks: (matcher.hooks ?? []).filter((hook) => !hook.command?.includes(marker)),
-    }))
-    .filter((matcher) => matcher.hooks.length > 0)
-  const nextHooks =
-    filtered.length === 0
-      ? Object.fromEntries(Object.entries(current.hooks).filter(([key]) => key !== "SessionStart"))
-      : { ...current.hooks, SessionStart: filtered }
-  writeSettings(path, { ...current.settings, hooks: nextHooks })
-  stdout.write(`removed samskara hook from ${path}\n`)
-  return 0
 }
