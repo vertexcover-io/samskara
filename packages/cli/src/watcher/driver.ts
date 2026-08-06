@@ -280,7 +280,15 @@ export const runCycle = async (
   config: WatcherConfig,
   deps: WatcherDeps,
 ): Promise<CheckpointStore> => {
-  const prev = await readCheckpoints(deps.fs, config.statePath)
+  // The cycle writes the store back at the end, so the file repairs itself; what it cannot do is
+  // tell anyone that every session is about to be sent again from its first line.
+  const prev = await readCheckpoints(deps.fs, config.statePath).catch((err: unknown) => {
+    deps.log.error(
+      { path: config.statePath, err },
+      "checkpoint store did not parse; every session resyncs from the start",
+    )
+    return { checkpoints: {} }
+  })
   const collectDeps: CollectDeps = {
     fs: deps.fs,
     glob: deps.glob,
