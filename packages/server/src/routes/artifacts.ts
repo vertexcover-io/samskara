@@ -57,7 +57,6 @@ const baseHeaders = (serve: ServeHeaders): Record<string, string> => ({
   "content-disposition": serve.disposition,
   "x-content-type-options": "nosniff",
   "accept-ranges": "bytes",
-  ...(serve.csp === undefined ? {} : { "content-security-policy": serve.csp }),
 })
 
 /**
@@ -194,16 +193,7 @@ export const artifactRoutes = ({ db, env }: Deps): Hono<{ Variables: AuthVariabl
       )
       if (found === null) return context.json({ error: "artifactNotFound" } as const, 404)
 
-      // The one route that widens the markup CSP, and only to our own origins: a document served
-      // here is expected to load the siblings it references, which the uuid route cannot express.
-      //
-      // Both origins, because the page may be reached either directly or through the web app's
-      // dev proxy -- and a subresource resolves against whichever one the document came from, so
-      // naming only the API origin blocks every load behind the proxy.
-      const serve = serveHeadersFor(found.bytes, found.isBinary, {
-        mediaOrigins: [env.publicBaseUrl, env.webBaseUrl],
-        sandbox: env.artifactPreviewSandbox,
-      })
+      const serve = serveHeadersFor(found.bytes, found.isBinary)
       const response = rangeResponse(found.bytes, serve, context.req.header("range"))
 
       if (response.kind === "unsatisfiable") return context.body(null, 416, response.headers)
@@ -227,9 +217,7 @@ export const artifactRoutes = ({ db, env }: Deps): Hono<{ Variables: AuthVariabl
 
       // `found.mimeType` is what the client claimed on upload and is never consulted here:
       // echoing it is the stored-XSS vector this route exists to close.
-      const serve = serveHeadersFor(found.bytes, found.isBinary, {
-        sandbox: env.artifactPreviewSandbox,
-      })
+      const serve = serveHeadersFor(found.bytes, found.isBinary)
       const response = rangeResponse(found.bytes, serve, context.req.header("range"))
 
       if (response.kind === "unsatisfiable") return context.body(null, 416, response.headers)

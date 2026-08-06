@@ -290,27 +290,14 @@ const FetchedText = ({ url, render }: { url: string; render: (text: string) => J
 const previewSrc = (exhibit: Exhibit): string | null => exhibit.previewUrl ?? exhibit.textUrl
 
 /**
- * Must agree with the server's `ARTIFACT_PREVIEW_SANDBOX`, and defaults off the same way: the frame
- * is sandboxed if *either* the attribute or the response header says so, so setting one alone
- * changes nothing in either direction.
- */
-const sandboxed = (): boolean => import.meta.env.VITE_ARTIFACT_PREVIEW_SANDBOX === "on"
-
-/**
- * Agent-authored markup renders as a page rather than as source. Sandboxed, the document sits in an
- * opaque origin: scripts run, but with no cookies, no storage and no reach into this app. The
- * attribute repeats the response header so a cached or proxied response cannot arrive unsandboxed,
- * and `allow-same-origin` must never join `allow-scripts` -- together they let a script inside
- * strip its own sandbox and act as the signed-in user.
- *
- * Unsandboxed, that protection is gone and the document is simply part of this app. It is a
- * deliberate setting for a deployment where every agent whose output lands here is trusted, and it
- * is what lets a report load its own screenshots and recordings over an authenticated session.
+ * Agent-authored markup renders as a page rather than as source, unsandboxed and same-origin, which
+ * is what lets a captured report load its own screenshots and recordings over an authenticated
+ * session. A script inside one therefore acts as the signed-in user: this suits an internal
+ * deployment where every agent whose output lands here is trusted, and nothing else.
  */
 const Preview = ({ url, name }: { url: string; name: string }) => (
   <iframe
     src={url}
-    {...(sandboxed() ? { sandbox: "allow-scripts" } : {})}
     title={`Rendered preview of ${name}`}
     className="h-[70vh] w-full border border-rule bg-white"
   />
