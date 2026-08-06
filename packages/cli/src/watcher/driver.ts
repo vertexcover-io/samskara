@@ -261,8 +261,19 @@ const enqueueArtifacts = async (
     ]
   })
 
-  if (entries.length === 0) return
-  await enqueue(queuePath, entries, deps.log)
+  if (entries.length > 0) await enqueue(queuePath, entries, deps.log)
+
+  if (candidates.length > 0) {
+    deps.log.info(
+      {
+        root,
+        found: candidates.length,
+        skipped: candidates.length - entries.length,
+        enqueued: entries.length,
+      },
+      "artifact candidates enqueued",
+    )
+  }
 }
 
 export const runCycle = async (

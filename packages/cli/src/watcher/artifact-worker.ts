@@ -207,27 +207,43 @@ const enqueueReferences = async (
 
     const projectRoot = entry.projectRoot
     const decisions = await shouldCaptureArtifacts(refs, { projectRoot, allowScratch: false })
-    const survivors = decisions.flatMap((decision) => (decision.ok ? [decision.path] : []))
-    if (survivors.length === 0) return
+    for (const [index, decision] of decisions.entries()) {
+      if (decision.ok) continue
+      deps.log.debug({ ref: refs[index], reason: decision.reason }, "reference not captured")
+    }
 
+    const survivors = decisions.flatMap((decision) => (decision.ok ? [decision.path] : []))
     // Must follow the capture check: one path outside the root makes `git ls-files` exit 128 and
     // print nothing for the whole batch, discarding every valid reference with it.
-    const kept = await untrackedAmong(projectRoot, survivors, deps.log)
-    if (kept.length === 0) return
+    const kept =
+      survivors.length === 0 ? [] : await untrackedAmong(projectRoot, survivors, deps.log)
 
-    const observedAt = new Date(deps.clock.now()).toISOString()
-    const entries = kept.map(
-      (ref): ArtifactQueueEntry => ({
-        sessionId: entry.sessionId,
-        path: ref,
-        relativePath: relative(projectRoot, ref),
-        projectRoot,
-        changeKind: "created",
-        observedAt,
-        attempts: 0,
-      }),
+    if (kept.length > 0) {
+      const observedAt = new Date(deps.clock.now()).toISOString()
+      const entries = kept.map(
+        (ref): ArtifactQueueEntry => ({
+          sessionId: entry.sessionId,
+          path: ref,
+          relativePath: relative(projectRoot, ref),
+          projectRoot,
+          changeKind: "created",
+          observedAt,
+          attempts: 0,
+        }),
+      )
+      await enqueue(config.queuePath, entries, deps.log)
+    }
+
+    deps.log.info(
+      {
+        path: entry.path,
+        found: refs.length,
+        skipped: refs.length - survivors.length,
+        alreadyTracked: survivors.length - kept.length,
+        enqueued: kept.length,
+      },
+      "artifact reference scan complete",
     )
-    await enqueue(config.queuePath, entries, deps.log)
   } catch (error) {
     deps.log.warn({ path: entry.path, err: error }, "artifact reference scan failed")
   }
@@ -256,6 +272,10 @@ const processOne = async (
     const state = await readArtifactState(config.statePath)
     const key = stateKey(entry.sessionId, entry.path)
     if (state.artifacts[key]?.currentHash === upload.currentHash) {
+      deps.log.debug(
+        { path: entry.path, hash: upload.currentHash },
+        "artifact bytes unchanged since the last upload; skipping",
+      )
       await settle(config, entry, null)
       return true
     }
@@ -265,6 +285,17 @@ const processOne = async (
       .catch((): ArtifactSinkResult => ({ status: 0 }))
 
     if (status >= 200 && status < 300) {
+      deps.log.debug(
+        {
+          path: entry.path,
+          status,
+          changeKind: upload.changeKind,
+          bytes: upload.currentContent.length,
+          baseCaptured: upload.baseContent !== undefined,
+          attempts: entry.attempts + 1,
+        },
+        "artifact uploaded",
+      )
       await settle(config, entry, null)
       await advanceArtifactState(config.statePath, key, {
         currentHash: upload.currentHash,
