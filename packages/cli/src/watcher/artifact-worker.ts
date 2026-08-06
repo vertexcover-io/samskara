@@ -1,8 +1,9 @@
 import { dirname, relative, resolve, sep } from "node:path"
 import type { ArtifactUploadPayload } from "@samskara/core"
+import type pino from "pino"
 import { z } from "zod"
 import { atomicWriteJson, readJson, withFileLock } from "../config/atomic.js"
-import { runGit } from "../git.js"
+import { runGitOrNull } from "../git.js"
 import { referencedPaths } from "./artifact-extract.js"
 import {
   type ArtifactQueue,
@@ -147,12 +148,6 @@ const toPayload = (upload: ArtifactUpload): ArtifactUploadPayload => upload
 const REFERENCE_SCAN_TYPES = new Set(["text/html", "text/markdown"])
 
 /**
- * `entry.relativePath` is always a suffix of `entry.path` (both required by the queue schema), so
- * the root is what remains once that suffix and its separator are trimmed off. It comes out
- * canonical because both fields were built from a canonical root -- `resolveProject` resolves it
- * once, and every enqueuer computes `relativePath` against that.
- */
-/**
  * `--literal-pathspecs` is a top-level git option and has to precede the subcommand -- placed after
  * it, git rejects it as unknown. Without it pathspec magic is on, and a file named `shot[1].png` is
  * read as a character class. Git answers relative to the directory it ran in -- the project root
@@ -161,22 +156,32 @@ const REFERENCE_SCAN_TYPES = new Set(["text/html", "text/markdown"])
  *
  * Callers must pass a non-empty set: `git ls-files` with no pathspec lists the entire repository.
  */
-const trackedAmong = async (
+const untrackedAmong = async (
   projectRoot: string,
   paths: ReadonlyArray<string>,
-): Promise<ReadonlySet<string> | null> => {
+  log: pino.Logger,
+): Promise<ReadonlyArray<string>> => {
+  // Asked as a question that succeeds, because a failing one cannot say why: `ls-files` exits 128
+  // both outside a repo and on a repo it could not read, and only the first means nothing is
+  // tracked. A repo that will not answer keeps nothing rather than uploading files git already has.
+  const insideRepo = await runGitOrNull(["rev-parse", "--is-inside-work-tree"], projectRoot, log)
+  if (insideRepo !== "true") return paths
+
   const relatives = paths.map((path) => relative(projectRoot, path))
-  const output = await runGit(
+  const output = await runGitOrNull(
     ["--literal-pathspecs", "ls-files", "-z", "--", ...relatives],
     projectRoot,
+    log,
   )
-  if (output === null) return null
+  if (output === null) return []
 
-  const tracked = output
-    .split("\0")
-    .filter((line) => line.length > 0)
-    .map((line) => resolve(projectRoot, line))
-  return new Set(tracked)
+  const tracked = new Set(
+    output
+      .split("\0")
+      .filter((line) => line.length > 0)
+      .map((line) => resolve(projectRoot, line)),
+  )
+  return paths.filter((path) => !tracked.has(path))
 }
 
 /**
@@ -207,10 +212,7 @@ const enqueueReferences = async (
 
     // Must follow the capture check: one path outside the root makes `git ls-files` exit 128 and
     // print nothing for the whole batch, discarding every valid reference with it.
-    const tracked = await trackedAmong(projectRoot, survivors)
-    if (tracked === null) return
-
-    const kept = survivors.filter((ref) => !tracked.has(ref))
+    const kept = await untrackedAmong(projectRoot, survivors, deps.log)
     if (kept.length === 0) return
 
     const observedAt = new Date(deps.clock.now()).toISOString()

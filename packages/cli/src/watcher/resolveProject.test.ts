@@ -1,11 +1,11 @@
 import { resolve } from "node:path"
 import { describe, expect, test, vi } from "vitest"
-import { runGit } from "../git.js"
+import { runGitOrNull } from "../git.js"
 import { resolveProject } from "./resolveProject.js"
 
-vi.mock("../git.js", () => ({ runGit: vi.fn(async () => null) }))
+vi.mock("../git.js", () => ({ runGitOrNull: vi.fn(async () => null) }))
 
-const git = vi.mocked(runGit)
+const git = vi.mocked(runGitOrNull)
 
 const gitReturning = (byArgs: Record<string, string | null>) => {
   git.mockImplementation(async (args) => byArgs[args.join(" ")] ?? null)

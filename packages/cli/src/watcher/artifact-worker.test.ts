@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { basename, dirname, join } from "node:path"
 import type { ArtifactUploadPayload } from "@samskara/core"
 import { beforeEach, describe, expect, test, vi } from "vitest"
-import { runGit } from "../git.js"
+import { runGitOrNull } from "../git.js"
 import { type ArtifactQueueEntry, enqueue, readQueue } from "./artifact-queue.js"
 import { advanceArtifactState, readArtifactState, stateKey } from "./artifact-worker.js"
 import {
@@ -16,20 +16,34 @@ import {
 } from "./artifact-worker.js"
 import { spyLogger } from "./test-logger.js"
 
-// Empty output means "nothing tracked", which is what most tests want. `restoreMocks`
-// restores this implementation between tests, so only tests needing something else program it.
-vi.mock("../git.js", () => ({ runGit: vi.fn(async () => "") }))
+// A real repo with nothing tracked, which is what most tests want. `restoreMocks` restores this
+// implementation between tests, so only tests needing something else program it.
+vi.mock("../git.js", () => ({
+  runGitOrNull: vi.fn(async (args: ReadonlyArray<string>) =>
+    args.includes("--is-inside-work-tree") ? "true" : "",
+  ),
+}))
 
-const git = vi.mocked(runGit)
+const git = vi.mocked(runGitOrNull)
 
 const sha256 = (content: string): string => createHash("sha256").update(content).digest("hex")
 
 /** Mirrors `git ls-files -z`: tracked paths only, NUL-terminated, in git's order not the caller's. */
 const gitTracking = (tracked: ReadonlyArray<string> | null): void => {
-  git.mockImplementation(async () =>
-    tracked === null ? null : tracked.map((path) => `${path}\0`).join(""),
-  )
+  git.mockImplementation(async (args) => {
+    if (args.includes("--is-inside-work-tree")) return "true"
+    return tracked === null ? null : tracked.map((path) => `${path}\0`).join("")
+  })
 }
+
+/** Every git call refuses, which is how a project that is not a repo answers. */
+const gitNotARepo = (): void => {
+  git.mockImplementation(async () => null)
+}
+
+/** The classification calls only -- the repo check that precedes them is not what these assert on. */
+const lsFilesArgs = (): ReadonlyArray<ReadonlyArray<string>> =>
+  git.mock.calls.map(([args]) => args).filter((args) => args.includes("ls-files"))
 
 /**
  * `isCapturable` excludes `/tmp` and `/private/tmp` outright, and `os.tmpdir()` falls back to
@@ -530,10 +544,8 @@ describe("artifact workers", () => {
       deps(scriptedSink([200])),
     )
 
-    expect(git.mock.calls).toHaveLength(1)
-    expect(git.mock.calls[0]?.[0]).toEqual(
-      expect.arrayContaining(["a.png", "b.png", "c.png", "d.png"]),
-    )
+    expect(lsFilesArgs()).toHaveLength(1)
+    expect(lsFilesArgs()[0]).toEqual(expect.arrayContaining(["a.png", "b.png", "c.png", "d.png"]))
     expect(git.mock.calls[0]?.[1]).toBe(dir)
   })
 
@@ -549,12 +561,7 @@ describe("artifact workers", () => {
     await runArtifactWorkers({ queuePath, statePath, workers: 1, drainOnce: true }, deps(sink))
 
     // A top-level git option: after the subcommand git rejects it as unknown.
-    expect(git.mock.calls[0]?.[0].slice(0, 4)).toEqual([
-      "--literal-pathspecs",
-      "ls-files",
-      "-z",
-      "--",
-    ])
+    expect(lsFilesArgs()[0]?.slice(0, 4)).toEqual(["--literal-pathspecs", "ls-files", "-z", "--"])
     expect(sink.sent.map((payload) => payload.path)).toContain(join(dir, "shot[1].png"))
   })
 
@@ -625,6 +632,24 @@ describe("artifact workers", () => {
     )
     expect(passed.some((arg) => arg.startsWith(".."))).toBe(false)
     expect(sink.sent.map((payload) => payload.path)).toContain(join(dir, "pages", "inside.mp4"))
+  })
+
+  test("S21: a project that is not a git repo keeps every reference", async () => {
+    const reportPath = join(dir, "notes.md")
+    await writeFile(join(dir, "a.png"), "a bytes", "utf8")
+    await writeFile(join(dir, "b.png"), "b bytes", "utf8")
+    await writeFile(reportPath, '<img src="a.png"><img src="b.png">', "utf8")
+
+    await enqueue(queuePath, [entry({ path: reportPath, relativePath: "notes.md" })])
+    const sink = scriptedSink([200])
+    gitNotARepo()
+
+    await runArtifactWorkers({ queuePath, statePath, workers: 1, drainOnce: true }, deps(sink))
+
+    // Nothing can be tracked outside a repo, so the tracked filter has nothing to exclude.
+    expect(sink.sent.map((payload) => payload.path).sort()).toEqual(
+      [reportPath, join(dir, "a.png"), join(dir, "b.png")].sort(),
+    )
   })
 
   test("S20: a scratch document's references are measured against the carried project root", async () => {
