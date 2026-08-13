@@ -20,6 +20,8 @@ const envSchema = z.object({
   GITHUB_CLIENT_ID: z.string().optional(),
   GITHUB_CLIENT_SECRET: z.string().optional(),
   GITHUB_ORG: z.string().default("vertexcover-io"),
+  // Logins that bypass the org-membership gate (comma-separated).
+  GITHUB_ALLOWED_LOGINS: z.string().default("aksdev87,amankumarsingh77,kgritesh"),
   // Used to build the OAuth redirect_uri; falls back to the request origin.
   APP_BASE_URL: z.string().url().optional(),
 });

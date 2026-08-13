@@ -67,6 +67,11 @@ export const buildAuthRouter = (
   const router = new Hono<{ Variables: AuthVariables }>();
   const requireAuth = buildRequireAuth(env);
   const cookieSecure = env.COOKIE_SECURE ?? env.NODE_ENV === "production";
+  const allowedLogins = new Set(
+    env.GITHUB_ALLOWED_LOGINS.split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean),
+  );
 
   const redirectUri = (c: { req: { url: string } }): string => {
     const base = env.APP_BASE_URL ?? new URL(c.req.url).origin;
@@ -115,10 +120,11 @@ export const buildAuthRouter = (
 
     try {
       const { accessToken } = await githubClient.exchangeCode(code, redirectUri(c));
-      const isMember = await githubClient.isOrgMember(accessToken, env.GITHUB_ORG);
-      if (!isMember) return c.redirect("/login?error=not_member");
-
       const profile = await githubClient.getProfile(accessToken);
+      if (!allowedLogins.has(profile.login.toLowerCase())) {
+        const isMember = await githubClient.isOrgMember(accessToken, env.GITHUB_ORG);
+        if (!isMember) return c.redirect("/login?error=not_member");
+      }
       if (!profile.email) {
         profile.email = await githubClient.getPrimaryEmail(accessToken);
       }

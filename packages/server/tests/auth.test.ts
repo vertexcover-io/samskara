@@ -59,6 +59,7 @@ const TEST_ENV: Env = {
   PORT: 0,
   NODE_ENV: "test",
   GITHUB_ORG: "test-org",
+  GITHUB_ALLOWED_LOGINS: "",
 };
 
 let pg: TestPgHandle;
