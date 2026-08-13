@@ -85,7 +85,10 @@ jobs:
           push: true
           tags: ${{ steps.set-tags.outputs.tags }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # A failed cache export must not abort the solve — it skips the image
+          # push and the App Service restart, blocking the deploy over a cache
+          # miss. Export failures now warn instead.
+          cache-to: type=gha,mode=max,ignore-error=true
 
       - name: Login to Azure
         uses: azure/login@v2
