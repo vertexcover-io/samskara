@@ -4,10 +4,22 @@ import { type SessionQuery, parseSessionQuery } from "./sessionQuery.js"
 export const SESSION_SORTS = ["recent", "oldest", "tokens", "project", "relevance"] as const
 export const SESSION_RANGES = ["all", "hour", "today", "week", "month", "custom"] as const
 
+const validIsoDate = (value: string): boolean => {
+  const [year, month, day] = value.split("-").map(Number)
+  if (year === undefined || month === undefined || day === undefined) return false
+  const date = new Date(0)
+  date.setUTCFullYear(year, month - 1, day)
+  date.setUTCHours(0, 0, 0, 0)
+  return (
+    date.getUTCFullYear() === year && date.getUTCMonth() + 1 === month && date.getUTCDate() === day
+  )
+}
+
 const isoDate = z
   .string()
   .trim()
   .regex(/^\d{4}-\d{2}-\d{2}$/)
+  .refine(validIsoDate, "Invalid calendar date")
   .optional()
 
 const unicodeLength = (value: string): number => Array.from(value).length
