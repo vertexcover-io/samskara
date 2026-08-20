@@ -26,6 +26,11 @@ export type SessionSummary = {
   readonly lastActiveAt: string
 }
 
+export type SessionListResult = {
+  readonly sessions: ReadonlyArray<SessionSummary>
+  readonly hasMore: boolean
+}
+
 export type SessionFacts = {
   readonly id: string
   readonly title: string | null

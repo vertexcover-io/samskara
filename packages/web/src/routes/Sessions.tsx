@@ -18,7 +18,11 @@ import { LoadingShell } from "../shell/LoadingShell.js"
 
 type State =
   | { readonly phase: "loading" }
-  | { readonly phase: "ready"; readonly sessions: ReadonlyArray<SessionSummary> }
+  | {
+      readonly phase: "ready"
+      readonly sessions: ReadonlyArray<SessionSummary>
+      readonly hasMore: boolean
+    }
   | { readonly phase: "failed"; readonly error: ApiError }
 
 const distinct = (
@@ -31,12 +35,20 @@ const distinct = (
   return [...values].sort()
 }
 
-const NoResults = ({ onClear }: { onClear: () => void }) => (
+const NoResults = ({
+  keyword,
+  onClear,
+}: {
+  keyword: string | null
+  onClear: () => void
+}) => (
   <section className="border border-dashed border-rule bg-panel p-8 text-center">
     <p className="text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-stamp">
       Nothing filed under these terms
     </p>
-    <h2 className="mt-2 text-[0.9375rem] font-semibold">No sessions match these filters</h2>
+    <h2 className="mt-2 text-[0.9375rem] font-semibold">
+      {keyword === null ? "No sessions match these filters" : `No sessions match “${keyword}”`}
+    </h2>
     <p className="mx-auto mt-2 max-w-md text-ink-soft">
       The filters above are still applied. Widen them, or clear them to see every session you can
       read.
@@ -81,10 +93,11 @@ const ErrorState = ({ error }: { error: ApiError }) => (
 
 type ResultProps = {
   readonly state: State
+  readonly keyword: string | null
   readonly onClear: () => void
 }
 
-const Result = ({ state, onClear }: ResultProps) => {
+const Result = ({ state, keyword, onClear }: ResultProps) => {
   if (state.phase === "loading") return <LoadingShell label="Retrieving sessions" />
 
   if (state.phase === "failed") {
@@ -92,16 +105,21 @@ const Result = ({ state, onClear }: ResultProps) => {
     return <ErrorState error={state.error} />
   }
 
-  if (state.sessions.length === 0) return <NoResults onClear={onClear} />
+  if (state.sessions.length === 0) return <NoResults keyword={keyword} onClear={onClear} />
 
   return (
-    <ul className="grid grid-cols-1 gap-1.5">
-      {state.sessions.map((session) => (
-        <li key={session.id}>
-          <SessionRow session={session} to={`/sessions/${session.id}`} />
-        </li>
-      ))}
-    </ul>
+    <>
+      {state.hasMore ? (
+        <p className="mb-2 font-mono text-[0.72rem] text-ink-soft">Showing the 50 best matches</p>
+      ) : null}
+      <ul className="grid grid-cols-1 gap-1.5">
+        {state.sessions.map((session) => (
+          <li key={session.id}>
+            <SessionRow session={session} to={`/sessions/${session.id}`} />
+          </li>
+        ))}
+      </ul>
+    </>
   )
 }
 
@@ -113,7 +131,22 @@ export const Sessions = () => {
   const query = serializeFilters(parseFilters(searchParams)).toString()
   const filters = useMemo(() => parseFilters(new URLSearchParams(query)), [query])
 
-  const applyFilters = (next: SessionFilters) => setSearchParams(serializeFilters(next))
+  // A keyword with no explicit sort defaults the control to best match, so a search is ranked
+  // rather than falling back to the recency order nobody asked for.
+  const displayFilters: SessionFilters =
+    filters.q !== null && searchParams.get("sort") === null ? { ...filters, sort: "best" } : filters
+
+  const applyFilters = (next: SessionFilters) => {
+    const onlyKeywordChanged =
+      next.project === displayFilters.project &&
+      next.user === displayFilters.user &&
+      next.range === displayFilters.range &&
+      next.from === displayFilters.from &&
+      next.to === displayFilters.to &&
+      next.sort === displayFilters.sort &&
+      next.q !== displayFilters.q
+    setSearchParams(serializeFilters(next), onlyKeywordChanged ? { replace: true } : undefined)
+  }
 
   useEffect(() => {
     let active = true
@@ -124,7 +157,7 @@ export const Sessions = () => {
         if (!active) return
         setState(
           result.ok
-            ? { phase: "ready", sessions: result.data }
+            ? { phase: "ready", sessions: result.data.sessions, hasMore: result.data.hasMore }
             : { phase: "failed", error: result.error },
         )
       },
@@ -138,8 +171,10 @@ export const Sessions = () => {
   useEffect(() => {
     let active = true
 
+    // Unfiltered on purpose: this is what fills the Project and User dropdowns, and narrowing
+    // it by the keyword would strip their options down to whatever the search matched.
     getJson("/api/sessions", parseSessionList).then((result) => {
-      if (active && result.ok) setVocabulary(result.data)
+      if (active && result.ok) setVocabulary(result.data.sessions)
     })
 
     return () => {
@@ -172,8 +207,8 @@ export const Sessions = () => {
       filters.range === "custom"
         ? onScreen.filter((session) => withinRange(filters, session.lastActiveAt))
         : onScreen
-    return sortSessions(scoped, filters.sort)
-  }, [onScreen, filters])
+    return sortSessions(scoped, displayFilters.sort)
+  }, [onScreen, filters, displayFilters.sort])
 
   const shown: State = state.phase === "ready" ? { ...state, sessions: visible } : state
 
@@ -186,11 +221,16 @@ export const Sessions = () => {
       <h1 className="text-[1.375rem] font-semibold leading-tight">Sessions</h1>
 
       <div className="mt-4">
-        <FilterBar filters={filters} projects={projects} users={users} onChange={applyFilters} />
+        <FilterBar
+          filters={displayFilters}
+          projects={projects}
+          users={users}
+          onChange={applyFilters}
+        />
       </div>
 
       <div className="mt-4">
-        <Result state={shown} onClear={() => applyFilters(EMPTY_FILTERS)} />
+        <Result state={shown} keyword={filters.q} onClear={() => applyFilters(EMPTY_FILTERS)} />
       </div>
     </section>
   )

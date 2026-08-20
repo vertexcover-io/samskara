@@ -76,7 +76,7 @@ test("S44: opening a session from the filtered list shows three tabs with Conver
   authedPage: page,
 }) => {
   await page.goto("/sessions?project=samskara")
-  await page.getByRole("button", { name: /Make ingest idempotent/ }).click()
+  await page.getByRole("link", { name: /Make ingest idempotent/ }).click()
 
   await expect(page).toHaveURL(/\/sessions\/e2e-detail-1$/)
 
@@ -170,5 +170,5 @@ test("EDGE-008 S44: a session id that does not exist renders the not-found state
   await page.getByRole("button", { name: /back to all sessions/i }).click()
 
   await expect(page).toHaveURL(/\/sessions$/)
-  await expect(page.getByRole("button", { name: /Make ingest idempotent/ })).toBeVisible()
+  await expect(page.getByRole("link", { name: /Make ingest idempotent/ })).toBeVisible()
 })

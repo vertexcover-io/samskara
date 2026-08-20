@@ -33,12 +33,12 @@ test("S27: opening a project card filters sessions into the URL, changing the Us
   authedPage: page,
 }) => {
   await page.goto("/projects")
-  await page.getByRole("button", { name: /Samskara/ }).click()
+  await page.getByRole("link", { name: /Samskara/ }).click()
 
   await expect(page).toHaveURL(/\/sessions\?project=samskara$/)
-  await expect(page.getByRole("button", { name: /Port the session detail surface/ })).toBeVisible()
-  await expect(page.getByRole("button", { name: /Wire the auth guard/ })).toBeVisible()
-  await expect(page.getByRole("button", { name: /Trim the ingest pipeline/ })).toHaveCount(0)
+  await expect(page.getByRole("link", { name: /Port the session detail surface/ })).toBeVisible()
+  await expect(page.getByRole("link", { name: /Wire the auth guard/ })).toBeVisible()
+  await expect(page.getByRole("link", { name: /Trim the ingest pipeline/ })).toHaveCount(0)
   await expect(page.getByRole("combobox", { name: /project/i })).toHaveValue("samskara")
 
   await page.getByRole("combobox", { name: /user/i }).selectOption(E2E_OTHER_USER_LOGIN)
@@ -46,20 +46,20 @@ test("S27: opening a project card filters sessions into the URL, changing the Us
   await expect(page).toHaveURL(
     new RegExp(`/sessions\\?project=samskara&user=${E2E_OTHER_USER_LOGIN}$`),
   )
-  await expect(page.getByRole("button", { name: /Wire the auth guard/ })).toBeVisible()
-  await expect(page.getByRole("button", { name: /Port the session detail surface/ })).toHaveCount(0)
+  await expect(page.getByRole("link", { name: /Wire the auth guard/ })).toBeVisible()
+  await expect(page.getByRole("link", { name: /Port the session detail surface/ })).toHaveCount(0)
 
   await page.goBack()
 
   await expect(page).toHaveURL(/\/sessions\?project=samskara$/)
   await expect(page.getByRole("combobox", { name: /user/i })).toHaveValue("")
-  await expect(page.getByRole("button", { name: /Port the session detail surface/ })).toBeVisible()
-  await expect(page.getByRole("button", { name: /Wire the auth guard/ })).toBeVisible()
+  await expect(page.getByRole("link", { name: /Port the session detail surface/ })).toBeVisible()
+  await expect(page.getByRole("link", { name: /Wire the auth guard/ })).toBeVisible()
 
   await page.goto(`/sessions?project=samskara&user=${E2E_OTHER_USER_LOGIN}`)
 
-  await expect(page.getByRole("button", { name: /Wire the auth guard/ })).toBeVisible()
-  await expect(page.getByRole("button", { name: /Port the session detail surface/ })).toHaveCount(0)
+  await expect(page.getByRole("link", { name: /Wire the auth guard/ })).toBeVisible()
+  await expect(page.getByRole("link", { name: /Port the session detail surface/ })).toHaveCount(0)
   await expect(page.getByRole("combobox", { name: /project/i })).toHaveValue("samskara")
   await expect(page.getByRole("combobox", { name: /user/i })).toHaveValue(E2E_OTHER_USER_LOGIN)
 })
@@ -70,7 +70,7 @@ test("S27: an unfiltered /sessions lists every readable session, a row opens /se
   await page.goto("/sessions")
 
   for (const title of titles) {
-    await expect(page.getByRole("button", { name: new RegExp(title) })).toBeVisible()
+    await expect(page.getByRole("link", { name: new RegExp(title) })).toBeVisible()
   }
 
   await page.setViewportSize({ width: 320, height: 800 })
@@ -79,7 +79,7 @@ test("S27: an unfiltered /sessions lists every readable session, a row opens /se
   )
   expect(overflow).toBeLessThanOrEqual(0)
 
-  await page.getByRole("button", { name: /Port the session detail surface/ }).click()
+  await page.getByRole("link", { name: /Port the session detail surface/ }).click()
   await expect(page).toHaveURL(/\/sessions\/e2e-s-1$/)
 })
 
@@ -90,13 +90,13 @@ test("S27: a URL naming a project the user cannot read shows the access-withheld
 
   await expect(page.getByText(/that project cannot be opened/i)).toBeVisible()
   for (const title of titles) {
-    await expect(page.getByRole("button", { name: new RegExp(title) })).toHaveCount(0)
+    await expect(page.getByRole("link", { name: new RegExp(title) })).toHaveCount(0)
   }
 
   await page.getByRole("button", { name: /back to all sessions/i }).click()
 
   await expect(page).toHaveURL(/\/sessions$/)
-  await expect(page.getByRole("button", { name: /Port the session detail surface/ })).toBeVisible()
+  await expect(page.getByRole("link", { name: /Port the session detail surface/ })).toBeVisible()
 })
 
 test("S27: filters that match nothing keep their values and offer a clear action that empties the query string", async ({
@@ -111,7 +111,7 @@ test("S27: filters that match nothing keep their values and offer a clear action
   await page.getByRole("button", { name: /clear filters/i }).click()
 
   await expect(page).toHaveURL(/\/sessions$/)
-  await expect(page.getByRole("button", { name: new RegExp(titles[0] ?? "") })).toBeVisible()
+  await expect(page.getByRole("link", { name: new RegExp(titles[0] ?? "") })).toBeVisible()
   await expect(page.getByRole("combobox", { name: /user/i })).toHaveValue("")
 })
 
@@ -120,7 +120,7 @@ test("S27: the sessions index shows the primary user's own session under their l
 }) => {
   await page.goto(`/sessions?user=${E2E_USER_LOGIN}`)
 
-  await expect(page.getByRole("button", { name: /Port the session detail surface/ })).toBeVisible()
-  await expect(page.getByRole("button", { name: /Trim the ingest pipeline/ })).toBeVisible()
-  await expect(page.getByRole("button", { name: /Wire the auth guard/ })).toHaveCount(0)
+  await expect(page.getByRole("link", { name: /Port the session detail surface/ })).toBeVisible()
+  await expect(page.getByRole("link", { name: /Trim the ingest pipeline/ })).toBeVisible()
+  await expect(page.getByRole("link", { name: /Wire the auth guard/ })).toHaveCount(0)
 })

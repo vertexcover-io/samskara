@@ -1,4 +1,4 @@
-import { useId } from "react"
+import { useEffect, useId, useRef, useState } from "react"
 import {
   RANGES,
   RANGE_LABEL,
@@ -8,6 +8,7 @@ import {
   type SessionFilters,
   type Sort,
 } from "../sessions/filters.js"
+import { useDebouncedValue } from "../sessions/useDebouncedValue.js"
 
 const asRange = (value: string): Range => RANGES.find((range) => range === value) ?? "all"
 const asSort = (value: string): Sort => SORTS.find((sort) => sort === value) ?? "recent"
@@ -66,6 +67,49 @@ const Choice = ({ label, value, options, onChange }: ChoiceProps) => {
         </select>
         <Caret />
       </div>
+    </div>
+  )
+}
+
+// Local state carries every keystroke immediately; onChange only fires once the debounced
+// value settles, so typing costs one URL write instead of one per keystroke.
+const SearchControl = ({
+  filters,
+  onChange,
+}: {
+  filters: SessionFilters
+  onChange: (filters: SessionFilters) => void
+}) => {
+  const id = useId()
+  const [text, setText] = useState(filters.q ?? "")
+  const debounced = useDebouncedValue(text, 250)
+  const committed = useRef(filters.q)
+
+  useEffect(() => {
+    setText(filters.q ?? "")
+    committed.current = filters.q
+  }, [filters.q])
+
+  useEffect(() => {
+    const next = debounced.trim() === "" ? null : debounced
+    if (next === committed.current) return
+    committed.current = next
+    onChange({ ...filters, q: next })
+  }, [debounced, filters, onChange])
+
+  return (
+    <div className="min-w-0">
+      <label className={labelClass} htmlFor={id}>
+        Keyword
+      </label>
+      <input
+        id={id}
+        type="search"
+        value={text}
+        placeholder="Search transcripts…"
+        className={controlClass}
+        onChange={(event) => setText(event.target.value)}
+      />
     </div>
   )
 }
@@ -157,8 +201,9 @@ type Props = {
 export const FilterBar = ({ filters, projects, users, onChange }: Props) => (
   <section
     aria-label="Session filters"
-    className="grid grid-cols-1 items-end gap-3 border border-rule bg-panel p-3 min-[560px]:grid-cols-2 min-[900px]:grid-cols-5"
+    className="grid grid-cols-1 items-end gap-3 border border-rule bg-panel p-3 min-[560px]:grid-cols-2 min-[900px]:grid-cols-6"
   >
+    <SearchControl filters={filters} onChange={onChange} />
     <Choice
       label="Project"
       value={filters.project ?? ""}

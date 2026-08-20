@@ -419,7 +419,7 @@ test.describe("capture pipeline", () => {
     // The collector never sets a title -- Claude transcripts carry none, so `sessions.title`
     // is NULL. The list is named by the server's `derivedTitle`, which coalesces that NULL
     // with the opening user prompt, so a captured session is never shown as "untitled".
-    const row = page.getByRole("button", { name: /Rescans duplicate rows/ })
+    const row = page.getByRole("link", { name: /Rescans duplicate rows/ })
     await expect(row).toBeVisible()
 
     await row.click()

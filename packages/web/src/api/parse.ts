@@ -8,6 +8,7 @@ import type {
   SessionCommit,
   SessionDetailPayload,
   SessionFacts,
+  SessionListResult,
   SessionPullRequest,
   SessionRepo,
   SessionSummary,
@@ -120,12 +121,14 @@ const parseSessionSummary = (value: unknown): SessionSummary | null => {
   }
 }
 
-export const parseSessionList = (body: unknown): ReadonlyArray<SessionSummary> | null => {
+export const parseSessionList = (body: unknown): SessionListResult | null => {
   const fields = asFields(body)
   if (!fields || !Array.isArray(fields.sessions)) return null
 
   const parsed = fields.sessions.map(parseSessionSummary)
-  return parsed.every((session): session is SessionSummary => session !== null) ? parsed : null
+  if (!parsed.every((session): session is SessionSummary => session !== null)) return null
+
+  return { sessions: parsed, hasMore: bool(fields.hasMore) }
 }
 
 const bool = (value: unknown): boolean => value === true

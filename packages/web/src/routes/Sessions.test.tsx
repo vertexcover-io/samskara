@@ -63,8 +63,15 @@ const control = (name: RegExp): HTMLSelectElement => {
   return element
 }
 
+const searchBox = (): HTMLInputElement => {
+  const element = screen.getByRole("searchbox", { name: /keyword/i })
+  if (!(element instanceof HTMLInputElement)) throw new Error("keyword is not an input")
+  return element
+}
+
 afterEach(() => {
   vi.unstubAllGlobals()
+  vi.useRealTimers()
 })
 
 test("S23: loading /sessions?project=p&user=u&range=week shows all three controls set from the query string - not reset to defaults", async () => {
@@ -206,4 +213,99 @@ test("S25: with user=maya applied, ravi is still offered - options come from the
   })
   expect(control(/user/i).value).toBe("maya")
   expect(screen.queryByRole("link", { name: /trim the ingest pipeline/i })).not.toBeInTheDocument()
+})
+
+test("SC20: a keyword with no sort in the URL defaults the sort control to Best match", async () => {
+  stubFetch(okWith([session]))
+
+  renderAt("/sessions?q=timeout")
+
+  await screen.findByRole("link", { name: /port the session detail surface/i })
+  expect(control(/sort by/i).value).toBe("best")
+})
+
+test("SC20: a keyword with an explicit sort in the URL keeps that sort", async () => {
+  stubFetch(okWith([session]))
+
+  renderAt("/sessions?q=timeout&sort=oldest")
+
+  await screen.findByRole("link", { name: /port the session detail surface/i })
+  expect(control(/sort by/i).value).toBe("oldest")
+})
+
+test("SC21: a keyword matching nothing names the keyword in the empty state and still offers to clear", async () => {
+  stubFetch(okWith([]))
+
+  renderAt("/sessions?q=zzzznotfound")
+
+  const heading = await screen.findByRole("heading", { name: /no sessions match/i })
+  expect(heading).toHaveTextContent("zzzznotfound")
+  expect(screen.getByRole("button", { name: /clear filters/i })).toBeInTheDocument()
+})
+
+test("SC22: hasMore true shows a line naming the 50 best matches", async () => {
+  stubFetch(() => Promise.resolve(jsonResponse(200, { sessions: [session], hasMore: true })))
+
+  renderAt("/sessions?q=timeout")
+
+  await screen.findByRole("link", { name: /port the session detail surface/i })
+  expect(screen.getByText(/showing the 50 best matches/i)).toBeInTheDocument()
+})
+
+test("SC22: hasMore false shows no such line", async () => {
+  stubFetch(okWith([session]))
+
+  renderAt("/sessions?q=timeout")
+
+  await screen.findByRole("link", { name: /port the session detail surface/i })
+  expect(screen.queryByText(/showing the 50 best matches/i)).not.toBeInTheDocument()
+})
+
+test("SC23: typing five characters quickly writes the URL once, after the pause, and sends one request for the whole word", async () => {
+  const calls = stubFetch(okWith([]))
+  const testUser = userEvent.setup({ delay: 0 })
+
+  renderAt("/sessions")
+  await screen.findByRole("searchbox", { name: /keyword/i })
+
+  await testUser.type(searchBox(), "abcde")
+
+  expect(screen.getByTestId("location")).not.toHaveTextContent("q=")
+
+  await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("q=abcde"), {
+    timeout: 2000,
+  })
+  expect(calls.filter((path) => path.includes("q="))).toEqual(["/api/sessions?q=abcde"])
+})
+
+test("SC24: the project dropdown still offers all three projects when the keyword matches a session in only one", async () => {
+  const samskara = { ...session, id: "s-1" }
+  const andromeda = {
+    ...session,
+    id: "s-2",
+    title: "Trim the ingest pipeline",
+    projectSlug: "andromeda",
+    projectName: "Andromeda",
+  }
+  const acme = {
+    ...session,
+    id: "s-3",
+    title: "Wire the auth guard",
+    projectSlug: "acme",
+    projectName: "Acme",
+  }
+
+  stubFetch((url) => {
+    const rows = url.searchParams.get("q") === null ? [samskara, andromeda, acme] : [samskara]
+    return Promise.resolve(jsonResponse(200, { sessions: rows, hasMore: false }))
+  })
+
+  renderAt("/sessions?q=timeout")
+
+  await screen.findByRole("link", { name: /port the session detail surface/i })
+
+  await waitFor(() => {
+    const labels = Array.from(control(/project/i).options).map((option) => option.label)
+    expect(labels).toEqual(["All projects", "Acme", "Andromeda", "Samskara"])
+  })
 })

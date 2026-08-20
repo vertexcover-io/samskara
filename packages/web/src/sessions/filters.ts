@@ -11,7 +11,7 @@ export const RANGE_LABEL: Readonly<Record<Range, string>> = {
   custom: "Custom range…",
 }
 
-export const SORTS = ["recent", "oldest", "tokens", "project"] as const
+export const SORTS = ["recent", "oldest", "tokens", "project", "best"] as const
 
 export type Sort = (typeof SORTS)[number]
 
@@ -20,6 +20,7 @@ export const SORT_LABEL: Readonly<Record<Sort, string>> = {
   oldest: "Oldest first",
   tokens: "Most tokens",
   project: "Project name",
+  best: "Best match",
 }
 
 export type SessionFilters = {
@@ -29,6 +30,7 @@ export type SessionFilters = {
   readonly from: string | null
   readonly to: string | null
   readonly sort: Sort
+  readonly q: string | null
 }
 
 export const EMPTY_FILTERS: SessionFilters = {
@@ -38,6 +40,7 @@ export const EMPTY_FILTERS: SessionFilters = {
   from: null,
   to: null,
   sort: "recent",
+  q: null,
 }
 
 const isRange = (value: string | null): value is Range =>
@@ -68,6 +71,7 @@ export const parseFilters = (params: URLSearchParams): SessionFilters => {
     from: isoDate(params.get("from")),
     to: isoDate(params.get("to")),
     sort: isSort(sort) ? sort : "recent",
+    q: trimmed(params.get("q")),
   }
 }
 
@@ -81,6 +85,7 @@ export const serializeFilters = (filters: SessionFilters): URLSearchParams => {
     if (filters.to !== null) params.set("to", filters.to)
   }
   if (filters.sort !== "recent") params.set("sort", filters.sort)
+  if (filters.q !== null) params.set("q", filters.q)
   return params
 }
 
@@ -125,6 +130,7 @@ export const sortSessions = <T extends Sortable>(
   sort: Sort,
 ): ReadonlyArray<T> => {
   const at = (session: T): number => new Date(session.lastActiveAt).getTime() || 0
+  if (sort === "best") return sessions
   const copy = [...sessions]
 
   if (sort === "oldest") return copy.sort((a, b) => at(a) - at(b))
