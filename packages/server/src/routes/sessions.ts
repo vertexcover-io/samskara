@@ -78,6 +78,7 @@ const serialize = (row: SessionSummaryRow) => ({
   tokensTotal: Number(row.tokensTotal),
   status: row.status,
   lastActiveAt: new Date(row.lastActiveAt).toISOString(),
+  snippet: row.snippet,
 })
 
 const isoOrNull = (value: string | null): string | null =>

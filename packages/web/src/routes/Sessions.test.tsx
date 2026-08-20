@@ -24,6 +24,7 @@ const session: SessionSummary = {
   tokensTotal: 4200,
   status: "complete",
   lastActiveAt: "2026-02-01T09:30:00.000Z",
+  snippet: null,
 }
 
 const jsonResponse = (status: number, body: unknown): Response =>

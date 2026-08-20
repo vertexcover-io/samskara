@@ -24,6 +24,8 @@ export type SessionSummary = {
   readonly tokensTotal: number
   readonly status: string
   readonly lastActiveAt: string
+  /** The matching transcript text, marked with `[[hl]]`/`[[/hl]]`. Null when no keyword was set. */
+  readonly snippet: string | null
 }
 
 export type SessionListResult = {

@@ -15,6 +15,7 @@ const populated: SessionSummary = {
   tokensTotal: 128_400,
   status: "complete",
   lastActiveAt: "2026-02-01T09:30:00.000Z",
+  snippet: null,
 }
 
 const renderRow = (session: SessionSummary) =>
@@ -102,4 +103,30 @@ test("S26: the row is a link, so a session opens in a new tab the way any other 
   renderRow(populated)
 
   expect(screen.getByRole("link")).toHaveAttribute("href", "/sessions/s-1")
+})
+
+test("SC28: a row renders the matched text as a mark", () => {
+  renderRow({ ...populated, snippet: "a [[hl]]timeout[[/hl]] here" })
+
+  const row = screen.getByRole("link")
+  expect(row).toHaveTextContent("a timeout here")
+
+  const mark = screen.getByText("timeout")
+  expect(mark.tagName).toBe("MARK")
+})
+
+test("SC29: a row renders snippet text literally, never as markup", () => {
+  renderRow({ ...populated, snippet: "<img src=x onerror=alert(1)>" })
+
+  const row = screen.getByRole("link")
+  expect(row).toHaveTextContent("<img src=x onerror=alert(1)>")
+  expect(row.querySelector("img")).toBeNull()
+})
+
+test("SC30: a row with no snippet renders no snippet line", () => {
+  renderRow({ ...populated, snippet: null })
+
+  const row = screen.getByRole("link")
+  expect(row).toHaveTextContent("Port the session detail surface")
+  expect(row.querySelector("mark")).toBeNull()
 })

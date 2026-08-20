@@ -28,13 +28,23 @@ const formatTokens = (total: number): string => {
   return `${(total / unit.scale).toFixed(1)}${unit.suffix} tokens`
 }
 
+const HL = /\[\[hl\]\]([\s\S]*?)\[\[\/hl\]\]/g
+
+// Odd segments are the matched text; even segments are the surrounding text.
+const markSnippet = (text: string) =>
+  text
+    .split(HL)
+    // biome-ignore lint/suspicious/noArrayIndexKey: snippet segments have no stable identity
+    .map((part, i) => (i % 2 === 1 ? <mark key={i}>{part}</mark> : part))
+
 type Props = {
   readonly session: SessionSummary
   readonly to: string
 }
 
 export const SessionRow = ({ session, to }: Props) => {
-  const { title, projectName, userLogin, repo, durationMs, tokensTotal, lastActiveAt } = session
+  const { title, projectName, userLogin, repo, durationMs, tokensTotal, lastActiveAt, snippet } =
+    session
 
   return (
     <Link
@@ -50,6 +60,9 @@ export const SessionRow = ({ session, to }: Props) => {
         <span className="block truncate text-[0.875rem] font-semibold">
           {title ?? <span className="text-faded italic">untitled session</span>}
         </span>
+        {snippet === null ? null : (
+          <span className="block truncate text-[0.8rem] text-ink-soft">{markSnippet(snippet)}</span>
+        )}
         <span className="block truncate font-mono text-[0.72rem] text-ink-soft">
           {userLogin} · {repo === null ? null : `${repoLabel(repo)} · `}
           {durationMs === null ? <Unavailable /> : formatDuration(durationMs)} ·{" "}

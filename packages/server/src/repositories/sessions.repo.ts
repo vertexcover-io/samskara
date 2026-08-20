@@ -106,6 +106,7 @@ export type SessionSummaryRow = {
   readonly tokensTotal: number
   readonly status: string
   readonly lastActiveAt: string
+  readonly snippet: string | null
 }
 
 export type SessionListFilter = {
@@ -223,6 +224,18 @@ const matchCount = (q: string) => sql<number>`(
   where m."sessionId" = ${sessions.id} and ${msgTsv} @@ search_query_v1(${q})
 )`
 
+/** The best-matching message's headline, marked with sentinels the caller renders -- never raw `<b>` tags. */
+const snippet = (q: string) => sql<string | null>`(
+  select ts_headline('english',
+           msg_search_text_v1(m."content", m."details", m."msgType"),
+           search_query_v1(${q}),
+           'StartSel=[[hl]],StopSel=[[/hl]],MaxWords=24,MinWords=8,MaxFragments=1')
+  from "messages" m
+  where m."sessionId" = ${sessions.id} and ${msgTsv} @@ search_query_v1(${q})
+  order by ts_rank_cd(${msgTsv}, search_query_v1(${q})) desc
+  limit 1
+)`
+
 export const listAccessible = (
   db: Querier,
   userId: string,
@@ -247,6 +260,7 @@ export const listAccessible = (
       tokensTotal,
       status,
       lastActiveAt: sql<string>`${sessions.updatedAt}`,
+      snippet: filter.q !== undefined ? snippet(filter.q) : sql<string | null>`null`,
     })
     .from(sessions)
     .innerJoin(projects, eq(projects.id, sessions.projectId))

@@ -76,6 +76,7 @@ type SessionSummary = {
   readonly tokensTotal: number
   readonly status: string
   readonly lastActiveAt: string
+  readonly snippet: string | null
 }
 
 const seedUser = (db: Db, githubId: number, login: string): Promise<string> =>
@@ -406,6 +407,7 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
       tokensTotal: 350,
       status: "complete",
       lastActiveAt: new Date("2026-02-05T12:00:00Z").toISOString(),
+      snippet: null,
     })
   })
 
@@ -1029,6 +1031,33 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     await client.unsafe("drop index concurrently if exists sessions_search_idx")
 
     expect(idsOf(await listAs(db, owner, "?q=foxglove"))).toEqual(["noindex-has"])
+  })
+
+  test("SC31: a search response carries a snippet containing the keyword", async () => {
+    const owner = await seedUser(db, 2016, "search-snippet-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Snippet", slug: "search-snippet" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "snippet-session",
+      userId: owner,
+      projectId,
+      title: "S",
+      updatedAt: new Date(),
+    })
+    await seedSearchMessage(db, {
+      sessionId: "snippet-session",
+      lineNumber: 1,
+      msgType: "message",
+      ...chatMessage("investigate the zephyrquark timeout before it recurs"),
+    })
+
+    const [withKeyword] = await listAs(db, owner, "?q=zephyrquark")
+    expect(withKeyword?.snippet).toContain("[[hl]]zephyrquark[[/hl]]")
+
+    const [withoutKeyword] = await listAs(db, owner)
+    expect(withoutKeyword?.snippet).toBeNull()
   })
 })
 

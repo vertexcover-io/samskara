@@ -105,7 +105,8 @@ const parseSessionSummary = (value: unknown): SessionSummary | null => {
 
   const title = nullableStr(fields.title)
   const durationMs = nullableNum(fields.durationMs)
-  if (title === undefined || durationMs === undefined) return null
+  const snippet = nullableStr(fields.snippet)
+  if (title === undefined || durationMs === undefined || snippet === undefined) return null
 
   return {
     id,
@@ -118,6 +119,7 @@ const parseSessionSummary = (value: unknown): SessionSummary | null => {
     tokensTotal,
     status,
     lastActiveAt,
+    snippet,
   }
 }
 
