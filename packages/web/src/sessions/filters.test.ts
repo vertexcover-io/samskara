@@ -1,95 +1,66 @@
 import { describe, expect, test } from "vitest"
-import { type SessionFilters, parseFilters, serializeFilters } from "./filters.js"
+import { EMPTY_FILTERS, changedFilters, parseFilters, serializeFilters } from "./filters.js"
 
-const roundTrip = (filters: SessionFilters): SessionFilters =>
-  parseFilters(serializeFilters(filters))
+const roundTrip = (filters = EMPTY_FILTERS) => parseFilters(serializeFilters(filters))
 
-describe("S16: filters survive a serialize/parse round trip and cleared filters leave no query noise", () => {
-  const cases: ReadonlyArray<readonly [string, SessionFilters]> = [
-    [
-      "fully cleared",
-      { project: null, user: null, range: "all", from: null, to: null, sort: "recent" },
-    ],
-    [
-      "project only",
-      { project: "samskara", user: null, range: "all", from: null, to: null, sort: "recent" },
-    ],
-    [
-      "user only",
-      { project: null, user: "maya", range: "all", from: null, to: null, sort: "recent" },
-    ],
-    [
-      "range only",
-      { project: null, user: null, range: "week", from: null, to: null, sort: "recent" },
-    ],
-    [
-      "all three set",
-      { project: "samskara", user: "maya", range: "month", from: null, to: null, sort: "recent" },
-    ],
-    [
-      "slug needing encoding",
-      { project: "a b/c", user: "o'brien", range: "today", from: null, to: null, sort: "recent" },
-    ],
-  ]
+describe("session filter URLs", () => {
+  test("round-trips every server query parameter and URL-encodes exact values", () => {
+    const filters = {
+      ...EMPTY_FILTERS,
+      q: 'auth "release guard"',
+      project: "a b/c",
+      user: "o'brien",
+      repo: "8af8c0ae-fc61-4471-9c5e-7f252f1425e3",
+      branch: "feat/Release Case",
+      pr: "42",
+      commit: "ABCDEF0123456",
+      range: "custom" as const,
+      from: "2026-08-01",
+      to: "2026-08-20",
+      tz: "America/New_York",
+      sort: "relevance" as const,
+      page: 3,
+    }
 
-  test.each(cases)("%s deep-equals itself after a round trip", (_label, filters) => {
-    expect(roundTrip(filters)).toEqual(filters)
+    expect(roundTrip(filters)).toEqual({ ...filters, commit: "abcdef0123456" })
+    expect(serializeFilters(filters).toString()).toContain("branch=feat%2FRelease+Case")
   })
 
-  test("a fully cleared filter set serializes to an empty query string - not project=&user=&range=all", () => {
+  test("omits contextual defaults and all cleared values", () => {
+    expect(serializeFilters(EMPTY_FILTERS).toString()).toBe("")
+    expect(serializeFilters({ ...EMPTY_FILTERS, range: "today", tz: "UTC" }).toString()).toBe(
+      "range=today&tz=UTC",
+    )
+  })
+
+  test("preserves invalid structured values so the API can explain them", () => {
+    expect(parseFilters(new URLSearchParams("pr=001&commit=not-a-sha&branch=%20%20")).pr).toBe(
+      "001",
+    )
+    expect(parseFilters(new URLSearchParams("pr=001&commit=not-a-sha&branch=%20%20")).commit).toBe(
+      "not-a-sha",
+    )
+    expect(parseFilters(new URLSearchParams("pr=001&commit=not-a-sha&branch=%20%20")).branch).toBe(
+      "  ",
+    )
+  })
+
+  test("defaults an active q to relevance, then clearing q removes relevance", () => {
+    expect(parseFilters(new URLSearchParams("q=auth")).sort).toBe("relevance")
     expect(
-      serializeFilters({
-        project: null,
-        user: null,
-        range: "all",
-        from: null,
-        to: null,
-        sort: "recent",
-      }).toString(),
-    ).toBe("")
+      changedFilters({ ...EMPTY_FILTERS, q: "auth", sort: "relevance", page: 3 }, { q: null }),
+    ).toEqual(EMPTY_FILTERS)
   })
 
-  test("only the non-default fields appear in the query string", () => {
-    const params = serializeFilters({
-      project: "samskara",
-      user: null,
-      range: "week",
-      from: null,
-      to: null,
-      sort: "recent",
-    })
-    expect(params.toString()).toBe("project=samskara&range=week")
-  })
-})
-
-describe("S17: unrecognized and blank query values fall back to their defaults", () => {
-  test("range=banana parses as all - not as banana or undefined", () => {
-    expect(parseFilters(new URLSearchParams("range=banana")).range).toBe("all")
+  test("every result predicate and sort change resets the page", () => {
+    const pageThree = { ...EMPTY_FILTERS, q: "auth", page: 3 }
+    expect(changedFilters(pageThree, { branch: "main" }).page).toBe(1)
+    expect(changedFilters(pageThree, { sort: "tokens" }).page).toBe(1)
   })
 
-  test("a missing range parses as all", () => {
-    expect(parseFilters(new URLSearchParams("")).range).toBe("all")
-  })
-
-  test.each(["today", "week", "month", "all"] as const)("range=%s is preserved", (range) => {
-    expect(parseFilters(new URLSearchParams(`range=${range}`)).range).toBe(range)
-  })
-
-  test("whitespace-only project and user parse as null - not as empty strings", () => {
-    const filters = parseFilters(new URLSearchParams("project=%20%20&user="))
-    expect(filters.project).toBeNull()
-    expect(filters.user).toBeNull()
-  })
-
-  test("surrounding whitespace is trimmed off project and user", () => {
-    const filters = parseFilters(new URLSearchParams("project=%20samskara%20&user=%20maya"))
-    expect(filters).toEqual({
-      project: "samskara",
-      user: "maya",
-      range: "all",
-      from: null,
-      to: null,
-      sort: "recent",
-    })
+  test("uses a safe first page for malformed page values", () => {
+    expect(parseFilters(new URLSearchParams("page=0")).page).toBe(1)
+    expect(parseFilters(new URLSearchParams("page=1.5")).page).toBe(1)
+    expect(parseFilters(new URLSearchParams("page=4")).page).toBe(4)
   })
 })

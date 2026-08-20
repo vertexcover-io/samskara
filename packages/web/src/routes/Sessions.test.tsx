@@ -45,10 +45,25 @@ const stubFetch = (sessions: SessionsHandler): ReadonlyArray<string> => {
   return calls
 }
 
+const filterOptions = {
+  projects: [{ value: "samskara", label: "Samskara" }],
+  authors: [
+    { value: "maya", label: "maya" },
+    { value: "ravi", label: "ravi" },
+  ],
+  repositories: [],
+  branches: [],
+}
+
+const payload = (
+  rows: ReadonlyArray<SessionSummary>,
+  pagination = { page: 1, limit: 50, total: rows.length, pages: rows.length === 0 ? 0 : 1 },
+) => ({ sessions: rows, pagination, filterOptions })
+
 const okWith =
   (rows: ReadonlyArray<SessionSummary>): SessionsHandler =>
   () =>
-    Promise.resolve(jsonResponse(200, { sessions: rows }))
+    Promise.resolve(jsonResponse(200, payload(rows)))
 
 const renderAt = (path: string) =>
   render(
@@ -148,6 +163,102 @@ test("EDGE-003: a 404 projectNotFound renders a permission-denied state with a l
   expect(screen.getByTestId("location")).not.toHaveTextContent("project=locked")
 })
 
+test("every stable validation code presents the targeted recovery state", async () => {
+  const validationCodes = [
+    "invalidSearchQuery",
+    "invalidPrNumber",
+    "invalidCommit",
+    "invalidTimeZone",
+    "invalidRepo",
+    "invalidBranch",
+    "invalidPage",
+    "invalidLimit",
+    "invalidSort",
+    "invalidRange",
+    "invalidFilter",
+  ] as const
+
+  for (const error of validationCodes) {
+    stubFetch(() => Promise.resolve(jsonResponse(400, { error })))
+    const view = renderAt("/sessions?q=auth")
+    expect(await screen.findByText(/check your search or filter/i)).toBeInTheDocument()
+    expect(screen.queryByText(/retrieval failed/i)).not.toBeInTheDocument()
+    view.unmount()
+    vi.unstubAllGlobals()
+  }
+})
+
+test("ambiguous commit has its own recovery state", async () => {
+  stubFetch(() => Promise.resolve(jsonResponse(400, { error: "ambiguousCommit" })))
+  renderAt("/sessions?commit=abcdef1")
+  expect(await screen.findByText(/commit prefix is ambiguous/i)).toBeInTheDocument()
+})
+
+test("today initializes the URL before its only sessions request so the request includes timezone", async () => {
+  const calls = stubFetch(okWith([session]))
+  renderAt("/sessions?range=today")
+
+  await screen.findByRole("link", { name: /port the session detail surface/i })
+  expect(calls).toHaveLength(1)
+  expect(new URL(calls.at(0) ?? "", "http://localhost").searchParams.get("tz")).toBe("UTC")
+  expect(screen.getByTestId("location")).toHaveTextContent("range=today&tz=UTC")
+})
+
+test("stale sessions responses cannot replace newer filter results", async () => {
+  let settleMaya: ((response: Response) => void) | undefined
+  const calls = stubFetch((url) => {
+    if (url.searchParams.get("user") === "maya") {
+      return new Promise((resolve) => {
+        settleMaya = resolve
+      })
+    }
+    return Promise.resolve(jsonResponse(200, payload([{ ...session, title: "Latest result" }])))
+  })
+  renderAt("/sessions")
+
+  expect(await screen.findByRole("link", { name: /latest result/i })).toBeInTheDocument()
+  await userEvent.selectOptions(control(/user/i), "maya")
+  await userEvent.selectOptions(control(/user/i), "")
+  expect(await screen.findByRole("link", { name: /latest result/i })).toBeInTheDocument()
+  settleMaya?.(jsonResponse(200, payload([{ ...session, title: "Stale result" }])))
+  await waitFor(() =>
+    expect(screen.queryByRole("link", { name: /stale result/i })).not.toBeInTheDocument(),
+  )
+  expect(calls).toHaveLength(3)
+})
+
+test("search clear removes relevance and pagination preserves remaining URL filters", async () => {
+  const calls = stubFetch((url) => {
+    const page = Number(url.searchParams.get("page") ?? "1")
+    return Promise.resolve(
+      jsonResponse(200, payload([session], { page, limit: 1, total: 2, pages: 2 })),
+    )
+  })
+  renderAt("/sessions?q=timeout&project=samskara&sort=relevance")
+
+  await screen.findByRole("link", { name: /port the session detail surface/i })
+  await userEvent.click(screen.getByRole("button", { name: /clear search/i }))
+  await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("project=samskara"))
+  expect(screen.getByTestId("location")).not.toHaveTextContent("relevance")
+
+  await userEvent.click(screen.getByRole("button", { name: "Next" }))
+  await waitFor(() =>
+    expect(screen.getByTestId("location")).toHaveTextContent("project=samskara&page=2"),
+  )
+  expect(calls.at(-1)).toBe("/api/sessions?project=samskara&page=2")
+})
+
+test("out-of-range pages render truthful empty pagination rather than a no-matches state", async () => {
+  stubFetch(() =>
+    Promise.resolve(jsonResponse(200, payload([], { page: 9, limit: 25, total: 1, pages: 1 }))),
+  )
+  renderAt("/sessions?page=9")
+
+  expect(await screen.findByText("Page 9 of 1")).toBeInTheDocument()
+  expect(screen.getByText("Showing 0–0 of 1 sessions")).toBeInTheDocument()
+  expect(screen.queryByText(/no sessions match/i)).not.toBeInTheDocument()
+})
+
 test("S26: activating the row for s-1 navigates to /sessions/s-1", async () => {
   stubFetch(okWith([session]))
 
@@ -167,7 +278,13 @@ test("S25: when the vocabulary request fails, the controls still offer the value
     if (path.endsWith("/api/auth/me")) return Promise.resolve(jsonResponse(200, user))
     if (path === "/api/sessions") return Promise.resolve(jsonResponse(503, { error: "down" }))
     if (path.startsWith("/api/sessions")) {
-      return Promise.resolve(jsonResponse(200, { sessions: [session, ravi] }))
+      return Promise.resolve(
+        jsonResponse(200, {
+          sessions: [session, ravi],
+          pagination: { page: 1, limit: 50, total: 2, pages: 1 },
+          filterOptions,
+        }),
+      )
     }
     return Promise.reject(new Error(`unstubbed fetch: ${path}`))
   })
@@ -193,7 +310,13 @@ test("S25: with user=maya applied, ravi is still offered - options come from the
   stubFetch((url) => {
     const login = url.searchParams.get("user")
     const rows = login === null ? all : all.filter((row) => row.userLogin === login)
-    return Promise.resolve(jsonResponse(200, { sessions: rows }))
+    return Promise.resolve(
+      jsonResponse(200, {
+        sessions: rows,
+        pagination: { page: 1, limit: 50, total: rows.length, pages: rows.length === 0 ? 0 : 1 },
+        filterOptions,
+      }),
+    )
   })
 
   renderAt("/sessions?user=maya")

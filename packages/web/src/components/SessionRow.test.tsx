@@ -103,3 +103,28 @@ test("S26: the row is a link, so a session opens in a new tab the way any other 
 
   expect(screen.getByRole("link")).toHaveAttribute("href", "/sessions/s-1")
 })
+
+test("search evidence renders a supported source label and escaped highlighted text", () => {
+  renderRow({
+    ...populated,
+    match: {
+      sourceKind: "toolResult",
+      sourceRowId: "tool-1",
+      snippet: [
+        { text: "The <script> value ", highlighted: false },
+        { text: "timed out", highlighted: true },
+      ],
+    },
+  })
+
+  expect(screen.getByRole("link")).toHaveTextContent("Tool result")
+  expect(document.querySelector("mark")).toHaveTextContent("timed out")
+  expect(screen.getByText("The <script> value", { exact: false }).tagName).toBe("SPAN")
+  expect(document.querySelector("script")).toBeNull()
+})
+
+test("a non-search row has no evidence label or mark", () => {
+  renderRow(populated)
+  expect(screen.queryByRole("mark")).not.toBeInTheDocument()
+  expect(screen.queryByText("Tool result")).not.toBeInTheDocument()
+})

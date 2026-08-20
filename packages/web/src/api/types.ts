@@ -13,6 +13,19 @@ export type SessionRepo = {
   readonly repoName: string
 }
 
+export type SearchSourceKind = "session" | "message" | "pullRequest" | "toolCall" | "toolResult"
+
+export type SearchSnippetSegment = {
+  readonly text: string
+  readonly highlighted: boolean
+}
+
+export type SessionSearchMatch = {
+  readonly sourceKind: SearchSourceKind
+  readonly sourceRowId: string
+  readonly snippet: ReadonlyArray<SearchSnippetSegment>
+}
+
 export type SessionSummary = {
   readonly id: string
   readonly title: string | null
@@ -24,6 +37,41 @@ export type SessionSummary = {
   readonly tokensTotal: number
   readonly status: string
   readonly lastActiveAt: string
+  /** Decorative search evidence. It is null outside keyword searches or when it could not be read safely. */
+  readonly match?: SessionSearchMatch | null
+}
+
+export type FilterOption = {
+  readonly value: string
+  readonly label: string
+}
+
+export type RepositoryFilterOption = FilterOption & {
+  readonly host: string
+  readonly owner: string
+  readonly repoName: string
+}
+
+export type SessionFilterOptions = {
+  readonly projects: ReadonlyArray<FilterOption>
+  readonly authors: ReadonlyArray<FilterOption>
+  readonly repositories: ReadonlyArray<RepositoryFilterOption>
+  /** Branch names are their exact, case-sensitive values and also their presentation labels. */
+  readonly branches: ReadonlyArray<string>
+}
+
+export type SessionPagination = {
+  readonly page: number
+  readonly limit: number
+  readonly total: number
+  /** API currently serializes this as `pages`; it remains the total page count. */
+  readonly totalPages: number
+}
+
+export type SessionListPayload = {
+  readonly sessions: ReadonlyArray<SessionSummary>
+  readonly pagination: SessionPagination
+  readonly filterOptions: SessionFilterOptions
 }
 
 export type SessionFacts = {
@@ -148,6 +196,8 @@ export type ApiErrorKind = "unauthorized" | "notFound" | "network" | "server"
 
 export type ApiError = {
   readonly kind: ApiErrorKind
+  /** Stable API error code when the server supplied one. */
+  readonly code: string | null
   readonly message: string
 }
 

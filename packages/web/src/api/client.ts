@@ -1,11 +1,21 @@
 import type { ApiError, ApiErrorKind, ApiResult } from "./types.js"
 
-const failure = (kind: ApiErrorKind, message: string): ApiError => ({ kind, message })
+const failure = (kind: ApiErrorKind, message: string, code: string | null = null): ApiError => ({
+  kind,
+  code,
+  message,
+})
 
-const errorForStatus = (status: number): ApiError => {
-  if (status === 401) return failure("unauthorized", "Your session has expired.")
-  if (status === 404) return failure("notFound", "That resource does not exist.")
-  return failure("server", `The server responded with ${status}.`)
+const errorCode = (body: unknown): string | null => {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return null
+  const error = (body as Record<string, unknown>).error
+  return typeof error === "string" ? error : null
+}
+
+const errorForStatus = (status: number, code: string | null): ApiError => {
+  if (status === 401) return failure("unauthorized", "Your session has expired.", code)
+  if (status === 404) return failure("notFound", "That resource does not exist.", code)
+  return failure("server", `The server responded with ${status}.`, code)
 }
 
 const MALFORMED = Symbol("malformed")
@@ -15,14 +25,20 @@ const requestJson = async <T>(
   parse: (body: unknown) => T | null,
   init: RequestInit,
 ): Promise<ApiResult<T>> => {
-  const response = await fetch(path, { credentials: "same-origin", ...init }).catch(() => null)
-
-  if (!response) return { ok: false, error: failure("network", "The server is unreachable.") }
-  if (!response.ok) return { ok: false, error: errorForStatus(response.status) }
+  let response: Response
+  try {
+    response = await fetch(path, { credentials: "same-origin", ...init })
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      return { ok: false, error: failure("network", "The request was cancelled.") }
+    }
+    return { ok: false, error: failure("network", "The server is unreachable.") }
+  }
 
   const body = await response.json().catch(() => MALFORMED)
-  const parsed = body === MALFORMED ? null : parse(body)
+  if (!response.ok) return { ok: false, error: errorForStatus(response.status, errorCode(body)) }
 
+  const parsed = body === MALFORMED ? null : parse(body)
   if (parsed === null) {
     return { ok: false, error: failure("server", "The server sent a malformed response.") }
   }

@@ -344,7 +344,7 @@ describe.skipIf(!dockerAvailable())("ingest repositories", () => {
       thinking: 1_000_000_000,
     })
 
-    const rows = await sessionsRepo.listAccessible(db, userId)
+    const { rows } = await sessionsRepo.listAccessible(db, userId)
     const row = rows.find((candidate) => candidate.id === "sess-huge-tokens")
     // Typed and asserted as a number, not merely coercible to one: the route serialises this
     // straight to JSON, and a bigint arriving as a string would fail the client's schema.

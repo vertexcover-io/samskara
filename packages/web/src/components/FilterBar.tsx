@@ -1,4 +1,5 @@
-import { useId } from "react"
+import { useEffect, useId, useState } from "react"
+import type { SessionFilterOptions } from "../api/types.js"
 import {
   RANGES,
   RANGE_LABEL,
@@ -7,23 +8,19 @@ import {
   SORT_LABEL,
   type SessionFilters,
   type Sort,
+  changedFilters,
 } from "../sessions/filters.js"
 
 const asRange = (value: string): Range => RANGES.find((range) => range === value) ?? "all"
 const asSort = (value: string): Sort => SORTS.find((sort) => sort === value) ?? "recent"
 
-// Native controls do not inherit type, so the font stack is set explicitly.
 const controlClass =
   "mt-1 h-9 w-full min-w-0 rounded-xs border border-rule bg-panel-2 px-2 font-mono text-[0.78rem] leading-none text-ink transition-colors hover:border-ink-soft focus-visible:border-custody"
-
 const selectClass = `${controlClass} mt-0 cursor-pointer appearance-none pr-7`
-
 const labelClass = "block text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-ink-soft"
+const buttonClass =
+  "h-9 rounded-xs border border-ink bg-ink px-4 text-[0.78rem] font-semibold text-panel-2 transition-colors hover:bg-ink-2"
 
-/**
- * A child rather than a background image: an inline `url()` cannot survive a Tailwind arbitrary
- * value (its spaces split the class list), and drawing it here lets the caret take `currentColor`.
- */
 const Caret = () => (
   <svg
     viewBox="0 0 12 8"
@@ -45,7 +42,6 @@ type ChoiceProps = {
 
 const Choice = ({ label, value, options, onChange }: ChoiceProps) => {
   const id = useId()
-
   return (
     <div className="min-w-0">
       <label className={labelClass} htmlFor={id}>
@@ -75,43 +71,86 @@ const withAny = (options: ReadonlyArray<Option>, anyLabel: string): ReadonlyArra
   ...options,
 ]
 
-// Two date inputs need the room of two controls, and the range keeps that width in either state so
-// switching to a custom window does not reflow the bar around it.
-const RANGE_SPAN = "min-w-0 min-[560px]:col-span-2"
+const TextFilter = ({
+  label,
+  value,
+  placeholder,
+  hint,
+  onSubmit,
+}: {
+  readonly label: string
+  readonly value: string | null
+  readonly placeholder: string
+  readonly hint?: string
+  readonly onSubmit: (value: string | null) => void
+}) => {
+  const id = useId()
+  const [draft, setDraft] = useState(value ?? "")
+  useEffect(() => setDraft(value ?? ""), [value])
 
-// Choosing a custom window replaces the range select in place rather than
-// appending a control, so the bar never reflows.
+  return (
+    <form
+      className="min-w-0"
+      onSubmit={(event) => {
+        event.preventDefault()
+        onSubmit(draft === "" ? null : draft)
+      }}
+    >
+      <label className={labelClass} htmlFor={id}>
+        {label}
+      </label>
+      <div className="mt-1 flex gap-1.5">
+        <input
+          id={id}
+          className={`${controlClass} mt-0`}
+          value={draft}
+          placeholder={placeholder}
+          onChange={(event) => setDraft(event.target.value)}
+          aria-describedby={hint === undefined ? undefined : `${id}-hint`}
+        />
+        <button
+          type="submit"
+          className="shrink-0 rounded-xs border border-rule bg-panel-2 px-2 font-mono text-[0.72rem] font-semibold hover:border-ink"
+        >
+          Apply
+        </button>
+      </div>
+      {hint === undefined ? null : (
+        <span id={`${id}-hint`} className="sr-only">
+          {hint}
+        </span>
+      )}
+    </form>
+  )
+}
+
 const RangeControl = ({
   filters,
   onChange,
-}: {
-  filters: SessionFilters
-  onChange: (filters: SessionFilters) => void
-}) => {
+}: { readonly filters: SessionFilters; readonly onChange: (filters: SessionFilters) => void }) => {
   const id = useId()
-
   if (filters.range !== "custom") {
     return (
-      <div className={RANGE_SPAN}>
-        <Choice
-          label="Last active"
-          value={filters.range}
-          options={RANGES.map((range) => ({ value: range, label: RANGE_LABEL[range] }))}
-          onChange={(range) => onChange({ ...filters, range: asRange(range) })}
-        />
-      </div>
+      <Choice
+        label="Last active"
+        value={filters.range}
+        options={RANGES.map((range) => ({ value: range, label: RANGE_LABEL[range] }))}
+        onChange={(range) =>
+          onChange(changedFilters(filters, { range: asRange(range), from: null, to: null }))
+        }
+      />
     )
   }
 
   return (
-    <div className={RANGE_SPAN}>
+    <div className="min-w-0 min-[560px]:col-span-2">
       <div className="flex items-baseline justify-between gap-2">
         <label className={labelClass} htmlFor={id}>
           Last active
         </label>
         <button
           type="button"
-          onClick={() => onChange({ ...filters, range: "all", from: null, to: null })}
+          onClick={() => onChange(changedFilters(filters, { range: "all", from: null, to: null }))}
           className="text-[0.625rem] font-semibold uppercase tracking-[0.1em] text-custody hover:underline"
         >
           Reset
@@ -126,7 +165,7 @@ const RangeControl = ({
           aria-label="From date"
           className={`${controlClass} mt-0`}
           onChange={(event) =>
-            onChange({ ...filters, from: event.target.value === "" ? null : event.target.value })
+            onChange(changedFilters(filters, { from: event.target.value || null }))
           }
         />
         <span aria-hidden="true" className="shrink-0 font-mono text-[0.72rem] text-faded">
@@ -139,7 +178,7 @@ const RangeControl = ({
           aria-label="To date"
           className={`${controlClass} mt-0`}
           onChange={(event) =>
-            onChange({ ...filters, to: event.target.value === "" ? null : event.target.value })
+            onChange(changedFilters(filters, { to: event.target.value || null }))
           }
         />
       </div>
@@ -149,38 +188,154 @@ const RangeControl = ({
 
 type Props = {
   readonly filters: SessionFilters
-  readonly projects: ReadonlyArray<Option>
-  readonly users: ReadonlyArray<string>
+  readonly options: SessionFilterOptions
   readonly onChange: (filters: SessionFilters) => void
+  readonly onClear: () => void
 }
 
-export const FilterBar = ({ filters, projects, users, onChange }: Props) => (
-  <section
-    aria-label="Session filters"
-    className="grid grid-cols-1 items-end gap-3 border border-rule bg-panel p-3 min-[560px]:grid-cols-2 min-[900px]:grid-cols-5"
-  >
-    <Choice
-      label="Project"
-      value={filters.project ?? ""}
-      options={withAny(projects, "All projects")}
-      onChange={(project) => onChange({ ...filters, project: project === "" ? null : project })}
-    />
-    <Choice
-      label="User"
-      value={filters.user ?? ""}
-      options={withAny(
-        users.map((user) => ({ value: user, label: user })),
-        "All users",
-      )}
-      onChange={(user) => onChange({ ...filters, user: user === "" ? null : user })}
-    />
-    <RangeControl filters={filters} onChange={onChange} />
+export const FilterBar = ({ filters, options, onChange, onClear }: Props) => {
+  const [query, setQuery] = useState(filters.q ?? "")
+  const searchId = useId()
+  const sorts = filters.q === null ? SORTS.filter((sort) => sort !== "relevance") : SORTS
+  useEffect(() => setQuery(filters.q ?? ""), [filters.q])
 
-    <Choice
-      label="Sort by"
-      value={filters.sort}
-      options={SORTS.map((sort) => ({ value: sort, label: SORT_LABEL[sort] }))}
-      onChange={(sort) => onChange({ ...filters, sort: asSort(sort) })}
-    />
-  </section>
-)
+  return (
+    <section aria-label="Search and filter sessions" className="border border-rule bg-panel p-3">
+      <form
+        className="grid grid-cols-1 items-end gap-2 min-[600px]:grid-cols-[minmax(0,1fr)_auto]"
+        onSubmit={(event) => {
+          event.preventDefault()
+          const q = query.trim() || null
+          onChange(
+            changedFilters(filters, {
+              q,
+              sort:
+                q === null && filters.sort === "relevance"
+                  ? "recent"
+                  : filters.sort === "recent" && q !== null
+                    ? "relevance"
+                    : filters.sort,
+            }),
+          )
+        }}
+      >
+        <div className="min-w-0">
+          <label className={labelClass} htmlFor={searchId}>
+            Search session evidence
+          </label>
+          <div className="relative mt-1">
+            <input
+              id={searchId}
+              type="search"
+              className={`${controlClass} mt-0 h-10 pl-9 pr-14`}
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Terms, phrases, or OR"
+              aria-describedby={`${searchId}-help`}
+            />
+            <svg
+              className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-ink-soft"
+              aria-hidden="true"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+            >
+              <circle cx="11" cy="11" r="7" />
+              <path d="m20 20-4-4" />
+            </svg>
+            {query === "" ? null : (
+              <button
+                type="button"
+                onClick={() => {
+                  setQuery("")
+                  onChange(
+                    changedFilters(filters, {
+                      q: null,
+                      sort: filters.sort === "relevance" ? "recent" : filters.sort,
+                    }),
+                  )
+                }}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-[0.68rem] font-semibold text-custody hover:underline"
+                aria-label="Clear search"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+          <span id={`${searchId}-help`} className="sr-only">
+            Search titles, messages, pull requests, tool calls, and tool results you are authorized
+            to read.
+          </span>
+        </div>
+        <button type="submit" className={buttonClass}>
+          Search
+        </button>
+      </form>
+
+      <div className="mt-3 flex items-baseline justify-between gap-3 border-t border-rule pt-3">
+        <span className={labelClass}>Narrow the case file</span>
+        <button
+          type="button"
+          onClick={onClear}
+          className="text-[0.68rem] font-semibold text-custody hover:underline"
+        >
+          Reset search &amp; filters
+        </button>
+      </div>
+
+      <div className="mt-2 grid grid-cols-1 gap-3 min-[560px]:grid-cols-2 min-[1000px]:grid-cols-4">
+        <Choice
+          label="Project"
+          value={filters.project ?? ""}
+          options={withAny(options.projects, "All projects")}
+          onChange={(project) => onChange(changedFilters(filters, { project: project || null }))}
+        />
+        <Choice
+          label="User"
+          value={filters.user ?? ""}
+          options={withAny(options.authors, "All users")}
+          onChange={(user) => onChange(changedFilters(filters, { user: user || null }))}
+        />
+        <Choice
+          label="Repository"
+          value={filters.repo ?? ""}
+          options={withAny(options.repositories, "All repositories")}
+          onChange={(repo) => onChange(changedFilters(filters, { repo: repo || null }))}
+        />
+        <Choice
+          label="Branch"
+          value={filters.branch ?? ""}
+          options={withAny(
+            options.branches.map((branch) => ({ value: branch, label: branch })),
+            "All branches",
+          )}
+          onChange={(branch) => onChange(changedFilters(filters, { branch: branch || null }))}
+        />
+        <TextFilter
+          label="PR number"
+          value={filters.pr}
+          placeholder="e.g. 42"
+          hint="Enter a canonical positive pull request number."
+          onSubmit={(pr) => onChange(changedFilters(filters, { pr }))}
+        />
+        <TextFilter
+          label="Commit SHA"
+          value={filters.commit}
+          placeholder="7–40 hex characters"
+          hint="Use a full SHA or an unambiguous seven to forty character hexadecimal prefix."
+          onSubmit={(commit) =>
+            onChange(changedFilters(filters, { commit: commit?.trim().toLowerCase() ?? null }))
+          }
+        />
+        <RangeControl filters={filters} onChange={onChange} />
+        <Choice
+          label="Sort by"
+          value={filters.sort}
+          options={sorts.map((sort) => ({ value: sort, label: SORT_LABEL[sort] }))}
+          onChange={(sort) => onChange(changedFilters(filters, { sort: asSort(sort) }))}
+        />
+      </div>
+    </section>
+  )
+}

@@ -1,11 +1,11 @@
-import { zValidator } from "@hono/zod-validator"
 import { Hono } from "hono"
-import { z } from "zod"
+import { ZodError } from "zod"
 import type { Db } from "../db/client.js"
 import type { Env } from "../lib/env.js"
 import { type AuthVariables, requireAuth } from "../lib/require-auth.js"
 import { listForSession } from "../repositories/artifacts.repo.js"
 import {
+  AmbiguousCommitError,
   type SessionDetailRow,
   type SessionSummaryRow,
   findVisibleProjectBySlug,
@@ -13,51 +13,18 @@ import {
   listAccessible,
   remove,
 } from "../repositories/sessions.repo.js"
+import {
+  type SessionListQuery,
+  dateWindowFor,
+  parseSessionListQuery,
+} from "../search/sessionFilters.js"
+import { SessionQueryError } from "../search/sessionQuery.js"
 import { serializeArtifact } from "./artifacts.js"
 
 type Deps = {
   readonly db: Db
   readonly env: Env
 }
-
-const RANGES = ["all", "hour", "today", "week", "month", "custom"] as const
-
-const isoDate = z
-  .string()
-  .trim()
-  .regex(/^\d{4}-\d{2}-\d{2}$/)
-  .optional()
-
-const querySchema = z.object({
-  project: z.string().trim().min(1).optional(),
-  user: z.string().trim().min(1).optional(),
-  range: z.enum(RANGES).optional(),
-  from: isoDate,
-  to: isoDate,
-})
-
-const DAY_MS = 24 * 60 * 60 * 1000
-
-const startOfUtcDay = (now: Date): Date =>
-  new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
-
-type RangeQuery = {
-  readonly range?: (typeof RANGES)[number]
-  readonly from?: string
-  readonly to?: string
-}
-
-const sinceFor = ({ range, from }: RangeQuery, now: Date): Date | undefined => {
-  if (range === "custom") return from === undefined ? undefined : new Date(`${from}T00:00:00.000Z`)
-  if (range === "hour") return new Date(now.getTime() - 60 * 60 * 1000)
-  if (range === "today") return startOfUtcDay(now)
-  if (range === "week") return new Date(now.getTime() - 7 * DAY_MS)
-  if (range === "month") return new Date(now.getTime() - 30 * DAY_MS)
-  return undefined
-}
-
-const untilFor = ({ range, to }: RangeQuery): Date | undefined =>
-  range === "custom" && to !== undefined ? new Date(`${to}T23:59:59.999Z`) : undefined
 
 const serialize = (row: SessionSummaryRow) => ({
   id: row.id,
@@ -70,6 +37,7 @@ const serialize = (row: SessionSummaryRow) => ({
   tokensTotal: Number(row.tokensTotal),
   status: row.status,
   lastActiveAt: new Date(row.lastActiveAt).toISOString(),
+  ...(row.match === null ? {} : { match: row.match }),
 })
 
 const isoOrNull = (value: string | null): string | null =>
@@ -101,23 +69,69 @@ const serializeDetail = (detail: SessionDetailRow) => ({
 export const sessionsRoutes = ({ db, env }: Deps): Hono<{ Variables: AuthVariables }> => {
   const app = new Hono<{ Variables: AuthVariables }>()
 
-  app.get("/", requireAuth({ db, env }, ["web"]), zValidator("query", querySchema), async (c) => {
-    const { project, user, range, from, to } = c.req.valid("query")
+  app.get("/", requireAuth({ db, env }, ["web"]), async (c) => {
+    let query: SessionListQuery
+    try {
+      query = parseSessionListQuery(c.req.query())
+    } catch (error) {
+      if (error instanceof SessionQueryError) return c.json({ error: "invalidSearchQuery" }, 400)
+      if (error instanceof ZodError) {
+        const field = error.issues[0]?.path[0]
+        const codes: Record<string, string> = {
+          pr: "invalidPrNumber",
+          commit: "invalidCommit",
+          q: "invalidSearchQuery",
+          repo: "invalidRepo",
+          branch: "invalidBranch",
+          tz: "invalidTimeZone",
+          page: "invalidPage",
+          limit: "invalidLimit",
+          sort: "invalidSort",
+          range: "invalidRange",
+          project: "invalidProject",
+          user: "invalidUser",
+        }
+        return c.json({ error: codes[String(field)] ?? "invalidFilter" }, 400)
+      }
+      throw error
+    }
     const userId = c.get("user").id
-
-    if (project !== undefined && (await findVisibleProjectBySlug(db, userId, project)) === null) {
+    if (
+      query.project !== undefined &&
+      (await findVisibleProjectBySlug(db, userId, query.project)) === null
+    ) {
       return c.json({ error: "projectNotFound" }, 404)
     }
-
-    const window = { range, from, to }
-    const rows = await listAccessible(db, userId, {
-      projectSlug: project,
-      userLogin: user,
-      since: sinceFor(window, new Date()),
-      until: untilFor(window),
-    })
-
-    return c.json({ sessions: rows.map(serialize) })
+    try {
+      const result = await listAccessible(db, userId, {
+        projectSlug: query.project,
+        userLogin: query.user,
+        repoId: query.repo,
+        branch: query.branch,
+        prNumber: query.pr,
+        commit: query.commit,
+        searchQuery: query.parsedQuery,
+        ...dateWindowFor(query, new Date()),
+        sort: query.sort,
+        page: query.page,
+        limit: query.limit,
+      })
+      const page = query.page ?? 1
+      const limit = query.limit ?? 50
+      return c.json({
+        sessions: result.rows.map(serialize),
+        pagination: {
+          page,
+          limit,
+          total: result.total,
+          totalPages: Math.ceil(result.total / limit),
+        },
+        filterOptions: result.filterOptions,
+      })
+    } catch (error) {
+      if (error instanceof AmbiguousCommitError) return c.json({ error: "ambiguousCommit" }, 400)
+      throw error
+    }
   })
 
   app.get("/:id", requireAuth({ db, env }, ["web"]), async (c) => {
