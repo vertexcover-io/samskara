@@ -28,13 +28,17 @@ const isoDate = z
   .regex(/^\d{4}-\d{2}-\d{2}$/)
   .optional()
 
+// websearch_to_tsquery honours `or`, so an unbounded keyword lets a request build a query that
+// matches nearly every session and scores each one before the row limit applies.
+const MAX_KEYWORD_LENGTH = 200
+
 const querySchema = z.object({
   project: z.string().trim().min(1).optional(),
   user: z.string().trim().min(1).optional(),
   range: z.enum(RANGES).optional(),
   from: isoDate,
   to: isoDate,
-  q: z.string().optional(),
+  q: z.string().max(MAX_KEYWORD_LENGTH).optional(),
 })
 
 const SEARCH_LIMIT = 50

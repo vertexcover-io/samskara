@@ -6,9 +6,9 @@ type IndexDef = { readonly name: string; readonly ddl: string }
 
 const INDEXES: ReadonlyArray<IndexDef> = [
   {
-    name: "messages_search_idx",
-    ddl: `create index concurrently if not exists messages_search_idx
-          on "messages" using gin (msg_search_tsv_v1("content", "details", "msgType"))`,
+    name: "messages_search_idx_v2",
+    ddl: `create index concurrently if not exists messages_search_idx_v2
+          on "messages" using gin (msg_search_tsv_v2("content", "details", "msgType"))`,
   },
   {
     name: "sessions_search_idx",
@@ -16,6 +16,11 @@ const INDEXES: ReadonlyArray<IndexDef> = [
           on "sessions" using gin (session_search_tsv_v1("title", "cwd"))`,
   },
 ]
+
+// Postgres does not rebuild an expression index when the function body behind it changes, so
+// msg_search_tsv moved to a new _v2 name (see migration 0013) and the index built on the old _v1
+// expression is dead weight -- kept around it would just double-write on every message insert.
+const LEGACY_INDEXES: ReadonlyArray<string> = ["messages_search_idx"]
 
 // A failed concurrent build leaves an index behind that Postgres will not use.
 const dropIfInvalid = async (sql: postgres.Sql, name: string): Promise<void> => {
@@ -36,6 +41,9 @@ export type IndexBuildResult = { readonly name: string; readonly built: boolean 
 export const createSearchIndexes = async (
   sql: postgres.Sql,
 ): Promise<ReadonlyArray<IndexBuildResult>> => {
+  for (const name of LEGACY_INDEXES) {
+    await sql.unsafe(`drop index concurrently if exists ${name}`)
+  }
   const results: IndexBuildResult[] = []
   for (const index of INDEXES) {
     await dropIfInvalid(sql, index.name)
@@ -62,7 +70,15 @@ export const warnMissingSearchIndexes = async (
   sql: postgres.Sql,
   log: pino.Logger,
 ): Promise<void> => {
-  const missing = await findMissingSearchIndexes(sql)
+  let missing: ReadonlyArray<string>
+  try {
+    missing = await findMissingSearchIndexes(sql)
+  } catch (error) {
+    // A skipped deploy step should cost speed, not correctness -- and a boot-time check must
+    // never keep the process from listening, even when the database itself is unreachable.
+    log.warn({ error }, "search index check failed; continuing without it")
+    return
+  }
   for (const name of missing) {
     log.warn(
       { index: name },

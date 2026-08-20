@@ -2,10 +2,31 @@ import { execFileSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import { createLogger } from "@samskara/core"
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql"
-import type postgres from "postgres"
+import postgres from "postgres"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
 import { createDb } from "../db/client.js"
 import { createSearchIndexes, warnMissingSearchIndexes } from "./create-search-indexes.js"
+
+describe("B4: warnMissingSearchIndexes stays non-fatal when Postgres is unreachable", () => {
+  test("a rejected query is swallowed and logged, not thrown -- so server boot can still call serve()", async () => {
+    const unreachable = postgres("postgres://nobody:nobody@127.0.0.1:1/nowhere", {
+      connect_timeout: 1,
+      max: 1,
+    })
+    const lines: string[] = []
+    const log = createLogger(
+      { service: "test" },
+      { level: "warn", destination: { write: (line: string) => lines.push(line) } },
+    )
+
+    try {
+      await expect(warnMissingSearchIndexes(unreachable, log)).resolves.toBeUndefined()
+      expect(lines.length).toBeGreaterThan(0)
+    } finally {
+      await unreachable.end({ timeout: 1 })
+    }
+  })
+})
 
 const dockerAvailable = () => {
   try {
@@ -20,7 +41,7 @@ const packageDir = fileURLToPath(new URL("../..", import.meta.url))
 
 const indexNames = async (sql: postgres.Sql): Promise<ReadonlyArray<string>> => {
   const rows = await sql<Array<{ relname: string }>>`
-    select relname from pg_class where relname in ('messages_search_idx', 'sessions_search_idx')
+    select relname from pg_class where relname in ('messages_search_idx_v2', 'sessions_search_idx')
   `
   return rows.map((row) => row.relname)
 }
@@ -63,23 +84,23 @@ describe.skipIf(!dockerAvailable())("search index maintenance", () => {
     expect(parsed).toHaveLength(2)
     expect(parsed.every((entry) => entry.level === 40)).toBe(true)
     expect(new Set(parsed.map((entry) => entry.index))).toEqual(
-      new Set(["messages_search_idx", "sessions_search_idx"]),
+      new Set(["messages_search_idx_v2", "sessions_search_idx"]),
     )
   })
 
   test("createSearchIndexes creates both named indexes idempotently, after which no missing-index warning is logged", async () => {
     const first = await createSearchIndexes(client)
     expect(first).toEqual([
-      { name: "messages_search_idx", built: true },
+      { name: "messages_search_idx_v2", built: true },
       { name: "sessions_search_idx", built: true },
     ])
     expect(await indexNames(client)).toEqual(
-      expect.arrayContaining(["messages_search_idx", "sessions_search_idx"]),
+      expect.arrayContaining(["messages_search_idx_v2", "sessions_search_idx"]),
     )
 
     const second = await createSearchIndexes(client)
     expect(second).toEqual([
-      { name: "messages_search_idx", built: false },
+      { name: "messages_search_idx_v2", built: false },
       { name: "sessions_search_idx", built: false },
     ])
 
@@ -90,5 +111,21 @@ describe.skipIf(!dockerAvailable())("search index maintenance", () => {
     )
     await warnMissingSearchIndexes(client, log)
     expect(lines).toHaveLength(0)
+  })
+
+  test("I1: createSearchIndexes drops the legacy v1 index left over from before the _v2 migration", async () => {
+    await client.unsafe(`create index concurrently if not exists messages_search_idx
+      on "messages" using gin (msg_search_tsv_v1("content", "details", "msgType"))`)
+    const before = await client<Array<{ relname: string }>>`
+      select relname from pg_class where relname = 'messages_search_idx'
+    `
+    expect(before).toHaveLength(1)
+
+    await createSearchIndexes(client)
+
+    const after = await client<Array<{ relname: string }>>`
+      select relname from pg_class where relname = 'messages_search_idx'
+    `
+    expect(after).toHaveLength(0)
   })
 })

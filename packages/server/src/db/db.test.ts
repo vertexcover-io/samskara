@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql"
 import { and, eq, sql } from "drizzle-orm"
+import type postgres from "postgres"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
 import { type Db, createDb } from "./client.js"
 import {
@@ -168,4 +169,33 @@ describe.skipIf(!dockerAvailable())("session data model", () => {
     expect(updated.updatedAt.getTime()).toBeGreaterThan(session.updatedAt.getTime())
     expect(updated.createdAt.getTime()).toBe(session.createdAt.getTime())
   })
+})
+
+describe.skipIf(!dockerAvailable())("I2: createDb bounds every statement on the pool", () => {
+  let container: StartedPostgreSqlContainer
+  let teardown: () => Promise<void>
+  let client: postgres.Sql
+
+  beforeAll(async () => {
+    container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start()
+    const created = createDb(container.getConnectionUri())
+    client = created.client
+    teardown = async () => {
+      await created.client.end()
+      await container.stop()
+    }
+  }, 120_000)
+
+  afterAll(async () => {
+    await teardown?.()
+  })
+
+  test("the pool sets a statement_timeout instead of leaving queries to run unbounded", async () => {
+    const [row] = await client<Array<{ statement_timeout: string }>>`show statement_timeout`
+    expect(row?.statement_timeout).not.toBe("0")
+  })
+
+  test("a query that runs past the timeout is cancelled by Postgres, not left to keep running", async () => {
+    await expect(client`select pg_sleep(30)`).rejects.toThrow(/statement timeout/i)
+  }, 10_000)
 })

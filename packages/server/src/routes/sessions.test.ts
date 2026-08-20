@@ -544,6 +544,22 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     expect(res.status).toBe(400)
   })
 
+  test("I2: a keyword over 200 characters is rejected instead of being scored against every session", async () => {
+    const owner = await seedUser(db, 1802, "search-toolong-owner")
+
+    const res = await request(db, owner, `?q=${encodeURIComponent("a".repeat(201))}`)
+
+    expect(res.status).toBe(400)
+  })
+
+  test("I2: a keyword at exactly 200 characters is accepted", async () => {
+    const owner = await seedUser(db, 1803, "search-atlimit-owner")
+
+    const res = await request(db, owner, `?q=${encodeURIComponent("a".repeat(200))}`)
+
+    expect(res.status).toBe(200)
+  })
+
   test("SC2: a word from a chat message finds its session, and a session without it is absent", async () => {
     const owner = await seedUser(db, 2001, "search-chat-owner")
     const projectId = await projectsRepo.upsert(db, {
@@ -682,6 +698,125 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     })
 
     expect(idsOf(await listAs(db, owner, "?q=zephyrquark"))).toEqual([])
+  })
+
+  test("I1: a localCommand's args are indexed, not just its command name", async () => {
+    const owner = await seedUser(db, 2101, "search-localcommand-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "LocalCommand", slug: "search-localcommand" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "localcommand-session",
+      userId: owner,
+      projectId,
+      title: "L",
+      updatedAt: new Date(),
+    })
+    await seedSearchMessage(db, {
+      sessionId: "localcommand-session",
+      lineNumber: 1,
+      msgType: "localCommand",
+      details: {
+        command: "/plan",
+        args: "add retry to the uploader",
+        commandType: "slash",
+        status: "success",
+      },
+    })
+
+    expect(idsOf(await listAs(db, owner, "?q=uploader"))).toEqual(["localcommand-session"])
+    expect(idsOf(await listAs(db, owner, "?q=plan"))).toEqual(["localcommand-session"])
+  })
+
+  test("I1: a localCommand's stdout and stderr do not match -- only its command and args are indexed", async () => {
+    const owner = await seedUser(db, 2102, "search-localcommand-bulk-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "LocalCommandBulk", slug: "search-localcommand-bulk" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "localcommand-bulk-session",
+      userId: owner,
+      projectId,
+      title: "LB",
+      updatedAt: new Date(),
+    })
+    await seedSearchMessage(db, {
+      sessionId: "localcommand-bulk-session",
+      lineNumber: 1,
+      msgType: "localCommand",
+      details: {
+        command: "/plan",
+        args: "review the changes",
+        status: "success",
+        stdout: "zephyrfoxtrot appears only in stdout here",
+        stderr: "zephyrfoxtrot also mentioned in stderr",
+      },
+    })
+
+    expect(idsOf(await listAs(db, owner, "?q=zephyrfoxtrot"))).toEqual([])
+  })
+
+  test("I1: a hookCall's command is indexed", async () => {
+    const owner = await seedUser(db, 2103, "search-hookcall-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "HookCall", slug: "search-hookcall" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "hookcall-session",
+      userId: owner,
+      projectId,
+      title: "H",
+      updatedAt: new Date(),
+    })
+    await seedSearchMessage(db, {
+      sessionId: "hookcall-session",
+      lineNumber: 1,
+      msgType: "hookCall",
+      details: {
+        type: "PreToolUse",
+        phase: "result",
+        status: "success",
+        command: "npx zephyrgander-lint --fix",
+        exitCode: 0,
+      },
+    })
+
+    expect(idsOf(await listAs(db, owner, "?q=zephyrgander"))).toEqual(["hookcall-session"])
+  })
+
+  test("I1: a hookCall's stdout, stderr, and response do not match -- only its command is indexed", async () => {
+    const owner = await seedUser(db, 2104, "search-hookcall-bulk-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "HookCallBulk", slug: "search-hookcall-bulk" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "hookcall-bulk-session",
+      userId: owner,
+      projectId,
+      title: "HB",
+      updatedAt: new Date(),
+    })
+    await seedSearchMessage(db, {
+      sessionId: "hookcall-bulk-session",
+      lineNumber: 1,
+      msgType: "hookCall",
+      details: {
+        type: "PostToolUse",
+        phase: "result",
+        status: "success",
+        command: "echo done",
+        exitCode: 0,
+        stdout: "zephyrquokka printed to stdout",
+        stderr: "zephyrquokka printed to stderr",
+        response: { note: "zephyrquokka in response" },
+      },
+    })
+
+    expect(idsOf(await listAs(db, owner, "?q=zephyrquokka"))).toEqual([])
   })
 
   test("SC6: a quoted phrase matches only adjacent words, not the same words far apart", async () => {
@@ -1027,10 +1162,26 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
       ...chatMessage("mentions nothing relevant"),
     })
 
-    await client.unsafe("drop index concurrently if exists messages_search_idx")
+    // "drop ... if exists" no-ops silently, so confirm both indexes are actually there before
+    // dropping them -- otherwise this test cannot tell "dropped" from "never built".
+    const present = await client<Array<{ relname: string }>>`
+      select relname from pg_class where relname in ('messages_search_idx_v2', 'sessions_search_idx')
+    `
+    expect(present.map((row) => row.relname).sort()).toEqual([
+      "messages_search_idx_v2",
+      "sessions_search_idx",
+    ])
+
+    await client.unsafe("drop index concurrently if exists messages_search_idx_v2")
     await client.unsafe("drop index concurrently if exists sessions_search_idx")
 
-    expect(idsOf(await listAs(db, owner, "?q=foxglove"))).toEqual(["noindex-has"])
+    try {
+      expect(idsOf(await listAs(db, owner, "?q=foxglove"))).toEqual(["noindex-has"])
+    } finally {
+      // Leaving both indexes dropped would starve every test that runs after this one in the
+      // shared container.
+      await createSearchIndexes(client)
+    }
   })
 
   test("SC31: a search response carries a snippet containing the keyword", async () => {

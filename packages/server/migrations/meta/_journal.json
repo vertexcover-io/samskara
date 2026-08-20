@@ -92,6 +92,13 @@
       "when": 1787280000000,
       "tag": "0012_search_functions",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1787280100000,
+      "tag": "0013_search_functions_v2",
+      "breakpoints": true
     }
   ]
 }

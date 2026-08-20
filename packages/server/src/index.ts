@@ -14,7 +14,12 @@ if (!databaseUrl) throw new Error("DATABASE_URL is required")
 const { db, client } = createDb(databaseUrl)
 const app = buildApp(db, env, { rootLog })
 
-await warnMissingSearchIndexes(client, rootLog)
+// A skipped deploy step, or an unreachable database at boot, should cost search speed, not the
+// process's ability to listen -- warnMissingSearchIndexes already swallows its own failures, but
+// this is the last line of defence against one throwing before serve() ever runs.
+await warnMissingSearchIndexes(client, rootLog).catch((error: unknown) => {
+  rootLog.warn({ error }, "search index check failed at boot; continuing without it")
+})
 
 const port = Number(process.env.PORT ?? 3000)
 

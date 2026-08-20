@@ -202,7 +202,7 @@ const derivedTitle = sql<string | null>`coalesce(${sessions.title}, (
   limit 1
 ))`
 
-const msgTsv = sql`msg_search_tsv_v1(m."content", m."details", m."msgType")`
+const msgTsv = sql`msg_search_tsv_v2(m."content", m."details", m."msgType")`
 
 /** A session matches when its own title/cwd matches, or any of its messages does. */
 const matchesQ = (q: string) => sql`(
@@ -227,7 +227,7 @@ const matchCount = (q: string) => sql<number>`(
 /** The best-matching message's headline, marked with sentinels the caller renders -- never raw `<b>` tags. */
 const snippet = (q: string) => sql<string | null>`(
   select ts_headline('english',
-           msg_search_text_v1(m."content", m."details", m."msgType"),
+           msg_search_text_v2(m."content", m."details", m."msgType"),
            search_query_v1(${q}),
            'StartSel=[[hl]],StopSel=[[/hl]],MaxWords=24,MinWords=8,MaxFragments=1')
   from "messages" m
