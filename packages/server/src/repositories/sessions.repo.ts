@@ -113,6 +113,8 @@ export type SessionListFilter = {
   readonly userLogin?: string
   readonly since?: Date
   readonly until?: Date
+  readonly q?: string
+  readonly limit?: number
 }
 
 const ownMessages = sql`"messages" where "messages"."sessionId" = "sessions"."id"`
@@ -199,6 +201,28 @@ const derivedTitle = sql<string | null>`coalesce(${sessions.title}, (
   limit 1
 ))`
 
+const msgTsv = sql`msg_search_tsv_v1(m."content", m."details", m."msgType")`
+
+/** A session matches when its own title/cwd matches, or any of its messages does. */
+const matchesQ = (q: string) => sql`(
+  session_search_tsv_v1(${sessions.title}, ${sessions.cwd}) @@ search_query_v1(${q})
+  or exists (
+    select 1 from "messages" m
+    where m."sessionId" = ${sessions.id} and ${msgTsv} @@ search_query_v1(${q})
+  ))`
+
+/** Repeats the index expression exactly, since Postgres only uses an expression index on a literal match. */
+const searchRank = (q: string) => sql<number>`(
+  select coalesce(max(ts_rank_cd(${msgTsv}, search_query_v1(${q}))), 0)
+  from "messages" m
+  where m."sessionId" = ${sessions.id} and ${msgTsv} @@ search_query_v1(${q})
+)`
+
+const matchCount = (q: string) => sql<number>`(
+  select count(*)::int from "messages" m
+  where m."sessionId" = ${sessions.id} and ${msgTsv} @@ search_query_v1(${q})
+)`
+
 export const listAccessible = (
   db: Querier,
   userId: string,
@@ -209,8 +233,9 @@ export const listAccessible = (
   if (filter.userLogin !== undefined) conditions.push(eq(users.githubLogin, filter.userLogin))
   if (filter.since !== undefined) conditions.push(gte(sessions.updatedAt, filter.since))
   if (filter.until !== undefined) conditions.push(lte(sessions.updatedAt, filter.until))
+  if (filter.q !== undefined) conditions.push(matchesQ(filter.q))
 
-  return db
+  const query = db
     .select({
       id: sessions.id,
       title: derivedTitle,
@@ -228,8 +253,18 @@ export const listAccessible = (
     .innerJoin(users, eq(users.id, sessions.userId))
     .leftJoin(repos, sql`${repos.id} = ${dominantRepoId}`)
     .where(and(...conditions))
-    .orderBy(desc(sessions.updatedAt))
-    .then((rows) => rows.map((row) => ({ ...withRepo(row), tokensTotal: Number(row.tokensTotal) })))
+    .orderBy(
+      ...(filter.q !== undefined
+        ? [desc(searchRank(filter.q)), desc(matchCount(filter.q)), desc(sessions.updatedAt)]
+        : [desc(sessions.updatedAt)]),
+    )
+
+  // One row past the cap, so the caller can tell more exist without a second count query.
+  const limited = filter.limit !== undefined ? query.limit(filter.limit + 1) : query
+
+  return limited.then((rows) =>
+    rows.map((row) => ({ ...withRepo(row), tokensTotal: Number(row.tokensTotal) })),
+  )
 }
 
 export const findVisibleProjectBySlug = async (

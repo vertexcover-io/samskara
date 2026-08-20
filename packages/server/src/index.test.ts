@@ -9,4 +9,8 @@ describe("server boot", () => {
     expect(source).not.toMatch(/console\.log/)
     expect(source).toMatch(/rootLog/)
   })
+
+  test("S13: index.ts checks for missing search indexes at boot", () => {
+    expect(source).toMatch(/warnMissingSearchIndexes/)
+  })
 })

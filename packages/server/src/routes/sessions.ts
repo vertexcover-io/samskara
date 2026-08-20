@@ -34,7 +34,15 @@ const querySchema = z.object({
   range: z.enum(RANGES).optional(),
   from: isoDate,
   to: isoDate,
+  q: z.string().optional(),
 })
+
+const SEARCH_LIMIT = 50
+
+export const normalizeKeyword = (raw: string | undefined): string | undefined => {
+  const text = raw?.trim() ?? ""
+  return text.length < 2 ? undefined : text
+}
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
@@ -102,7 +110,7 @@ export const sessionsRoutes = ({ db, env }: Deps): Hono<{ Variables: AuthVariabl
   const app = new Hono<{ Variables: AuthVariables }>()
 
   app.get("/", requireAuth({ db, env }, ["web"]), zValidator("query", querySchema), async (c) => {
-    const { project, user, range, from, to } = c.req.valid("query")
+    const { project, user, range, from, to, q } = c.req.valid("query")
     const userId = c.get("user").id
 
     if (project !== undefined && (await findVisibleProjectBySlug(db, userId, project)) === null) {
@@ -110,14 +118,19 @@ export const sessionsRoutes = ({ db, env }: Deps): Hono<{ Variables: AuthVariabl
     }
 
     const window = { range, from, to }
+    const keyword = normalizeKeyword(q)
     const rows = await listAccessible(db, userId, {
       projectSlug: project,
       userLogin: user,
       since: sinceFor(window, new Date()),
       until: untilFor(window),
+      q: keyword,
+      limit: keyword === undefined ? undefined : SEARCH_LIMIT,
     })
+    const hasMore = keyword !== undefined && rows.length > SEARCH_LIMIT
+    const page = hasMore ? rows.slice(0, SEARCH_LIMIT) : rows
 
-    return c.json({ sessions: rows.map(serialize) })
+    return c.json({ sessions: page.map(serialize), hasMore })
   })
 
   app.get("/:id", requireAuth({ db, env }, ["web"]), async (c) => {

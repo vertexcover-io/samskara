@@ -11,6 +11,7 @@
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
+    "db:search-index": "tsx src/scripts/create-search-indexes.ts",
     "seed:org": "tsx src/scripts/seed-org.ts"
   },
   "dependencies": {

@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql"
+import type postgres from "postgres"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import { buildApp } from "../app.js"
 import { type Db, createDb } from "../db/client.js"
@@ -20,6 +21,22 @@ import type { Env } from "../lib/env.js"
 import { signToken } from "../lib/jwt.js"
 import * as projectsRepo from "../repositories/projects.repo.js"
 import * as reposRepo from "../repositories/repos.repo.js"
+import { createSearchIndexes } from "../scripts/create-search-indexes.js"
+import { normalizeKeyword } from "./sessions.js"
+
+describe("normalizeKeyword", () => {
+  test.each([
+    ["a", undefined],
+    [" a ", undefined],
+    ["", undefined],
+    [undefined, undefined],
+    ["ab", "ab"],
+    ["  ab  ", "ab"],
+    ["zephyrquark", "zephyrquark"],
+  ])("SC1: normalizeKeyword(%j) is %j", (input, expected) => {
+    expect(normalizeKeyword(input)).toBe(expected)
+  })
+})
 
 const dockerAvailable = () => {
   try {
@@ -149,10 +166,47 @@ const idsOf = (rows: ReadonlyArray<SessionSummary>): ReadonlyArray<string> => ro
 const sortedIdsOf = (rows: ReadonlyArray<SessionSummary>): ReadonlyArray<string> =>
   [...idsOf(rows)].sort()
 
+const seedSearchMessage = async (
+  db: Db,
+  input: {
+    sessionId: string
+    lineNumber: number
+    msgType: string
+    content?: unknown
+    details?: unknown
+  },
+): Promise<void> => {
+  await db.insert(messages).values({
+    sessionId: input.sessionId,
+    lineUuid: crypto.randomUUID(),
+    subIndex: 0,
+    msgType: input.msgType,
+    timestamp: new Date(),
+    lineNumber: input.lineNumber,
+    content: input.content,
+    details: input.details,
+    raw: {},
+    sourceSchemaVersion: 1,
+  })
+}
+
+const chatMessage = (value: string) => ({ content: { type: "text", value } })
+
+const listWithHasMore = async (
+  db: Db,
+  userId: string,
+  query = "",
+): Promise<{ sessions: ReadonlyArray<SessionSummary>; hasMore: boolean }> => {
+  const res = await request(db, userId, query)
+  expect(res.status).toBe(200)
+  return (await res.json()) as { sessions: ReadonlyArray<SessionSummary>; hasMore: boolean }
+}
+
 describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
   let container: StartedPostgreSqlContainer
   let teardown: () => Promise<void>
   let db: Db
+  let client: postgres.Sql
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start()
@@ -164,6 +218,8 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     })
     const created = createDb(url)
     db = created.db
+    client = created.client
+    await createSearchIndexes(client)
     teardown = async () => {
       await created.client.end()
       await container.stop()
@@ -484,6 +540,495 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     const res = await request(db, owner, "?range=banana")
 
     expect(res.status).toBe(400)
+  })
+
+  test("SC2: a word from a chat message finds its session, and a session without it is absent", async () => {
+    const owner = await seedUser(db, 2001, "search-chat-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Chat", slug: "search-chat" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "has-term",
+      userId: owner,
+      projectId,
+      title: "A",
+      updatedAt: new Date(),
+    })
+    await seedSession(db, {
+      id: "no-term",
+      userId: owner,
+      projectId,
+      title: "B",
+      updatedAt: new Date(),
+    })
+    await seedSearchMessage(db, {
+      sessionId: "has-term",
+      lineNumber: 1,
+      msgType: "message",
+      ...chatMessage("investigate the zephyrquark timeout"),
+    })
+    await seedSearchMessage(db, {
+      sessionId: "no-term",
+      lineNumber: 1,
+      msgType: "message",
+      ...chatMessage("investigate an unrelated timeout"),
+    })
+
+    expect(idsOf(await listAs(db, owner, "?q=zephyrquark"))).toEqual(["has-term"])
+  })
+
+  test("SC3: a word from a tool command finds its session even though it appears only in the tool input", async () => {
+    const owner = await seedUser(db, 2002, "search-tool-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Tool", slug: "search-tool" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "tool-session",
+      userId: owner,
+      projectId,
+      title: "T",
+      updatedAt: new Date(),
+    })
+    await seedSession(db, {
+      id: "other-tool",
+      userId: owner,
+      projectId,
+      title: "O",
+      updatedAt: new Date(),
+    })
+    await seedSearchMessage(db, {
+      sessionId: "tool-session",
+      lineNumber: 1,
+      msgType: "toolCall",
+      details: { callId: "c1", name: "Grep", input: { pattern: "ripgrep" } },
+    })
+    await seedSearchMessage(db, {
+      sessionId: "other-tool",
+      lineNumber: 1,
+      msgType: "toolCall",
+      details: { callId: "c2", name: "Grep", input: { pattern: "unrelated" } },
+    })
+
+    expect(idsOf(await listAs(db, owner, "?q=ripgrep"))).toEqual(["tool-session"])
+  })
+
+  test("SC4: a bare filename and a bare directory name both find a session that names the full path", async () => {
+    const owner = await seedUser(db, 2003, "search-path-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Path", slug: "search-path" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "path-session",
+      userId: owner,
+      projectId,
+      title: "P",
+      updatedAt: new Date(),
+    })
+    await seedSession(db, {
+      id: "other-path",
+      userId: owner,
+      projectId,
+      title: "Q",
+      updatedAt: new Date(),
+    })
+    await seedSearchMessage(db, {
+      sessionId: "path-session",
+      lineNumber: 1,
+      msgType: "toolCall",
+      details: {
+        callId: "c1",
+        name: "Read",
+        input: { file_path: "packages/server/src/repositories/sessions.repo.ts" },
+      },
+    })
+    await seedSearchMessage(db, {
+      sessionId: "other-path",
+      lineNumber: 1,
+      msgType: "toolCall",
+      details: {
+        callId: "c2",
+        name: "Read",
+        input: { file_path: "packages/web/src/routes/Sessions.tsx" },
+      },
+    })
+
+    expect(idsOf(await listAs(db, owner, "?q=sessions.repo.ts"))).toEqual(["path-session"])
+    expect(idsOf(await listAs(db, owner, "?q=repositories"))).toEqual(["path-session"])
+  })
+
+  test("SC5: text that appeared only in a tool result's output does not match", async () => {
+    const owner = await seedUser(db, 2004, "search-output-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Output", slug: "search-output" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "output-session",
+      userId: owner,
+      projectId,
+      title: "O",
+      updatedAt: new Date(),
+    })
+    await seedSearchMessage(db, {
+      sessionId: "output-session",
+      lineNumber: 1,
+      msgType: "toolResult",
+      details: { callId: "c1", status: "success", output: "zephyrquark appears only here" },
+    })
+
+    expect(idsOf(await listAs(db, owner, "?q=zephyrquark"))).toEqual([])
+  })
+
+  test("SC6: a quoted phrase matches only adjacent words, not the same words far apart", async () => {
+    const owner = await seedUser(db, 2005, "search-phrase-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Phrase", slug: "search-phrase" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "adjacent",
+      userId: owner,
+      projectId,
+      title: "Adj",
+      updatedAt: new Date(),
+    })
+    await seedSession(db, {
+      id: "apart",
+      userId: owner,
+      projectId,
+      title: "Apart",
+      updatedAt: new Date(),
+    })
+    await seedSearchMessage(db, {
+      sessionId: "adjacent",
+      lineNumber: 1,
+      msgType: "message",
+      ...chatMessage("a timeout in ingest happened"),
+    })
+    await seedSearchMessage(db, {
+      sessionId: "apart",
+      lineNumber: 1,
+      msgType: "message",
+      ...chatMessage("a timeout occurred well before ingest started elsewhere"),
+    })
+
+    const query = `?q=${encodeURIComponent('"timeout in ingest"')}`
+    expect(idsOf(await listAs(db, owner, query))).toEqual(["adjacent"])
+  })
+
+  test("SC7: a minus-prefixed word drops sessions that also contain it", async () => {
+    const owner = await seedUser(db, 2006, "search-exclude-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Exclude", slug: "search-exclude" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "no-lunch",
+      userId: owner,
+      projectId,
+      title: "NL",
+      updatedAt: new Date(),
+    })
+    await seedSession(db, {
+      id: "with-lunch",
+      userId: owner,
+      projectId,
+      title: "WL",
+      updatedAt: new Date(),
+    })
+    await seedSearchMessage(db, {
+      sessionId: "no-lunch",
+      lineNumber: 1,
+      msgType: "message",
+      ...chatMessage("the request hit a timeout"),
+    })
+    await seedSearchMessage(db, {
+      sessionId: "with-lunch",
+      lineNumber: 1,
+      msgType: "message",
+      ...chatMessage("the timeout happened during lunch"),
+    })
+
+    expect(idsOf(await listAs(db, owner, "?q=timeout%20-lunch"))).toEqual(["no-lunch"])
+  })
+
+  test("SC8: a session with more matching messages ranks higher than one with fewer", async () => {
+    const owner = await seedUser(db, 2007, "search-rank-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Rank", slug: "search-rank" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "many-matches",
+      userId: owner,
+      projectId,
+      title: "Many",
+      updatedAt: new Date(),
+    })
+    await seedSession(db, {
+      id: "one-match",
+      userId: owner,
+      projectId,
+      title: "One",
+      updatedAt: new Date(),
+    })
+    for (const lineNumber of [1, 2, 3]) {
+      await seedSearchMessage(db, {
+        sessionId: "many-matches",
+        lineNumber,
+        msgType: "message",
+        ...chatMessage("juniper"),
+      })
+    }
+    await seedSearchMessage(db, {
+      sessionId: "one-match",
+      lineNumber: 1,
+      msgType: "message",
+      ...chatMessage("juniper"),
+    })
+
+    expect(idsOf(await listAs(db, owner, "?q=juniper"))).toEqual(["many-matches", "one-match"])
+  })
+
+  test("SC9: a search returns at most 50 sessions and reports that more exist", async () => {
+    const owner = await seedUser(db, 2008, "search-cap-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Cap", slug: "search-cap" },
+      ownerId: owner,
+    })
+    const now = new Date()
+    await db.insert(sessions).values(
+      Array.from({ length: 60 }, (_, i) => ({
+        id: `cap-${i}`,
+        source: "claude_code",
+        userId: owner,
+        projectId,
+        title: `Cap ${i}`,
+        updatedAt: now,
+      })),
+    )
+    await db.insert(messages).values(
+      Array.from({ length: 60 }, (_, i) => ({
+        sessionId: `cap-${i}`,
+        lineUuid: crypto.randomUUID(),
+        subIndex: 0,
+        msgType: "message",
+        timestamp: now,
+        lineNumber: 1,
+        content: { type: "text", value: "marigold" },
+        raw: {},
+        sourceSchemaVersion: 1,
+      })),
+    )
+
+    const { sessions: page, hasMore } = await listWithHasMore(db, owner, "?q=marigold")
+    expect(page).toHaveLength(50)
+    expect(hasMore).toBe(true)
+  })
+
+  test("SC10: a search never returns a session the requesting user cannot read", async () => {
+    const ownerA = await seedUser(db, 2009, "search-priv-owner")
+    const outsiderB = await seedUser(db, 2010, "search-priv-outsider")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Priv", slug: "search-priv" },
+      ownerId: ownerA,
+    })
+    await seedSession(db, {
+      id: "private-session",
+      userId: ownerA,
+      projectId,
+      title: "Priv",
+      updatedAt: new Date(),
+    })
+    await seedSession(db, {
+      id: "other-private",
+      userId: ownerA,
+      projectId,
+      title: "Other",
+      updatedAt: new Date(),
+    })
+    await seedSearchMessage(db, {
+      sessionId: "private-session",
+      lineNumber: 1,
+      msgType: "message",
+      ...chatMessage("mentions quokka here"),
+    })
+    await seedSearchMessage(db, {
+      sessionId: "other-private",
+      lineNumber: 1,
+      msgType: "message",
+      ...chatMessage("mentions nothing of interest"),
+    })
+
+    expect(idsOf(await listAs(db, outsiderB, "?q=quokka"))).toEqual([])
+    expect(idsOf(await listAs(db, ownerA, "?q=quokka"))).toEqual(["private-session"])
+  })
+
+  test("SC11: a keyword and a project filter narrow together", async () => {
+    const owner = await seedUser(db, 2011, "search-project-owner")
+    const projectA = await projectsRepo.upsert(db, {
+      identity: { name: "SearchA", slug: "search-proj-a" },
+      ownerId: owner,
+    })
+    const projectB = await projectsRepo.upsert(db, {
+      identity: { name: "SearchB", slug: "search-proj-b" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "in-a",
+      userId: owner,
+      projectId: projectA,
+      title: "A",
+      updatedAt: new Date(),
+    })
+    await seedSession(db, {
+      id: "other-in-a",
+      userId: owner,
+      projectId: projectA,
+      title: "A2",
+      updatedAt: new Date(),
+    })
+    await seedSession(db, {
+      id: "in-b",
+      userId: owner,
+      projectId: projectB,
+      title: "B",
+      updatedAt: new Date(),
+    })
+    await seedSearchMessage(db, {
+      sessionId: "in-a",
+      lineNumber: 1,
+      msgType: "message",
+      ...chatMessage("shared keyword tanager"),
+    })
+    await seedSearchMessage(db, {
+      sessionId: "other-in-a",
+      lineNumber: 1,
+      msgType: "message",
+      ...chatMessage("nothing to do with the term"),
+    })
+    await seedSearchMessage(db, {
+      sessionId: "in-b",
+      lineNumber: 1,
+      msgType: "message",
+      ...chatMessage("shared keyword tanager"),
+    })
+
+    expect(idsOf(await listAs(db, owner, "?q=tanager&project=search-proj-a"))).toEqual(["in-a"])
+  })
+
+  test("SC12: malformed query syntax returns 200 with a session list instead of an error", async () => {
+    const owner = await seedUser(db, 2012, "search-malformed-owner")
+
+    const res = await request(db, owner, `?q=${encodeURIComponent('& | ! ( "')}`)
+
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { sessions: unknown }
+    expect(Array.isArray(body.sessions)).toBe(true)
+  })
+
+  test("SC13: a session matches on its own title even when none of its messages do", async () => {
+    const owner = await seedUser(db, 2013, "search-title-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Title", slug: "search-title" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "titled",
+      userId: owner,
+      projectId,
+      title: "Session about hedgewick",
+      updatedAt: new Date(),
+    })
+    await seedSession(db, {
+      id: "untitled",
+      userId: owner,
+      projectId,
+      title: "Session about something else",
+      updatedAt: new Date(),
+    })
+    await seedSearchMessage(db, {
+      sessionId: "titled",
+      lineNumber: 1,
+      msgType: "message",
+      ...chatMessage("nothing relevant in the body"),
+    })
+    await seedSearchMessage(db, {
+      sessionId: "untitled",
+      lineNumber: 1,
+      msgType: "message",
+      ...chatMessage("nothing relevant in the body"),
+    })
+
+    expect(idsOf(await listAs(db, owner, "?q=hedgewick"))).toEqual(["titled"])
+  })
+
+  test("SC14 (regression): a request with no keyword returns the same sessions, same order, and hasMore false", async () => {
+    const owner = await seedUser(db, 2014, "search-regression-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Regress", slug: "search-regress" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "regress-old",
+      userId: owner,
+      projectId,
+      title: "Old",
+      updatedAt: new Date("2026-02-01T00:00:00Z"),
+    })
+    await seedSession(db, {
+      id: "regress-new",
+      userId: owner,
+      projectId,
+      title: "New",
+      updatedAt: new Date("2026-02-02T00:00:00Z"),
+    })
+
+    const { sessions: page, hasMore } = await listWithHasMore(db, owner)
+    expect(idsOf(page)).toEqual(["regress-new", "regress-old"])
+    expect(hasMore).toBe(false)
+  })
+
+  test("SC15: search returns the same sessions with the search indexes dropped", async () => {
+    const owner = await seedUser(db, 2015, "search-noindex-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "NoIndex", slug: "search-noindex" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "noindex-has",
+      userId: owner,
+      projectId,
+      title: "Has",
+      updatedAt: new Date(),
+    })
+    await seedSession(db, {
+      id: "noindex-no",
+      userId: owner,
+      projectId,
+      title: "No",
+      updatedAt: new Date(),
+    })
+    await seedSearchMessage(db, {
+      sessionId: "noindex-has",
+      lineNumber: 1,
+      msgType: "message",
+      ...chatMessage("mentions foxglove here"),
+    })
+    await seedSearchMessage(db, {
+      sessionId: "noindex-no",
+      lineNumber: 1,
+      msgType: "message",
+      ...chatMessage("mentions nothing relevant"),
+    })
+
+    await client.unsafe("drop index concurrently if exists messages_search_idx")
+    await client.unsafe("drop index concurrently if exists sessions_search_idx")
+
+    expect(idsOf(await listAs(db, owner, "?q=foxglove"))).toEqual(["noindex-has"])
   })
 })
 
