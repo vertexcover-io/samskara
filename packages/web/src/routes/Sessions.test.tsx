@@ -244,6 +244,20 @@ test("SC21: a keyword matching nothing names the keyword in the empty state and 
   expect(screen.getByRole("button", { name: /clear filters/i })).toBeInTheDocument()
 })
 
+test("B1: clicking Clear filters while a keyword is set actually empties the query string and the input", async () => {
+  stubFetch(okWith([]))
+
+  renderAt("/sessions?q=zzz")
+
+  await screen.findByRole("heading", { name: /no sessions match/i })
+  await userEvent.click(screen.getByRole("button", { name: /clear filters/i }))
+
+  await waitFor(() => expect(screen.getByTestId("location")).not.toHaveTextContent("q="), {
+    timeout: 2000,
+  })
+  expect(searchBox().value).toBe("")
+})
+
 test("SC22: hasMore true shows a line naming the 50 best matches", async () => {
   stubFetch(() => Promise.resolve(jsonResponse(200, { sessions: [session], hasMore: true })))
 
@@ -309,4 +323,36 @@ test("SC24: the project dropdown still offers all three projects when the keywor
     const labels = Array.from(control(/project/i).options).map((option) => option.label)
     expect(labels).toEqual(["All projects", "Acme", "Andromeda", "Samskara"])
   })
+})
+
+test("B2: choosing Most recent while a keyword is set is not immediately overridden back to Best match", async () => {
+  stubFetch(okWith([session]))
+
+  renderAt("/sessions?q=timeout")
+
+  await screen.findByRole("link", { name: /port the session detail surface/i })
+  expect(control(/sort by/i).value).toBe("best")
+
+  await userEvent.selectOptions(control(/sort by/i), "recent")
+
+  await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("sort=recent"))
+  expect(control(/sort by/i).value).toBe("recent")
+})
+
+test("B2: erasing the keyword does not leave sort=best stuck in the URL", async () => {
+  const testUser = userEvent.setup({ delay: 0 })
+  stubFetch(okWith([session]))
+
+  renderAt("/sessions?q=timeout")
+
+  await screen.findByRole("link", { name: /port the session detail surface/i })
+  expect(control(/sort by/i).value).toBe("best")
+
+  await testUser.clear(searchBox())
+
+  await waitFor(() => expect(screen.getByTestId("location")).not.toHaveTextContent("q="), {
+    timeout: 2000,
+  })
+  expect(screen.getByTestId("location")).not.toHaveTextContent("sort=best")
+  expect(control(/sort by/i).value).toBe("recent")
 })

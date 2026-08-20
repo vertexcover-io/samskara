@@ -9,6 +9,7 @@ import { SessionRow } from "../components/SessionRow.js"
 import {
   EMPTY_FILTERS,
   type SessionFilters,
+  type Sort,
   parseFilters,
   serializeFilters,
   sortSessions,
@@ -137,15 +138,31 @@ export const Sessions = () => {
     filters.q !== null && searchParams.get("sort") === null ? { ...filters, sort: "best" } : filters
 
   const applyFilters = (next: SessionFilters) => {
+    // "best" only exists as the Sort control's synthetic default while a keyword is set and
+    // nothing was explicitly chosen; carried through an unrelated change via the spread below
+    // (e.g. clearing the keyword) it would otherwise stick in the URL sorting nothing.
+    const resolved: SessionFilters = {
+      ...next,
+      sort: next.sort === "best" ? "recent" : next.sort,
+    }
     const onlyKeywordChanged =
-      next.project === displayFilters.project &&
-      next.user === displayFilters.user &&
-      next.range === displayFilters.range &&
-      next.from === displayFilters.from &&
-      next.to === displayFilters.to &&
-      next.sort === displayFilters.sort &&
-      next.q !== displayFilters.q
-    setSearchParams(serializeFilters(next), onlyKeywordChanged ? { replace: true } : undefined)
+      resolved.project === filters.project &&
+      resolved.user === filters.user &&
+      resolved.range === filters.range &&
+      resolved.from === filters.from &&
+      resolved.to === filters.to &&
+      resolved.sort === filters.sort &&
+      resolved.q !== filters.q
+    setSearchParams(serializeFilters(resolved), onlyKeywordChanged ? { replace: true } : undefined)
+  }
+
+  // The Sort control's own choice is always deliberate, so it is written to the URL even when it
+  // matches what "recent" would otherwise omit by default -- that omission is what made "Most
+  // recent" unselectable while a keyword was set.
+  const applySort = (sort: Sort) => {
+    const params = serializeFilters({ ...filters, sort })
+    params.set("sort", sort)
+    setSearchParams(params)
   }
 
   useEffect(() => {
@@ -226,6 +243,7 @@ export const Sessions = () => {
           projects={projects}
           users={users}
           onChange={applyFilters}
+          onSortChange={applySort}
         />
       </div>
 

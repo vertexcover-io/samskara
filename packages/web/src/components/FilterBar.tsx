@@ -84,6 +84,12 @@ const SearchControl = ({
   const [text, setText] = useState(filters.q ?? "")
   const debounced = useDebouncedValue(text, 250)
   const committed = useRef(filters.q)
+  // `filters` and `onChange` are fresh identities on every render; reading them through a ref
+  // keeps the commit effect below scoped to real debounce changes instead of re-firing whenever
+  // an unrelated render passes new object identities, which is what re-applied a stale keyword
+  // right after an external clear reset it.
+  const latest = useRef({ filters, onChange })
+  latest.current = { filters, onChange }
 
   useEffect(() => {
     setText(filters.q ?? "")
@@ -94,8 +100,8 @@ const SearchControl = ({
     const next = debounced.trim() === "" ? null : debounced
     if (next === committed.current) return
     committed.current = next
-    onChange({ ...filters, q: next })
-  }, [debounced, filters, onChange])
+    latest.current.onChange({ ...latest.current.filters, q: next })
+  }, [debounced])
 
   return (
     <div className="min-w-0">
@@ -196,9 +202,10 @@ type Props = {
   readonly projects: ReadonlyArray<Option>
   readonly users: ReadonlyArray<string>
   readonly onChange: (filters: SessionFilters) => void
+  readonly onSortChange: (sort: Sort) => void
 }
 
-export const FilterBar = ({ filters, projects, users, onChange }: Props) => (
+export const FilterBar = ({ filters, projects, users, onChange, onSortChange }: Props) => (
   <section
     aria-label="Session filters"
     className="grid grid-cols-1 items-end gap-3 border border-rule bg-panel p-3 min-[560px]:grid-cols-2 min-[900px]:grid-cols-6"
@@ -225,7 +232,7 @@ export const FilterBar = ({ filters, projects, users, onChange }: Props) => (
       label="Sort by"
       value={filters.sort}
       options={SORTS.map((sort) => ({ value: sort, label: SORT_LABEL[sort] }))}
-      onChange={(sort) => onChange({ ...filters, sort: asSort(sort) })}
+      onChange={(sort) => onSortChange(asSort(sort))}
     />
   </section>
 )
