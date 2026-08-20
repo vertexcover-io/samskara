@@ -6,8 +6,11 @@ import { buildApp } from "../app.js"
 import { type Db, createDb } from "../db/client.js"
 import {
   artifact,
+  commits,
   messages,
   projects,
+  pullRequests,
+  sessionPullRequests,
   sessions,
   subagents,
   tokenUsage,
@@ -309,6 +312,155 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     })
 
     expect(idsOf(await listAs(db, owner))).toEqual(["newest", "middle", "oldest"])
+  })
+
+  test("keyword search, pagination, and structured validation use the paginated list envelope", async () => {
+    const owner = await seedUser(db, 1251, "search-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Search", slug: "search" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "keyword-one",
+      userId: owner,
+      projectId,
+      title: "Needle first",
+      updatedAt: new Date("2026-02-01T00:00:00Z"),
+    })
+    await seedSession(db, {
+      id: "keyword-two",
+      userId: owner,
+      projectId,
+      title: "Needle second",
+      updatedAt: new Date("2026-02-02T00:00:00Z"),
+    })
+    await seedSession(db, {
+      id: "unmatched",
+      userId: owner,
+      projectId,
+      title: "Haystack",
+      updatedAt: new Date("2026-02-03T00:00:00Z"),
+    })
+
+    const response = await request(db, owner, "?q=needle&limit=1&page=2")
+    expect(response.status).toBe(200)
+    const body = (await response.json()) as {
+      sessions: ReadonlyArray<SessionSummary & { match?: { sourceKind: string } }>
+      pagination: { page: number; limit: number; total: number; totalPages: number }
+      filterOptions: { projects: ReadonlyArray<{ value: string }> }
+    }
+    expect(body.sessions).toHaveLength(1)
+    expect(body.sessions[0]?.id).toBe("keyword-one")
+    expect(body.sessions[0]?.match?.sourceKind).toBe("session")
+    expect(body.pagination).toEqual({ page: 2, limit: 1, total: 2, totalPages: 2 })
+    expect(body.filterOptions.projects.map((option) => option.value)).toEqual(["search"])
+
+    for (const query of [
+      "?pr=01",
+      "?pr=2147483648",
+      "?commit=not-a-sha",
+      "?q=OR",
+      "?q=___",
+      "?q=auth_guard",
+      "?q=auth+-___",
+    ]) {
+      const invalid = await request(db, owner, query)
+      expect(invalid.status).toBe(400)
+    }
+  })
+
+  test("keyword matches and headlines come only from the five approved source documents", async () => {
+    const owner = await seedUser(db, 1271, "five-source-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Five", slug: "five" },
+      ownerId: owner,
+    })
+    const repoId = await reposRepo.upsertByIdentity(
+      db,
+      { host: "github.com", owner: "acme", repoName: "five" },
+      owner,
+    )
+    const now = new Date("2026-02-01T00:00:00Z")
+    for (const [id, title] of [
+      ["source-session", "sessionneedle"],
+      ["source-message", "other"],
+      ["source-pr", "other"],
+      ["source-call", "other"],
+      ["source-result", "other"],
+      ["excluded", "other"],
+    ] as const) {
+      await seedSession(db, { id, userId: owner, projectId, title, updatedAt: now })
+    }
+    const insertMessageFor = async (sessionId: string, content: unknown, raw: unknown = {}) => {
+      const [message] = await db
+        .insert(messages)
+        .values({
+          sessionId,
+          lineUuid: crypto.randomUUID(),
+          subIndex: 0,
+          msgType: "message",
+          role: "assistant",
+          timestamp: now,
+          lineNumber: 1,
+          content,
+          raw,
+          sourceSchemaVersion: 1,
+        })
+        .returning({ id: messages.id })
+      if (!message) throw new Error("message not inserted")
+      return message.id
+    }
+    const messageId = await insertMessageFor("source-message", { value: "messageneedle" })
+    const callMessageId = await insertMessageFor("source-call", {})
+    const resultMessageId = await insertMessageFor("source-result", {})
+    await insertMessageFor("excluded", {}, { hidden: "rawneedle" })
+    await db.insert(toolCall).values({
+      toolId: "call-needle",
+      messageId: callMessageId,
+      toolName: "not-searchable",
+      toolInput: { value: "callneedle" },
+    })
+    await db.insert(toolResult).values({
+      toolId: "result-needle",
+      messageId: resultMessageId,
+      status: "success",
+      result: { value: "resultneedle" },
+    })
+    const [pr] = await db
+      .insert(pullRequests)
+      .values({ repoId, number: 77, title: "prneedle" })
+      .returning({ id: pullRequests.id })
+    if (!pr) throw new Error("pr not inserted")
+    await db.insert(sessionPullRequests).values({ sessionId: "source-pr", prId: pr.id })
+    await db
+      .insert(commits)
+      .values({ repoId, sessionId: "excluded", sha: "abcdef0123456789", subject: "commitneedle" })
+
+    for (const [q, id, sourceKind] of [
+      ["sessionneedle", "source-session", "session"],
+      ["messageneedle", "source-message", "message"],
+      ["prneedle", "source-pr", "pullRequest"],
+      ["callneedle", "source-call", "toolCall"],
+      ["resultneedle", "source-result", "toolResult"],
+    ] as const) {
+      const response = await request(db, owner, `?q=${q}`)
+      expect(response.status).toBe(200)
+      const body = (await response.json()) as {
+        sessions: ReadonlyArray<{
+          id: string
+          match?: {
+            sourceKind: string
+            sourceRowId: string
+            snippet: ReadonlyArray<{ text: string; highlighted: boolean }>
+          }
+        }>
+      }
+      expect(body.sessions.map((session) => session.id)).toEqual([id])
+      expect(body.sessions[0]?.match?.sourceKind).toBe(sourceKind)
+      expect(body.sessions[0]?.match?.snippet.some((segment) => segment.highlighted)).toBe(true)
+    }
+    expect(await listAs(db, owner, "?q=rawneedle")).toEqual([])
+    expect(await listAs(db, owner, "?q=commitneedle")).toEqual([])
   })
 
   test("S20: a summary carries the project name, login, summed tokens, and a duration spanning the message timestamps", async () => {

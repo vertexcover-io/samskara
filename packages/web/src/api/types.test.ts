@@ -1,5 +1,5 @@
 import { expect, test } from "vitest"
-import { parseSessionArtifacts } from "./parse.js"
+import { parseSessionArtifacts, parseSessionList } from "./parse.js"
 import type { CapturedArtifact } from "./types.js"
 
 const ROW = {
@@ -16,6 +16,50 @@ const ROW = {
   hasBase: true,
   firstSeenAt: "2026-07-01T10:00:00.000Z",
   lastSeenAt: "2026-07-01T10:05:00.000Z",
+}
+
+const session = {
+  id: "s-1",
+  title: "Search evidence",
+  projectName: "Samskara",
+  projectSlug: "samskara",
+  userLogin: "maya",
+  repo: null,
+  durationMs: 1_000,
+  tokensTotal: 42,
+  status: "complete",
+  lastActiveAt: "2026-08-20T10:00:00.000Z",
+}
+
+const listPayload = {
+  sessions: [
+    {
+      ...session,
+      match: {
+        sourceKind: "toolResult",
+        sourceRowId: "call-1",
+        snippet: [
+          { text: "deployment ", highlighted: false },
+          { text: "timeout", highlighted: true },
+        ],
+      },
+    },
+  ],
+  pagination: { page: 1, limit: 25, total: 1, totalPages: 1 },
+  filterOptions: {
+    projects: [{ value: "samskara", label: "Samskara" }],
+    authors: [{ value: "maya", label: "maya" }],
+    repositories: [
+      {
+        value: "r-1",
+        label: "acme/samskara",
+        host: "github.com",
+        owner: "acme",
+        repoName: "samskara",
+      },
+    ],
+    branches: ["main"],
+  },
 }
 
 test("S48: a well-formed artifacts response parses into the CapturedArtifact shape the view consumes", () => {
@@ -40,10 +84,8 @@ test("S48: a well-formed artifacts response parses into the CapturedArtifact sha
 
 test("S48: the list route omitting diff and oldFragment yields nulls rather than a parse failure", () => {
   const { diff: _diff, oldFragment: _oldFragment, ...withoutBodies } = ROW
-
   const parsed = parseSessionArtifacts({ artifacts: [withoutBodies] })
   if (parsed === null) throw new Error("expected a summary row to parse")
-
   expect(parsed[0]?.diff).toBeNull()
   expect(parsed[0]?.oldFragment).toBeNull()
 })
@@ -53,8 +95,42 @@ test("S54: a row missing a required field is rejected, so no partially-typed art
     const { [field]: _dropped, ...broken } = ROW as Record<string, unknown>
     expect(parseSessionArtifacts({ artifacts: [broken] })).toBeNull()
   }
-
   expect(parseSessionArtifacts({ artifacts: [{ ...ROW, relativePath: 42 }] })).toBeNull()
   expect(parseSessionArtifacts({ notArtifacts: [] })).toBeNull()
   expect(parseSessionArtifacts(null)).toBeNull()
+})
+
+test("session list parsing requires its pagination and authorization-safe vocabulary", () => {
+  const parsed = parseSessionList(listPayload)
+  expect(parsed?.pagination.total).toBe(1)
+  expect(parsed?.filterOptions.branches).toEqual(["main"])
+  expect(parsed?.sessions[0]?.match?.sourceKind).toBe("toolResult")
+
+  expect(
+    parseSessionList({ ...listPayload, pagination: { ...listPayload.pagination, totalPages: 2 } }),
+  ).toBeNull()
+  expect(
+    parseSessionList({
+      ...listPayload,
+      filterOptions: { ...listPayload.filterOptions, branches: [42] },
+    }),
+  ).toBeNull()
+})
+
+test("accepts a truthful out-of-range page with an empty session list", () => {
+  expect(
+    parseSessionList({
+      ...listPayload,
+      sessions: [],
+      pagination: { page: 9, limit: 25, total: 1, totalPages: 1 },
+    }),
+  ).toMatchObject({ pagination: { page: 9, total: 1, totalPages: 1 }, sessions: [] })
+})
+
+test("malformed decorative match evidence is dropped rather than poisoning a valid session list", () => {
+  const parsed = parseSessionList({
+    ...listPayload,
+    sessions: [{ ...session, match: { sourceKind: "artifact", sourceRowId: "a", snippet: [] } }],
+  })
+  expect(parsed?.sessions[0]?.match).toBeNull()
 })

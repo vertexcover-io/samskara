@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom"
 import { repoLabel } from "../api/repo.js"
-import type { SessionSummary } from "../api/types.js"
+import type { SearchSourceKind, SessionSummary } from "../api/types.js"
 import { absoluteTime, relativeTime } from "../time.js"
 
 const Unavailable = () => (
@@ -28,6 +28,14 @@ const formatTokens = (total: number): string => {
   return `${(total / unit.scale).toFixed(1)}${unit.suffix} tokens`
 }
 
+const SOURCE_LABEL: Readonly<Record<SearchSourceKind, string>> = {
+  session: "Session",
+  message: "Conversation",
+  pullRequest: "Pull request",
+  toolCall: "Tool call",
+  toolResult: "Tool result",
+}
+
 type Props = {
   readonly session: SessionSummary
   readonly to: string
@@ -35,6 +43,7 @@ type Props = {
 
 export const SessionRow = ({ session, to }: Props) => {
   const { title, projectName, userLogin, repo, durationMs, tokensTotal, lastActiveAt } = session
+  const match = session.match ?? null
 
   return (
     <Link
@@ -68,6 +77,23 @@ export const SessionRow = ({ session, to }: Props) => {
       >
         {relativeTime(lastActiveAt)}
       </time>
+
+      {match === null ? null : (
+        <span className="col-start-2 mt-1 block min-w-0 text-[0.78rem] leading-5 text-ink-soft min-[900px]:col-span-3">
+          <span className="mr-2 font-mono text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-custody">
+            {SOURCE_LABEL[match.sourceKind]}
+          </span>
+          {match.snippet.map((segment) =>
+            segment.highlighted ? (
+              <mark key={`highlighted:${segment.text}`} className="bg-stamp/20 px-px text-ink">
+                {segment.text}
+              </mark>
+            ) : (
+              <span key={`plain:${segment.text}`}>{segment.text}</span>
+            ),
+          )}
+        </span>
+      )}
     </Link>
   )
 }

@@ -11,11 +11,12 @@ export const RANGE_LABEL: Readonly<Record<Range, string>> = {
   custom: "Custom range…",
 }
 
-export const SORTS = ["recent", "oldest", "tokens", "project"] as const
+export const SORTS = ["relevance", "recent", "oldest", "tokens", "project"] as const
 
 export type Sort = (typeof SORTS)[number]
 
 export const SORT_LABEL: Readonly<Record<Sort, string>> = {
+  relevance: "Relevance",
   recent: "Most recent",
   oldest: "Oldest first",
   tokens: "Most tokens",
@@ -23,21 +24,35 @@ export const SORT_LABEL: Readonly<Record<Sort, string>> = {
 }
 
 export type SessionFilters = {
+  readonly q: string | null
   readonly project: string | null
   readonly user: string | null
+  readonly repo: string | null
+  readonly branch: string | null
+  readonly pr: string | null
+  readonly commit: string | null
   readonly range: Range
   readonly from: string | null
   readonly to: string | null
+  readonly tz: string | null
   readonly sort: Sort
+  readonly page: number
 }
 
 export const EMPTY_FILTERS: SessionFilters = {
+  q: null,
   project: null,
   user: null,
+  repo: null,
+  branch: null,
+  pr: null,
+  commit: null,
   range: "all",
   from: null,
   to: null,
+  tz: null,
   sort: "recent",
+  page: 1,
 }
 
 const isRange = (value: string | null): value is Range =>
@@ -58,79 +73,99 @@ const isoDate = (value: string | null): string | null => {
   return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : null
 }
 
+const pageNumber = (value: string | null): number => {
+  if (value === null || !/^[1-9][0-9]*$/.test(value)) return 1
+  const page = Number(value)
+  return Number.isSafeInteger(page) ? page : 1
+}
+
+/**
+ * Keep invalid user input in the URL. The API owns validation and must be able to explain a bad
+ * PR number, commit prefix, or branch instead of the client silently broadening the search.
+ */
+const rawValue = (value: string | null): string | null => (value === "" ? null : value)
+
+const commitValue = (value: string | null): string | null => {
+  const text = rawValue(value)
+  return text === null ? null : text.trim().toLowerCase()
+}
+
+export const localTimeZone = (): string | null => {
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone
+  return zone === undefined || zone === "" ? null : zone
+}
+
 export const parseFilters = (params: URLSearchParams): SessionFilters => {
-  const range = params.get("range")
+  const q = trimmed(params.get("q"))
   const sort = params.get("sort")
   return {
+    q,
     project: trimmed(params.get("project")),
     user: trimmed(params.get("user")),
-    range: isRange(range) ? range : "all",
+    repo: rawValue(params.get("repo")),
+    branch: rawValue(params.get("branch")),
+    pr: rawValue(params.get("pr")),
+    commit: commitValue(params.get("commit")),
+    range: isRange(params.get("range")) ? (params.get("range") as Range) : "all",
     from: isoDate(params.get("from")),
     to: isoDate(params.get("to")),
-    sort: isSort(sort) ? sort : "recent",
+    tz: trimmed(params.get("tz")),
+    sort: isSort(sort) ? sort : q === null ? "recent" : "relevance",
+    page: pageNumber(params.get("page")),
   }
 }
 
 export const serializeFilters = (filters: SessionFilters): URLSearchParams => {
   const params = new URLSearchParams()
+  if (filters.q !== null) params.set("q", filters.q)
   if (filters.project !== null) params.set("project", filters.project)
   if (filters.user !== null) params.set("user", filters.user)
+  if (filters.repo !== null) params.set("repo", filters.repo)
+  if (filters.branch !== null) params.set("branch", filters.branch)
+  if (filters.pr !== null) params.set("pr", filters.pr)
+  if (filters.commit !== null) params.set("commit", filters.commit.toLowerCase())
   if (filters.range !== "all") params.set("range", filters.range)
   if (filters.range === "custom") {
     if (filters.from !== null) params.set("from", filters.from)
     if (filters.to !== null) params.set("to", filters.to)
   }
+  if ((filters.range === "today" || filters.range === "custom") && filters.tz !== null) {
+    params.set("tz", filters.tz)
+  }
   if (filters.sort !== "recent") params.set("sort", filters.sort)
+  if (filters.page > 1) params.set("page", String(filters.page))
   return params
 }
 
-const startOf = (range: Range, now: number): number | null => {
-  if (range === "hour") return now - 3_600_000
-  if (range === "today") {
-    const start = new Date(now)
-    start.setHours(0, 0, 0, 0)
-    return start.getTime()
-  }
-  if (range === "week") return now - 7 * 86_400_000
-  if (range === "month") return now - 30 * 86_400_000
-  return null
-}
-
-type Sortable = {
-  readonly lastActiveAt: string
-  readonly tokensTotal: number
-  readonly projectName: string
-}
-
-export const withinRange = (
+/** Result-affecting controls always return to the first page. */
+export const changedFilters = (
   filters: SessionFilters,
-  lastActiveAt: string,
-  now: number = Date.now(),
-): boolean => {
-  const at = new Date(lastActiveAt).getTime()
-  if (Number.isNaN(at)) return true
-
-  if (filters.range === "custom") {
-    if (filters.from !== null && at < new Date(`${filters.from}T00:00:00`).getTime()) return false
-    if (filters.to !== null && at > new Date(`${filters.to}T23:59:59.999`).getTime()) return false
-    return true
-  }
-
-  const start = startOf(filters.range, now)
-  return start === null || at >= start
+  change: Partial<SessionFilters>,
+): SessionFilters => {
+  const next = { ...filters, ...change, page: 1 }
+  if (next.q === null && next.sort === "relevance") return { ...next, sort: "recent" }
+  return next
 }
 
-export const sortSessions = <T extends Sortable>(
-  sessions: ReadonlyArray<T>,
-  sort: Sort,
-): ReadonlyArray<T> => {
-  const at = (session: T): number => new Date(session.lastActiveAt).getTime() || 0
-  const copy = [...sessions]
-
-  if (sort === "oldest") return copy.sort((a, b) => at(a) - at(b))
-  if (sort === "tokens") return copy.sort((a, b) => b.tokensTotal - a.tokensTotal)
-  if (sort === "project") {
-    return copy.sort((a, b) => a.projectName.localeCompare(b.projectName) || at(b) - at(a))
+export const clearFilter = <K extends keyof SessionFilters>(
+  filters: SessionFilters,
+  key: K,
+): SessionFilters => {
+  const defaults: Pick<
+    SessionFilters,
+    "q" | "project" | "user" | "repo" | "branch" | "pr" | "commit"
+  > = {
+    q: null,
+    project: null,
+    user: null,
+    repo: null,
+    branch: null,
+    pr: null,
+    commit: null,
   }
-  return copy.sort((a, b) => at(b) - at(a))
+  if (!(key in defaults))
+    return changedFilters(filters, { [key]: EMPTY_FILTERS[key] } as Partial<SessionFilters>)
+  return changedFilters(filters, {
+    [key]: defaults[key as keyof typeof defaults],
+  } as Partial<SessionFilters>)
 }
