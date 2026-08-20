@@ -1,7 +1,9 @@
 # samskara
 
 Capture platform for AI coding-agent session logs (Claude Code first, generic by design).
-Summarizes sessions and serves a web UI + API/MCP for search.
+Summarizes sessions and serves a web UI + API/MCP for search. Search matches the full
+transcript: chat prose and tool calls. It uses Postgres full-text search. Use the `/sessions`
+page or `GET /api/sessions?q=` to search.
 
 The identity mesh (users/orgs/repos/sessions), the **auth system** (GitHub OAuth web
 login, org-allowlist gate, session/CLI JWTs, browserless CLI pairing), and the **application
@@ -46,6 +48,8 @@ bun run stack:up    # docker compose up -d (Postgres/pgvector on :5433)
 bun run stack:down  # docker compose down
 bun run db:migrate  # apply drizzle migrations
 bun run seed:org <github-slug>   # seed an allowed org (login is gated to members)
+
+bun run --cwd packages/server db:search-index   # build the search GIN indexes (see Search below)
 ```
 
 ## Auth
@@ -65,7 +69,7 @@ Ports: backend `:3000`, web `:8000`
 | POST | `/api/auth/cli-code`        | web      | Mint a CLI pairing code |
 | POST | `/api/auth/cli-exchange`    | none     | Redeem a code → `aud:cli` JWT |
 | GET  | `/api/projects`             | web      | Projects the user can read, with session counts and last activity |
-| GET  | `/api/sessions`             | web      | Readable sessions, newest first; optional `project`, `user`, `range` filters |
+| GET  | `/api/sessions`             | web      | Readable sessions, newest first; optional `project`, `user`, `range` filters, and `q` for keyword search (ranked, capped at 50 with `hasMore`) |
 | GET  | `/api/sessions/:id`         | web      | One session with its messages, tool calls, subagents, and token usage |
 | POST | `/api/ingest`               | cli      | Flush a captured session (messages, tool calls, subagents) |
 
@@ -127,7 +131,7 @@ packages/server/src/
   services/      github.ts (GithubClient seam), auth.ts (gate + upsert), pairing.ts, ingest.ts
   lib/           env.ts (zod config), jwt.ts (jose), cookies.ts, require-auth.ts,
                  logging-middleware.ts (reqId + request child logger)
-  scripts/       seed-org.ts
+  scripts/       seed-org.ts, create-search-indexes.ts (db:search-index; see Search below)
   app.ts         buildApp(db, env, deps) — Hono app, /health + /api/auth + /api/ingest
                  + /api/projects + /api/sessions
   index.ts       Node server entry — logs "server listening" via the root logger
@@ -142,7 +146,7 @@ React Router routes, all but `/login` behind `RequireAuth` (which renders a load
 |---|---|
 | `/login` | GitHub sign-in; redirects to `/projects` when already authenticated |
 | `/projects` | Project cards — name, slug, session count, last activity, last session title |
-| `/sessions` | Session index. Project, User, and Date Range filters read from and write to the query string, so any filtered view is a shareable link and Back/Forward restore it |
+| `/sessions` | Session index. Project, User, Date Range, and Keyword filters read from and write to the query string, so any filtered view is a shareable link and Back/Forward restore it. A keyword narrows the list by full transcript match. It also adds a "Best match" sort option, on by default |
 | `/sessions/:sessionId` | Session detail — Conversation, Timeline, Tool Calls, and Artifacts tabs, plus expandable subagent branches |
 
 Unmatched paths redirect to `/projects`. The app shell carries an account menu with CLI pairing and
@@ -156,7 +160,7 @@ packages/web/src/
   shell/      AppShell.tsx, AccountMenu.tsx, LoadingShell.tsx
   session/    detail viewer — Tabs, RecordStream, ToolCallsView, ArtifactsView, SubagentAnnex
   components/ ProjectCard.tsx, SessionRow.tsx, FilterBar.tsx
-  sessions/   filters.ts (query-string ⇄ filter state)
+  sessions/   filters.ts (query-string ⇄ filter state), useDebouncedValue.ts (keyword input debounce)
   index.css   Tailwind v4 tokens in an @theme block (no tailwind.config file)
 ```
 
@@ -180,3 +184,40 @@ The identity mesh (`users`, `orgs`, `repos`, `user_orgs`, `projects`, `user_proj
 The server package's Vitest suite spins up a real `pgvector/pgvector:pg16` container via
 testcontainers and runs the migrations against it, so the schema and the auth routes are
 tested end-to-end. It is skipped when Docker is unavailable.
+
+## Search
+
+`GET /api/sessions?q=<keyword>` searches the full transcript of each session. It matches chat
+prose, tool commands, file paths, and edit content. It skips bulk tool output, such as file reads
+and full command logs. This keeps the index small. It also stops common words from matching every
+session.
+
+Postgres full-text search ranks the results. It ranks first by relevance, then by the number of
+matching messages, then by recency. The response returns at most 50 sessions. It sets a `hasMore`
+flag when more sessions match. A keyword under 2 characters is not searched.
+
+In the web UI, the Keyword field in the `/sessions` filter bar runs this search. Once a keyword is
+set, the filter bar adds a "Best match" sort option.
+
+SQL functions derive the searchable text at query time, from the existing `content` and `details`
+JSONB columns: `search_norm_v1`, `msg_search_tsv_v2`, `session_search_tsv_v1`, `search_query_v1`.
+This needs no extra column, no ingest-time step, and no backfill.
+
+Search functions carry a version suffix, such as `_v1` or `_v2`. Postgres does not rebuild an
+expression index when `CREATE OR REPLACE FUNCTION` changes the function body. So a changed
+extraction rule ships as a new function name, backing a new index. It does not edit the old index.
+
+**Migrations create the SQL functions, not the indexes.** After `bun run db:migrate`, build the
+two GIN expression indexes (`messages_search_idx_v2`, `sessions_search_idx`) with:
+
+```sh
+bun run --cwd packages/server db:search-index
+```
+
+This command runs `CREATE INDEX CONCURRENTLY`. It never blocks writes from ingest. The command is
+idempotent, so run it again after each deploy. It drops and rebuilds any index a previous run left
+`INVALID`.
+
+If you skip this step, search still works. It falls back to a sequential scan over the `messages`
+table, so results stay correct but slow at scale. At startup, the server logs a warning when an
+index is missing: `search index missing; run: bun run --cwd packages/server db:search-index`.
