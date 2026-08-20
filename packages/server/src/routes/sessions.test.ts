@@ -367,6 +367,18 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
       const invalid = await request(db, owner, query)
       expect(invalid.status).toBe(400)
     }
+
+    for (const query of [
+      "?range=custom&from=2026-02-30&to=2026-03-01&tz=UTC",
+      "?range=custom&from=2026-99-99&to=2027-01-01&tz=UTC",
+    ]) {
+      const invalid = await request(db, owner, query)
+      expect(invalid.status).toBe(400)
+      expect(await invalid.json()).toEqual({ error: "invalidFilter" })
+    }
+
+    const leapDay = await request(db, owner, "?range=custom&from=2024-02-29&to=2024-02-29&tz=UTC")
+    expect(leapDay.status).toBe(200)
   })
 
   test("keyword matches and headlines come only from the five approved source documents", async () => {
