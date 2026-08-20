@@ -93,7 +93,9 @@ const main = async (): Promise<void> => {
     console.error("DATABASE_URL is required")
     process.exit(1)
   }
-  const { client } = createDb(url)
+  // CREATE INDEX CONCURRENTLY is a multi-pass DDL statement that runs far longer than the
+  // request-path statement_timeout createDb() applies by default -- this admin connection opts out.
+  const { client } = createDb(url, { statementTimeoutMs: 0 })
   const results = await createSearchIndexes(client)
   for (const result of results) {
     console.log(`${result.name}: ${result.built ? "built" : "already present"}`)

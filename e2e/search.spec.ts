@@ -99,3 +99,19 @@ test("SC26: clearing the keyword after a narrowing search restores the full list
     await expect(page.getByRole("link", { name: new RegExp(title) })).toBeVisible()
   }
 })
+
+// "wizard" appears only in e2e-search-2's message content ("Simplify the onboarding wizard
+// steps."), never in any seeded title -- unlike SC25's "timeout", which also matches a title,
+// so this is the only scenario that fails if message-content search itself breaks.
+test("SC34: a keyword that appears only in message content, never in a title, still narrows the list", async ({
+  authedPage: page,
+}) => {
+  await page.goto("/sessions")
+
+  await page.getByRole("searchbox", { name: /keyword/i }).fill("wizard")
+
+  await expect(page).toHaveURL(/[?&]q=wizard(&|$)/)
+  await expect(page.getByRole("link", { name: /Refactor the onboarding flow/ })).toBeVisible()
+  await expect(page.getByRole("link", { name: /Debug the payment timeout/ })).toHaveCount(0)
+  await expect(page.getByRole("link", { name: /Patch the ingest watcher/ })).toHaveCount(0)
+})

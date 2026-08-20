@@ -16,8 +16,8 @@ export type SeedMessage = {
   readonly role?: string
   readonly agentId?: string
   readonly isSubagent?: boolean
-  readonly content?: unknown
-  readonly details?: unknown
+  readonly content?: postgres.JSONValue
+  readonly details?: postgres.JSONValue
   readonly tool?: {
     readonly toolId: string
     readonly toolName: string
@@ -65,8 +65,10 @@ const projectId = (slug: string): string => {
 
 type Sql = ReturnType<typeof postgres>
 
-const jsonOrNull = (value: unknown): string | null =>
-  value === undefined ? null : JSON.stringify(value)
+// sql.json() is required here: binding a plain JSON.stringify()'d string into a jsonb column
+// double-encodes it, storing a JSON *string* scalar instead of the intended object.
+const jsonOrNull = (sql: Sql, value: postgres.JSONValue | undefined) =>
+  value === undefined ? null : sql.json(value)
 
 const seedMessages = async (sql: Sql, session: SeedSession): Promise<void> => {
   for (const [line, entry] of (session.messages ?? []).entries()) {
@@ -79,7 +81,7 @@ const seedMessages = async (sql: Sql, session: SeedSession): Promise<void> => {
       values (
         ${session.id}, gen_random_uuid(), 0, ${entry.msgType}, ${entry.subType ?? null},
         ${entry.role ?? null}, ${timestamp}, ${line + 1}, ${entry.agentId ?? null},
-        ${entry.isSubagent ?? false}, ${jsonOrNull(entry.content)}, ${jsonOrNull(entry.details)},
+        ${entry.isSubagent ?? false}, ${jsonOrNull(sql, entry.content)}, ${jsonOrNull(sql, entry.details)},
         '{}'::jsonb, 1
       )
       returning id

@@ -203,6 +203,38 @@ const listWithHasMore = async (
   return (await res.json()) as { sessions: ReadonlyArray<SessionSummary>; hasMore: boolean }
 }
 
+const seedMatchingSessions = async (
+  db: Db,
+  userId: string,
+  projectId: string,
+  count: number,
+): Promise<void> => {
+  const now = new Date()
+  await db.insert(sessions).values(
+    Array.from({ length: count }, (_, i) => ({
+      id: `cap-${i}`,
+      source: "claude_code",
+      userId,
+      projectId,
+      title: `Cap ${i}`,
+      updatedAt: now,
+    })),
+  )
+  await db.insert(messages).values(
+    Array.from({ length: count }, (_, i) => ({
+      sessionId: `cap-${i}`,
+      lineUuid: crypto.randomUUID(),
+      subIndex: 0,
+      msgType: "message",
+      timestamp: now,
+      lineNumber: 1,
+      content: { type: "text", value: "marigold" },
+      raw: {},
+      sourceSchemaVersion: 1,
+    })),
+  )
+}
+
 describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
   let container: StartedPostgreSqlContainer
   let teardown: () => Promise<void>
@@ -936,30 +968,35 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
       identity: { name: "Cap", slug: "search-cap" },
       ownerId: owner,
     })
-    const now = new Date()
-    await db.insert(sessions).values(
-      Array.from({ length: 60 }, (_, i) => ({
-        id: `cap-${i}`,
-        source: "claude_code",
-        userId: owner,
-        projectId,
-        title: `Cap ${i}`,
-        updatedAt: now,
-      })),
-    )
-    await db.insert(messages).values(
-      Array.from({ length: 60 }, (_, i) => ({
-        sessionId: `cap-${i}`,
-        lineUuid: crypto.randomUUID(),
-        subIndex: 0,
-        msgType: "message",
-        timestamp: now,
-        lineNumber: 1,
-        content: { type: "text", value: "marigold" },
-        raw: {},
-        sourceSchemaVersion: 1,
-      })),
-    )
+    await seedMatchingSessions(db, owner, projectId, 60)
+
+    const { sessions: page, hasMore } = await listWithHasMore(db, owner, "?q=marigold")
+    expect(page).toHaveLength(50)
+    expect(hasMore).toBe(true)
+  })
+
+  // The repository over-fetches by one row (limit + 1) so hasMore can be derived without a
+  // second query. SC9 seeds 60 matches, past the cap either way -- these pin the boundary itself.
+  test("SC32: exactly 50 matching sessions report hasMore: false", async () => {
+    const owner = await seedUser(db, 2017, "search-cap-boundary-low")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "CapLow", slug: "search-cap-boundary-low" },
+      ownerId: owner,
+    })
+    await seedMatchingSessions(db, owner, projectId, 50)
+
+    const { sessions: page, hasMore } = await listWithHasMore(db, owner, "?q=marigold")
+    expect(page).toHaveLength(50)
+    expect(hasMore).toBe(false)
+  })
+
+  test("SC33: exactly 51 matching sessions report hasMore: true", async () => {
+    const owner = await seedUser(db, 2018, "search-cap-boundary-high")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "CapHigh", slug: "search-cap-boundary-high" },
+      ownerId: owner,
+    })
+    await seedMatchingSessions(db, owner, projectId, 51)
 
     const { sessions: page, hasMore } = await listWithHasMore(db, owner, "?q=marigold")
     expect(page).toHaveLength(50)

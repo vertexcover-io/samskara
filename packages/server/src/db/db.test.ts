@@ -199,3 +199,35 @@ describe.skipIf(!dockerAvailable())("I2: createDb bounds every statement on the 
     await expect(client`select pg_sleep(30)`).rejects.toThrow(/statement timeout/i)
   }, 10_000)
 })
+
+describe.skipIf(!dockerAvailable())(
+  "I3: createDb accepts an unbounded statement_timeout for admin/DDL connections",
+  () => {
+    let container: StartedPostgreSqlContainer
+    let teardown: () => Promise<void>
+    let client: postgres.Sql
+
+    beforeAll(async () => {
+      container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start()
+      const created = createDb(container.getConnectionUri(), { statementTimeoutMs: 0 })
+      client = created.client
+      teardown = async () => {
+        await created.client.end()
+        await container.stop()
+      }
+    }, 120_000)
+
+    afterAll(async () => {
+      await teardown?.()
+    })
+
+    test("statementTimeoutMs: 0 disables the pool's statement_timeout", async () => {
+      const [row] = await client<Array<{ statement_timeout: string }>>`show statement_timeout`
+      expect(row?.statement_timeout).toBe("0")
+    })
+
+    test("a query that runs past the request-path 2s bound still completes -- this is the connection the index-build script uses", async () => {
+      await expect(client`select pg_sleep(3)`).resolves.toBeDefined()
+    }, 10_000)
+  },
+)
