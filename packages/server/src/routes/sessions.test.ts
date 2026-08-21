@@ -8,6 +8,7 @@ import {
   artifact,
   commits,
   messages,
+  orgs,
   projects,
   pullRequests,
   sessionPullRequests,
@@ -16,6 +17,7 @@ import {
   tokenUsage,
   toolCall,
   toolResult,
+  userOrgs,
   userProjectGrant,
   users,
 } from "../db/schema.js"
@@ -786,6 +788,8 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions/:id", () => {
     await db.delete(sessions)
     await db.delete(userProjectGrant)
     await db.delete(projects)
+    await db.delete(userOrgs)
+    await db.delete(orgs)
     await db.delete(users)
   })
 
@@ -1099,5 +1103,34 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions/:id", () => {
 
     expect(res.status).toBe(401)
     expect(await db.select().from(sessions)).toHaveLength(1)
+  })
+
+  test("SC2: a member of the owning org reads the org project's session list and detail; a non-member cannot", async () => {
+    const member = await seedUser(db, 2501, "sc2-member")
+    const outsider = await seedUser(db, 2502, "sc2-outsider")
+    const [org] = await db
+      .insert(orgs)
+      .values({ githubSlug: "sc2-acme", name: "Acme" })
+      .returning({ id: orgs.id })
+    if (!org) throw new Error("seed org failed")
+    await db.insert(userOrgs).values({ userId: member, orgId: org.id })
+
+    const { id: projectId } = await projectsRepo.upsertOwned(db, {
+      identity: { name: "acme-widget", slug: "sc2-acme-widget" },
+      owner: { kind: "org", orgId: org.id },
+    })
+    await seedSession(db, {
+      id: "sc2-org-session",
+      userId: member,
+      projectId,
+      title: "Org session",
+      updatedAt: new Date(),
+    })
+
+    expect((await listAs(db, member)).map((s) => s.id)).toContain("sc2-org-session")
+    expect((await detailRequest(db, member, "sc2-org-session")).status).toBe(200)
+
+    expect((await listAs(db, outsider)).map((s) => s.id)).not.toContain("sc2-org-session")
+    expect((await detailRequest(db, outsider, "sc2-org-session")).status).toBe(404)
   })
 })

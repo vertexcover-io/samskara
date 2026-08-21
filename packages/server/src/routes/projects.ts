@@ -13,6 +13,7 @@ const serialize = (row: ProjectSummaryRow) => ({
   id: row.id,
   name: row.name,
   slug: row.slug,
+  owner: { type: row.ownerType, slug: row.ownerSlug },
   sessionCount: row.sessionCount,
   lastActiveAt: row.lastActiveAt === null ? null : new Date(row.lastActiveAt).toISOString(),
 })

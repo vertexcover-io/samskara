@@ -1,6 +1,6 @@
 import type { Page } from "@playwright/test"
-import { expect, test } from "./fixtures/auth.js"
-import { E2E_OTHER_USER_LOGIN, E2E_USER_LOGIN, seedDatabase } from "./seed.js"
+import { expect, mintSessionToken, test } from "./fixtures/auth.js"
+import { E2E_OTHER_USER_ID, E2E_OTHER_USER_LOGIN, E2E_USER_LOGIN, seedDatabase } from "./seed.js"
 
 const VISIBLE_REPOSITORY = "samskara"
 const HIDDEN_REPOSITORY = "sealed"
@@ -162,6 +162,12 @@ const SEED = {
       slug: "andromeda",
       name: "Andromeda",
       sessions: [{ id: "andromeda-session", title: "Trim the ingest pipeline" }],
+    },
+    {
+      slug: "acme-widget",
+      name: "acme-widget",
+      org: "acme",
+      sessions: [{ id: "acme-widget-session", title: "Acme widget session" }],
     },
     {
       slug: "sealed-project",
@@ -415,4 +421,30 @@ test("project links use accessible link semantics, filters restore through histo
     () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
   )
   expect(overflow).toBeLessThanOrEqual(0)
+})
+
+test("SC8: a member sees the org's project card; a non-member does not", async ({
+  authedPage: page,
+  context,
+}) => {
+  // Matched by href rather than accessible name: a dev database can carry an unrelated
+  // "acme-widgets" project whose name would also satisfy a substring/regex name match.
+  const acmeWidgetCard = page.locator('a[href="/sessions?project=acme-widget"]')
+
+  await page.goto("/projects")
+  await expect(acmeWidgetCard).toBeVisible()
+
+  const otherToken = await mintSessionToken(E2E_OTHER_USER_ID)
+  await context.addCookies([
+    {
+      name: "session",
+      value: otherToken,
+      domain: "localhost",
+      path: "/",
+      httpOnly: true,
+      sameSite: "Lax",
+    },
+  ])
+  await page.goto("/projects")
+  await expect(acmeWidgetCard).toHaveCount(0)
 })

@@ -75,12 +75,16 @@ export type SeedProject = {
   readonly name: string
   /** Other-owned projects are intentionally not granted to the E2E user. */
   readonly owner?: "primary" | "other"
+  /** An org-owned project instead of a user-owned one. Mutually exclusive with `owner`. */
+  readonly org?: string
   readonly sessions: ReadonlyArray<SeedSession>
 }
 
 export type SeedSpec = {
   readonly repositories?: ReadonlyArray<SeedRepository>
   readonly projects: ReadonlyArray<SeedProject>
+  /** Org membership for a project's org, keyed by org slug. Defaults to `["primary"]`. */
+  readonly orgMembers?: Record<string, ReadonlyArray<"primary" | "other">>
 }
 
 const deterministicUuid = (value: string): string => {
@@ -95,6 +99,7 @@ const deterministicUuid = (value: string): string => {
 }
 
 const projectId = (slug: string): string => deterministicUuid(`e2e:${slug}`)
+const orgId = (slug: string): string => deterministicUuid(`org:${slug}`)
 const seededMessageId = (sessionId: string, line: number): string =>
   deterministicUuid(`e2e:${sessionId}:${line}`)
 
@@ -203,6 +208,12 @@ const seedStructuredFacts = async (
 export const seedDatabase = async (spec: SeedSpec): Promise<void> => {
   const sql = postgres(DATABASE_URL)
   const projectIds = spec.projects.map((project) => projectId(project.slug))
+  const orgSlugs = [
+    ...new Set([
+      ...spec.projects.flatMap((project) => (project.org === undefined ? [] : [project.org])),
+      ...Object.keys(spec.orgMembers ?? {}),
+    ]),
+  ]
 
   try {
     // Every project ID is derived from its E2E-only slug, so this clears hidden-project fixtures
@@ -210,6 +221,10 @@ export const seedDatabase = async (spec: SeedSpec): Promise<void> => {
     if (projectIds.length > 0) {
       await sql`delete from "userProjectGrant" where "projectId" in ${sql(projectIds)}`
       await sql`delete from projects where id in ${sql(projectIds)}`
+    }
+    await sql`delete from user_orgs where user_id in (${E2E_USER_ID}, ${E2E_OTHER_USER_ID})`
+    if (orgSlugs.length > 0) {
+      await sql`delete from orgs where id in ${sql(orgSlugs.map(orgId))}`
     }
     await sql`delete from repos where "userId" in (${E2E_USER_ID}, ${E2E_OTHER_USER_ID})`
 
@@ -225,13 +240,31 @@ export const seedDatabase = async (spec: SeedSpec): Promise<void> => {
       on conflict (id) do update set github_login = excluded.github_login
     `
 
+    for (const slug of orgSlugs) {
+      await sql`
+        insert into orgs (id, github_slug, auto_add_members)
+        values (${orgId(slug)}, ${slug}, true)
+        on conflict (github_slug) do update set auto_add_members = excluded.auto_add_members
+      `
+      for (const member of spec.orgMembers?.[slug] ?? ["primary"]) {
+        const userId = member === "other" ? E2E_OTHER_USER_ID : E2E_USER_ID
+        await sql`insert into user_orgs (user_id, org_id) values (${userId}, ${orgId(slug)}) on conflict do nothing`
+      }
+    }
+
     const repositories = await seedRepositories(sql, spec.repositories ?? [])
     for (const [index, project] of spec.projects.entries()) {
       const id = projectId(project.slug)
-      const ownerId = project.owner === "other" ? E2E_OTHER_USER_ID : E2E_USER_ID
+      const ownerUserId =
+        project.org === undefined
+          ? project.owner === "other"
+            ? E2E_OTHER_USER_ID
+            : E2E_USER_ID
+          : null
+      const ownerOrgId = project.org === undefined ? null : orgId(project.org)
       await sql`
-        insert into projects (id, name, slug, "ownerId")
-        values (${id}, ${project.name}, ${project.slug}, ${ownerId})
+        insert into projects (id, name, slug, "ownerId", "ownerOrgId")
+        values (${id}, ${project.name}, ${project.slug}, ${ownerUserId}, ${ownerOrgId})
       `
 
       for (const [order, session] of project.sessions.entries()) {

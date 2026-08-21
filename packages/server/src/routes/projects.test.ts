@@ -4,7 +4,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import { buildApp } from "../app.js"
 import { type Db, createDb } from "../db/client.js"
-import { projects, sessions, userProjectGrant, users } from "../db/schema.js"
+import { orgs, projects, sessions, userOrgs, userProjectGrant, users } from "../db/schema.js"
 import type { Env } from "../lib/env.js"
 import { signToken } from "../lib/jwt.js"
 import * as projectsRepo from "../repositories/projects.repo.js"
@@ -34,6 +34,7 @@ type ProjectSummary = {
   readonly id: string
   readonly name: string
   readonly slug: string
+  readonly owner: { readonly type: "user" | "org"; readonly slug: string }
   readonly sessionCount: number
   readonly lastActiveAt: string | null
 }
@@ -100,10 +101,12 @@ describe.skipIf(!dockerAvailable())("GET /api/projects", () => {
     await db.delete(sessions)
     await db.delete(userProjectGrant)
     await db.delete(projects)
+    await db.delete(userOrgs)
+    await db.delete(orgs)
     await db.delete(users)
   })
 
-  test("S5: a viewer-granted user sees the owner's project, and an outsider sees only their own - not every project in the table", async () => {
+  test("S5/SC7 (regression): a viewer-granted user sees the owner's project with owner reported as the granter, and an outsider sees only their own - not every project in the table", async () => {
     const ownerA = await seedUser(db, 111, "owner-a")
     const granteeB = await seedUser(db, 222, "grantee-b")
     const outsiderC = await seedUser(db, 333, "outsider-c")
@@ -119,7 +122,9 @@ describe.skipIf(!dockerAvailable())("GET /api/projects", () => {
     await projectsRepo.grant(db, granteeB, p1, "viewer")
 
     expect((await listAs(db, ownerA)).map((p) => p.id)).toEqual([p1])
-    expect((await listAs(db, granteeB)).map((p) => p.id)).toEqual([p1])
+    const grantedList = await listAs(db, granteeB)
+    expect(grantedList.map((p) => p.id)).toEqual([p1])
+    expect(grantedList[0]?.owner).toEqual({ type: "user", slug: "owner-a" })
     expect((await listAs(db, outsiderC)).map((p) => p.id)).toEqual([p2])
   })
 
@@ -150,6 +155,7 @@ describe.skipIf(!dockerAvailable())("GET /api/projects", () => {
       id: projectId,
       name: "Samskara",
       slug: "samskara",
+      owner: { type: "user", slug: "summary-owner" },
       sessionCount: 2,
       lastActiveAt: new Date("2026-02-01T00:00:00Z").toISOString(),
     })
@@ -168,9 +174,45 @@ describe.skipIf(!dockerAvailable())("GET /api/projects", () => {
       id: projectId,
       name: "Empty",
       slug: "empty",
+      owner: { type: "user", slug: "empty-owner" },
       sessionCount: 0,
       lastActiveAt: null,
     })
+  })
+
+  test("SC3: a personal project reports its owner as the user", async () => {
+    const owner = await seedUser(db, 700, "sc3-owner")
+    await projectsRepo.upsert(db, {
+      identity: { name: "Solo", slug: "solo" },
+      ownerId: owner,
+    })
+
+    const [summary] = await listAs(db, owner)
+    expect(summary?.owner).toEqual({ type: "user", slug: "sc3-owner" })
+  })
+
+  test("SC1: a member of the owning org lists the org's project with its owner, and a non-member does not", async () => {
+    const member = await seedUser(db, 701, "sc1-member")
+    const outsider = await seedUser(db, 702, "sc1-outsider")
+    const [org] = await db
+      .insert(orgs)
+      .values({ githubSlug: "acme", name: "Acme" })
+      .returning({ id: orgs.id, githubSlug: orgs.githubSlug })
+    if (!org) throw new Error("seed org failed")
+    await db.insert(userOrgs).values({ userId: member, orgId: org.id })
+
+    const { id: projectId } = await projectsRepo.upsertOwned(db, {
+      identity: { name: "acme-widget", slug: "acme-widget" },
+      owner: { kind: "org", orgId: org.id },
+    })
+
+    const memberList = await listAs(db, member)
+    expect(memberList.map((p) => p.id)).toContain(projectId)
+    expect(memberList.find((p) => p.id === projectId)?.owner).toEqual({
+      type: "org",
+      slug: "acme",
+    })
+    expect((await listAs(db, outsider)).map((p) => p.id)).not.toContain(projectId)
   })
 
   test("S8: no cookie and a cli-audience token are both 401 unauthorized - a cli token never reads the web API", async () => {
