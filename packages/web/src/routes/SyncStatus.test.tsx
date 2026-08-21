@@ -161,3 +161,21 @@ test("SC20: a URL carrying filter values applies them on first paint", async () 
     "ascending",
   )
 })
+
+test("SC24: clearing the filters keeps the reader's sort column and direction", async () => {
+  stubFetch(200, { rows: [ROW] })
+  const user = userEvent.setup()
+
+  renderPage("/sync-status?sort=user&dir=asc&project=nothingmatchesthis")
+
+  await user.click(await screen.findByRole("button", { name: "Clear filters" }))
+
+  expect(await screen.findByText("Samskara")).toBeInTheDocument()
+  expect(screen.getByTestId("location")).not.toHaveTextContent("project=")
+  expect(screen.getByTestId("location")).toHaveTextContent("sort=user")
+  expect(screen.getByTestId("location")).toHaveTextContent("dir=asc")
+  expect(screen.getByRole("columnheader", { name: "User" })).toHaveAttribute(
+    "aria-sort",
+    "ascending",
+  )
+})

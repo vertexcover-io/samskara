@@ -28,9 +28,10 @@ type State =
 const inputClass =
   "mt-1 h-9 w-full min-w-0 rounded-xs border border-rule bg-panel-2 px-2 font-mono text-[0.78rem] leading-none text-ink transition-colors hover:border-ink-soft focus-visible:border-custody"
 const labelClass = "block text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-ink-soft"
+const emptyPanelClass = "border border-dashed border-rule bg-panel p-8 text-center"
 
 const EmptyState = () => (
-  <section className="border border-dashed border-rule bg-panel p-8 text-center">
+  <section className={emptyPanelClass}>
     <p className="text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-stamp">
       No users yet
     </p>
@@ -42,7 +43,7 @@ const NoMatches = ({
   state,
   onClear,
 }: { readonly state: TableState; readonly onClear: () => void }) => (
-  <section className="border border-dashed border-rule bg-panel p-8 text-center">
+  <section className={emptyPanelClass}>
     <p className="text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-stamp">
       No rows match
     </p>
@@ -61,7 +62,7 @@ const NoMatches = ({
   </section>
 )
 
-const ErrorState = ({ error }: { error: ApiError }) => (
+const ErrorState = ({ error }: { readonly error: ApiError }) => (
   <section className="border border-err/40 bg-panel p-6">
     <p className="text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-err">
       Retrieval failed
@@ -70,7 +71,7 @@ const ErrorState = ({ error }: { error: ApiError }) => (
   </section>
 )
 
-const UserCell = ({ row }: { row: SyncStatusRow }) => (
+const UserCell = ({ row }: { readonly row: SyncStatusRow }) => (
   <td className="border border-rule px-2 py-1 align-top">
     {row.avatarUrl === null ? null : (
       <img
@@ -86,7 +87,7 @@ const UserCell = ({ row }: { row: SyncStatusRow }) => (
   </td>
 )
 
-const ProjectCell = ({ row }: { row: SyncStatusRow }) => {
+const ProjectCell = ({ row }: { readonly row: SyncStatusRow }) => {
   if (row.projectId === null) {
     return <td className="border border-rule px-2 py-1 align-top text-faded italic">no projects</td>
   }
@@ -98,7 +99,7 @@ const ProjectCell = ({ row }: { row: SyncStatusRow }) => {
   )
 }
 
-const SyncedCell = ({ lastSyncedAt }: { lastSyncedAt: string | null }) => (
+const SyncedCell = ({ lastSyncedAt }: { readonly lastSyncedAt: string | null }) => (
   <td className="border border-rule px-2 py-1 align-top">
     {lastSyncedAt === null ? (
       "never"
@@ -240,7 +241,7 @@ export const SyncStatus = () => {
   const onSort = (column: Column) =>
     applyState({ ...tableState, column, direction: nextDirection(tableState, column) })
   const onFilter = (next: Partial<TableState>) => applyState({ ...tableState, ...next })
-  const clearFilters = () => setParams(new URLSearchParams())
+  const clearFilters = () => applyState({ ...tableState, user: "", project: "" })
 
   if (fetchState.phase === "loading") return <LoadingShell label="Retrieving sync status" />
   if (fetchState.phase === "failed") {
