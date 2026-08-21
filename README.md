@@ -1,182 +1,289 @@
-# samskara
+# Samskara
 
-Capture platform for AI coding-agent session logs (Claude Code first, generic by design).
-Summarizes sessions and serves a web UI + API/MCP for search.
+Samskara records what your AI coding agent actually did, and makes it searchable.
 
-The identity mesh (users/orgs/repos/sessions), the **auth system** (GitHub OAuth web
-login, org-allowlist gate, session/CLI JWTs, browserless CLI pairing), and the **application
-UI** (projects, filtered sessions index, session detail viewer, CLI pairing and logout) are in
-place. Every package builds, typechecks, lints, and passes its tests.
+Claude Code already writes a transcript of every session to `~/.claude/projects`. Those files are
+local, per-machine, and hard to read. Samskara watches them, ships the sessions you opt into to a
+server you run, and gives you a web UI to browse and search them — across projects, across
+machines, across everyone on the team.
 
-## Packages
+Capture is opt-in per folder. Nothing leaves your machine until you run `samskara enable` in a
+project.
 
-| Package             | Purpose                                                        |
-| ------------------- | -------------------------------------------------------------- |
-| `@samskara/core`    | Shared types, the collector framework (`SourceAdapter` + Claude plugin), ingest types, and the `createLogger` logging factory. |
-| `@samskara/cli`     | `samskara` binary. Pairing, per-folder capture opt-in, status, and a hook-revived background watcher. |
-| `@samskara/server`  | Hono API on Node. Drizzle + postgres-js + pgvector. Auth + `/health` + `/api/ingest`. |
-| `@samskara/web`     | Vite 6 + React 18 + Tailwind v4 UI. React Router routes, auth guard, projects, sessions index, and the session detail viewer. |
+## What gets captured
+
+- **The conversation** — prompts, replies, and the tool calls in between, including subagent branches.
+- **Artifacts** — files the agent created or edited, stored as *before*, *after*, and the diff.
+- **Git context** — the branch, commits, and pull requests a session touched.
+- **Token usage** and session duration, per session.
+
+## How it works
+
+```
+Claude Code                 samskara CLI                  server + web UI
+~/.claude/projects/  ──▶  watcher (background)  ──POST──▶  Postgres + pgvector
+   transcripts            reads enabled folders   /api/ingest      ▲
+                                                                   │
+                                                          browse & search at :8000
+```
+
+A `SessionStart` hook keeps the watcher alive: every time you start a Claude Code session, the hook
+makes sure the background watcher is running. The watcher polls transcripts, keeps a per-session
+checkpoint so it only sends what is new, and uploads artifacts in the background.
+
+---
 
 ## Requirements
 
-- [Bun](https://bun.sh) 1.2.19+
-- Docker (for the Postgres/pgvector container and the server DB test)
-- Node 22+
+| | |
+|---|---|
+| [Bun](https://bun.sh) 1.2.19+ | package manager and test runner |
+| Node 22+ | the CLI binary and the server both run on Node |
+| Docker | Postgres + pgvector, and the server's DB tests |
+| A GitHub OAuth app | web login |
+| A GitHub org | login is gated to members of an org you seed |
 
-## Setup
+---
+
+## Run the server locally
+
+### 1. Install and start Postgres
 
 ```sh
 bun install
+bun run stack:up          # Postgres 16 + pgvector on host port 5433
+```
+
+### 2. Create a GitHub OAuth app
+
+Go to **GitHub → Settings → Developer settings → OAuth Apps → New OAuth App** and set:
+
+- **Homepage URL** — `http://localhost:8000`
+- **Authorization callback URL** — `http://localhost:3000/api/auth/github/callback`
+
+Generate a client secret. You need both the client ID and the secret in the next step.
+
+### 3. Fill in `.env`
+
+```sh
 cp .env.example .env
 ```
 
-## Commands
+| Variable | What it is |
+|---|---|
+| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | from the OAuth app above |
+| `JWT_SECRET` | any long random string — `openssl rand -hex 32` |
+| `DATABASE_URL` | `postgres://samskara:samskara@localhost:5433/samskara` (matches `docker-compose.yml`) |
+| `PUBLIC_BASE_URL` | where the API is reachable, `http://localhost:3000` |
+| `WEB_BASE_URL` | where the UI is, `http://localhost:8000` |
+| `COOKIE_SECURE` | `false` for local http, `true` behind https |
+| `JWT_EXPIRES_IN` | session lifetime, default `7d` |
+| `VITE_API_BASE_URL` | API base the SPA calls, `http://localhost:3000` |
+
+### 4. Migrate and seed your org
 
 ```sh
-bun run dev         # turbo run dev across packages
-bun run build       # build all packages
-bun run typecheck   # typecheck all packages, plus the e2e project
-bun run lint        # biome check .
-bun run test        # run all package tests
-bun run e2e         # Playwright end-to-end suite (boots server + web, seeds the DB)
-bun run e2e:ui      # the same suite in Playwright's UI mode
-bun run format      # biome format --write .
-
-bun run stack:up    # docker compose up -d (Postgres/pgvector on :5433)
-bun run stack:down  # docker compose down
-bun run db:migrate  # apply drizzle migrations
-bun run seed:org <github-slug>   # seed an allowed org (login is gated to members)
+bun run db:migrate
+bun run seed:org YOUR_GITHUB_ORG_SLUG
 ```
 
-## Auth
+Only members of a seeded org can log in. If your GitHub account is not in that org, the callback
+will reject you.
 
-GitHub OAuth web login, gated to members of a seeded org. Config lives in `.env` (see
-`.env.example`): `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET`, `JWT_SECRET`, `PUBLIC_BASE_URL`,
-`WEB_BASE_URL` (default `http://localhost:8000`), `COOKIE_SECURE`, `JWT_EXPIRES_IN` (default `7d`).
-Ports: backend `:3000`, web `:8000`
-(Vite proxies `/api` → `:3000`).
+### 5. Start it
+
+```sh
+bun run dev               # API on :3000, web on :8000
+```
+
+Open http://localhost:8000 and sign in with GitHub.
+
+---
+
+## Install the CLI
+
+The CLI is not published to npm yet, so you install it from this repo:
+
+```sh
+bun install
+bun run build --filter=@samskara/cli
+cd packages/cli && npm link
+```
+
+That puts a `samskara` command on your PATH pointing at `packages/cli/dist/index.js`. Rebuild after
+pulling changes; the link keeps working. To remove it later: `npm unlink -g @samskara/cli`.
+
+If your server is not on the default ports, point the CLI at it:
+
+```sh
+export SAMSKARA_API_URL=https://samskara.example.com     # default http://localhost:3000
+export SAMSKARA_WEB_URL=https://samskara.example.com     # default http://localhost:8000
+```
+
+### First run
+
+```sh
+samskara init             # log in, install the hook, start the watcher
+cd ~/code/my-project
+samskara enable           # start capturing this folder
+```
+
+`init` asks for a pairing code. Open the web UI, sign in, and pick **Pair the CLI → Generate code**
+from the account menu. A code never expires but works only once. The token it returns is stored at
+`~/.samskara/token` with mode `0600`.
+
+---
+
+## CLI reference
+
+### Setup and account
+
+| Command | What it does |
+|---|---|
+| `samskara init` | Log in, install the Claude Code `SessionStart` hook, start the watcher. Safe to re-run. |
+| `samskara login [--code CODE]` | Pair with the web UI and store a CLI token. |
+| `samskara logout` | Stop the watcher and delete the stored token. |
+
+### Choosing what to capture
+
+| Command | What it does |
+|---|---|
+| `samskara enable [path]` | Capture this folder (defaults to the current directory). |
+| `samskara enable --all` | Also send sessions recorded *before* you enabled it. |
+| `samskara enable --sync-from 2026-07-01` | Only send sessions started after that date. |
+| `samskara disable [path]` | Stop capturing locally. Sessions already uploaded stay on the server. |
+
+By default `enable` starts the clock now, so turning capture on for an old project does not
+retroactively upload years of history. Re-running plain `enable` on an already-enabled folder
+changes nothing — pass `--all` or `--sync-from` to move the cutoff.
+
+### Day to day
+
+| Command | What it does |
+|---|---|
+| `samskara status` | Projects, capture state, last sync time, watcher PID. Start here when something looks off. |
+| `samskara logs [-f]` | Pretty-print the watcher log. `-f` streams new lines. |
+| `samskara restart` | Stop the watcher and start a fresh one. |
+| `samskara replay SESSION_ID` | Delete a session server-side and locally, then re-capture it from scratch. |
+
+### Hooks and the watcher
+
+| Command | What it does |
+|---|---|
+| `samskara install-hooks` | Install the `SessionStart` hook by hand. |
+| `samskara uninstall-hooks` | Remove it. |
+| `samskara watch` | Start the watcher daemon directly. |
+| `samskara watch --foreground` | Run the capture loop in this terminal — useful for debugging. |
+
+`--verbose` on any command turns on debug logging.
+
+### Local state
+
+Everything the CLI stores lives in `~/.samskara` (override the whole directory with `SAMSKARA_HOME`):
+
+| Path | Contents |
+|---|---|
+| `token` | CLI access token, mode `0600` |
+| `projects.json` | which folders are enabled, and since when |
+| `state.json` | per-session ingest checkpoints |
+| `artifacts.json`, `artifact-queue.json` | artifact checkpoints and pending uploads |
+| `watch.pid` | watcher process id |
+| `logs/current.log` | watcher log, rotated daily |
+
+---
+
+## Using the web UI
+
+| Route | What you get |
+|---|---|
+| `/projects` | Every project you can read — session count, last activity, last session title |
+| `/sessions` | Session index with search and filters |
+| `/sessions/:id` | One session: Conversation, Timeline, Tool Calls, and Artifacts tabs, with subagent branches you can expand |
+
+Filters live in the query string, so any view you are looking at is a link you can paste to a
+teammate, and Back/Forward work the way you expect.
+
+Search supports a small deliberate grammar:
+
+```
+auth refactor            both words
+"rate limit"             exact phrase
+deploy -staging          exclude a word
+redis OR valkey          either
+migrat*                  prefix match
+```
+
+Filters you can combine with it: `project`, `user`, `repo`, `branch`, `pr`, `commit`,
+`range` (`hour` / `today` / `week` / `month` / `custom` with `from` and `to`), and
+`sort` (`recent`, `oldest`, `tokens`, `project`, `relevance`).
+
+---
+
+## Repo layout
+
+| Package | What it holds |
+|---|---|
+| `@samskara/core` | Shared types, the collector framework (`SourceAdapter` + Claude plugin), the logging factory |
+| `@samskara/cli` | The `samskara` binary — pairing, capture opt-in, the watcher |
+| `@samskara/server` | Hono API on Node, Drizzle + postgres-js + pgvector |
+| `@samskara/web` | Vite + React + Tailwind UI |
+
+### API surface
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| GET  | `/api/auth/github/start`    | none     | Set `oauth_state` cookie, redirect to GitHub |
-| GET  | `/api/auth/github/callback` | none     | Verify state, exchange code, org-gate, upsert user, set session |
-| GET  | `/api/auth/me`              | web      | Current user |
-| POST | `/api/auth/logout`          | web      | Clear session cookie |
-| POST | `/api/auth/cli-code`        | web      | Mint a CLI pairing code |
-| POST | `/api/auth/cli-exchange`    | none     | Redeem a code → `aud:cli` JWT |
-| GET  | `/api/projects`             | web      | Projects the user can read, with session counts and last activity |
-| GET  | `/api/sessions`             | web      | Readable sessions, newest first; optional `project`, `user`, `range` filters |
-| GET  | `/api/sessions/:id`         | web      | One session with its messages, tool calls, subagents, and token usage |
-| POST | `/api/ingest`               | cli      | Flush a captured session (messages, tool calls, subagents) |
+| GET | `/health` | none | liveness |
+| GET | `/api/auth/github/start` | none | begin OAuth |
+| GET | `/api/auth/github/callback` | none | verify state, org-gate, set session cookie |
+| GET | `/api/auth/me` | web / cli | current user |
+| POST | `/api/auth/logout` | web | clear the session cookie |
+| POST | `/api/auth/cli-code` | web | mint a pairing code |
+| POST | `/api/auth/cli-exchange` | none | redeem a code for a CLI token |
+| GET | `/api/projects` | web | projects with session counts |
+| GET | `/api/sessions` | web | session list, search and filters |
+| GET | `/api/sessions/:id` | web | one session with messages, tools, subagents, tokens |
+| GET | `/api/sessions/:id/artifacts` | web | artifacts for a session |
+| DELETE | `/api/sessions/:id` | cli | delete a session (used by `replay`) |
+| POST | `/api/ingest` | cli | flush a captured session |
+| POST | `/api/artifacts` | cli | upload an artifact |
+| GET | `/api/artifacts/:id` | web | artifact metadata and diff |
+| GET | `/api/artifacts/:id/raw?which=base\|current` | web | the artifact bytes |
 
-Tokens are audience-scoped (`aud: web | cli`) and checked per route by `requireAuth(aud)`.
-`samskara login` pairs the CLI: it redeems a code for an `aud:cli` token stored at
-`~/.samskara/token` (`0600`).
+Tokens are audience-scoped (`aud: web` or `aud: cli`) and checked per route.
 
-## CLI capture lifecycle
+---
 
-```sh
-samskara init                 # login if needed, install hook, start watcher
-samskara enable [path]        # enable one folder (cwd by default)
-samskara disable [path]       # stop capturing it locally; cloud data is retained
-samskara status               # projects, last-sync timestamps, watcher PID/log
-samskara logout               # stop watcher and remove the CLI token
-```
-
-Capture is local-only and opt-in. Enabled folders live in `~/.samskara/projects.json`; each entry is
-keyed by project slug and stores `{ name, path, enabled, enabledAt }`. Git remotes provide stable
-project identities when available, while non-git folders use a path-derived identity. Override all
-local state paths with `SAMSKARA_HOME`.
-
-`init` installs a managed Claude Code `SessionStart` hook. The hook runs the hidden `ensure` command,
-which revives the detached singleton watcher and tells the agent when authentication or project
-enablement is missing. Watcher output is appended to `~/.samskara/watch.log`; its PID is stored in
-`~/.samskara/watch.pid` (`0600`). `install-hooks` and `uninstall-hooks` manage the hook explicitly.
-The foreground `samskara watch` command remains available for debugging. It polls Claude Code session
-files, resolves the owning project, captures only enabled project slugs, and POSTs flushes to
-`/api/ingest`. Explicit `watch --project-name ... --project-slug ...` overrides bypass the registry.
-
-## Logging
-
-Every package logs structured NDJSON via `createLogger(base, opts?)` from `@samskara/core`
-(pino under the hood — no pretty transport, ever). `base` must include `service`
-(`samskara-server`, `samskara-cli`), and `createLogger` redacts `token`, `authorization`,
-`*.token`, `req.headers.authorization`, `password`, and `secret` from every line.
-
-- **Level:** `LOG_LEVEL` env var (`fatal`|`error`|`warn`|`info`|`debug`|`trace`) if set and
-  valid; otherwise `info` when `NODE_ENV=production`, `debug` otherwise. An invalid `LOG_LEVEL`
-  falls back to the same default and warns once (never throws).
-- **CLI:** `samskara --verbose <command>` forces `debug` regardless of env/`NODE_ENV`.
-- **Server:** a global Hono middleware (`lib/logging-middleware.ts`) mints a `reqId` (trusts an
-  incoming `x-request-id` header if non-blank, else `randomUUID()`), echoes it on the response,
-  and binds a per-request child logger to `c.set("log", …)` carrying `{reqId, method, path}`.
-  `requireAuth` enriches it with `userId`; the ingest handler enriches it with
-  `{sessionId, eventCount, repo, isSubagent}` via `setBindings` (same instance, not re-childed).
-  One `info` completion line `{status, ms}` is logged per request; `onError` logs at `error`
-  through `c.get("log")` when present, else the server root logger, and always returns
-  `{error: "internal"}` with status 500.
-
-## Server structure
-
-```
-packages/server/src/
-  db/            client.ts (postgres-js + drizzle), customTypes.ts (vector), schema.ts
-  repositories/  drizzle queries per model (users/orgs/projects/sessions)
-  routes/        auth.ts (OAuth + session + CLI pairing), ingest.ts (session flush),
-                 projects.ts + sessions.ts (read-only web API behind requireAuth("web"))
-  services/      github.ts (GithubClient seam), auth.ts (gate + upsert), pairing.ts, ingest.ts
-  lib/           env.ts (zod config), jwt.ts (jose), cookies.ts, require-auth.ts,
-                 logging-middleware.ts (reqId + request child logger)
-  scripts/       seed-org.ts
-  app.ts         buildApp(db, env, deps) — Hono app, /health + /api/auth + /api/ingest
-                 + /api/projects + /api/sessions
-  index.ts       Node server entry — logs "server listening" via the root logger
-```
-
-## Web UI
-
-React Router routes, all but `/login` behind `RequireAuth` (which renders a loading shell while
-`/api/auth/me` resolves, so protected data never flashes before the check settles):
-
-| Route | Screen |
-|---|---|
-| `/login` | GitHub sign-in; redirects to `/projects` when already authenticated |
-| `/projects` | Project cards — name, slug, session count, last activity, last session title |
-| `/sessions` | Session index. Project, User, and Date Range filters read from and write to the query string, so any filtered view is a shareable link and Back/Forward restore it |
-| `/sessions/:sessionId` | Session detail — Conversation, Timeline, Tool Calls, and Artifacts tabs, plus expandable subagent branches |
-
-Unmatched paths redirect to `/projects`. The app shell carries an account menu with CLI pairing and
-logout.
-
-```
-packages/web/src/
-  api/        typed fetch adapters (client.ts, parse.ts, types.ts, account.ts)
-  auth/       AuthProvider.tsx, RequireAuth.tsx, SessionExpired.tsx
-  routes/     Login.tsx, Projects.tsx, Sessions.tsx, SessionDetail.tsx
-  shell/      AppShell.tsx, AccountMenu.tsx, LoadingShell.tsx
-  session/    detail viewer — Tabs, RecordStream, ToolCallsView, ArtifactsView, SubagentAnnex
-  components/ ProjectCard.tsx, SessionRow.tsx, FilterBar.tsx
-  sessions/   filters.ts (query-string ⇄ filter state)
-  index.css   Tailwind v4 tokens in an @theme block (no tailwind.config file)
-```
-
-End-to-end tests live in `e2e/` and run against a real browser. `e2e/playwright.config.ts` boots
-both the API server and Vite and seeds Postgres; `e2e/fixtures/auth.ts` mints an HS256 session
-cookie directly, so the suite authenticates without a GitHub round trip.
-
-## Database
-
-Postgres 16 with the pgvector extension, exposed on host port **5433**:
+## Development
 
 ```sh
-bun run stack:up
+bun run dev          # API + web, watch mode
+bun run build        # build every package
+bun run typecheck    # every package, plus the e2e project
+bun run lint         # biome check .
+bun run format       # biome format --write .
+bun run test         # every package's unit tests
+bun run e2e          # Playwright, boots server + web and seeds the DB
+bun run e2e:ui       # the same suite in Playwright's UI mode
+bun run cli -- status   # run the CLI from source, without linking
 ```
 
-The identity mesh (`users`, `orgs`, `repos`, `user_orgs`, `projects`, `user_project_grant`,
-`sessions`, `messages`, `tool_call`, `tool_result`, `subagents`, `token_usage`) is defined in
-`db/schema.ts` with drizzle-kit migrations under `packages/server/migrations/`. Apply them with
-`bun run db:migrate`. The auth system adds no new tables (pairing codes are in-memory).
+Database helpers:
 
-The server package's Vitest suite spins up a real `pgvector/pgvector:pg16` container via
-testcontainers and runs the migrations against it, so the schema and the auth routes are
-tested end-to-end. It is skipped when Docker is unavailable.
+```sh
+bun run stack:up / stack:down          # Postgres container
+bun run db:generate                    # generate a migration from schema.ts
+bun run db:migrate                     # apply migrations
+bun run db:index-search                # build the search indexes
+bun run db:verify-search-indexes       # check they match the schema
+```
+
+The server's test suite starts a real `pgvector/pgvector:pg16` container via testcontainers and runs
+the migrations against it, so schema and auth are covered end to end. Those tests skip themselves
+when Docker is not available.
+
+### Logging
+
+Every package logs NDJSON through `createLogger` from `@samskara/core` (pino underneath). Level
+comes from `LOG_LEVEL`, defaulting to `info` in production and `debug` elsewhere. `token`,
+`authorization`, `password`, and `secret` are redacted from every line. Each API request gets a
+`reqId` that is echoed back on the response, so a log line and a request can always be tied together.
