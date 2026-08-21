@@ -5,7 +5,32 @@ import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
 import { type Db, createDb } from "../db/client.js"
 import { orgs } from "../db/schema.js"
-import { seedOrg } from "./seed-org.js"
+import { parseArgs, seedOrg } from "./seed-org.js"
+
+describe("parseArgs", () => {
+  test("accepts a bare slug with auto-add on by default", () => {
+    expect(parseArgs(["acme"])).toEqual({ ok: true, slug: "acme", autoAddMembers: true })
+  })
+
+  test("--no-auto-add turns auto-add off", () => {
+    expect(parseArgs(["acme", "--no-auto-add"])).toEqual({
+      ok: true,
+      slug: "acme",
+      autoAddMembers: false,
+    })
+  })
+
+  test("rejects an unknown flag instead of silently turning auto-add on", () => {
+    expect(parseArgs(["acme", "--no-autoadd"]).ok).toBe(false)
+    expect(parseArgs(["acme", "--no-auto-add=true"]).ok).toBe(false)
+    expect(parseArgs(["acme", "--verbose"]).ok).toBe(false)
+  })
+
+  test("rejects when no slug is given", () => {
+    expect(parseArgs([]).ok).toBe(false)
+    expect(parseArgs(["--no-auto-add"]).ok).toBe(false)
+  })
+})
 
 const dockerAvailable = () => {
   try {
