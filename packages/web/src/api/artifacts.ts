@@ -1,6 +1,6 @@
-import { getJson } from "./client.js"
+import { type ApiResult, getJson } from "./client.js"
 import { parseSessionArtifacts } from "./parse.js"
-import type { ApiResult, CapturedArtifact } from "./types.js"
+import type { CapturedArtifact } from "./types.js"
 
 export const fetchSessionArtifacts = (
   sessionId: string,

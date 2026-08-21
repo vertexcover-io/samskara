@@ -2,10 +2,10 @@ import { type Ref, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import { fetchSessionArtifacts } from "../api/artifacts.js"
 import { getJson } from "../api/client.js"
+import type { ApiError } from "../api/client.js"
 import { parseSessionDetail } from "../api/parse.js"
 import { repoLabel, repoUrl } from "../api/repo.js"
 import type {
-  ApiError,
   CapturedArtifact,
   SessionDetailPayload,
   SessionFacts,

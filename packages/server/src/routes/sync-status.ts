@@ -21,13 +21,12 @@ const serialize = (row: SyncStatusRow) => ({
   lastSyncedAt: row.lastSyncedAt === null ? null : new Date(row.lastSyncedAt).toISOString(),
 })
 
-export const syncStatusRoutes = ({ db, env }: Deps): Hono<{ Variables: AuthVariables }> => {
-  const app = new Hono<{ Variables: AuthVariables }>()
-
-  app.get("/", requireAuth({ db, env }, ["web"]), async (c) => {
-    const rows = await listSyncStatus(db)
-    return c.json({ rows: rows.map(serialize) })
-  })
-
-  return app
-}
+export const syncStatusRoutes = ({ db, env }: Deps) =>
+  new Hono<{ Variables: AuthVariables }>().get(
+    "/",
+    requireAuth({ db, env }, ["web"]),
+    async (c) => {
+      const rows = await listSyncStatus(db)
+      return c.json({ rows: rows.map(serialize) }, 200)
+    },
+  )

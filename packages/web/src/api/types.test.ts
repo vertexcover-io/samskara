@@ -1,10 +1,5 @@
 import { expect, test } from "vitest"
-import {
-  parseProjectList,
-  parseSessionArtifacts,
-  parseSessionList,
-  parseSyncStatusRows,
-} from "./parse.js"
+import { parseProjectList, parseSessionArtifacts, parseSessionList } from "./parse.js"
 import type { CapturedArtifact } from "./types.js"
 
 const ROW = {
@@ -169,32 +164,4 @@ test("SC33: a session row without projectId fails to parse, a complete one succe
 
   const { projectId: _projectId, ...sessionWithoutProjectId } = session
   expect(parseSessionList({ ...listPayload, sessions: [sessionWithoutProjectId] })).toBeNull()
-})
-
-const SYNC_STATUS_ROW = {
-  userId: "u-1",
-  githubLogin: "maya",
-  name: "Maya",
-  avatarUrl: "https://example.com/maya.png",
-  projectId: "p-1",
-  projectName: "Samskara",
-  projectSlug: "samskara",
-  sessionCount: 3,
-  lastSyncedAt: "2026-08-20T10:00:00.000Z",
-}
-
-test("S1: a row missing a field is rejected by the parser, and a well-formed body returns an array of the same length", () => {
-  const { lastSyncedAt: _dropped, ...broken } = SYNC_STATUS_ROW
-  expect(parseSyncStatusRows({ rows: [broken] })).toBeNull()
-
-  // parseSyncStatusRow checks required fields in two separate guards; a row missing a field from
-  // either one must be rejected, not just the second guard covered above.
-  const { userId: _droppedUserId, ...missingUserId } = SYNC_STATUS_ROW
-  expect(parseSyncStatusRows({ rows: [missingUserId] })).toBeNull()
-
-  const { githubLogin: _droppedLogin, ...missingLogin } = SYNC_STATUS_ROW
-  expect(parseSyncStatusRows({ rows: [missingLogin] })).toBeNull()
-
-  const parsed = parseSyncStatusRows({ rows: [SYNC_STATUS_ROW, SYNC_STATUS_ROW] })
-  expect(parsed).toHaveLength(2)
 })

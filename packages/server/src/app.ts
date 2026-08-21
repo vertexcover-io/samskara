@@ -21,21 +21,20 @@ type Deps = {
 
 type Variables = { log: pino.Logger }
 
-export const buildApp = (db: Db, env: Env, deps: Deps = {}): Hono<{ Variables: Variables }> => {
+export const buildApp = (db: Db, env: Env, deps: Deps = {}) => {
   const githubClient = deps.githubClient ?? createGithubClient(env)
   const pairingStore = deps.pairingStore ?? createPairingStore()
   const rootLog = deps.rootLog ?? createLogger({ service: "samskara-server" })
+
   const app = new Hono<{ Variables: Variables }>()
-
-  app.use(loggingMiddleware(rootLog))
-
-  app.get("/health", (c) => c.json({ status: "ok" }))
-  app.route("/api/auth", authRoutes({ db, env, githubClient, pairingStore }))
-  app.route("/api/ingest", ingestRoutes({ db, env }))
-  app.route("/api/artifacts", artifactRoutes({ db, env }))
-  app.route("/api/projects", projectsRoutes({ db, env }))
-  app.route("/api/sessions", sessionsRoutes({ db, env }))
-  app.route("/api/sync-status", syncStatusRoutes({ db, env }))
+    .use(loggingMiddleware(rootLog))
+    .get("/health", (c) => c.json({ status: "ok" }, 200))
+    .route("/api/auth", authRoutes({ db, env, githubClient, pairingStore }))
+    .route("/api/ingest", ingestRoutes({ db, env }))
+    .route("/api/artifacts", artifactRoutes({ db, env }))
+    .route("/api/projects", projectsRoutes({ db, env }))
+    .route("/api/sessions", sessionsRoutes({ db, env }))
+    .route("/api/sync-status", syncStatusRoutes({ db, env }))
 
   app.onError((err, c) => {
     ;(c.get("log") ?? rootLog).error({ err }, "server error")
@@ -44,3 +43,5 @@ export const buildApp = (db: Db, env: Env, deps: Deps = {}): Hono<{ Variables: V
 
   return app
 }
+
+export type AppType = ReturnType<typeof buildApp>

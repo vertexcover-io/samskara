@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { useSearchParams } from "react-router-dom"
-import { getJson } from "../api/client.js"
-import { parseSyncStatusRows } from "../api/parse.js"
-import type { ApiError, SyncStatusRow } from "../api/types.js"
+import { type ApiError, client, request } from "../api/client.js"
+import type { SyncStatusRow } from "../api/shapes.js"
 import { SessionExpired } from "../auth/SessionExpired.js"
 import { TextField } from "../components/TextField.js"
 import { LoadingShell } from "../shell/LoadingShell.js"
@@ -209,11 +208,11 @@ export const SyncStatus = () => {
   useEffect(() => {
     let active = true
 
-    getJson("/api/sync-status", parseSyncStatusRows).then((result) => {
+    request(() => client.api["sync-status"].$get()).then((result) => {
       if (!active) return
       setFetchState(
         result.ok
-          ? { phase: "ready", rows: result.data }
+          ? { phase: "ready", rows: result.data.rows }
           : { phase: "failed", error: result.error },
       )
     })

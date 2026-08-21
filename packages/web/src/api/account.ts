@@ -1,5 +1,5 @@
-import { postJson } from "./client.js"
-import type { ApiResult, LogoutAck, PairingCode } from "./types.js"
+import { type ApiResult, postJson } from "./client.js"
+import type { LogoutAck, PairingCode } from "./types.js"
 
 const asFields = (value: unknown): Readonly<Record<string, unknown>> | null =>
   typeof value === "object" && value !== null && !Array.isArray(value) ? { ...value } : null

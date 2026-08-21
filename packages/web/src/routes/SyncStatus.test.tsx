@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, beforeEach, expect, test, vi } from "vitest"
-import type { SyncStatusRow } from "../api/types.js"
+import type { SyncStatusRow } from "../api/shapes.js"
 import { TestRouter } from "../tests/test-router.js"
 import { absoluteTime } from "../time.js"
 import { SyncStatus } from "./SyncStatus.js"

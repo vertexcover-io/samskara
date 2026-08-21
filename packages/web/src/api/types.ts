@@ -12,18 +12,6 @@ export type ProjectSummary = {
   readonly lastActiveAt: string | null
 }
 
-export type SyncStatusRow = {
-  readonly userId: string
-  readonly githubLogin: string
-  readonly name: string | null
-  readonly avatarUrl: string | null
-  readonly projectId: string | null
-  readonly projectName: string | null
-  readonly projectSlug: string | null
-  readonly sessionCount: number
-  readonly lastSyncedAt: string | null
-}
-
 /** `host` is `local` for a repo with no remote — there `owner` is its absolute root path. */
 export type SessionRepo = {
   readonly host: string
@@ -209,19 +197,6 @@ export type CurrentUser = {
   readonly name: string | null
   readonly avatarUrl: string | null
 }
-
-export type ApiErrorKind = "unauthorized" | "notFound" | "network" | "server"
-
-export type ApiError = {
-  readonly kind: ApiErrorKind
-  /** Stable API error code when the server supplied one. */
-  readonly code: string | null
-  readonly message: string
-}
-
-export type ApiResult<T> =
-  | { readonly ok: true; readonly data: T }
-  | { readonly ok: false; readonly error: ApiError }
 
 export type PairingCode = {
   readonly code: string

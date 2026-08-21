@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { requestPairingCode } from "../api/account.js"
-import type { ApiError } from "../api/types.js"
+import type { ApiError } from "../api/client.js"
 import { copyText } from "./copyText.js"
 import { useFocusTrap } from "./useFocusTrap.js"
 
