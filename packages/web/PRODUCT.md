@@ -70,10 +70,10 @@ Recommended constraints to confirm before production rollout:
 - Capture and ingest design: `.harness/features/watch-daemon-ingest/design.md`.
 - Functional verification evidence: `.harness/features/watch-daemon-ingest/verification/proof-report.md`.
 - Web application surface: `packages/web/src/App.tsx` defines the routes (`/login`, `/projects`,
-  `/sessions`, `/sessions/:sessionId`) behind an auth guard; `packages/web/src/auth/` holds the
-  session boundary, `packages/web/src/shell/` the app shell and account menu,
-  `packages/web/src/session/` the session detail viewer, and `packages/web/src/index.css` the
-  Tailwind v4 design tokens.
+  `/sessions`, `/sessions/:sessionId`, `/sync-status`) behind an auth guard; `packages/web/src/auth/`
+  holds the session boundary, `packages/web/src/shell/` the app shell and account menu,
+  `packages/web/src/session/` the session detail viewer, `packages/web/src/sync/` the sync-status
+  page's sort/filter logic, and `packages/web/src/index.css` the Tailwind v4 design tokens.
 - Current implementation supports Claude Code first; additional agent adapters, summarization, search, embeddings, MCP, and artifact storage are not yet established as shipped capabilities.
 
 ## Product Principles
