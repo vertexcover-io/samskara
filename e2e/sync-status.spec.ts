@@ -43,3 +43,38 @@ test("SC13: a signed-in visit follows the Sync nav link to /sync-status and list
   await expect(secondaryRow.getByText(E2E_OTHER_USER_LOGIN, { exact: true })).toBeVisible()
   await expect(secondaryRow.locator("time")).toBeVisible()
 })
+
+test("SC21: a project filter narrows the table and survives a reload", async ({
+  authedPage: page,
+}) => {
+  await page.goto("/sync-status")
+  await expect(page.locator("tr", { hasText: "Secondary Sync Project" })).toBeVisible()
+
+  await page.getByRole("textbox", { name: "Project" }).fill("Primary")
+
+  await expect(page.locator("tr", { hasText: "Primary Sync Project" })).toBeVisible()
+  await expect(page.locator("tr", { hasText: "Secondary Sync Project" })).not.toBeVisible()
+  await expect(page).toHaveURL(/project=Primary/)
+
+  await page.reload()
+
+  await expect(page.locator("tr", { hasText: "Primary Sync Project" })).toBeVisible()
+  await expect(page.locator("tr", { hasText: "Secondary Sync Project" })).not.toBeVisible()
+})
+
+test("SC22: the table does not scroll sideways on a narrow screen", async ({
+  authedPage: page,
+}) => {
+  await page.setViewportSize({ width: 320, height: 800 })
+  await page.goto("/sync-status")
+  await expect(page.locator("tr", { hasText: "Primary Sync Project" })).toBeVisible()
+
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  )
+  expect(overflow).toBeLessThanOrEqual(0)
+
+  for (const label of ["User", "Project", "Sessions", "Last synced"]) {
+    await expect(page.getByRole("columnheader", { name: label })).toBeVisible()
+  }
+})
