@@ -227,8 +227,13 @@ export const seedDatabase = async (spec: SeedSpec): Promise<void> => {
       await sql`delete from projects where id in ${sql(projectIds)}`
     }
     await sql`delete from user_orgs where user_id in (${E2E_USER_ID}, ${E2E_OTHER_USER_ID})`
+    // Deleted by slug, not by the deterministic id: the insert below is `on conflict
+    // (github_slug) do update`, so a row a developer created by hand (e.g. `bun run seed:org
+    // acme`, which gets a random id) survives a delete keyed on the deterministic id and every
+    // later insert that assumes that id -- user_orgs, projects."ownerOrgId" -- hits a foreign
+    // key violation. Cascading deletes on those FKs make this safe to run before re-inserting.
     if (orgSlugs.length > 0) {
-      await sql`delete from orgs where id in ${sql(orgSlugs.map(orgId))}`
+      await sql`delete from orgs where github_slug in ${sql(orgSlugs)}`
     }
     // A spec outside this file (e.g. capture-pipeline.spec.ts's real watcher) can create a
     // project/session/repo trio this seed's projectIds list never names. Clearing every e2e
