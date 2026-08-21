@@ -1,3 +1,4 @@
+import type { SessionRepo } from "./shapes.js"
 import type {
   CapturedArtifact,
   RawMessage,
@@ -6,13 +7,7 @@ import type {
   SessionCommit,
   SessionDetailPayload,
   SessionFacts,
-  SessionFilterOptions,
-  SessionListPayload,
-  SessionPagination,
   SessionPullRequest,
-  SessionRepo,
-  SessionSearchMatch,
-  SessionSummary,
   TokenTotals,
 } from "./types.js"
 
@@ -47,170 +42,6 @@ const parseRepo = (value: unknown): SessionRepo | null => {
   if (host === null || owner === null || repoName === null) return null
 
   return { host, owner, repoName }
-}
-
-const parseSessionSummary = (value: unknown): SessionSummary | null => {
-  const fields = asFields(value)
-  if (!fields) return null
-
-  const id = str(fields.id)
-  const projectId = str(fields.projectId)
-  const projectName = str(fields.projectName)
-  const userLogin = str(fields.userLogin)
-  const status = str(fields.status)
-  const lastActiveAt = str(fields.lastActiveAt)
-  const tokensTotal = num(fields.tokensTotal)
-  if (id === null || projectId === null || projectName === null) return null
-  if (userLogin === null || status === null || lastActiveAt === null) return null
-  if (tokensTotal === null) return null
-
-  const title = nullableStr(fields.title)
-  const durationMs = nullableNum(fields.durationMs)
-  if (title === undefined || durationMs === undefined) return null
-
-  return {
-    id,
-    title,
-    projectId,
-    projectName,
-    userLogin,
-    repo: parseRepo(fields.repo),
-    durationMs,
-    tokensTotal,
-    status,
-    lastActiveAt,
-    match: parseSearchMatch(fields.match),
-  }
-}
-
-const SEARCH_SOURCE_KINDS = new Set(["session", "message", "pullRequest", "toolCall", "toolResult"])
-const MAX_SNIPPET_SEGMENTS = 32
-const MAX_SNIPPET_CHARS = 4_000
-
-/** Search evidence is decorative: reject malformed evidence but keep the trustworthy session row. */
-const parseSearchMatch = (value: unknown): SessionSearchMatch | null => {
-  if (value === null || value === undefined) return null
-  const fields = asFields(value)
-  if (!fields) return null
-
-  const sourceKind = str(fields.sourceKind)
-  const sourceRowId = str(fields.sourceRowId)
-  if (sourceKind === null || !SEARCH_SOURCE_KINDS.has(sourceKind) || sourceRowId === null)
-    return null
-  if (!Array.isArray(fields.snippet) || fields.snippet.length > MAX_SNIPPET_SEGMENTS) return null
-
-  let length = 0
-  const snippet = fields.snippet.map((segment) => {
-    const part = asFields(segment)
-    const text = part === null ? null : str(part.text)
-    if (text === null || part === null || typeof part.highlighted !== "boolean") return null
-    length += text.length
-    return { text, highlighted: part.highlighted }
-  })
-  if (
-    length > MAX_SNIPPET_CHARS ||
-    !snippet.every((segment): segment is NonNullable<typeof segment> => segment !== null)
-  ) {
-    return null
-  }
-
-  return { sourceKind: sourceKind as SessionSearchMatch["sourceKind"], sourceRowId, snippet }
-}
-
-const parseOption = (value: unknown): { readonly value: string; readonly label: string } | null => {
-  const fields = asFields(value)
-  if (!fields) return null
-  const valueText = str(fields.value)
-  const label = str(fields.label)
-  return valueText === null || label === null ? null : { value: valueText, label }
-}
-
-const parseOptions = (
-  value: unknown,
-): ReadonlyArray<{ readonly value: string; readonly label: string }> | null => {
-  if (!Array.isArray(value)) return null
-  const options = value.map(parseOption)
-  return options.every((option): option is NonNullable<typeof option> => option !== null)
-    ? options
-    : null
-}
-
-const parseFilterOptions = (value: unknown): SessionFilterOptions | null => {
-  const fields = asFields(value)
-  if (!fields) return null
-  const projects = parseOptions(fields.projects)
-  const authors = parseOptions(fields.authors)
-  const branches = fields.branches
-  if (
-    projects === null ||
-    authors === null ||
-    !Array.isArray(branches) ||
-    !branches.every((branch): branch is string => typeof branch === "string") ||
-    !Array.isArray(fields.repositories)
-  )
-    return null
-
-  const repositories = fields.repositories.map((repository) => {
-    const option = parseOption(repository)
-    const repositoryFields = asFields(repository)
-    const host = repositoryFields === null ? null : str(repositoryFields.host)
-    const owner = repositoryFields === null ? null : str(repositoryFields.owner)
-    const repoName = repositoryFields === null ? null : str(repositoryFields.repoName)
-    return option === null || host === null || owner === null || repoName === null
-      ? null
-      : { ...option, host, owner, repoName }
-  })
-  if (
-    !repositories.every(
-      (repository): repository is NonNullable<typeof repository> => repository !== null,
-    )
-  ) {
-    return null
-  }
-  return { projects, authors, repositories, branches }
-}
-
-const parsePagination = (value: unknown, sessionCount: number): SessionPagination | null => {
-  const fields = asFields(value)
-  if (!fields) return null
-  const page = num(fields.page)
-  const limit = num(fields.limit)
-  const total = num(fields.total)
-  const totalPages = num(fields.totalPages ?? fields.pages)
-  if (
-    page === null ||
-    limit === null ||
-    total === null ||
-    totalPages === null ||
-    !Number.isInteger(page) ||
-    !Number.isInteger(limit) ||
-    !Number.isInteger(total) ||
-    !Number.isInteger(totalPages) ||
-    page < 1 ||
-    limit < 1 ||
-    total < 0 ||
-    totalPages < 0 ||
-    totalPages !== Math.ceil(total / limit) ||
-    sessionCount > limit ||
-    // The server truthfully returns empty rows for a page beyond the final page.
-    (totalPages === 0 && page !== 1) ||
-    (sessionCount > 0 && page > totalPages)
-  ) {
-    return null
-  }
-  return { page, limit, total, totalPages }
-}
-
-export const parseSessionList = (body: unknown): SessionListPayload | null => {
-  const fields = asFields(body)
-  if (!fields || !Array.isArray(fields.sessions)) return null
-  const sessions = fields.sessions.map(parseSessionSummary)
-  if (!sessions.every((session): session is SessionSummary => session !== null)) return null
-  const pagination = parsePagination(fields.pagination, sessions.length)
-  const filterOptions = parseFilterOptions(fields.filterOptions)
-  return pagination === null || filterOptions === null
-    ? null
-    : { sessions, pagination, filterOptions }
 }
 
 const bool = (value: unknown): boolean => value === true

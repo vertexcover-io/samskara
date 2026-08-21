@@ -1,9 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { useSearchParams } from "react-router-dom"
-import { getJson } from "../api/client.js"
-import type { ApiError } from "../api/client.js"
-import { parseSessionList } from "../api/parse.js"
-import type { SessionListPayload } from "../api/types.js"
+import { type ApiError, client, request } from "../api/client.js"
+import type { SessionListPayload } from "../api/shapes.js"
 import { SessionExpired } from "../auth/SessionExpired.js"
 import { FilterBar } from "../components/FilterBar.js"
 import { SessionRow } from "../components/SessionRow.js"
@@ -194,6 +192,8 @@ export const Sessions = () => {
     const tz = localTimeZone()
     return tz === null ? filters : { ...filters, tz }
   }, [filters])
+  // A primitive dependency, not the object: `effectiveFilters` gets a new reference every time
+  // the tz-sync effect below round-trips it through the URL, which would refire this fetch twice.
   const effectiveQuery = useMemo(
     () => serializeFilters(effectiveFilters).toString(),
     [effectiveFilters],
@@ -215,10 +215,10 @@ export const Sessions = () => {
             : null,
     }))
 
-    getJson(
-      effectiveQuery === "" ? "/api/sessions" : `/api/sessions?${effectiveQuery}`,
-      parseSessionList,
-      { signal: controller.signal },
+    const query = Object.fromEntries(new URLSearchParams(effectiveQuery))
+
+    request(() =>
+      client.api.sessions.$get({ query }, { init: { signal: controller.signal } }),
     ).then((result) => {
       if (controller.signal.aborted) return
       setState(

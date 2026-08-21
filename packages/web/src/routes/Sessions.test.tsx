@@ -2,8 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, test, vi } from "vitest"
 import { AppRoutes } from "../App.js"
-import type { CurrentUser } from "../api/shapes.js"
-import type { SessionSummary } from "../api/types.js"
+import type { CurrentUser, SessionSummary } from "../api/shapes.js"
 import { TestRouter } from "../tests/test-router.js"
 
 const user: CurrentUser = {
@@ -58,7 +57,7 @@ const filterOptions = {
 
 const payload = (
   rows: ReadonlyArray<SessionSummary>,
-  pagination = { page: 1, limit: 50, total: rows.length, pages: rows.length === 0 ? 0 : 1 },
+  pagination = { page: 1, limit: 50, total: rows.length, totalPages: rows.length === 0 ? 0 : 1 },
 ) => ({ sessions: rows, pagination, filterOptions })
 
 const okWith =
@@ -232,7 +231,7 @@ test("search clear removes relevance and pagination preserves remaining URL filt
   const calls = stubFetch((url) => {
     const page = Number(url.searchParams.get("page") ?? "1")
     return Promise.resolve(
-      jsonResponse(200, payload([session], { page, limit: 1, total: 2, pages: 2 })),
+      jsonResponse(200, payload([session], { page, limit: 1, total: 2, totalPages: 2 })),
     )
   })
   renderAt("/sessions?q=timeout&project=samskara&sort=relevance")
@@ -251,7 +250,9 @@ test("search clear removes relevance and pagination preserves remaining URL filt
 
 test("out-of-range pages render truthful empty pagination rather than a no-matches state", async () => {
   stubFetch(() =>
-    Promise.resolve(jsonResponse(200, payload([], { page: 9, limit: 25, total: 1, pages: 1 }))),
+    Promise.resolve(
+      jsonResponse(200, payload([], { page: 9, limit: 25, total: 1, totalPages: 1 })),
+    ),
   )
   renderAt("/sessions?page=9")
 
@@ -282,7 +283,7 @@ test("S25: when the vocabulary request fails, the controls still offer the value
       return Promise.resolve(
         jsonResponse(200, {
           sessions: [session, ravi],
-          pagination: { page: 1, limit: 50, total: 2, pages: 1 },
+          pagination: { page: 1, limit: 50, total: 2, totalPages: 1 },
           filterOptions,
         }),
       )
@@ -314,7 +315,12 @@ test("S25: with user=maya applied, ravi is still offered - options come from the
     return Promise.resolve(
       jsonResponse(200, {
         sessions: rows,
-        pagination: { page: 1, limit: 50, total: rows.length, pages: rows.length === 0 ? 0 : 1 },
+        pagination: {
+          page: 1,
+          limit: 50,
+          total: rows.length,
+          totalPages: rows.length === 0 ? 0 : 1,
+        },
         filterOptions,
       }),
     )
@@ -330,4 +336,98 @@ test("S25: with user=maya applied, ravi is still offered - options come from the
   })
   expect(control(/user/i).value).toBe("maya")
   expect(screen.queryByRole("link", { name: /trim the ingest pipeline/i })).not.toBeInTheDocument()
+})
+
+test("SC15: the sessions page renders each row the inferred list payload returns", async () => {
+  const first = session
+  const second = {
+    ...session,
+    id: "s-2",
+    title: "Trim the ingest pipeline",
+    projectName: "Andromeda",
+    userLogin: "ravi",
+    tokensTotal: 12_400_000,
+    durationMs: null,
+  }
+  stubFetch(okWith([first, second]))
+
+  renderAt("/sessions")
+
+  const firstRow = await screen.findByRole("link", { name: /port the session detail surface/i })
+  expect(firstRow).toHaveTextContent("Samskara")
+  expect(firstRow).toHaveTextContent("maya")
+  expect(firstRow).toHaveTextContent("4.2k tokens")
+
+  const secondRow = screen.getByRole("link", { name: /trim the ingest pipeline/i })
+  expect(secondRow).toHaveTextContent("Andromeda")
+  expect(secondRow).toHaveTextContent("ravi")
+  expect(secondRow).toHaveTextContent("12.4M tokens")
+  expect(secondRow).toHaveTextContent("unavailable")
+})
+
+test("SC16: a search match decorates its row, and a row without one still renders", async () => {
+  const matched = {
+    ...session,
+    match: {
+      sourceKind: "toolResult" as const,
+      sourceRowId: "tool-1",
+      score: 1.5,
+      snippet: [{ text: "deployment timeout", highlighted: true }],
+    },
+  }
+  const unmatched = { ...session, id: "s-2", title: "Trim the ingest pipeline" }
+  stubFetch(okWith([matched, unmatched]))
+
+  renderAt("/sessions?q=timeout")
+
+  const matchedRow = await screen.findByRole("link", { name: /port the session detail surface/i })
+  expect(matchedRow.querySelector("mark")).toHaveTextContent("deployment timeout")
+
+  const unmatchedRow = screen.getByRole("link", { name: /trim the ingest pipeline/i })
+  expect(unmatchedRow.querySelector("mark")).toBeNull()
+})
+
+test("SC17: an ambiguous commit filter shows the failure state, not the session-expired state", async () => {
+  stubFetch(() => Promise.resolve(jsonResponse(400, { error: "ambiguousCommit" })))
+
+  renderAt("/sessions?commit=abcdef1")
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(/commit prefix is ambiguous/i)
+  expect(screen.queryByRole("list")).not.toBeInTheDocument()
+})
+
+test("SC18: an unknown project filter shows the not-found state", async () => {
+  stubFetch(() => Promise.resolve(jsonResponse(404, { error: "projectNotFound" })))
+
+  renderAt("/sessions?project=locked")
+
+  expect(await screen.findByText(/cannot be opened/i)).toBeInTheDocument()
+  expect(screen.queryByRole("list")).not.toBeInTheDocument()
+})
+
+test("SC19 (regression): changing a filter refetches and keeps the previous rows visible until the new ones arrive", async () => {
+  let settleSecond: ((response: Response) => void) | undefined
+  const calls = stubFetch((url) => {
+    if (url.searchParams.get("user") === "maya") {
+      return new Promise((resolve) => {
+        settleSecond = resolve
+      })
+    }
+    return Promise.resolve(jsonResponse(200, payload([session])))
+  })
+  renderAt("/sessions")
+
+  await screen.findByRole("link", { name: /port the session detail surface/i })
+  await userEvent.selectOptions(control(/user/i), "maya")
+
+  expect(calls).toHaveLength(2)
+  expect(screen.getByRole("link", { name: /port the session detail surface/i })).toBeInTheDocument()
+
+  const ravi = { ...session, id: "s-2", title: "Trim the ingest pipeline", userLogin: "ravi" }
+  settleSecond?.(jsonResponse(200, payload([ravi])))
+
+  await screen.findByRole("link", { name: /trim the ingest pipeline/i })
+  expect(
+    screen.queryByRole("link", { name: /port the session detail surface/i }),
+  ).not.toBeInTheDocument()
 })

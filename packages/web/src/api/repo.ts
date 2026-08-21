@@ -1,4 +1,4 @@
-import type { SessionRepo } from "./types.js"
+import type { SessionRepo } from "./shapes.js"
 
 /**
  * A remoteless repo is keyed by its absolute root path, so only its name is worth showing --

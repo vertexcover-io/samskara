@@ -5,11 +5,11 @@ import { getJson } from "../api/client.js"
 import type { ApiError } from "../api/client.js"
 import { parseSessionDetail } from "../api/parse.js"
 import { repoLabel, repoUrl } from "../api/repo.js"
+import type { SessionRepo } from "../api/shapes.js"
 import type {
   CapturedArtifact,
   SessionDetailPayload,
   SessionFacts,
-  SessionRepo,
   TokenTotals,
 } from "../api/types.js"
 import { SessionExpired } from "../auth/SessionExpired.js"

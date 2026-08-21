@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react"
 import { expect, test } from "vitest"
-import type { SessionSummary } from "../api/types.js"
+import type { SessionSummary } from "../api/shapes.js"
 import { TestRouter } from "../tests/test-router.js"
 import { SessionRow } from "./SessionRow.js"
 
@@ -110,6 +110,7 @@ test("search evidence renders a supported source label and escaped highlighted t
     match: {
       sourceKind: "toolResult",
       sourceRowId: "tool-1",
+      score: 1.5,
       snippet: [
         { text: "The <script> value ", highlighted: false },
         { text: "timed out", highlighted: true },
