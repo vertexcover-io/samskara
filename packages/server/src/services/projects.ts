@@ -44,9 +44,16 @@ export const findOrCreateProject = async (
   const org = await registeredOrgFor(db, identity.remote)
   const isMember = org !== null && (await userOrgsRepo.isMember(db, userId, org.id))
   const choice = ownerFor({ remote: identity.remote, org, isMember })
-  if (choice.kind === "org" && org !== null) {
+  if (choice.kind === "org" && org !== null && identity.remote !== undefined) {
+    const remote = identity.remote
+    // Derived from the verified remote, not the client-supplied slug: two clones of the same
+    // repo can disagree on remote casing, and a client-trusted slug would give each one its own
+    // project row instead of sharing the one org row R11 requires.
     const row = await projectsRepo.upsertOwned(db, {
-      identity,
+      identity: {
+        name: remote.repoName,
+        slug: `${org.githubSlug}-${remote.repoName.toLowerCase()}`,
+      },
       owner: { kind: "org", orgId: org.id },
     })
     return { ...row, owner: { type: "org", slug: org.githubSlug } }

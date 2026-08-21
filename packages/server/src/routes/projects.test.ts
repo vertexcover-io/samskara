@@ -322,6 +322,32 @@ describe.skipIf(!dockerAvailable())("POST /api/projects", () => {
     expect(rows[0]).toMatchObject({ ownerOrgId: orgId, ownerUserId: null })
   })
 
+  test("R11: two POSTs for the same org repo with different remote casing yield one project", async () => {
+    const member = await seedUser(db, 805, "sc-casing-member")
+    const orgId = await seedOrg("acme")
+    await db.insert(userOrgs).values({ userId: member, orgId })
+
+    const first = await postAs(member, {
+      name: "widget",
+      slug: "client-slug-one",
+      remote: { host: "github.com", owner: "Acme", repoName: "Widget" },
+    })
+    expect(first.status).toBe(201)
+    expect(first.body.owner).toEqual({ type: "org", slug: "acme" })
+
+    const second = await postAs(member, {
+      name: "widget",
+      slug: "client-slug-two",
+      remote: { host: "github.com", owner: "acme", repoName: "widget" },
+    })
+    expect(second.status).toBe(200)
+    expect(second.body.id).toBe(first.body.id)
+
+    const rows = await db.select().from(projects).where(eq(projects.ownerOrgId, orgId))
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.slug).toBe("acme-widget")
+  })
+
   test("SC19: a non-member's POST creates a personal project and says why", async () => {
     const outsider = await seedUser(db, 802, "sc19-outsider")
     await seedOrg("acme")
