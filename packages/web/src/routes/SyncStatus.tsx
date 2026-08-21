@@ -102,7 +102,7 @@ const ProjectCell = ({ row }: { readonly row: SyncStatusRow }) => {
 const SyncedCell = ({ lastSyncedAt }: { readonly lastSyncedAt: string | null }) => (
   <td className="border border-rule px-2 py-1 align-top">
     {lastSyncedAt === null ? (
-      "never"
+      <span className="text-faded italic underline decoration-dotted">never</span>
     ) : (
       <time dateTime={lastSyncedAt} title={absoluteTime(lastSyncedAt)}>
         {relativeTime(lastSyncedAt)}
