@@ -142,8 +142,8 @@ describe("login command", () => {
     expect(errors.join("")).toContain("did not return a usable token")
   })
 
-  test("a rejected code explains that it may have expired, and how to get another", async () => {
-    process.env.SAMSKARA_HOME = await mkdtemp(join(tmpdir(), "samskara-login-expired-"))
+  test("a rejected code explains that it was already used, and how to get another", async () => {
+    process.env.SAMSKARA_HOME = await mkdtemp(join(tmpdir(), "samskara-login-rejected-"))
     const errors: string[] = []
 
     vi.stubGlobal(
@@ -157,7 +157,8 @@ describe("login command", () => {
     })
 
     expect(code).toBe(1)
-    expect(errors.join("")).toContain("expired or already been used")
+    expect(errors.join("")).toContain("already been used")
+    expect(errors.join("")).not.toContain("expires")
     expect(errors.join("")).toContain("Pair the CLI")
   })
 

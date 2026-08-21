@@ -15,8 +15,8 @@ export type LoginOptions = {
 export const pairingInstructions = (): string =>
   [
     `To get a pairing code, open ${webBase} and sign in, then choose "Pair the CLI"`,
-    "from the account menu and select Generate code. Each code can only be used once",
-    "and expires five minutes after it is generated.",
+    "from the account menu and select Generate code. A code does not expire, but it can",
+    "only be used once.",
   ].join("\n")
 
 const tokenResponseSchema = z.object({ token: z.string().min(1) })
@@ -40,7 +40,7 @@ const redeemCode = async (code: string): Promise<string> => {
   })
   if (res.status === 401) {
     throw new Error(
-      "The server rejected this pairing code. It has either expired or already been used, so please generate a new one.",
+      "The server rejected this pairing code. It has already been used, or the server was restarted since it was generated, so please generate a new one.",
     )
   }
   if (!res.ok) {
@@ -74,6 +74,24 @@ export const verifyToken = async (token: string): Promise<PublicUser> => {
     )
   }
   return parsed.data
+}
+
+/**
+ * Whether the stored token still works, told apart from a server that is simply unreachable:
+ * only a real rejection is worth nagging the user about.
+ */
+export type TokenCheck = "ok" | "rejected" | "unreachable"
+
+export const checkToken = async (token: string): Promise<TokenCheck> => {
+  try {
+    const res = await fetch(`${apiBase}/api/auth/me`, {
+      headers: { authorization: `Bearer ${token}` },
+    })
+    if (res.status === 401 || res.status === 403) return "rejected"
+    return res.ok ? "ok" : "unreachable"
+  } catch {
+    return "unreachable"
+  }
 }
 
 export const login = async (options: LoginOptions): Promise<number> => {

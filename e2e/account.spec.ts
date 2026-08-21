@@ -15,7 +15,7 @@ test.beforeEach(async () => {
   await seedDatabase(SEED)
 })
 
-test("S36: the account menu mints a real 32-char hex pairing code with an expiry and Copy, and logging out lands on /login where a /projects reload shows no project data", async ({
+test("S36: the account menu mints a real 32-char hex pairing code with Copy and no expiry, and logging out lands on /login where a /projects reload shows no project data", async ({
   authedPage: page,
 }) => {
   await page.goto("/projects")
@@ -29,7 +29,7 @@ test("S36: the account menu mints a real 32-char hex pairing code with an expiry
   await dialog.getByRole("button", { name: /generate code/i }).click()
 
   await expect(dialog.getByTestId("pairing-code")).toHaveText(/^[0-9a-f]{32}$/)
-  await expect(dialog.getByText(/expires/i)).toBeVisible()
+  await expect(dialog.getByText(/expires/i)).toHaveCount(0)
   await expect(dialog.getByRole("button", { name: /^copy$/i })).toBeVisible()
 
   await dialog.getByRole("button", { name: /close/i }).click()

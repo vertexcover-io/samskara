@@ -5,36 +5,29 @@ export type PairingStore = {
   readonly redeem: (code: string) => string | null
 }
 
-type Entry = {
-  readonly userId: string
-  readonly expiresAt: number
-}
+export const createPairingStore = (): PairingStore => {
+  const codes = new Map<string, string>()
+  const latest = new Map<string, string>()
 
-const TTL_MS = 5 * 60 * 1000
-
-export const createPairingStore = (now: () => number = () => Date.now()): PairingStore => {
-  const codes = new Map<string, Entry>()
-
-  const sweep = (at: number): void => {
-    for (const [code, entry] of codes) {
-      if (entry.expiresAt <= at) codes.delete(code)
-    }
-  }
-
+  // Codes no longer expire, so nothing else would ever remove one. Holding at most a code per
+  // user bounds the map by the user count instead of by how often anyone presses Generate, and
+  // matches what generating a new code already means: the old one is not the one to paste.
   const mint = (userId: string): string => {
-    const at = now()
-    sweep(at)
+    const previous = latest.get(userId)
+    if (previous !== undefined) codes.delete(previous)
+
     const code = randomBytes(16).toString("hex")
-    codes.set(code, { userId, expiresAt: at + TTL_MS })
+    codes.set(code, userId)
+    latest.set(userId, code)
     return code
   }
 
   const redeem = (code: string): string | null => {
-    const at = now()
-    const entry = codes.get(code)
+    const userId = codes.get(code)
+    if (userId === undefined) return null
     codes.delete(code)
-    if (!entry || entry.expiresAt <= at) return null
-    return entry.userId
+    latest.delete(userId)
+    return userId
   }
 
   return { mint, redeem }

@@ -1,17 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { requestPairingCode } from "../api/account.js"
 import type { ApiError } from "../api/types.js"
-import { absoluteTime } from "../time.js"
 import { copyText } from "./copyText.js"
 import { useFocusTrap } from "./useFocusTrap.js"
-
-const TTL_MS = 5 * 60 * 1000
 
 type State =
   | { readonly phase: "ready" }
   | { readonly phase: "generating" }
-  | { readonly phase: "ready-code"; readonly code: string; readonly expiresAt: number }
-  | { readonly phase: "expired" }
+  | { readonly phase: "ready-code"; readonly code: string }
   | { readonly phase: "failed"; readonly error: ApiError }
 
 const READY: State = { phase: "ready" }
@@ -22,7 +18,7 @@ const Label = ({ children }: { children: string }) => (
   </p>
 )
 
-const CodePanel = ({ code, expiresAt }: { code: string; expiresAt: number }) => {
+const CodePanel = ({ code }: { code: string }) => {
   const [copied, setCopied] = useState(false)
 
   const onCopy = useCallback(() => {
@@ -38,10 +34,7 @@ const CodePanel = ({ code, expiresAt }: { code: string; expiresAt: number }) => 
       >
         {code}
       </p>
-      <p className="mt-2 text-ink-soft">
-        Expires{" "}
-        <span className="font-mono text-[0.78rem] tabular-nums">{absoluteTime(expiresAt)}</span>
-      </p>
+      <p className="mt-2 text-ink-soft">Single use. It stays valid until you use it.</p>
       <button
         type="button"
         onClick={onCopy}
@@ -75,13 +68,6 @@ export const PairingDialog = ({ open, onClose, restoreFocusTo }: Props) => {
     }
   }, [open])
 
-  useEffect(() => {
-    if (state.phase !== "ready-code") return
-    const remaining = state.expiresAt - Date.now()
-    const timer = setTimeout(() => setState({ phase: "expired" }), Math.max(remaining, 0))
-    return () => clearTimeout(timer)
-  }, [state])
-
   const generate = useCallback(() => {
     if (pending.current) return
     pending.current = true
@@ -91,7 +77,7 @@ export const PairingDialog = ({ open, onClose, restoreFocusTo }: Props) => {
       pending.current = false
       setState(
         result.ok
-          ? { phase: "ready-code", code: result.data.code, expiresAt: Date.now() + TTL_MS }
+          ? { phase: "ready-code", code: result.data.code }
           : { phase: "failed", error: result.error },
       )
     })
@@ -129,15 +115,7 @@ export const PairingDialog = ({ open, onClose, restoreFocusTo }: Props) => {
           {generating ? "Generating…" : actionLabel}
         </button>
 
-        {state.phase === "ready-code" ? (
-          <CodePanel code={state.code} expiresAt={state.expiresAt} />
-        ) : null}
-
-        {state.phase === "expired" ? (
-          <output className="mt-4 block border border-warn/40 bg-panel p-3 text-warn">
-            That code expired. Generate a new one.
-          </output>
-        ) : null}
+        {state.phase === "ready-code" ? <CodePanel code={state.code} /> : null}
 
         {state.phase === "failed" ? (
           <p role="alert" className="mt-4 border border-err/40 bg-panel p-3 text-err">

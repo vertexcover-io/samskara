@@ -444,9 +444,8 @@ describe.skipIf(!dockerAvailable())("auth routes (cli pairing)", () => {
     expect(second.status).toBe(401)
   })
 
-  test("S16: a code exchanged after its 5m TTL is 401 with no token", async () => {
-    let now = 2_000_000
-    const pairingStore = createPairingStore(() => now)
+  test("S16: a pairing code never expires - other users minting theirs leaves it exchangeable", async () => {
+    const pairingStore = createPairingStore()
     const user = await seedUser(db)
     const webToken = await signToken(env, { sub: user.id, aud: "web" })
     const app = buildApp(db, env, { githubClient: noopClient, pairingStore })
@@ -454,8 +453,37 @@ describe.skipIf(!dockerAvailable())("auth routes (cli pairing)", () => {
     const minted = await app.request("/api/auth/cli-code", jsonPost({}, `session=${webToken}`))
     const { code } = (await minted.json()) as { code: string }
 
-    now += 5 * 60 * 1000 + 1
+    // No clock and no sweeper: only this user pressing Generate again retires this code.
+    pairingStore.mint("someone-else")
+    pairingStore.mint("another-user")
+
     const exchanged = await app.request("/api/auth/cli-exchange", jsonPost({ code }))
+    expect(exchanged.status).toBe(200)
+    expect(await exchanged.json()).toHaveProperty("token")
+  })
+
+  test("S16c: generating a second code retires the first, so only the pasted one works", async () => {
+    const user = await seedUser(db)
+    const webToken = await signToken(env, { sub: user.id, aud: "web" })
+    const app = buildApp(db, env, { githubClient: noopClient })
+
+    const first = await app.request("/api/auth/cli-code", jsonPost({}, `session=${webToken}`))
+    const { code: stale } = (await first.json()) as { code: string }
+    const second = await app.request("/api/auth/cli-code", jsonPost({}, `session=${webToken}`))
+    const { code: fresh } = (await second.json()) as { code: string }
+
+    expect((await app.request("/api/auth/cli-exchange", jsonPost({ code: stale }))).status).toBe(
+      401,
+    )
+    expect((await app.request("/api/auth/cli-exchange", jsonPost({ code: fresh }))).status).toBe(
+      200,
+    )
+  })
+
+  test("S16b: an unknown pairing code is 401 with no token", async () => {
+    const app = buildApp(db, env, { githubClient: noopClient })
+
+    const exchanged = await app.request("/api/auth/cli-exchange", jsonPost({ code: "nope" }))
     expect(exchanged.status).toBe(401)
     expect(await exchanged.json()).not.toHaveProperty("token")
   })

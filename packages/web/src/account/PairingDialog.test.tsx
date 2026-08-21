@@ -44,15 +44,15 @@ test("S30: a pending cli-code request renders 'Generating…' and marks the gene
   expect(generating).toBeDisabled()
 })
 
-test("S31: a returned code renders the code itself, an expiry string, and a Copy action - not just a bare code", async () => {
+test("S31: a returned code renders the code itself and a Copy action, and never claims an expiry - the code does not expire", async () => {
   stubCliCode(() => Promise.resolve(jsonResponse(200, { code: "abc123" })))
 
   renderDialog()
   await userEvent.click(screen.getByRole("button", { name: /generate code/i }))
 
   expect(await screen.findByText("abc123")).toBeInTheDocument()
-  expect(screen.getByText(/expires/i)).toBeInTheDocument()
   expect(screen.getByRole("button", { name: /copy/i })).toBeInTheDocument()
+  expect(screen.queryByText(/expires/i)).not.toBeInTheDocument()
 })
 
 test("S32: activating Generate twice while the first request is pending issues exactly one call to /api/auth/cli-code - not two", async () => {
