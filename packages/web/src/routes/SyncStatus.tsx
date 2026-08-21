@@ -4,6 +4,7 @@ import { getJson } from "../api/client.js"
 import { parseSyncStatusRows } from "../api/parse.js"
 import type { ApiError, SyncStatusRow } from "../api/types.js"
 import { SessionExpired } from "../auth/SessionExpired.js"
+import { TextField } from "../components/TextField.js"
 import { LoadingShell } from "../shell/LoadingShell.js"
 import {
   COLUMNS,
@@ -25,9 +26,6 @@ type State =
   | ({ readonly phase: "ready" } & Loaded)
   | { readonly phase: "failed"; readonly error: ApiError }
 
-const inputClass =
-  "mt-1 h-9 w-full min-w-0 rounded-xs border border-rule bg-panel-2 px-2 font-mono text-[0.78rem] leading-none text-ink transition-colors hover:border-ink-soft focus-visible:border-custody"
-const labelClass = "block text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-ink-soft"
 const emptyPanelClass = "border border-dashed border-rule bg-panel p-8 text-center"
 
 const EmptyState = () => (
@@ -183,25 +181,13 @@ const FilterBoxes = ({
 }) => (
   <div className="grid grid-cols-1 gap-3 min-[560px]:grid-cols-2">
     <div className="min-w-0">
-      <label className={labelClass} htmlFor="sync-status-user-filter">
-        User
-      </label>
-      <input
-        id="sync-status-user-filter"
-        className={inputClass}
-        value={state.user}
-        onChange={(event) => onFilter({ user: event.target.value })}
-      />
+      <TextField label="User" value={state.user} onChange={(user) => onFilter({ user })} />
     </div>
     <div className="min-w-0">
-      <label className={labelClass} htmlFor="sync-status-project-filter">
-        Project
-      </label>
-      <input
-        id="sync-status-project-filter"
-        className={inputClass}
+      <TextField
+        label="Project"
         value={state.project}
-        onChange={(event) => onFilter({ project: event.target.value })}
+        onChange={(project) => onFilter({ project })}
       />
     </div>
   </div>
