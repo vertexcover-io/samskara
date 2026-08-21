@@ -21,6 +21,13 @@ describe("loadEnv", () => {
       cookieSecure: false,
       jwtSecret: "jwt",
       jwtExpiresIn: "7d",
+      db: {
+        poolMax: 10,
+        connectTimeoutSeconds: 10,
+        idleTimeoutSeconds: 30,
+        statementTimeoutSeconds: 30,
+      },
+      serverTiming: false,
     })
   })
 
@@ -31,6 +38,34 @@ describe("loadEnv", () => {
 
   test("coerces COOKIE_SECURE=true to boolean true", () => {
     expect(loadEnv({ ...complete, COOKIE_SECURE: "true" }).cookieSecure).toBe(true)
+  })
+
+  test("reads explicit database pool and timeout configuration", () => {
+    expect(
+      loadEnv({
+        ...complete,
+        DB_POOL_MAX: "12",
+        DB_CONNECT_TIMEOUT_SECONDS: "8",
+        DB_IDLE_TIMEOUT_SECONDS: "45",
+        DB_STATEMENT_TIMEOUT_SECONDS: "60",
+      }).db,
+    ).toEqual({
+      poolMax: 12,
+      connectTimeoutSeconds: 8,
+      idleTimeoutSeconds: 45,
+      statementTimeoutSeconds: 60,
+    })
+  })
+
+  test("enables Server-Timing only with explicit server configuration", () => {
+    expect(loadEnv({ ...complete, SERVER_TIMING: "true" }).serverTiming).toBe(true)
+  })
+
+  test("rejects invalid database configuration ranges", () => {
+    expect(() => loadEnv({ ...complete, DB_POOL_MAX: "0" })).toThrow(/DB_POOL_MAX/)
+    expect(() => loadEnv({ ...complete, DB_CONNECT_TIMEOUT_SECONDS: "fast" })).toThrow(
+      /DB_CONNECT_TIMEOUT_SECONDS/,
+    )
   })
 
   test("throws naming the missing key when JWT_SECRET is absent", () => {

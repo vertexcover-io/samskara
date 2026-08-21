@@ -17,8 +17,11 @@ const captured = (overrides: Partial<CapturedArtifact> = {}): CapturedArtifact =
   mimeType: "text/markdown",
   isBinary: false,
   changeKind: "edited",
-  diff: null,
-  oldFragment: null,
+  hasDiff: false,
+  hasOldFragment: false,
+  byteSize: 42,
+  diffByteSize: null,
+  oldFragmentByteSize: null,
   editCount: 1,
   firstSeenAt: "2026-07-01T10:00:00.000Z",
   lastSeenAt: "2026-07-01T10:05:00.000Z",
@@ -143,46 +146,53 @@ test("S48: captured artifacts are listed by relative path and selecting one show
   expect(within(viewer).getByText("src/ingest.ts")).toBeInTheDocument()
 })
 
-test("S50: an edited artifact renders its diff with added and removed lines distinguishable from context", () => {
+test("S50: an edited artifact defaults to Diff and fetches its selected diff body", async () => {
+  const body = "@@ -1,3 +1,3 @@\n # Notes\n-The original line.\n+The replacement line.\n"
+  const calls: string[] = []
+  vi.stubGlobal("fetch", (url: string) => {
+    calls.push(url)
+    return Promise.resolve(
+      new Response(JSON.stringify({ artifact: { diff: body } }), { status: 200 }),
+    )
+  })
+
   render(
     <TestRouter initialEntries={["/s/1?tab=artifacts"]}>
-      <ArtifactsView
-        artifacts={[
-          captured({
-            diff: "@@ -1,3 +1,3 @@\n # Notes\n-The original line.\n+The replacement line.\n",
-          }),
-        ]}
-      />
+      <ArtifactsView artifacts={[captured({ hasDiff: true, diffByteSize: body.length })]} />
     </TestRouter>,
   )
 
   const viewer = screen.getByRole("region", { name: /artifact viewer/i })
-  const removed = within(viewer).getByText("-The original line.")
+  const removed = await within(viewer).findByText("-The original line.")
   const added = within(viewer).getByText("+The replacement line.")
   const context = within(viewer).getByText("# Notes")
 
   expect(removed.className).not.toBe(context.className)
   expect(added.className).not.toBe(context.className)
   expect(added.className).not.toBe(removed.className)
+  expect(calls.filter((url) => url.startsWith("/api/artifacts"))).toEqual([
+    "/api/artifacts/c-1?part=diff",
+  ])
 })
 
-test("S51: an artifact with no resolvable base shows its replaced excerpt labelled as an excerpt, not a diff", () => {
+test("S51: an unresolved-base edit fetches its replaced excerpt on demand", async () => {
+  vi.stubGlobal("fetch", () =>
+    Promise.resolve(
+      new Response(JSON.stringify({ artifact: { oldFragment: "The original line." } }), {
+        status: 200,
+      }),
+    ),
+  )
   render(
     <TestRouter initialEntries={["/s/1?tab=artifacts"]}>
       <ArtifactsView
-        artifacts={[
-          captured({
-            changeKind: "editedUnknownBase",
-            diff: null,
-            oldFragment: "The original line.",
-          }),
-        ]}
+        artifacts={[captured({ changeKind: "editedUnknownBase", hasOldFragment: true })]}
       />
     </TestRouter>,
   )
 
   const viewer = screen.getByRole("region", { name: /artifact viewer/i })
-  expect(within(viewer).getByText(/The original line\./)).toBeInTheDocument()
+  expect(await within(viewer).findByText(/The original line\./)).toBeInTheDocument()
   expect(within(viewer).getByText(/replaced excerpt/i)).toBeInTheDocument()
   expect(within(viewer).queryByText(/no contents captured/i)).not.toBeInTheDocument()
   expect(within(viewer).queryByText(/permission denied/i)).not.toBeInTheDocument()
@@ -200,11 +210,7 @@ test("S52: a created artifact shows its content, without offering a diff pane", 
 
   render(
     <TestRouter initialEntries={["/s/1?tab=artifacts"]}>
-      <ArtifactsView
-        artifacts={[
-          captured({ changeKind: "created", diff: null, oldFragment: null, editCount: 0 }),
-        ]}
-      />
+      <ArtifactsView artifacts={[captured({ changeKind: "created", editCount: 0 })]} />
     </TestRouter>,
   )
 
@@ -325,6 +331,16 @@ test("S54: the preview frame is not sandboxed, so a captured report can load its
 
 test("S54: an edited HTML file still opens on its diff, with the rendered page one click away", async () => {
   const user = userEvent.setup()
+  vi.stubGlobal("fetch", () =>
+    Promise.resolve(
+      new Response(
+        JSON.stringify({ artifact: { diff: "@@ -1 +1 @@\n-<p>old</p>\n+<p>new</p>\n" } }),
+        {
+          status: 200,
+        },
+      ),
+    ),
+  )
   render(
     <TestRouter initialEntries={["/s/1?tab=artifacts"]}>
       <ArtifactsView
@@ -333,7 +349,7 @@ test("S54: an edited HTML file still opens on its diff, with the rendered page o
             id: "c-html",
             relativePath: "reports/proof.html",
             mimeType: "text/html",
-            diff: "@@ -1 +1 @@\n-<p>old</p>\n+<p>new</p>\n",
+            hasDiff: true,
           }),
         ]}
       />
@@ -342,7 +358,7 @@ test("S54: an edited HTML file still opens on its diff, with the rendered page o
 
   const viewer = within(screen.getByRole("region", { name: /artifact viewer/i }))
   // The diff is what changed, so it stays the landing view even for a renderable file.
-  expect(viewer.getByText("+<p>new</p>")).toBeInTheDocument()
+  expect(await viewer.findByText("+<p>new</p>")).toBeInTheDocument()
   expect(viewer.queryByTitle(/rendered preview/i)).not.toBeInTheDocument()
 
   await user.click(viewer.getByRole("tab", { name: /preview/i }))

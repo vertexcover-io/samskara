@@ -10,7 +10,7 @@ import { type Db, createDb } from "../db/client.js"
 import { artifact, projects, sessions, userProjectGrant, users } from "../db/schema.js"
 import type { Env } from "../lib/env.js"
 import { signToken } from "../lib/jwt.js"
-import { rangeResponse } from "./artifacts.js"
+import { __testOnlyRangeResponse } from "./artifacts.js"
 
 // Pure-function boundary cases for `rangeResponse` -- no Postgres/HTTP needed, so these run
 // unconditionally even without Docker, unlike the route suite below.
@@ -19,7 +19,7 @@ describe("rangeResponse", () => {
   const bytes = Buffer.from("0123456789") // length 10, valid indices 0-9
 
   test("a suffix range returns the final N bytes", () => {
-    const result = rangeResponse(bytes, serve, "bytes=-3")
+    const result = __testOnlyRangeResponse(bytes, serve, "bytes=-3")
     if (result.kind !== "partial") throw new Error(`expected partial, got ${result.kind}`)
     expect(result.body.toString()).toBe("789")
     expect(result.headers["content-range"]).toBe("bytes 7-9/10")
@@ -27,45 +27,45 @@ describe("rangeResponse", () => {
   })
 
   test("a suffix range longer than the file clamps to the whole file, not a negative start", () => {
-    const result = rangeResponse(bytes, serve, "bytes=-1000")
+    const result = __testOnlyRangeResponse(bytes, serve, "bytes=-1000")
     if (result.kind !== "partial") throw new Error(`expected partial, got ${result.kind}`)
     expect(result.body.toString()).toBe("0123456789")
     expect(result.headers["content-range"]).toBe("bytes 0-9/10")
   })
 
   test("start exactly at the byte length is unsatisfiable", () => {
-    const result = rangeResponse(bytes, serve, "bytes=10-15")
+    const result = __testOnlyRangeResponse(bytes, serve, "bytes=10-15")
     expect(result.kind).toBe("unsatisfiable")
     expect(result.headers["content-range"]).toBe("bytes */10")
   })
 
   test("start one before the byte length is the final single byte", () => {
-    const result = rangeResponse(bytes, serve, "bytes=9-15")
+    const result = __testOnlyRangeResponse(bytes, serve, "bytes=9-15")
     if (result.kind !== "partial") throw new Error(`expected partial, got ${result.kind}`)
     expect(result.body.toString()).toBe("9")
     expect(result.headers["content-range"]).toBe("bytes 9-9/10")
   })
 
   test("a bare 'bytes=-' with no digits either side falls back to a full response", () => {
-    const result = rangeResponse(bytes, serve, "bytes=-")
+    const result = __testOnlyRangeResponse(bytes, serve, "bytes=-")
     if (result.kind !== "full") throw new Error(`expected full, got ${result.kind}`)
     expect(result.body.equals(bytes)).toBe(true)
   })
 
   test("a malformed range header falls back to a full response rather than erroring", () => {
-    const result = rangeResponse(bytes, serve, "not-a-range")
+    const result = __testOnlyRangeResponse(bytes, serve, "not-a-range")
     if (result.kind !== "full") throw new Error(`expected full, got ${result.kind}`)
     expect(result.body.equals(bytes)).toBe(true)
   })
 
   test("no range header at all returns the full body with content-length", () => {
-    const result = rangeResponse(bytes, serve, undefined)
+    const result = __testOnlyRangeResponse(bytes, serve, undefined)
     expect(result.kind).toBe("full")
     expect(result.headers["content-length"]).toBe("10")
   })
 
   test("an open-ended range from a middle offset runs to the last byte", () => {
-    const result = rangeResponse(bytes, serve, "bytes=5-")
+    const result = __testOnlyRangeResponse(bytes, serve, "bytes=5-")
     if (result.kind !== "partial") throw new Error(`expected partial, got ${result.kind}`)
     expect(result.body.toString()).toBe("56789")
     expect(result.headers["content-range"]).toBe("bytes 5-9/10")
@@ -219,7 +219,7 @@ describe.skipIf(!dockerAvailable())("artifact read routes", () => {
     await db.delete(artifact)
   })
 
-  test("S39: a session's artifacts are listed with metadata and diff, and never with their blobs", async () => {
+  test("S39: a session's artifacts are listed with metadata flags and never with body columns", async () => {
     await seedArtifact({
       path: "/work/docs/notes.md",
       relativePath: "docs/notes.md",
@@ -256,7 +256,10 @@ describe.skipIf(!dockerAvailable())("artifact read routes", () => {
       changeKind: "edited",
       editCount: 1,
       byteSize: Buffer.byteLength("# Notes\n\nChanged.\n"),
-      diff: "--- a\n+++ b\n-Original.\n+Changed.\n",
+      hasDiff: true,
+      hasOldFragment: false,
+      diffByteSize: Buffer.byteLength("--- a\n+++ b\n-Original.\n+Changed.\n"),
+      oldFragmentByteSize: null,
     })
     expect(binary).toMatchObject({ isBinary: true, byteSize: PNG_BYTES.length })
 
@@ -264,10 +267,12 @@ describe.skipIf(!dockerAvailable())("artifact read routes", () => {
     for (const row of artifacts) {
       expect(row).not.toHaveProperty("currentContent")
       expect(row).not.toHaveProperty("baseContent")
+      expect(row).not.toHaveProperty("diff")
+      expect(row).not.toHaveProperty("oldFragment")
     }
   })
 
-  test("S40: a single text artifact reads back with its diff and both contents byte for byte", async () => {
+  test("S40: selected detail reads only its requested diff body", async () => {
     const current = "# Notes\n\nChanged.\n"
     const base = "# Notes\n\nOriginal.\n"
     const id = await seedArtifact({
@@ -280,18 +285,36 @@ describe.skipIf(!dockerAvailable())("artifact read routes", () => {
       diff: "--- a\n+++ b\n-Original.\n+Changed.\n",
     })
 
-    const res = await get(`/api/artifacts/${id}`, ownerToken)
+    const res = await get(`/api/artifacts/${id}?part=diff`, ownerToken)
     expect(res.status).toBe(200)
 
     const body = (await res.json()) as { artifact: Record<string, unknown> }
     expect(body.artifact).toMatchObject({
       id,
       relativePath: "docs/notes.md",
-      currentContent: current,
-      baseContent: base,
       diff: "--- a\n+++ b\n-Original.\n+Changed.\n",
     })
+    expect(body.artifact).not.toHaveProperty("oldFragment")
+    expect(body.artifact).not.toHaveProperty("currentContent")
+    expect(body.artifact).not.toHaveProperty("baseContent")
     expect(new Date(String(body.artifact.lastSeenAt)).toISOString()).toBe(body.artifact.lastSeenAt)
+  })
+
+  test("S40: selected old-fragment detail returns only its requested body", async () => {
+    const id = await seedArtifact({
+      path: "/work/docs/replaced.md",
+      relativePath: "docs/replaced.md",
+      mimeType: "text/markdown",
+      isBinary: false,
+      current: Buffer.from("current\n", "utf8"),
+    })
+    await db.update(artifact).set({ oldFragment: "original excerpt" }).where(eq(artifact.id, id))
+
+    const res = await get(`/api/artifacts/${id}?part=oldFragment`, ownerToken)
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { artifact: Record<string, unknown> }
+    expect(body.artifact).toMatchObject({ oldFragment: "original excerpt" })
+    expect(body.artifact).not.toHaveProperty("diff")
   })
 
   test("S40: a binary artifact carries its metadata and omits its contents", async () => {
@@ -307,12 +330,11 @@ describe.skipIf(!dockerAvailable())("artifact read routes", () => {
     expect(res.status).toBe(200)
 
     const body = (await res.json()) as { artifact: Record<string, unknown> }
-    expect(body.artifact).toMatchObject({
-      isBinary: true,
-      currentContent: null,
-      baseContent: null,
-      byteSize: PNG_BYTES.length,
-    })
+    expect(body.artifact).toMatchObject({ isBinary: true, byteSize: PNG_BYTES.length })
+    expect(body.artifact).not.toHaveProperty("currentContent")
+    expect(body.artifact).not.toHaveProperty("baseContent")
+    expect(body.artifact).not.toHaveProperty("diff")
+    expect(body.artifact).not.toHaveProperty("oldFragment")
   })
 
   test("S41: a user without access is refused on every read route, indistinguishably from absent", async () => {
@@ -520,6 +542,44 @@ describe.skipIf(!dockerAvailable())("artifact read routes", () => {
     const current = await get(`/api/artifacts/${id}/raw?which=current`, ownerToken)
     expect(current.status).toBe(200)
     expect(await current.text()).toBe("brand new\n")
+  })
+
+  test("S46: raw responses return stored strong ETags and honor matching conditionals", async () => {
+    const id = await seedArtifact({
+      path: "/work/etag.md",
+      relativePath: "etag.md",
+      mimeType: "text/markdown",
+      isBinary: false,
+      current: Buffer.from("cached\n", "utf8"),
+    })
+
+    const first = await get(`/api/artifacts/${id}/raw`, ownerToken)
+    expect(first.status).toBe(200)
+    const etag = first.headers.get("etag")
+    expect(etag).toBe(`"${sha256(Buffer.from("cached\n", "utf8"))}"`)
+
+    const cached = await get(`/api/artifacts/${id}/raw`, ownerToken, {
+      "if-none-match": etag ?? "",
+    })
+    expect(cached.status).toBe(304)
+    expect(await cached.text()).toBe("")
+  })
+
+  test("S46: If-Range mismatch falls back to a complete response", async () => {
+    const id = await seedArtifact({
+      path: "/work/if-range.md",
+      relativePath: "if-range.md",
+      mimeType: "text/markdown",
+      isBinary: false,
+      current: Buffer.from("complete\n", "utf8"),
+    })
+
+    const res = await get(`/api/artifacts/${id}/raw`, ownerToken, {
+      range: "bytes=0-2",
+      "if-range": '"stale"',
+    })
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe("complete\n")
   })
 
   test("S47: which=base returns the stored base when one exists, and defaults to current when omitted", async () => {

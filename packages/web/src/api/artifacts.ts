@@ -7,6 +7,12 @@ export const fetchSessionArtifacts = (
 ): Promise<ApiResult<ReadonlyArray<CapturedArtifact>>> =>
   getJson(`/api/sessions/${encodeURIComponent(sessionId)}/artifacts`, parseSessionArtifacts)
 
+export type ArtifactDetailPart = "diff" | "oldFragment"
+
+/** The selected artifact body is fetched only when its view becomes active. */
+export const artifactDetailUrl = (artifactId: string, part: ArtifactDetailPart): string =>
+  `/api/artifacts/${encodeURIComponent(artifactId)}?part=${part}`
+
 export const rawArtifactUrl = (artifactId: string, which: "base" | "current" = "current"): string =>
   `/api/artifacts/${encodeURIComponent(artifactId)}/raw?which=${which}`
 

@@ -26,7 +26,7 @@ export const buildApp = (db: Db, env: Env, deps: Deps = {}): Hono<{ Variables: V
   const rootLog = deps.rootLog ?? createLogger({ service: "samskara-server" })
   const app = new Hono<{ Variables: Variables }>()
 
-  app.use(loggingMiddleware(rootLog))
+  app.use(loggingMiddleware(rootLog, { serverTiming: env.serverTiming }))
 
   app.get("/health", (c) => c.json({ status: "ok" }))
   app.route("/api/auth", authRoutes({ db, env, githubClient, pairingStore }))

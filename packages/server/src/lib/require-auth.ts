@@ -6,6 +6,7 @@ import { type User, getUserById } from "../services/auth.js"
 import { SESSION_COOKIE } from "./cookies.js"
 import type { Env } from "./env.js"
 import { type Audience, verifyToken } from "./jwt.js"
+import { timePhase } from "./request-timing.js"
 
 export type AuthVariables = {
   user: User
@@ -36,10 +37,10 @@ export const requireAuth =
     const token = resolveToken(c)
     if (!token) return c.json({ error: "unauthorized" }, 401)
 
-    const verified = await verifyToken(env, token, accepted)
+    const verified = await timePhase("auth.jwt", () => verifyToken(env, token, accepted))
     if (!verified) return c.json({ error: "unauthorized" }, 401)
 
-    const user = await getUserById(db, verified.sub)
+    const user = await timePhase("auth.user", () => getUserById(db, verified.sub))
     if (!user) return c.json({ error: "unauthorized" }, 401)
 
     c.set("user", user)

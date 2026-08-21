@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import { useSearchParams } from "react-router-dom"
-import { artifactPathUrl, rawArtifactUrl } from "../api/artifacts.js"
+import { artifactDetailUrl, artifactPathUrl, rawArtifactUrl } from "../api/artifacts.js"
 import type { CapturedArtifact } from "../api/types.js"
 import { absoluteTime } from "../time.js"
 import { Code } from "./Code.js"
@@ -71,8 +71,8 @@ type Exhibit = {
   readonly downloadUrl: string | null
   readonly isBinary: boolean
   readonly relativePath: string | null
-  readonly diff: string | null
-  readonly oldFragment: string | null
+  readonly diffUrl: string | null
+  readonly oldFragmentUrl: string | null
   readonly changeKind: string | null
   readonly editCount: number | null
 }
@@ -96,8 +96,8 @@ const fromFrameLink = (artifact: Artifact): Exhibit => ({
   downloadUrl: null,
   isBinary: false,
   relativePath: null,
-  diff: null,
-  oldFragment: null,
+  diffUrl: null,
+  oldFragmentUrl: null,
   changeKind: null,
   editCount: null,
 })
@@ -110,8 +110,8 @@ const fromCaptured = (artifact: CapturedArtifact, sessionId: string | null): Exh
   mimeType: artifact.mimeType,
   agent: null,
   access: "granted",
-  // The list route withholds text bodies; the diff and the fragment are what it does send. A
-  // created file has neither, so its body is fetched from the raw route on demand.
+  // The list route contains metadata only. Every body, including a diff or old fragment, is fetched
+  // after the viewer chooses the corresponding pane.
   content: null,
   mediaUrl: artifact.isBinary ? rawArtifactUrl(artifact.id) : null,
   textUrl: artifact.isBinary ? null : rawArtifactUrl(artifact.id),
@@ -126,8 +126,8 @@ const fromCaptured = (artifact: CapturedArtifact, sessionId: string | null): Exh
   downloadUrl: rawArtifactUrl(artifact.id),
   isBinary: artifact.isBinary,
   relativePath: artifact.relativePath,
-  diff: artifact.diff,
-  oldFragment: artifact.oldFragment,
+  diffUrl: artifact.hasDiff ? artifactDetailUrl(artifact.id, "diff") : null,
+  oldFragmentUrl: artifact.hasOldFragment ? artifactDetailUrl(artifact.id, "oldFragment") : null,
   changeKind: artifact.changeKind,
   editCount: artifact.editCount,
 })
@@ -249,10 +249,43 @@ const ReplacedExcerpt = ({ fragment }: { fragment: string }) => (
   </section>
 )
 
-type FetchState =
+type FetchState<T> =
   | { readonly status: "loading" }
-  | { readonly status: "ready"; readonly text: string }
+  | { readonly status: "ready"; readonly value: T }
   | { readonly status: "failed" }
+
+const ContentsUnavailable = () => (
+  <Notice tone="faded" title="Contents unavailable">
+    This artifact's contents could not be read back. Its provenance is recorded above.
+  </Notice>
+)
+
+const fetchTexts = (urls: ReadonlyArray<string>): Promise<ReadonlyArray<string>> =>
+  Promise.all(
+    urls.map((url) =>
+      fetch(url, { credentials: "same-origin" }).then((response) =>
+        response.ok ? response.text() : Promise.reject(new Error("unreadable")),
+      ),
+    ),
+  )
+
+const useFetchedTexts = (urls: ReadonlyArray<string>): FetchState<ReadonlyArray<string>> => {
+  const [state, setState] = useState<FetchState<ReadonlyArray<string>>>({ status: "loading" })
+  const key = urls.join("\u0000")
+
+  useEffect(() => {
+    let live = true
+    setState({ status: "loading" })
+    fetchTexts(key.split("\u0000"))
+      .then((value) => live && setState({ status: "ready", value }))
+      .catch(() => live && setState({ status: "failed" }))
+    return () => {
+      live = false
+    }
+  }, [key])
+
+  return state
+}
 
 /**
  * A created file has no diff and no replaced excerpt -- its body is the only thing there is to
@@ -261,29 +294,11 @@ type FetchState =
  * rather than adding a second detail-fetch path that would return the same bytes.
  */
 const FetchedText = ({ url, render }: { url: string; render: (text: string) => JSX.Element }) => {
-  const [state, setState] = useState<FetchState>({ status: "loading" })
-
-  useEffect(() => {
-    let live = true
-    setState({ status: "loading" })
-    fetch(url, { credentials: "same-origin" })
-      .then((response) => (response.ok ? response.text() : Promise.reject(new Error("unreadable"))))
-      .then((text) => live && setState({ status: "ready", text }))
-      .catch(() => live && setState({ status: "failed" }))
-    return () => {
-      live = false
-    }
-  }, [url])
+  const state = useFetchedTexts([url])
 
   if (state.status === "loading") return <output className="block text-faded">Loading…</output>
-  if (state.status === "failed") {
-    return (
-      <Notice tone="faded" title="Contents unavailable">
-        This artifact's contents could not be read back. Its provenance is recorded above.
-      </Notice>
-    )
-  }
-  return render(state.text)
+  if (state.status === "failed") return <ContentsUnavailable />
+  return render(state.value[0] ?? "")
 }
 
 /** Prefers the path URL so relative references resolve; falls back to the uuid route. */
@@ -328,21 +343,50 @@ const SideBySide = ({
   </div>
 )
 
-/** Fetches both sides before rendering, so the panes never show mismatched halves. */
+/** Fetches both sides concurrently before rendering, so the panes never show mismatched halves. */
 const SideBySideLoader = ({
   baseUrl,
   currentUrl,
   path,
   wrap,
-}: { baseUrl: string; currentUrl: string; path: string | null; wrap: boolean }) => (
+}: { baseUrl: string; currentUrl: string; path: string | null; wrap: boolean }) => {
+  const state = useFetchedTexts([baseUrl, currentUrl])
+
+  if (state.status === "loading") return <output className="block text-faded">Loading…</output>
+  if (state.status === "failed") return <ContentsUnavailable />
+  const [base = "", current = ""] = state.value
+  return <SideBySide base={base} current={current} path={path} wrap={wrap} />
+}
+
+const EmptyDiff = () => (
+  <Notice tone="faded" title="No diff captured">
+    No pre-session copy of this file resolved, so there is nothing to compare against.
+  </Notice>
+)
+
+const SelectedDetail = ({
+  url,
+  field,
+  render,
+}: {
+  url: string
+  field: "diff" | "oldFragment"
+  render: (body: string) => JSX.Element
+}) => (
   <FetchedText
-    url={baseUrl}
-    render={(base) => (
-      <FetchedText
-        url={currentUrl}
-        render={(current) => <SideBySide base={base} current={current} path={path} wrap={wrap} />}
-      />
-    )}
+    url={url}
+    render={(text) => {
+      try {
+        const detail = JSON.parse(text) as { artifact?: Record<string, unknown> }
+        return typeof detail.artifact?.[field] === "string" ? (
+          render(detail.artifact[field])
+        ) : (
+          <EmptyDiff />
+        )
+      } catch {
+        return <ContentsUnavailable />
+      }
+    }}
   />
 )
 
@@ -420,13 +464,25 @@ const EditedBody = ({ exhibit, wrap }: { exhibit: Exhibit; wrap: boolean }) => {
         />
       )
     }
-    if (exhibit.diff !== null) return <DiffBody content={exhibit.diff} wrap={wrap} />
-    if (exhibit.oldFragment !== null) return <ReplacedExcerpt fragment={exhibit.oldFragment} />
-    return (
-      <Notice tone="faded" title="No diff captured">
-        No pre-session copy of this file resolved, so there is nothing to compare against.
-      </Notice>
-    )
+    if (exhibit.diffUrl !== null) {
+      return (
+        <SelectedDetail
+          url={exhibit.diffUrl}
+          field="diff"
+          render={(diff) => <DiffBody content={diff} wrap={wrap} />}
+        />
+      )
+    }
+    if (exhibit.oldFragmentUrl !== null) {
+      return (
+        <SelectedDetail
+          url={exhibit.oldFragmentUrl}
+          field="oldFragment"
+          render={(fragment) => <ReplacedExcerpt fragment={fragment} />}
+        />
+      )
+    }
+    return <EmptyDiff />
   }
 
   return (
@@ -471,7 +527,13 @@ const Body = ({ exhibit, wrap }: { exhibit: Exhibit; wrap: boolean }) => {
   }
 
   // An edit carries a before AND an after, so it gets the switcher rather than one fixed pane.
-  if (exhibit.diff !== null || exhibit.oldFragment !== null || exhibit.baseUrl !== null) {
+  if (
+    exhibit.changeKind === "edited" ||
+    exhibit.changeKind === "editedUnknownBase" ||
+    exhibit.diffUrl !== null ||
+    exhibit.oldFragmentUrl !== null ||
+    exhibit.baseUrl !== null
+  ) {
     return <EditedBody exhibit={exhibit} wrap={wrap} />
   }
 

@@ -205,6 +205,11 @@ export const seedDatabase = async (spec: SeedSpec): Promise<void> => {
   const projectIds = spec.projects.map((project) => projectId(project.slug))
 
   try {
+    // Different specs seed different project sets into the same disposable database. Clear every
+    // prior E2E session first so message.repoId cannot retain a repository omitted by this spec.
+    // Session-owned messages, tool rows, commits, artifacts, and PR links cascade from this delete.
+    await sql`delete from sessions where "userId" in (${E2E_USER_ID}, ${E2E_OTHER_USER_ID})`
+
     // Every project ID is derived from its E2E-only slug, so this clears hidden-project fixtures
     // as well as visible ones without touching a non-E2E project owned by the second test user.
     if (projectIds.length > 0) {

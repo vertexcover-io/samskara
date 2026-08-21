@@ -9,10 +9,12 @@ const ROW = {
   mimeType: "text/markdown",
   isBinary: false,
   changeKind: "edited",
-  diff: "@@ -1 +1 @@\n-old\n+new\n",
-  oldFragment: null,
+  hasDiff: true,
+  hasOldFragment: false,
   editCount: 2,
   byteSize: 42,
+  diffByteSize: 22,
+  oldFragmentByteSize: null,
   hasBase: true,
   firstSeenAt: "2026-07-01T10:00:00.000Z",
   lastSeenAt: "2026-07-01T10:05:00.000Z",
@@ -74,20 +76,22 @@ test("S48: a well-formed artifacts response parses into the CapturedArtifact sha
     mimeType: "text/markdown",
     isBinary: false,
     changeKind: "edited",
-    diff: "@@ -1 +1 @@\n-old\n+new\n",
-    oldFragment: null,
+    hasDiff: true,
+    hasOldFragment: false,
+    byteSize: 42,
+    diffByteSize: 22,
+    oldFragmentByteSize: null,
     editCount: 2,
     firstSeenAt: "2026-07-01T10:00:00.000Z",
     lastSeenAt: "2026-07-01T10:05:00.000Z",
   })
 })
 
-test("S48: the list route omitting diff and oldFragment yields nulls rather than a parse failure", () => {
-  const { diff: _diff, oldFragment: _oldFragment, ...withoutBodies } = ROW
-  const parsed = parseSessionArtifacts({ artifacts: [withoutBodies] })
+test("S48: metadata-only list rows retain body-presence flags without diff bodies", () => {
+  const parsed = parseSessionArtifacts({ artifacts: [ROW] })
   if (parsed === null) throw new Error("expected a summary row to parse")
-  expect(parsed[0]?.diff).toBeNull()
-  expect(parsed[0]?.oldFragment).toBeNull()
+  expect(parsed[0]?.hasDiff).toBe(true)
+  expect(parsed[0]?.hasOldFragment).toBe(false)
 })
 
 test("S54: a row missing a required field is rejected, so no partially-typed artifact reaches the view", () => {

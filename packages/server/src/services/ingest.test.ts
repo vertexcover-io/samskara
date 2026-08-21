@@ -20,6 +20,7 @@ import {
   toolResult,
   users,
 } from "../db/schema.js"
+import * as sessionsRepo from "../repositories/sessions.repo.js"
 import { type Ctx, ingest } from "./ingest.js"
 
 const dockerAvailable = () => {
@@ -214,6 +215,7 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
     const [tokens] = await db.select().from(tokenUsage).where(eq(tokenUsage.inputTokens, 4))
     expect(call?.toolInput).toEqual({ path: "a.ts" })
     expect(result).toMatchObject({ result: { ok: true }, status: "cancelled" })
+    expect(call?.messageId).not.toBe(result?.messageId)
     expect(tokens).toMatchObject({ outputTokens: 3, cachedTokens: 2, thinkingTokens: 1 })
 
     const otherSession = "sess-roundtrip-other"
@@ -225,6 +227,96 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
       ingested: 3,
       deduped: 0,
     })
+  })
+
+  test("detail associates each call with its nearest later same-track result", async () => {
+    const sessionId = "sess-tool-result-association"
+    const item = (
+      lineUuid: string,
+      lineNumber: number,
+      subIndex: number,
+      trackId: string,
+      msgType: "toolCall" | "toolResult",
+      toolId: string,
+      output?: unknown,
+    ): TestMessage => ({
+      lineUuid,
+      lineNumber,
+      message: {
+        sessionId,
+        source: "claude_code",
+        sourceSchemaVersion: 1,
+        trackId,
+        subIndex,
+        msgType,
+        details:
+          msgType === "toolCall"
+            ? { callId: toolId, name: "Read", input: { path: `${trackId}-${lineNumber}` } }
+            : { callId: toolId, output, status: "success" },
+      } as NormalizedMessage,
+    })
+    const main = [
+      item("0191d942-3ba5-7dba-9a7d-22d65b302601", 1, 0, "main", "toolCall", "repeated"),
+      item("0191d942-3ba5-7dba-9a7d-22d65b302602", 2, 0, "main", "toolResult", "repeated", {
+        winner: "first",
+      }),
+      item("0191d942-3ba5-7dba-9a7d-22d65b302603", 3, 0, "main", "toolCall", "repeated"),
+      item("0191d942-3ba5-7dba-9a7d-22d65b302604", 4, 0, "main", "toolResult", "repeated", {
+        winner: "second",
+      }),
+      item("0191d942-3ba5-7dba-9a7d-22d65b302605", 5, 0, "main", "toolCall", "missing"),
+      item("0191d942-3ba5-7dba-9a7d-22d65b302606", 1, 0, "other-track", "toolResult", "repeated", {
+        winner: "wrong-track",
+      }),
+      item("0191d942-3ba5-7dba-9a7d-22d65b302607", 2, 0, "other-track", "toolCall", "repeated"),
+      item("0191d942-3ba5-7dba-9a7d-22d65b302608", 3, 0, "other-track", "toolResult", "repeated", {
+        winner: "other-track",
+      }),
+    ]
+    await ingest(ctx, mainPayload(sessionId, main))
+    await ingest(
+      ctx,
+      mainPayload("sess-tool-result-collision", [
+        {
+          ...item("0191d942-3ba5-7dba-9a7d-22d65b302609", 1, 0, "main", "toolResult", "repeated", {
+            winner: "wrong-session",
+          }),
+          message: {
+            ...item(
+              "0191d942-3ba5-7dba-9a7d-22d65b302609",
+              1,
+              0,
+              "main",
+              "toolResult",
+              "repeated",
+              { winner: "wrong-session" },
+            ).message,
+            sessionId: "sess-tool-result-collision",
+          },
+        },
+      ]),
+    )
+
+    const first = await sessionsRepo.getDetail(db, userId, sessionId)
+    const second = await sessionsRepo.getDetail(db, userId, sessionId)
+    expect(first?.toolCalls).toHaveLength(4)
+    const callsByPath = new Map(
+      first?.toolCalls.map((call) => [(call.toolInput as { path: string }).path, call]) ?? [],
+    )
+    expect(callsByPath.get("main-1")?.result).toEqual({ winner: "first" })
+    expect(callsByPath.get("main-3")?.result).toEqual({ winner: "second" })
+    expect(callsByPath.get("main-5")).toMatchObject({ result: null, status: null })
+    expect(callsByPath.get("other-track-2")).toMatchObject({
+      result: { winner: "other-track" },
+      status: "success",
+    })
+    expect(second?.toolCalls).toEqual(first?.toolCalls)
+
+    const calls = await db.select().from(toolCall).where(eq(toolCall.toolId, "repeated"))
+    const results = await db.select().from(toolResult).where(eq(toolResult.toolId, "repeated"))
+    expect(
+      calls.every((call) => results.every((result) => call.messageId !== result.messageId)),
+    ).toBe(true)
   })
 
   test("an injected user turn keeps the subType that says who put it there, so a reader can tell it from a typed prompt", async () => {

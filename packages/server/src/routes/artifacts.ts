@@ -6,16 +6,19 @@ import {
   MAX_TEXT_BYTES,
   artifactUploadSchema,
 } from "@samskara/core"
-import { Hono } from "hono"
+import { type Context, Hono } from "hono"
 import { z } from "zod"
 import type { Db } from "../db/client.js"
 import { type ServeHeaders, serveHeadersFor } from "../lib/artifact-serving.js"
 import type { Env } from "../lib/env.js"
 import { type AuthVariables, requireAuth } from "../lib/require-auth.js"
 import {
+  type ArtifactByteSlice,
   type ArtifactDetailRow,
   type ArtifactSummaryRow,
   getArtifact,
+  getArtifactByteMetadata,
+  getArtifactByteMetadataByPath,
   getArtifactBytes,
   getArtifactBytesByPath,
   upsertArtifact,
@@ -25,6 +28,7 @@ import * as sessionsRepo from "../repositories/sessions.repo.js"
 type Deps = { readonly db: Db; readonly env: Env }
 
 const rawQuerySchema = z.object({ which: z.enum(["base", "current"]).default("current") })
+const detailQuerySchema = z.object({ part: z.enum(["diff", "oldFragment"]).optional() })
 
 const decode = (payload: ArtifactUploadPayload, content: string): Buffer =>
   Buffer.from(content, payload.encoding === "base64" ? "base64" : "utf8")
@@ -41,7 +45,23 @@ export const serializeArtifact = <T extends ArtifactSummaryRow | ArtifactDetailR
   lastSeenAt: new Date(row.lastSeenAt).toISOString(),
 })
 
-export type RangeResponse =
+/** The detail API returns only the selected text body, never sibling body fields as null placeholders. */
+const serializeArtifactDetail = (
+  row: ArtifactDetailRow,
+  part: "diff" | "oldFragment" | undefined,
+) => {
+  const { diff, oldFragment, ...metadata } = serializeArtifact(row)
+  if (part === "diff") return { ...metadata, diff }
+  if (part === "oldFragment") return { ...metadata, oldFragment }
+  return metadata
+}
+
+export type ParsedRange =
+  | { readonly kind: "full" }
+  | { readonly kind: "partial"; readonly start: number; readonly length: number }
+  | { readonly kind: "unsatisfiable" }
+
+type RangeResponse =
   | { readonly kind: "full"; readonly body: Buffer; readonly headers: Record<string, string> }
   | {
       readonly kind: "partial"
@@ -59,49 +79,72 @@ const baseHeaders = (serve: ServeHeaders): Record<string, string> => ({
   "accept-ranges": "bytes",
 })
 
-/**
- * A single `bytes=` range only. Multipart ranges would require a boundary-delimited body, and no
- * client this serves (a `<video>` seeking a captured recording) asks for one.
- */
-export const rangeResponse = (
-  bytes: Buffer,
-  serve: ServeHeaders,
-  rangeHeader: string | undefined,
-): RangeResponse => {
-  const headers = baseHeaders(serve)
-  if (rangeHeader === undefined) {
-    return {
-      kind: "full",
-      body: bytes,
-      headers: { ...headers, "content-length": `${bytes.length}` },
-    }
+const rangeHeaders = (headers: Record<string, string>, range: ParsedRange, total: number) => {
+  if (range.kind === "full") return { ...headers, "content-length": `${total}` }
+  if (range.kind === "unsatisfiable") return { ...headers, "content-range": `bytes */${total}` }
+  return {
+    ...headers,
+    "content-range": `bytes ${range.start}-${range.start + range.length - 1}/${total}`,
+    "content-length": `${range.length}`,
   }
+}
+
+/**
+ * Parses a single `bytes=` range before body selection. A malformed/multiple range retains the
+ * legacy full-response behavior; a satisfiable range becomes a PostgreSQL substring request.
+ */
+export const parseRange = (rangeHeader: string | undefined, total: number): ParsedRange => {
+  if (rangeHeader === undefined) return { kind: "full" }
 
   const match = RANGE.exec(rangeHeader.trim())
-  if (!match) return { kind: "full", body: bytes, headers }
+  if (!match) return { kind: "full" }
 
   const [, rawStart = "", rawEnd = ""] = match
-  const total = bytes.length
+  if (rawStart === "" && rawEnd === "") return { kind: "full" }
 
   // `bytes=-N` is a suffix request: the final N bytes, not a range starting at zero.
   const start = rawStart === "" ? Math.max(total - Number(rawEnd), 0) : Number(rawStart)
   const end = rawStart === "" || rawEnd === "" ? total - 1 : Math.min(Number(rawEnd), total - 1)
 
-  if (rawStart === "" && rawEnd === "") return { kind: "full", body: bytes, headers }
-  if (start >= total || start > end) {
-    return { kind: "unsatisfiable", headers: { ...headers, "content-range": `bytes */${total}` } }
+  if (start >= total || start > end) return { kind: "unsatisfiable" }
+  return { kind: "partial", start, length: end - start + 1 }
+}
+
+/**
+ * Test-only adapter for range boundary cases. Route handlers use `parseRange` and `rangeHeaders`
+ * directly, then ask Postgres for the selected slice rather than materializing a whole blob.
+ */
+export const __testOnlyRangeResponse = (
+  bytes: Buffer,
+  serve: ServeHeaders,
+  rangeHeader: string | undefined,
+): RangeResponse => {
+  const headers = baseHeaders(serve)
+  const range = parseRange(rangeHeader, bytes.length)
+  if (range.kind === "full") {
+    return { kind: "full", body: bytes, headers: rangeHeaders(headers, range, bytes.length) }
+  }
+  if (range.kind === "unsatisfiable") {
+    return { kind: "unsatisfiable", headers: rangeHeaders(headers, range, bytes.length) }
   }
 
   return {
     kind: "partial",
-    body: bytes.subarray(start, end + 1),
-    headers: {
-      ...headers,
-      "content-range": `bytes ${start}-${end}/${total}`,
-      "content-length": `${end - start + 1}`,
-    },
+    body: bytes.subarray(range.start, range.start + range.length),
+    headers: rangeHeaders(headers, range, bytes.length),
   }
 }
+
+const matchesEtag = (value: string | undefined, etag: string): boolean =>
+  value
+    ?.split(",")
+    .map((candidate) => candidate.trim())
+    .some((candidate) => candidate === "*" || candidate === etag) ?? false
+
+const rawHeaders = (serve: ServeHeaders, hash: string): Record<string, string> => ({
+  ...baseHeaders(serve),
+  etag: `"${hash}"`,
+})
 
 export const artifactRoutes = ({ db, env }: Deps): Hono<{ Variables: AuthVariables }> => {
   const app = new Hono<{ Variables: AuthVariables }>()
@@ -161,11 +204,60 @@ export const artifactRoutes = ({ db, env }: Deps): Hono<{ Variables: AuthVariabl
     },
   )
 
-  app.get("/:artifactId", requireAuth({ db, env }, ["web"]), async (context) => {
-    const row = await getArtifact(db, context.get("user").id, context.req.param("artifactId"))
-    if (row === null) return context.json({ error: "artifactNotFound" } as const, 404)
-    return context.json({ artifact: serializeArtifact<ArtifactDetailRow>(row) })
-  })
+  app.get(
+    "/:artifactId",
+    requireAuth({ db, env }, ["web"]),
+    zValidator("query", detailQuerySchema),
+    async (context) => {
+      const row = await getArtifact(
+        db,
+        context.get("user").id,
+        context.req.param("artifactId"),
+        context.req.valid("query").part,
+      )
+      if (row === null) return context.json({ error: "artifactNotFound" } as const, 404)
+      return context.json({
+        artifact: serializeArtifactDetail(row, context.req.valid("query").part),
+      })
+    },
+  )
+
+  const serveRaw = async (
+    context: Context<{ Variables: AuthVariables }>,
+    metadata: Awaited<ReturnType<typeof getArtifactByteMetadata>>,
+    load: (slice?: ArtifactByteSlice) => Promise<{ readonly bytes: Buffer } | null>,
+  ) => {
+    if (metadata === null || metadata.byteSize === null || metadata.hash === null) {
+      return context.json({ error: "artifactNotFound" } as const, 404)
+    }
+
+    const etag = `"${metadata.hash}"`
+    if (matchesEtag(context.req.header("if-none-match"), etag))
+      return context.body(null, 304, { etag })
+
+    // A mismatched If-Range means the browser needs a complete fresh representation.
+    const rangeHeader =
+      context.req.header("if-range") === undefined || context.req.header("if-range") === etag
+        ? context.req.header("range")
+        : undefined
+    const range = parseRange(rangeHeader, metadata.byteSize)
+    const serve = serveHeadersFor(metadata.sample ?? Buffer.alloc(0), metadata.isBinary)
+    const headers = rawHeaders(serve, metadata.hash)
+
+    if (range.kind === "unsatisfiable") {
+      return context.body(null, 416, rangeHeaders(headers, range, metadata.byteSize))
+    }
+
+    const found = await load(
+      range.kind === "partial" ? { start: range.start, length: range.length } : undefined,
+    )
+    if (found === null) return context.json({ error: "artifactNotFound" } as const, 404)
+
+    if (range.kind === "partial") {
+      return context.body(found.bytes, 206, rangeHeaders(headers, range, metadata.byteSize))
+    }
+    return context.body(found.bytes, 200, rangeHeaders(headers, range, metadata.byteSize))
+  }
 
   /**
    * The same bytes as `/:artifactId/raw`, addressed by the path the artifact had on disk. A
@@ -183,21 +275,14 @@ export const artifactRoutes = ({ db, env }: Deps): Hono<{ Variables: AuthVariabl
       const marker = "/files/"
       const at = context.req.path.indexOf(marker)
       const relativePath = decodeURIComponent(context.req.path.slice(at + marker.length))
+      const userId = context.get("user").id
+      const sessionId = context.req.param("sessionId")
 
-      const found = await getArtifactBytesByPath(
-        db,
-        context.get("user").id,
-        context.req.param("sessionId"),
-        relativePath,
-        which,
+      return serveRaw(
+        context,
+        await getArtifactByteMetadataByPath(db, userId, sessionId, relativePath, which),
+        (slice) => getArtifactBytesByPath(db, userId, sessionId, relativePath, which, slice),
       )
-      if (found === null) return context.json({ error: "artifactNotFound" } as const, 404)
-
-      const serve = serveHeadersFor(found.bytes, found.isBinary)
-      const response = rangeResponse(found.bytes, serve, context.req.header("range"))
-
-      if (response.kind === "unsatisfiable") return context.body(null, 416, response.headers)
-      return context.body(response.body, response.kind === "partial" ? 206 : 200, response.headers)
     },
   )
 
@@ -207,21 +292,14 @@ export const artifactRoutes = ({ db, env }: Deps): Hono<{ Variables: AuthVariabl
     zValidator("query", rawQuerySchema),
     async (context) => {
       const { which } = context.req.valid("query")
-      const found = await getArtifactBytes(
-        db,
-        context.get("user").id,
-        context.req.param("artifactId"),
-        which,
+      const artifactId = context.req.param("artifactId")
+      const userId = context.get("user").id
+
+      return serveRaw(
+        context,
+        await getArtifactByteMetadata(db, userId, artifactId, which),
+        (slice) => getArtifactBytes(db, userId, artifactId, which, slice),
       )
-      if (found === null) return context.json({ error: "artifactNotFound" } as const, 404)
-
-      // `found.mimeType` is what the client claimed on upload and is never consulted here:
-      // echoing it is the stored-XSS vector this route exists to close.
-      const serve = serveHeadersFor(found.bytes, found.isBinary)
-      const response = rangeResponse(found.bytes, serve, context.req.header("range"))
-
-      if (response.kind === "unsatisfiable") return context.body(null, 416, response.headers)
-      return context.body(response.body, response.kind === "partial" ? 206 : 200, response.headers)
     },
   )
 

@@ -154,6 +154,7 @@ const NESTED_PAYLOAD: SessionDetailPayload = buildPayload({
 type ArtifactsReply = { readonly status: number; readonly body: unknown }
 
 const OK_EMPTY: ArtifactsReply = { status: 200, body: { artifacts: [] } }
+const CAPTURED_DIFF = "@@ -1,3 +1,3 @@\n-The original line.\n+The replacement line.\n"
 
 const renderDetail = (
   payload: SessionDetailPayload = PAYLOAD,
@@ -162,6 +163,11 @@ const renderDetail = (
 ) => {
   vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
     const url = typeof input === "string" ? input : String(input)
+    if (url.includes("/api/artifacts/") && url.includes("part=diff")) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ artifact: { diff: CAPTURED_DIFF } }), { status: 200 }),
+      )
+    }
     if (url.includes("/artifacts")) {
       return Promise.resolve(
         new Response(JSON.stringify(artifacts.body), { status: artifacts.status }),
@@ -569,9 +575,12 @@ const CAPTURED = {
   mimeType: "text/markdown",
   isBinary: false,
   changeKind: "edited",
-  diff: "@@ -1,3 +1,3 @@\n-The original line.\n+The replacement line.\n",
+  hasDiff: true,
+  hasOldFragment: false,
   editCount: 1,
   byteSize: 42,
+  diffByteSize: CAPTURED_DIFF.length,
+  oldFragmentByteSize: null,
   hasBase: true,
   firstSeenAt: "2026-07-01T10:00:00.000Z",
   lastSeenAt: "2026-07-01T10:05:00.000Z",
@@ -584,7 +593,13 @@ test("S48: the artifacts tab lists the session's captured files as a folder tree
     body: {
       artifacts: [
         CAPTURED,
-        { ...CAPTURED, id: "cap-2", relativePath: "src/ingest.ts", diff: null },
+        {
+          ...CAPTURED,
+          id: "cap-2",
+          relativePath: "src/ingest.ts",
+          hasDiff: false,
+          diffByteSize: null,
+        },
       ],
     },
   })

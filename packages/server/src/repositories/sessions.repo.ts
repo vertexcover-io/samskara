@@ -175,20 +175,6 @@ const durationMs = sql<number | null>`(
   having count("messages"."timestamp") > 1
 )`
 
-const tokensFor = (sessionId: SQL): SQL<number> => sql`(
-  select coalesce(sum(
-    "tokenUsage"."inputTokens"::bigint + "tokenUsage"."outputTokens"::bigint
-    + "tokenUsage"."cachedTokens"::bigint + "tokenUsage"."thinkingTokens"::bigint
-  ), 0)::bigint
-  from "tokenUsage"
-  join "messages" on "messages"."id" = "tokenUsage"."messageId"
-  where "messages"."sessionId" = ${sessionId}
-)`
-
-const tokensTotal = tokensFor(sql`"sessions"."id"`)
-
-const status = sql<string>`case when ${messageCount} = 0 then 'empty' else 'complete' end`
-
 const dominantRepoId = sql`(
   select "messages"."repoId"
   from ${ownMessages} and "messages"."repoId" is not null
@@ -300,7 +286,7 @@ const safeSnippet = (
 }
 
 const authorizationCte = (db: Querier, userId: string) => sql`
-  authorized_sessions AS MATERIALIZED (
+  authorized_sessions AS (
     select "sessions"."id", "sessions"."title", "sessions"."updatedAt", "projects"."name" as "projectName", "projects"."slug" as "projectSlug", "users"."github_login" as "userLogin"
     from "sessions"
     join "projects" on "projects"."id" = "sessions"."projectId"
@@ -397,7 +383,7 @@ export const listAccessible = async (
     filter.commit === undefined ? undefined : await resolveCommit(db, userId, filter.commit)
   const predicates = filterPredicates(filter, resolvedCommit)
   const where = predicates.length === 0 ? sql`true` : sql.join(predicates, sql` and `)
-  const filtered = sql`filtered_sessions as materialized (select a.* from authorized_sessions a where ${where})`
+  const filtered = sql`filtered_sessions as (select a.* from authorized_sessions a where ${where})`
   const query =
     filter.searchQuery === undefined ? undefined : compileSessionQuery(filter.searchQuery)
   const matches =
@@ -441,54 +427,127 @@ export const listAccessible = async (
           : query !== undefined && (filter.sort === undefined || filter.sort === "relevance")
             ? sql`p.score desc, p."matchedRows" desc, p."updatedAt" desc, p.id asc`
             : sql`p."updatedAt" desc, p.id asc`
+  const ranked = isTokenSort
+    ? sql`ranked as (
+        select ms.*, coalesce(tt."tokensTotal", 0)::bigint as "tokensTotal"
+        from matched_sessions ms
+        left join (
+          select m."sessionId" as id, coalesce(sum(
+            tu."inputTokens"::bigint + tu."outputTokens"::bigint
+            + tu."cachedTokens"::bigint + tu."thinkingTokens"::bigint
+          ), 0)::bigint as "tokensTotal"
+          from "messages" m
+          join matched_sessions ms on ms.id = m."sessionId"
+          left join "tokenUsage" tu on tu."messageId" = m.id
+          group by m."sessionId"
+        ) tt on tt.id = ms.id
+      )`
+    : sql`ranked as (
+        select ms.*, null::bigint as "tokensTotal"
+        from matched_sessions ms
+      )`
+  const messageFacts = isTokenSort
+    ? sql`message_facts as (
+        select p.id,
+          count(m.id)::int as "messageCount",
+          case when count(m."timestamp") > 1
+            then (extract(epoch from max(m."timestamp") - min(m."timestamp")) * 1000)::bigint
+            else null end as "durationMs",
+          p."tokensTotal"
+        from paged p
+        left join "messages" m on m."sessionId" = p.id
+        group by p.id, p."tokensTotal"
+      )`
+    : sql`message_facts as (
+        select p.id,
+          count(m.id)::int as "messageCount",
+          case when count(m."timestamp") > 1
+            then (extract(epoch from max(m."timestamp") - min(m."timestamp")) * 1000)::bigint
+            else null end as "durationMs",
+          coalesce(sum(
+            tu."inputTokens"::bigint + tu."outputTokens"::bigint
+            + tu."cachedTokens"::bigint + tu."thinkingTokens"::bigint
+          ), 0)::bigint as "tokensTotal"
+        from paged p
+        left join "messages" m on m."sessionId" = p.id
+        left join "tokenUsage" tu on tu."messageId" = m.id
+        group by p.id
+      )`
   const rows = (await db.execute(sql`
-    with ${authorizationCte(db, userId)}, ${filtered}, ${matches}, ranked as (
-      select ms.*, ${isTokenSort ? tokensFor(sql`ms.id`) : sql`null::bigint`} as "tokensTotal", count(*) over()::int as total
-      from matched_sessions ms
-    ), paged as (select * from ranked order by ${order} limit ${limit} offset ${offset})
-    select p.id, ${derivedTitle} as title, p."projectName", p."projectSlug", p."userLogin",
-      r.host as "repoHost", r.owner as "repoOwner", r."repo_name" as "repoName", ${durationMs} as "durationMs",
-      ${isTokenSort ? sql`p."tokensTotal"` : tokensFor(sql`"sessions"."id"`)} as "tokensTotal", ${status} as status,
-      p."updatedAt" as "lastActiveAt", p."sourceKind", p."sourceRowId", p.score, p.total,
-      case when p."sourceText" is null then null else ts_headline('simple'::regconfig, p."sourceText", ${query ?? sql`null::tsquery`}, ${SNIPPET_OPTIONS}) end as headline
-    from paged p join "sessions" on "sessions".id = p.id left join "repos" r on r.id = ${dominantRepoId}
-    order by ${finalOrder}
+    with ${authorizationCte(db, userId)}, ${filtered}, ${matches}, ${ranked},
+    totals as (select count(*)::int as total from ranked),
+    paged as (select * from ranked order by ${order} limit ${limit} offset ${offset}),
+    ${messageFacts},
+    dominant_repos as (
+      select distinct on (p.id) p.id, m."repoId"
+      from paged p
+      join "messages" m on m."sessionId" = p.id and m."repoId" is not null
+      group by p.id, m."repoId"
+      order by p.id, count(*) desc, min(m."lineNumber") asc
+    ),
+    derived_titles as (
+      select distinct on (p.id) p.id,
+        left(btrim(split_part(coalesce(m."content"->>'value', m."content"->>'text', m."content"->>'body'), chr(10), 1)), 120) as title
+      from paged p
+      join "messages" m on m."sessionId" = p.id
+        and m."msgType" = 'message' and m.role = 'user'
+        and coalesce(m."content"->>'value', m."content"->>'text', m."content"->>'body') is not null
+        and btrim(coalesce(m."content"->>'value', m."content"->>'text', m."content"->>'body')) <> ''
+      order by p.id, m."lineNumber" asc
+    ),
+    result_rows as (
+      select p.id, coalesce(p.title, dt.title) as title, p."projectName", p."projectSlug", p."userLogin",
+        r.host as "repoHost", r.owner as "repoOwner", r."repo_name" as "repoName",
+        mf."durationMs", ${isTokenSort ? sql`p."tokensTotal"` : sql`mf."tokensTotal"`} as "tokensTotal",
+        case when mf."messageCount" = 0 then 'empty' else 'complete' end as status,
+        p."updatedAt" as "lastActiveAt", p."sourceKind", p."sourceRowId", p."sourceText", p.score, totals.total,
+        case when p."sourceText" is null then null else ts_headline('simple'::regconfig, p."sourceText", ${query ?? sql`null::tsquery`}, ${SNIPPET_OPTIONS}) end as headline
+      from paged p
+      cross join totals
+      join message_facts mf on mf.id = p.id
+      left join dominant_repos dr on dr.id = p.id
+      left join "repos" r on r.id = dr."repoId"
+      left join derived_titles dt on dt.id = p.id
+      order by ${finalOrder}
+    )
+    select * from result_rows
+    union all
+    select
+      null::text as id, null::text as title, null::text as "projectName", null::text as "projectSlug", null::text as "userLogin",
+      null::text as "repoHost", null::text as "repoOwner", null::text as "repoName", null::bigint as "durationMs",
+      null::bigint as "tokensTotal", null::text as status, null::timestamptz as "lastActiveAt", null::text as "sourceKind",
+      null::text as "sourceRowId", null::text as "sourceText", null::real as score, totals.total, null::text as headline
+    from totals
+    where not exists (select 1 from result_rows)
   `)) as ReadonlyArray<Record<string, unknown>>
-  const total =
-    rows.length === 0
-      ? Number(
-          (
-            (await db.execute(
-              sql`with ${authorizationCte(db, userId)}, ${filtered}, ${matches} select count(*)::int as total from matched_sessions`,
-            )) as ReadonlyArray<{ total: number }>
-          )[0]?.total ?? 0,
-        )
-      : Number(rows[0]?.total)
-  const mapped = rows.map((row) =>
-    withRepo({
-      id: row.id as string,
-      title: row.title as string | null,
-      projectName: row.projectName as string,
-      projectSlug: row.projectSlug as string,
-      userLogin: row.userLogin as string,
-      repoHost: row.repoHost as string | null,
-      repoOwner: row.repoOwner as string | null,
-      repoName: row.repoName as string | null,
-      durationMs: row.durationMs === null ? null : Number(row.durationMs),
-      tokensTotal: Number(row.tokensTotal),
-      status: row.status as string,
-      lastActiveAt: String(row.lastActiveAt),
-      match:
-        row.sourceKind === null
-          ? null
-          : {
-              sourceKind: row.sourceKind as SessionMatch["sourceKind"],
-              sourceRowId: String(row.sourceRowId),
-              score: Number(row.score),
-              snippet: safeSnippet(String(row.sourceText), String(row.headline)),
-            },
-    }),
-  )
+  const total = Number(rows[0]?.total ?? 0)
+  const mapped = rows
+    .filter((row) => row.id !== null)
+    .map((row) =>
+      withRepo({
+        id: row.id as string,
+        title: row.title as string | null,
+        projectName: row.projectName as string,
+        projectSlug: row.projectSlug as string,
+        userLogin: row.userLogin as string,
+        repoHost: row.repoHost as string | null,
+        repoOwner: row.repoOwner as string | null,
+        repoName: row.repoName as string | null,
+        durationMs: row.durationMs === null ? null : Number(row.durationMs),
+        tokensTotal: Number(row.tokensTotal),
+        status: row.status as string,
+        lastActiveAt: String(row.lastActiveAt),
+        match:
+          row.sourceKind === null
+            ? null
+            : {
+                sourceKind: row.sourceKind as SessionMatch["sourceKind"],
+                sourceRowId: String(row.sourceRowId),
+                score: Number(row.score),
+                snippet: safeSnippet(String(row.sourceText), String(row.headline)),
+              },
+      }),
+    )
   return { rows: mapped, total, filterOptions: await filterOptionsFor(db, userId) }
 }
 
@@ -684,20 +743,25 @@ export const getDetail = async (
         .from(messages)
         .where(eq(messages.sessionId, sessionId))
         .orderBy(asc(messages.lineNumber), asc(messages.subIndex)),
-      db
-        .select({
-          toolId: toolCall.toolId,
-          messageId: toolCall.messageId,
-          toolName: toolCall.toolName,
-          toolInput: toolCall.toolInput,
-          result: toolResult.result,
-          status: toolResult.status,
-        })
-        .from(toolCall)
-        .innerJoin(messages, eq(messages.id, toolCall.messageId))
-        .leftJoin(toolResult, eq(toolResult.toolId, toolCall.toolId))
-        .where(eq(messages.sessionId, sessionId))
-        .orderBy(asc(messages.lineNumber), asc(toolCall.toolId)),
+      db.execute(sql`
+        select tc."toolId", tc."messageId", tc."toolName", tc."toolInput", result."result", result.status
+        from "toolCall" tc
+        join "messages" call_message on call_message.id = tc."messageId"
+        left join lateral (
+          select tr.result, tr.status
+          from "toolResult" tr
+          join "messages" result_message on result_message.id = tr."messageId"
+          where tr."toolId" = tc."toolId"
+            and result_message."sessionId" = call_message."sessionId"
+            and result_message."trackId" = call_message."trackId"
+            and (result_message."lineNumber", result_message."subIndex", result_message.id)
+              >= (call_message."lineNumber", call_message."subIndex", call_message.id)
+          order by result_message."lineNumber" asc, result_message."subIndex" asc, result_message.id asc
+          limit 1
+        ) result on true
+        where call_message."sessionId" = ${sessionId}
+        order by call_message."lineNumber" asc, call_message."subIndex" asc, tc."toolId" asc
+      `) as Promise<ReadonlyArray<ToolCallRow>>,
       db
         .select({
           agentId: subagents.agentId,

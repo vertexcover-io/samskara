@@ -177,8 +177,12 @@ export type CapturedArtifact = {
   readonly mimeType: string
   readonly isBinary: boolean
   readonly changeKind: string
-  readonly diff: string | null
-  readonly oldFragment: string | null
+  /** List metadata only; bodies are fetched from the selected detail endpoint. */
+  readonly hasDiff: boolean
+  readonly hasOldFragment: boolean
+  readonly byteSize: number
+  readonly diffByteSize: number | null
+  readonly oldFragmentByteSize: number | null
   readonly editCount: number
   readonly firstSeenAt: string
   readonly lastSeenAt: string
