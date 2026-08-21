@@ -1,0 +1,1 @@
+CREATE INDEX "sessions_user_project_updated_idx" ON "sessions" USING btree ("userId","projectId","updatedAt");

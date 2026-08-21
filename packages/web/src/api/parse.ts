@@ -15,6 +15,7 @@ import type {
   SessionRepo,
   SessionSearchMatch,
   SessionSummary,
+  SyncStatusRow,
   TokenTotals,
 } from "./types.js"
 
@@ -71,6 +72,53 @@ export const parseProjectList = (body: unknown): ReadonlyArray<ProjectSummary> |
 
   const parsed = fields.projects.map(parseProjectSummary)
   return parsed.every((project): project is ProjectSummary => project !== null) ? parsed : null
+}
+
+const parseSyncStatusRow = (value: unknown): SyncStatusRow | null => {
+  const fields = asFields(value)
+  if (!fields) return null
+
+  const userId = str(fields.userId)
+  const githubLogin = str(fields.githubLogin)
+  const sessionCount = num(fields.sessionCount)
+  if (userId === null || githubLogin === null || sessionCount === null) return null
+
+  const name = nullableStr(fields.name)
+  const avatarUrl = nullableStr(fields.avatarUrl)
+  const projectId = nullableStr(fields.projectId)
+  const projectName = nullableStr(fields.projectName)
+  const projectSlug = nullableStr(fields.projectSlug)
+  const lastSyncedAt = nullableStr(fields.lastSyncedAt)
+  if (
+    name === undefined ||
+    avatarUrl === undefined ||
+    projectId === undefined ||
+    projectName === undefined ||
+    projectSlug === undefined ||
+    lastSyncedAt === undefined
+  ) {
+    return null
+  }
+
+  return {
+    userId,
+    githubLogin,
+    name,
+    avatarUrl,
+    projectId,
+    projectName,
+    projectSlug,
+    sessionCount,
+    lastSyncedAt,
+  }
+}
+
+export const parseSyncStatusRows = (body: unknown): ReadonlyArray<SyncStatusRow> | null => {
+  const fields = asFields(body)
+  if (!fields || !Array.isArray(fields.rows)) return null
+
+  const parsed = fields.rows.map(parseSyncStatusRow)
+  return parsed.every((row): row is SyncStatusRow => row !== null) ? parsed : null
 }
 
 const nullableNum = (value: unknown): number | null | undefined => {
