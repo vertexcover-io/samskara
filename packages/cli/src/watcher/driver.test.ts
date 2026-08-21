@@ -22,6 +22,7 @@ import {
 } from "./driver.js"
 import type { ResolvedRepo } from "./resolveRepo.js"
 import { createInMemorySink } from "./sink.js"
+import { spyLogger } from "./test-logger.js"
 
 // The driver binds these at module load, so the mock must replace the module, not a dep.
 const repoMocks = vi.hoisted(() => ({
@@ -291,6 +292,40 @@ describe("watcher driver", () => {
     expect(sink.received).toHaveLength(1)
     expect(sink.received[0]?.sessionId).toBe("no-session")
     expect(store.checkpoints[main]?.lineProcessed).toBe(1)
+  })
+
+  test("a 401 flush names the cause and the fix, not a bare 'flush failed'", async () => {
+    const main = join(projects, "sess-1.jsonl")
+    await writeFile(main, `${assistantLine("l1", "sess-1")}\n`, "utf8")
+
+    const spy = spyLogger()
+    const sink = createInMemorySink(
+      () => 401,
+      () => '{"error":"unauthorized"}',
+    )
+    await runCycle(config, deps({ sink, glob: async () => [main], log: spy.log }))
+
+    const [entry] = spy.warn
+    expect(entry?.message).toContain("samskara login")
+    expect(entry?.details.status).toBe(401)
+    expect(entry?.details.detail).toContain("unauthorized")
+    expect(entry?.details.key).toBe(main)
+  })
+
+  test("a 500 flush explains the retry rather than reading as a lost session", async () => {
+    const main = join(projects, "sess-1.jsonl")
+    await writeFile(main, `${assistantLine("l1", "sess-1")}\n`, "utf8")
+
+    const spy = spyLogger()
+    const sink = createInMemorySink(
+      () => 500,
+      () => "boom",
+    )
+    await runCycle(config, deps({ sink, glob: async () => [main], log: spy.log }))
+
+    const [entry] = spy.warn
+    expect(entry?.message).toMatch(/retr/i)
+    expect(entry?.details.detail).toContain("boom")
   })
 
   test("independent sessions run in parallel; one failing does not block the other", async () => {

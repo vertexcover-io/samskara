@@ -19,6 +19,7 @@ import { type ArtifactQueueEntry, enqueue } from "./artifact-queue.js"
 import { shouldCaptureArtifacts } from "./containment.js"
 import { collectGitEvents } from "./gitEvents.js"
 import { createRepoResolver, resolveHeadSha } from "./resolveRepo.js"
+import type { SinkResult } from "./sink.js"
 
 export const MESSAGE_CAP = 2000
 
@@ -33,7 +34,7 @@ export type WatcherConfig = {
 export type WatcherDeps = {
   readonly fs: FileSystem
   readonly clock: Clock
-  readonly sink: { send(payload: IngestPayload): Promise<{ status: number }> }
+  readonly sink: { send(payload: IngestPayload): Promise<SinkResult> }
   readonly glob: (pattern: string) => Promise<ReadonlyArray<string>>
   readonly plugin: AgentPlugin
   readonly resolveProject: (startDir: string) => Promise<ProjectIdentity>
@@ -77,6 +78,21 @@ export const sliceByMessages = (
   }
   if (current.length > 0) chunks.push(chunk(current))
   return chunks
+}
+
+/**
+ * A bare "flush failed" tells nobody what to do about it, so every status the server can answer
+ * with is turned into the sentence a person reading the log needs.
+ */
+export const flushCause = (status: number): string => {
+  if (status === 0) return "the server could not be reached; the chunk retries next cycle"
+  if (status === 401 || status === 403)
+    return "the server rejected this CLI's credentials -- run `samskara login` to pair again"
+  if (status === 409) return "the server has no session to attach these records to yet"
+  if (status === 413) return "the chunk was larger than the server accepts"
+  if (status === 429) return "the server is rate limiting this CLI; the chunk retries next cycle"
+  if (status >= 500) return "the server errored; the chunk retries next cycle"
+  return "the server rejected the upload"
 }
 
 const wrap = (track: SessionTrack, clock: Clock, body: CheckpointBody): Checkpoint => ({
@@ -154,11 +170,18 @@ const syncTrack = async (
         .flatMap((message) => (message.msgType === "toolResult" ? [message.details.callId] : [])),
     )
     const chunkEvents = events.filter((event) => resultIds.has(event.callId))
-    const { status } = await deps.sink.send(payloadFor(track, request.records, origin, chunkEvents))
+    const { status, detail } = await deps.sink.send(
+      payloadFor(track, request.records, origin, chunkEvents),
+    )
     if (status < 200 || status >= 300) {
       deps.log.warn(
-        { sessionId: track.sessionId, key: track.checkpointKey, status },
-        "flush failed",
+        {
+          sessionId: track.sessionId,
+          key: track.checkpointKey,
+          status,
+          ...(detail ? { detail } : {}),
+        },
+        `flush failed: ${flushCause(status)}`,
       )
       break
     }
