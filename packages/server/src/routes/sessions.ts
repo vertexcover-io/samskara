@@ -8,7 +8,7 @@ import {
   AmbiguousCommitError,
   type SessionDetailRow,
   type SessionSummaryRow,
-  findVisibleProjectBySlug,
+  findVisibleProjectById,
   getDetail,
   listAccessible,
   remove,
@@ -29,6 +29,7 @@ type Deps = {
 const serialize = (row: SessionSummaryRow) => ({
   id: row.id,
   title: row.title,
+  projectId: row.projectId,
   projectName: row.projectName,
   projectSlug: row.projectSlug,
   userLogin: row.userLogin,
@@ -98,13 +99,13 @@ export const sessionsRoutes = ({ db, env }: Deps): Hono<{ Variables: AuthVariabl
     const userId = c.get("user").id
     if (
       query.project !== undefined &&
-      (await findVisibleProjectBySlug(db, userId, query.project)) === null
+      (await findVisibleProjectById(db, userId, query.project)) === null
     ) {
       return c.json({ error: "projectNotFound" }, 404)
     }
     try {
       const result = await listAccessible(db, userId, {
-        projectSlug: query.project,
+        projectId: query.project,
         userLogin: query.user,
         repoId: query.repo,
         branch: query.branch,

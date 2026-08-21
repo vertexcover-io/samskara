@@ -102,7 +102,7 @@ const deterministicUuid = (value: string): string => {
   ].join("-")
 }
 
-const projectId = (slug: string): string => deterministicUuid(`e2e:${slug}`)
+export const projectId = (slug: string): string => deterministicUuid(`e2e:${slug}`)
 const orgId = (slug: string): string => deterministicUuid(`org:${slug}`)
 const seededMessageId = (sessionId: string, line: number): string =>
   deterministicUuid(`e2e:${sessionId}:${line}`)
@@ -230,6 +230,11 @@ export const seedDatabase = async (spec: SeedSpec): Promise<void> => {
     if (orgSlugs.length > 0) {
       await sql`delete from orgs where id in ${sql(orgSlugs.map(orgId))}`
     }
+    // A spec outside this file (e.g. capture-pipeline.spec.ts's real watcher) can create a
+    // project/session/repo trio this seed's projectIds list never names. Clearing every e2e
+    // user's sessions -- cascading their messages/commits -- before the repos delete keeps that
+    // leftover from blocking it on a foreign key.
+    await sql`delete from sessions where "userId" in (${E2E_USER_ID}, ${E2E_OTHER_USER_ID})`
     await sql`delete from repos where "userId" in (${E2E_USER_ID}, ${E2E_OTHER_USER_ID})`
 
     await sql`

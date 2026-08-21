@@ -524,6 +524,16 @@ test("S37: the masthead reports all six session facts from the payload", async (
   expect(within(facts).getByText("18,200")).toBeInTheDocument()
 })
 
+test("SC32: the breadcrumb links to the session's project by id, not its slug", async () => {
+  renderDetail(
+    buildPayload({ ...PAYLOAD, session: { projectId: "22222222-2222-4222-8222-222222222222" } }),
+  )
+
+  const breadcrumb = await screen.findByRole("navigation", { name: /breadcrumb/i })
+  const link = await within(breadcrumb).findByRole("link", { name: "Samskara" })
+  expect(link).toHaveAttribute("href", "/sessions?project=22222222-2222-4222-8222-222222222222")
+})
+
 const metaLineOf = async (): Promise<string> => {
   await screen.findByRole("heading", { name: "Make ingest idempotent" })
   // The title is pinned in its own bar now, so the meta line is found from the facts it sits above.

@@ -17,6 +17,7 @@ const samskara: ProjectSummary = {
   id: "p-1",
   name: "Samskara",
   slug: "samskara",
+  owner: { type: "user", slug: "e2e-user" },
   sessionCount: 3,
   lastActiveAt: "2026-02-01T09:30:00.000Z",
 }
@@ -118,7 +119,7 @@ test("S10: a session that expires after /api/auth/me resolved lands on /login an
   expect(calls.filter((path) => path.endsWith("/api/projects")).length).toBeLessThanOrEqual(1)
 })
 
-test("S13: activating the samskara card navigates to /sessions?project=samskara with the slug encoded", async () => {
+test("S13, SC32: activating the samskara card navigates to /sessions?project=<id> with the project id encoded", async () => {
   stubFetch({
     me: () => Promise.resolve(jsonResponse(200, user)),
     projects: () => Promise.resolve(jsonResponse(200, { projects: [samskara] })),
@@ -130,5 +131,5 @@ test("S13: activating the samskara card navigates to /sessions?project=samskara 
   const card = await within(main).findByRole("link", { name: /samskara/i })
   await userEvent.click(card)
 
-  expect(screen.getByTestId("location")).toHaveTextContent("/sessions?project=samskara")
+  expect(screen.getByTestId("location")).toHaveTextContent("/sessions?project=p-1")
 })

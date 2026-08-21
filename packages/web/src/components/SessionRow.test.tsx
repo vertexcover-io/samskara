@@ -7,6 +7,7 @@ import { SessionRow } from "./SessionRow.js"
 const populated: SessionSummary = {
   id: "s-1",
   title: "Port the session detail surface",
+  projectId: "p-1",
   projectName: "Samskara",
   projectSlug: "samskara",
   userLogin: "maya",

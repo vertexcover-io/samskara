@@ -414,7 +414,11 @@ test.describe("capture pipeline", () => {
     `
     expect(stored?.title).toBeNull()
 
-    await page.goto(`/sessions?project=${PROJECT_SLUG}`)
+    const [project] = await sql<{ id: string }[]>`
+      select id from projects where slug = ${PROJECT_SLUG} and "ownerId" = ${E2E_USER_ID}
+    `
+    if (!project) throw new Error(`no project row for slug ${PROJECT_SLUG}`)
+    await page.goto(`/sessions?project=${project.id}`)
 
     // The collector never sets a title -- Claude transcripts carry none, so `sessions.title`
     // is NULL. The list is named by the server's `derivedTitle`, which coalesces that NULL

@@ -107,6 +107,7 @@ export type SessionMatch = {
 export type SessionSummaryRow = {
   readonly id: string
   readonly title: string | null
+  readonly projectId: string
   readonly projectName: string
   readonly projectSlug: string
   readonly userLogin: string
@@ -138,7 +139,7 @@ export type SessionFilterOptions = {
 export type ParsedSessionQuery = SessionQuery
 
 export type SessionListFilter = {
-  readonly projectSlug?: string
+  readonly projectId?: string
   readonly userLogin?: string
   readonly repoId?: string
   readonly branch?: string
@@ -301,7 +302,7 @@ const safeSnippet = (
 
 const authorizationCte = (db: Querier, userId: string) => sql`
   authorized_sessions AS MATERIALIZED (
-    select "sessions"."id", "sessions"."title", "sessions"."updatedAt", "projects"."name" as "projectName", "projects"."slug" as "projectSlug", "users"."github_login" as "userLogin"
+    select "sessions"."id", "sessions"."title", "sessions"."updatedAt", "projects"."id" as "projectId", "projects"."name" as "projectName", "projects"."slug" as "projectSlug", "users"."github_login" as "userLogin"
     from "sessions"
     join "projects" on "projects"."id" = "sessions"."projectId"
     join "users" on "users"."id" = "sessions"."userId"
@@ -332,7 +333,7 @@ const filterPredicates = (
   resolvedCommit: string | null | undefined,
 ): SQL[] => {
   const clauses: SQL[] = []
-  if (filter.projectSlug !== undefined) clauses.push(sql`a."projectSlug" = ${filter.projectSlug}`)
+  if (filter.projectId !== undefined) clauses.push(sql`a."projectId" = ${filter.projectId}`)
   if (filter.userLogin !== undefined) clauses.push(sql`a."userLogin" = ${filter.userLogin}`)
   if (filter.since !== undefined) clauses.push(sql`a."updatedAt" >= ${filter.since.toISOString()}`)
   if (filter.until !== undefined) clauses.push(sql`a."updatedAt" < ${filter.until.toISOString()}`)
@@ -365,7 +366,7 @@ const filterPredicates = (
 const filterOptionsFor = async (db: Querier, userId: string): Promise<SessionFilterOptions> => {
   const [projectsRows, authorRows, repoRows, branchRows] = await Promise.all([
     db.execute(
-      sql`with ${authorizationCte(db, userId)} select distinct "projectSlug" as value, "projectName" as label from authorized_sessions order by label, value`,
+      sql`with ${authorizationCte(db, userId)} select distinct "projectId" as value, "projectName" as label from authorized_sessions order by label, value`,
     ),
     db.execute(
       sql`with ${authorizationCte(db, userId)} select distinct "userLogin" as value, "userLogin" as label from authorized_sessions order by value`,
@@ -446,7 +447,7 @@ export const listAccessible = async (
       select ms.*, ${isTokenSort ? tokensFor(sql`ms.id`) : sql`null::bigint`} as "tokensTotal", count(*) over()::int as total
       from matched_sessions ms
     ), paged as (select * from ranked order by ${order} limit ${limit} offset ${offset})
-    select p.id, ${derivedTitle} as title, p."projectName", p."projectSlug", p."userLogin",
+    select p.id, ${derivedTitle} as title, p."projectId", p."projectName", p."projectSlug", p."userLogin",
       r.host as "repoHost", r.owner as "repoOwner", r."repo_name" as "repoName", ${durationMs} as "durationMs",
       ${isTokenSort ? sql`p."tokensTotal"` : tokensFor(sql`"sessions"."id"`)} as "tokensTotal", ${status} as status,
       p."updatedAt" as "lastActiveAt", p."sourceKind", p."sourceRowId", p.score, p.total,
@@ -468,6 +469,7 @@ export const listAccessible = async (
     withRepo({
       id: row.id as string,
       title: row.title as string | null,
+      projectId: row.projectId as string,
       projectName: row.projectName as string,
       projectSlug: row.projectSlug as string,
       userLogin: row.userLogin as string,
@@ -492,21 +494,22 @@ export const listAccessible = async (
   return { rows: mapped, total, filterOptions: await filterOptionsFor(db, userId) }
 }
 
-export const findVisibleProjectBySlug = async (
+export const findVisibleProjectById = async (
   db: Querier,
   userId: string,
-  slug: string,
+  projectId: string,
 ): Promise<string | null> => {
   const [row] = await db
     .select({ id: projects.id })
     .from(projects)
-    .where(and(eq(projects.slug, slug), visibleToUser(db, userId)))
+    .where(and(eq(projects.id, projectId), visibleToUser(db, userId)))
   return row?.id ?? null
 }
 
 export type SessionFactsRow = {
   readonly id: string
   readonly title: string | null
+  readonly projectId: string
   readonly projectName: string
   readonly projectSlug: string
   readonly userLogin: string
@@ -615,6 +618,7 @@ const findVisibleSession = async (
     .select({
       id: sessions.id,
       title: derivedTitle,
+      projectId: projects.id,
       projectName: projects.name,
       projectSlug: projects.slug,
       userLogin: users.githubLogin,
