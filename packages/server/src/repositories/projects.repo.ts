@@ -4,9 +4,9 @@ import type { Querier } from "../db/client.js"
 import { orgs, projects, userOrgs, userProjectGrant, users } from "../db/schema.js"
 
 /**
- * Owner-or-grant-or-org-member, as a predicate over a query that already has `projects` in scope.
- * One definition rather than a copy per repository: two divergent copies of an authorization
- * predicate is how one of them silently stops matching the other.
+ * A predicate over a query that already has `projects` in scope. One definition rather than a
+ * copy per repository: two divergent copies of an authorization predicate is how one of them
+ * silently stops matching the other.
  */
 export const visibleToUser = (db: Querier, userId: string): SQL | undefined =>
   or(

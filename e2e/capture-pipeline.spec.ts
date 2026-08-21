@@ -163,8 +163,6 @@ const startHarness = async (options: HarnessOptions = {}): Promise<Harness> => {
   let child: ChildProcess | undefined
   let enableOutput: string | undefined
   if (viaEnable) {
-    // `enable` registers the project, stores its id in `projects.json`, and starts the
-    // watcher daemon itself (`reviveWatcher`) -- no separate `watch --foreground` spawn.
     // `--all`: the fixture transcripts carry a fixed 2026-06-01 timestamp, which a default
     // now-cutoff would exclude as "recorded before enabling".
     const result = await execFileAsync("bun", [CLI_ENTRY, "enable", cwd, "--all"], {
@@ -208,8 +206,6 @@ const startHarness = async (options: HarnessOptions = {}): Promise<Harness> => {
       if (child) {
         child.kill("SIGTERM")
       } else {
-        // `enable` started the daemon in a detached process of its own; its pid lives in
-        // `watch.pid` under this harness's SAMSKARA_HOME.
         try {
           const pid = Number.parseInt(
             (await readFile(join(samskaraHome, "watch.pid"), "utf8")).trim(),

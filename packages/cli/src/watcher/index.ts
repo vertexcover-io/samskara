@@ -66,10 +66,9 @@ export type WatchOptions = {
 }
 
 /**
- * Stamps the id `samskara enable` stored for this project onto the identity the daemon just
- * resolved, so every payload carries it. A daemon that has cached the identity since before
- * `enable` ran (`claude.ts`'s per-directory cache) keeps sending none until it restarts -- the
- * server's owner rule picks the same project in that case, so nothing is lost.
+ * A daemon that cached the identity before `enable` ran (`claude.ts`'s per-directory cache)
+ * keeps sending no id until it restarts -- the server's owner rule picks the same project in
+ * that case, so nothing is lost.
  */
 export const withStoredProjectId = async (identity: ProjectIdentity): Promise<ProjectIdentity> => {
   const stored = (await getProject(identity.slug))?.projectId

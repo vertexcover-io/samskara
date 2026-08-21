@@ -27,7 +27,6 @@ const identity: ProjectIdentity = { name: "widget", slug: "acme-widget" }
 
 const FAKE_PROJECT_ID = "00000000-0000-4000-8000-000000000001"
 
-/** A server that always finds/creates the caller's personal project, deterministically. */
 const fakeFetchOk = async (): Promise<Response> =>
   new Response(JSON.stringify({ id: FAKE_PROJECT_ID, owner: { type: "user", slug: "e2e-user" } }), {
     status: 201,

@@ -31,12 +31,7 @@ export type EnableOptions = {
   readonly fetch?: typeof globalThis.fetch
 }
 
-/**
- * Finds or creates the project this folder belongs to, server-side. Throws a user-facing
- * `Error` on every failure mode -- no token, an unreachable server, a rejected token, or a
- * response this CLI's schema does not recognize -- so `enableCommand` can turn every one into
- * `reportError` without re-deriving the message.
- */
+/** Every failure mode throws a user-facing `Error`, so `enableCommand` can hand it to `reportError` as is. */
 export const registerProject = async (
   deps: RegisterDeps,
   identity: ProjectIdentity,
@@ -128,8 +123,7 @@ export const enableCommand = async (options: EnableOptions = {}): Promise<number
         `Capture is already enabled for "${project.slug}" (since ${existing.enabledAt}). Nothing to change.\n`,
       )
     } else {
-      // The owner was decided after this project was already enabled -- refresh the stored id
-      // without touching enabledAt or syncFrom.
+      // The owner was decided after this project was already enabled.
       await upsertProject(project.slug, { ...existing, projectId: registered.id })
       stdout.write(ownerLine(project, registered))
     }
