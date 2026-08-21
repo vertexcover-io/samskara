@@ -113,7 +113,30 @@ describe("enable command", () => {
     expect((await getProject("acme-widget"))?.syncFrom).toBe("2026-07-01T00:00:00.000Z")
   })
 
-  test("REQ-037: re-enabling an already-enabled project keeps its original cutoff", async () => {
+  test("REQ-037: re-enabling an already-enabled project with no cutoff flag changes nothing", async () => {
+    const { output } = await setup()
+    const stdout = { write: (text: string) => output.push(text) }
+    await enableCommand({
+      cwd: "/work/widget",
+      now: () => new Date("2026-07-25T10:00:00.000Z"),
+      stdout,
+    })
+
+    const code = await enableCommand({
+      cwd: "/work/widget",
+      now: () => new Date("2026-07-26T18:30:00.000Z"),
+      stdout,
+    })
+
+    expect(code).toBe(0)
+    expect(await getProject("acme-widget")).toMatchObject({
+      enabledAt: "2026-07-25T10:00:00.000Z",
+      syncFrom: "2026-07-25T10:00:00.000Z",
+    })
+    expect(output.join("")).toContain("Nothing to change")
+  })
+
+  test("REQ-037b: --sync-from on an already-enabled project moves the cutoff and keeps enabledAt", async () => {
     const { output } = await setup()
     const stdout = { write: (text: string) => output.push(text) }
     await enableCommand({
@@ -131,9 +154,35 @@ describe("enable command", () => {
 
     expect(code).toBe(0)
     expect(await getProject("acme-widget")).toMatchObject({
+      enabled: true,
       enabledAt: "2026-07-25T10:00:00.000Z",
-      syncFrom: "2026-07-25T10:00:00.000Z",
+      syncFrom: "2026-07-01T00:00:00.000Z",
     })
+    expect(output.join("")).toContain("2026-07-01T00:00:00.000Z")
+    expect(output.join("")).not.toContain("Nothing to change")
+  })
+
+  test("REQ-037c: --all on an already-enabled project clears the cutoff entirely", async () => {
+    const { output } = await setup()
+    const stdout = { write: (text: string) => output.push(text) }
+    await enableCommand({
+      cwd: "/work/widget",
+      now: () => new Date("2026-07-25T10:00:00.000Z"),
+      stdout,
+    })
+
+    const code = await enableCommand({
+      cwd: "/work/widget",
+      all: true,
+      now: () => new Date("2026-07-26T18:30:00.000Z"),
+      stdout,
+    })
+
+    expect(code).toBe(0)
+    const entry = await getProject("acme-widget")
+    expect(entry?.syncFrom).toBeUndefined()
+    expect(entry?.enabledAt).toBe("2026-07-25T10:00:00.000Z")
+    expect(output.join("")).toContain("recorded earlier")
   })
 
   test("EDGE-013: an unparseable --sync-from exits 1 and registers nothing", async () => {

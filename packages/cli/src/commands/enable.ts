@@ -44,16 +44,23 @@ export const enableCommand = async (options: EnableOptions = {}): Promise<number
     return 1
   }
 
-  if (existing?.enabled === true) {
+  // A bare re-enable is a no-op so an accidental second run cannot move the cutoff forward and
+  // silently drop sessions. A cutoff flag is not accidental, so it wins even when already
+  // enabled -- otherwise the only way to widen a cutoff is `disable` then `enable`.
+  const askedForCutoff = options.all === true || options.syncFrom !== undefined
+  if (existing?.enabled === true && !askedForCutoff) {
     stdout.write(
       `Capture is already enabled for "${project.slug}" (since ${existing.enabledAt}). Nothing to change.\n`,
     )
   } else {
+    // Re-enabling keeps the original opt-in date: `enabledAt` records when capture was first
+    // asked for, and only `syncFrom` says what is eligible.
+    const since = existing?.enabled === true ? existing.enabledAt : enabledAt
     await upsertProject(project.slug, {
       name: project.name,
       path,
       enabled: true,
-      enabledAt,
+      enabledAt: since,
       ...(syncFrom === undefined ? {} : { syncFrom }),
     })
     stdout.write(
