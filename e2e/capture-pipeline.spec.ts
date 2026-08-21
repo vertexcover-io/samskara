@@ -4,9 +4,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
-import { SignJWT } from "jose"
 import postgres from "postgres"
-import { expect, mintSessionToken, test } from "./fixtures/auth.js"
+import { expect, mintCliToken, mintSessionToken, test } from "./fixtures/auth.js"
 import { API_BASE } from "./playwright.config.js"
 import { E2E_OTHER_USER_ID, E2E_USER_ID, orgId, seedDatabase } from "./seed.js"
 import {
@@ -20,7 +19,6 @@ import {
   userLine,
 } from "./transcript.js"
 
-const JWT_SECRET = process.env.JWT_SECRET ?? "e2e-secret"
 const DATABASE_URL =
   process.env.DATABASE_URL ?? "postgres://samskara:samskara@localhost:5433/samskara"
 const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url))
@@ -39,15 +37,6 @@ const GIT_REMOTE = "git@github.com:acme/widgets.git"
 const execFileAsync = promisify(execFile)
 
 type Sql = ReturnType<typeof postgres>
-
-const mintCliToken = (): Promise<string> =>
-  new SignJWT({})
-    .setProtectedHeader({ alg: "HS256" })
-    .setIssuer("samskara")
-    .setAudience("cli")
-    .setSubject(E2E_USER_ID)
-    .setExpirationTime("1h")
-    .sign(new TextEncoder().encode(JWT_SECRET))
 
 /**
  * Polls until `read` returns a value satisfying `done`, or the deadline passes.
