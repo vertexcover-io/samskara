@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { afterEach, beforeEach, expect, test, vi } from "vitest"
 import type { SyncStatusRow } from "../api/types.js"
 import { TestRouter } from "../tests/test-router.js"
@@ -27,9 +28,9 @@ const stubFetch = (status: number, body: unknown) => {
   })
 }
 
-const renderPage = () =>
+const renderPage = (path = "/sync-status") =>
   render(
-    <TestRouter initialEntries={["/sync-status"]}>
+    <TestRouter initialEntries={[path]}>
       <SyncStatus />
     </TestRouter>,
   )
@@ -108,4 +109,55 @@ test("SC6: an expired session paints the session-expired panel, not the retrieva
 
   expect(await screen.findByTestId("location")).toHaveTextContent("/login")
   expect(screen.queryByText(/retrieval failed/i)).not.toBeInTheDocument()
+})
+
+test("SC18: the active column reports its direction to a screen reader, and the other three report none", async () => {
+  stubFetch(200, { rows: [ROW] })
+
+  renderPage("/sync-status?sort=user&dir=asc")
+
+  const userHeader = await screen.findByRole("columnheader", { name: "User" })
+  expect(userHeader).toHaveAttribute("aria-sort", "ascending")
+  expect(screen.getByRole("columnheader", { name: "Project" })).toHaveAttribute("aria-sort", "none")
+  expect(screen.getByRole("columnheader", { name: "Sessions" })).toHaveAttribute(
+    "aria-sort",
+    "none",
+  )
+  expect(screen.getByRole("columnheader", { name: "Last synced" })).toHaveAttribute(
+    "aria-sort",
+    "none",
+  )
+})
+
+test("SC19: typing into the Project box writes it into the URL, and the default state leaves the URL clean", async () => {
+  stubFetch(200, { rows: [ROW] })
+  const user = userEvent.setup()
+
+  renderPage()
+  await screen.findByText("Samskara")
+  expect(await screen.findByTestId("location")).toHaveTextContent("/sync-status")
+  expect(screen.getByTestId("location")).not.toHaveTextContent("?")
+
+  await user.type(screen.getByRole("textbox", { name: "Project" }), "sams")
+
+  expect(screen.getByTestId("location")).toHaveTextContent("project=sams")
+})
+
+test("SC20: a URL carrying filter values applies them on first paint", async () => {
+  const other: SyncStatusRow = {
+    ...ROW,
+    projectId: "p-2",
+    projectName: "Andromeda",
+    projectSlug: "andromeda",
+  }
+  stubFetch(200, { rows: [ROW, other] })
+
+  renderPage("/sync-status?sort=user&dir=asc&project=samskara")
+
+  expect(await screen.findByText("Samskara")).toBeInTheDocument()
+  expect(screen.queryByText("Andromeda")).not.toBeInTheDocument()
+  expect(screen.getByRole("columnheader", { name: "User" })).toHaveAttribute(
+    "aria-sort",
+    "ascending",
+  )
 })
