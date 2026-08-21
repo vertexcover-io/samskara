@@ -9,6 +9,7 @@ import { installHooksCommand, uninstallHooksCommand } from "./commands/install-h
 import { logoutCommand } from "./commands/logout.js"
 import { logsCommand } from "./commands/logs.js"
 import { replayCommand } from "./commands/replay.js"
+import { restartCommand } from "./commands/restart.js"
 import { statusCommand } from "./commands/status.js"
 import { watchCommand } from "./commands/watch.js"
 import { apiBase } from "./config.js"
@@ -111,6 +112,13 @@ program
       verbose: Boolean(program.opts<{ verbose?: boolean }>().verbose),
       ...(projectOverride ? { projectOverride } : {}),
     })
+  })
+
+program
+  .command("restart")
+  .description("Stop the capture watcher and start a fresh one (requires being logged in)")
+  .action(async () => {
+    process.exitCode = await restartCommand()
   })
 
 program
