@@ -1,7 +1,7 @@
 import type { ProjectIdentity } from "@samskara/core"
 import { type SQL, and, desc, eq, exists, or, sql } from "drizzle-orm"
 import type { Querier } from "../db/client.js"
-import { projects, userProjectGrant } from "../db/schema.js"
+import { projects, sessions, userProjectGrant } from "../db/schema.js"
 
 /**
  * Owner-or-grant, as a predicate over a query that already has `projects` in scope. One definition
@@ -102,11 +102,8 @@ export type ProjectSummaryRow = {
   readonly lastActiveAt: string | null
 }
 
-const ownSessions = sql`"sessions" where "sessions"."projectId" = "projects"."id"`
-
-const sessionCount = sql<number>`(select count(*)::int from ${ownSessions})`
-
-const lastActiveAt = sql<string | null>`(select max("sessions"."updatedAt") from ${ownSessions})`
+const sessionCount = sql<number>`count(${sessions.id})::int`
+const lastActiveAt = sql<string | null>`max(${sessions.updatedAt})`
 
 export const listAccessibleSummaries = (
   db: Querier,
@@ -121,5 +118,7 @@ export const listAccessibleSummaries = (
       lastActiveAt,
     })
     .from(projects)
+    .leftJoin(sessions, eq(sessions.projectId, projects.id))
     .where(visibleToUser(db, userId))
+    .groupBy(projects.id, projects.name, projects.slug, projects.createdAt)
     .orderBy(sql`${lastActiveAt} desc nulls last`, desc(projects.createdAt))

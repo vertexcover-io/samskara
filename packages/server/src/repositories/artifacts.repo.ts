@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { and, asc, eq, sql } from "drizzle-orm"
 import type { Querier } from "../db/client.js"
 import { artifact, projects, sessions } from "../db/schema.js"
@@ -13,7 +14,6 @@ export type UpsertArtifactInput = {
   readonly currentContent: Buffer
   readonly currentHash: string
   readonly baseContent?: Buffer
-  readonly baseHash?: string
   readonly diff?: string
   readonly oldFragment?: string
 }
@@ -34,7 +34,18 @@ export type UpsertArtifactResult = {
  */
 const set = {
   baseContent: sql`coalesce("artifact"."baseContent", excluded."baseContent")`,
-  baseHash: sql`coalesce("artifact"."baseHash", excluded."baseHash")`,
+  // The content and its server-derived digest must be repaired together for legacy rows whose
+  // nullable client hash was absent or incorrect. Existing valid bases remain immutable.
+  baseHash: sql`case
+    when "artifact"."baseContent" is null then excluded."baseHash"
+    when "artifact"."baseHash" is null or "artifact"."baseHash" <> encode(sha256("artifact"."baseContent"), 'hex')
+      then encode(sha256("artifact"."baseContent"), 'hex')
+    else "artifact"."baseHash"
+  end`,
+  baseHashVerified: sql`case
+    when "artifact"."baseContent" is null then excluded."baseHashVerified"
+    else true
+  end`,
   currentContent: sql`excluded."currentContent"`,
   currentHash: sql`excluded."currentHash"`,
   mimeType: sql`excluded."mimeType"`,
@@ -46,6 +57,8 @@ const set = {
   editCount: sql`"artifact"."editCount" + 1`,
   lastSeenAt: sql`now()`,
 }
+
+const sha256 = (content: Buffer): string => createHash("sha256").update(content).digest("hex")
 
 export const upsertArtifact = async (
   db: Querier,
@@ -63,7 +76,8 @@ export const upsertArtifact = async (
       currentContent: input.currentContent,
       currentHash: input.currentHash,
       baseContent: input.baseContent ?? null,
-      baseHash: input.baseHash ?? null,
+      baseHash: input.baseContent === undefined ? null : sha256(input.baseContent),
+      baseHashVerified: input.baseContent !== undefined,
       diff: input.diff ?? null,
       oldFragment: input.oldFragment ?? null,
     })
@@ -89,58 +103,82 @@ export type ArtifactSummaryRow = {
   readonly changeKind: string
   readonly editCount: number
   readonly byteSize: number
-  readonly diff: string | null
   readonly hasBase: boolean
+  readonly hasDiff: boolean
+  readonly hasOldFragment: boolean
+  readonly diffByteSize: number | null
+  readonly oldFragmentByteSize: number | null
   readonly firstSeenAt: string
   readonly lastSeenAt: string
 }
 
+export type ArtifactDetailPart = "diff" | "oldFragment"
+
 export type ArtifactDetailRow = ArtifactSummaryRow & {
   readonly sessionId: string
+  readonly diff: string | null
   readonly oldFragment: string | null
-  readonly currentContent: string | null
-  readonly baseContent: string | null
 }
 
 export type ArtifactSide = "base" | "current"
 
-export type ArtifactBytes = {
-  readonly bytes: Buffer
+export type ArtifactByteMetadata = {
+  readonly byteSize: number | null
   readonly isBinary: boolean
   readonly mimeType: string
+  readonly hash: string | null
+  /** A bounded signature sample for MIME hardening; this is never an artifact body. */
+  readonly sample: Buffer | null
+}
+
+export type ArtifactBytes = {
+  readonly bytes: Buffer
+}
+
+export type ArtifactByteSlice = {
+  /** Zero-based offset, converted to PostgreSQL's one-based substring offset in the query. */
+  readonly start: number
+  readonly length: number
 }
 
 /**
  * Visibility is a join condition rather than a post-filter, so an artifact the caller cannot see
  * never leaves Postgres. Every caller collapses "no such row" and "not yours" into `null`: the
  * routes cannot then leak existence through a 403-vs-404 difference.
+ *
+ * This intentionally has no body columns. List and detail routes build their own projections below
+ * so adding a field here cannot accidentally make every artifact list carry a diff or fragment.
  */
-const visibleArtifact = (db: Querier, userId: string, where: ReturnType<typeof eq>) =>
+const artifactMetadataProjection = {
+  id: artifact.id,
+  sessionId: artifact.sessionId,
+  path: artifact.path,
+  relativePath: artifact.relativePath,
+  mimeType: artifact.mimeType,
+  isBinary: artifact.isBinary,
+  changeKind: artifact.changeKind,
+  editCount: artifact.editCount,
+  byteSize: sql<number>`octet_length("artifact"."currentContent")::int`,
+  hasBase: sql<boolean>`("artifact"."baseContent" is not null)`,
+  hasDiff: sql<boolean>`("artifact"."diff" is not null)`,
+  hasOldFragment: sql<boolean>`("artifact"."oldFragment" is not null)`,
+  diffByteSize: sql<number | null>`octet_length("artifact"."diff")::int`,
+  oldFragmentByteSize: sql<number | null>`octet_length("artifact"."oldFragment")::int`,
+  firstSeenAt: sql<string>`${artifact.firstSeenAt}`,
+  lastSeenAt: sql<string>`${artifact.lastSeenAt}`,
+}
+
+const visibleArtifactMetadata = (db: Querier, userId: string, where: ReturnType<typeof and>) =>
   db
-    .select({
-      id: artifact.id,
-      sessionId: artifact.sessionId,
-      path: artifact.path,
-      relativePath: artifact.relativePath,
-      mimeType: artifact.mimeType,
-      isBinary: artifact.isBinary,
-      changeKind: artifact.changeKind,
-      editCount: artifact.editCount,
-      byteSize: sql<number>`length("artifact"."currentContent")::int`,
-      diff: artifact.diff,
-      oldFragment: artifact.oldFragment,
-      hasBase: sql<boolean>`("artifact"."baseContent" is not null)`,
-      firstSeenAt: sql<string>`${artifact.firstSeenAt}`,
-      lastSeenAt: sql<string>`${artifact.lastSeenAt}`,
-    })
+    .select(artifactMetadataProjection)
     .from(artifact)
     .innerJoin(sessions, eq(sessions.id, artifact.sessionId))
     .innerJoin(projects, eq(projects.id, sessions.projectId))
     .where(and(where, visibleToUser(db, userId)))
 
 /**
- * `currentContent` is deliberately absent: selecting it here would pull every artifact's full bytes
- * for a list view. `byteSize` gives the UI a size without a second query.
+ * `currentContent`, `baseContent`, `diff`, and `oldFragment` are deliberately absent: list bytes
+ * remain bounded as individual artifact bodies grow.
  */
 export const listForSession = async (
   db: Querier,
@@ -154,108 +192,167 @@ export const listForSession = async (
     .where(and(eq(sessions.id, sessionId), visibleToUser(db, userId)))
   if (!session) return null
 
-  const rows = await visibleArtifact(db, userId, eq(artifact.sessionId, sessionId)).orderBy(
+  const rows = await visibleArtifactMetadata(db, userId, eq(artifact.sessionId, sessionId)).orderBy(
     asc(artifact.relativePath),
   )
-  return rows.map(({ sessionId: _sessionId, oldFragment: _oldFragment, ...summary }) => summary)
+  return rows.map(({ sessionId: _sessionId, ...summary }) => summary)
 }
 
 /**
- * A binary artifact returns its metadata with both contents omitted -- the caller uses `/raw` for
- * bytes. Text is decoded here rather than streamed because the detail view renders it.
+ * Detail bodies are opt-in and mutually exclusive. Opening Diff or the replaced excerpt therefore
+ * reads exactly one text column; the base/current bytes remain available only from the raw side
+ * endpoint, which likewise projects one side at a time.
  */
 export const getArtifact = async (
   db: Querier,
   userId: string,
   artifactId: string,
+  part: ArtifactDetailPart | undefined,
 ): Promise<ArtifactDetailRow | null> => {
   if (!UUID.test(artifactId)) return null
 
-  const [row] = await visibleArtifact(db, userId, eq(artifact.id, artifactId)).limit(1)
-  if (!row) return null
-
-  if (row.isBinary) return { ...row, currentContent: null, baseContent: null }
-
-  const [contents] = await db
-    .select({ currentContent: artifact.currentContent, baseContent: artifact.baseContent })
-    .from(artifact)
-    .where(eq(artifact.id, artifactId))
-
-  return {
-    ...row,
-    currentContent: contents?.currentContent?.toString("utf8") ?? null,
-    baseContent: contents?.baseContent?.toString("utf8") ?? null,
-  }
-}
-
-export const getArtifactBytes = async (
-  db: Querier,
-  userId: string,
-  artifactId: string,
-  which: ArtifactSide,
-): Promise<ArtifactBytes | null> => {
-  if (!UUID.test(artifactId)) return null
+  const body =
+    part === "diff"
+      ? { diff: artifact.diff, oldFragment: sql<null>`null` }
+      : part === "oldFragment"
+        ? { diff: sql<null>`null`, oldFragment: artifact.oldFragment }
+        : { diff: sql<null>`null`, oldFragment: sql<null>`null` }
 
   const [row] = await db
-    .select({
-      baseContent: artifact.baseContent,
-      currentContent: artifact.currentContent,
-      isBinary: artifact.isBinary,
-      mimeType: artifact.mimeType,
-    })
+    .select({ ...artifactMetadataProjection, ...body })
     .from(artifact)
     .innerJoin(sessions, eq(sessions.id, artifact.sessionId))
     .innerJoin(projects, eq(projects.id, sessions.projectId))
     .where(and(eq(artifact.id, artifactId), visibleToUser(db, userId)))
     .limit(1)
-  if (!row) return null
-
-  const bytes = which === "base" ? row.baseContent : row.currentContent
-  if (!bytes) return null
-
-  return { bytes, isBinary: row.isBinary, mimeType: row.mimeType }
+  return row ?? null
 }
 
-/**
- * The same bytes, addressed the way a captured document addresses its own siblings. A report links
- * `screenshots/01.png`, not a uuid, so serving it from a path-shaped URL is what lets the browser
- * resolve those references against the document rather than requiring the html be rewritten.
- *
- * `relativePath` is unique within a session -- one session belongs to one project and every path is
- * made relative to that single root -- so this matches at most one row without a tie-break.
- *
- * There is no filesystem here: a `..` segment cannot traverse anywhere, it simply fails to equal a
- * captured path. Visibility is the same join the uuid route uses.
- */
-export const getArtifactBytesByPath = async (
+const sideColumn = (which: ArtifactSide) =>
+  which === "base" ? artifact.baseContent : artifact.currentContent
+const sideHash = (which: ArtifactSide) =>
+  which === "base" ? artifact.baseHash : artifact.currentHash
+
+const byteMetadataProjection = (which: ArtifactSide) => {
+  const content = sideColumn(which)
+  return {
+    byteSize: sql<number | null>`octet_length(${content})::int`,
+    isBinary: artifact.isBinary,
+    mimeType: artifact.mimeType,
+    hash: sideHash(which),
+    baseHashVerified: artifact.baseHashVerified,
+    // Enough bytes for every signature inspected by serveHeadersFor, without pulling the body.
+    sample: sql<Buffer | null>`substring(${content} from 1 for 512)`,
+  }
+}
+
+const byteMetadataFor = async (
+  db: Querier,
+  userId: string,
+  where: ReturnType<typeof and>,
+  which: ArtifactSide,
+): Promise<ArtifactByteMetadata | null> => {
+  const [row] = await db
+    .select(byteMetadataProjection(which))
+    .from(artifact)
+    .innerJoin(sessions, eq(sessions.id, artifact.sessionId))
+    .innerJoin(projects, eq(projects.id, sessions.projectId))
+    .where(and(where, visibleToUser(db, userId)))
+    .limit(1)
+  if (!row) return null
+
+  // New rows get their hash during upsert. The marker makes existing rows self-heal only when their
+  // base is actually read, avoiding an unbounded full-blob migration. Do not trust the old nullable
+  // client hash even when it happens to be present.
+  if (which === "base" && row.byteSize !== null && !row.baseHashVerified) {
+    const [repaired] = await db
+      .update(artifact)
+      .set({
+        baseHash: sql`encode(sha256("baseContent"), 'hex')`,
+        baseHashVerified: true,
+      })
+      .where(and(where, eq(artifact.baseHashVerified, false)))
+      .returning({ hash: artifact.baseHash })
+    return repaired ? { ...row, hash: repaired.hash } : byteMetadataFor(db, userId, where, which)
+  }
+  return row
+}
+
+export const getArtifactByteMetadata = (
+  db: Querier,
+  userId: string,
+  artifactId: string,
+  which: ArtifactSide,
+): Promise<ArtifactByteMetadata | null> =>
+  UUID.test(artifactId)
+    ? byteMetadataFor(db, userId, eq(artifact.id, artifactId), which)
+    : Promise.resolve(null)
+
+export const getArtifactByteMetadataByPath = (
   db: Querier,
   userId: string,
   sessionId: string,
   relativePath: string,
   which: ArtifactSide,
+): Promise<ArtifactByteMetadata | null> =>
+  byteMetadataFor(
+    db,
+    userId,
+    and(eq(artifact.sessionId, sessionId), eq(artifact.relativePath, relativePath)),
+    which,
+  )
+
+const bytesFor = async (
+  db: Querier,
+  userId: string,
+  where: ReturnType<typeof and>,
+  which: ArtifactSide,
+  slice: ArtifactByteSlice | undefined,
 ): Promise<ArtifactBytes | null> => {
+  const content = sideColumn(which)
+  const selected =
+    slice === undefined
+      ? content
+      : sql<Buffer | null>`substring(${content} from ${slice.start + 1} for ${slice.length})`
   const [row] = await db
-    .select({
-      baseContent: artifact.baseContent,
-      currentContent: artifact.currentContent,
-      isBinary: artifact.isBinary,
-      mimeType: artifact.mimeType,
-    })
+    .select({ bytes: selected })
     .from(artifact)
     .innerJoin(sessions, eq(sessions.id, artifact.sessionId))
     .innerJoin(projects, eq(projects.id, sessions.projectId))
-    .where(
-      and(
-        eq(artifact.sessionId, sessionId),
-        eq(artifact.relativePath, relativePath),
-        visibleToUser(db, userId),
-      ),
-    )
+    .where(and(where, visibleToUser(db, userId)))
     .limit(1)
-  if (!row) return null
-
-  const bytes = which === "base" ? row.baseContent : row.currentContent
-  if (!bytes) return null
-
-  return { bytes, isBinary: row.isBinary, mimeType: row.mimeType }
+  if (!row?.bytes) return null
+  return { bytes: row.bytes }
 }
+
+export const getArtifactBytes = (
+  db: Querier,
+  userId: string,
+  artifactId: string,
+  which: ArtifactSide,
+  slice?: ArtifactByteSlice,
+): Promise<ArtifactBytes | null> =>
+  UUID.test(artifactId)
+    ? bytesFor(db, userId, eq(artifact.id, artifactId), which, slice)
+    : Promise.resolve(null)
+
+/**
+ * The same bytes, addressed the way a captured document addresses its own siblings. A report links
+ * `screenshots/01.png`, not a uuid, so serving it from a path-shaped URL is what lets the browser
+ * resolve those references against the document rather than requiring the html be rewritten.
+ */
+export const getArtifactBytesByPath = (
+  db: Querier,
+  userId: string,
+  sessionId: string,
+  relativePath: string,
+  which: ArtifactSide,
+  slice?: ArtifactByteSlice,
+): Promise<ArtifactBytes | null> =>
+  bytesFor(
+    db,
+    userId,
+    and(eq(artifact.sessionId, sessionId), eq(artifact.relativePath, relativePath)),
+    which,
+    slice,
+  )

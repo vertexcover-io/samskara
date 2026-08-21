@@ -451,6 +451,21 @@ const parseCapturedArtifact = (value: unknown): CapturedArtifact | null => {
   if (id === null || path === null || relativePath === null || mimeType === null) return null
   if (changeKind === null || firstSeenAt === null || lastSeenAt === null) return null
 
+  const hasDiff = fields.hasDiff
+  const hasOldFragment = fields.hasOldFragment
+  const byteSize = num(fields.byteSize)
+  const diffByteSize = nullableNum(fields.diffByteSize)
+  const oldFragmentByteSize = nullableNum(fields.oldFragmentByteSize)
+  if (
+    typeof hasDiff !== "boolean" ||
+    typeof hasOldFragment !== "boolean" ||
+    byteSize === null ||
+    diffByteSize === undefined ||
+    oldFragmentByteSize === undefined
+  ) {
+    return null
+  }
+
   return {
     id,
     path,
@@ -458,9 +473,11 @@ const parseCapturedArtifact = (value: unknown): CapturedArtifact | null => {
     mimeType,
     isBinary: bool(fields.isBinary),
     changeKind,
-    // The list route omits both; the detail route supplies them.
-    diff: nullableStr(fields.diff) ?? null,
-    oldFragment: nullableStr(fields.oldFragment) ?? null,
+    hasDiff,
+    hasOldFragment,
+    byteSize,
+    diffByteSize,
+    oldFragmentByteSize,
     editCount: numOr(fields.editCount, 0),
     firstSeenAt,
     lastSeenAt,

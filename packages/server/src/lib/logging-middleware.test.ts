@@ -1,5 +1,6 @@
 import { createLogger } from "@samskara/core"
 import { Hono } from "hono"
+import pino from "pino"
 import { describe, expect, test } from "vitest"
 import { buildApp } from "../app.js"
 import type { Db } from "../db/client.js"
@@ -47,6 +48,62 @@ describe("loggingMiddleware", () => {
     const res = await app.request("/ok", { headers: { "x-request-id": "   " } })
     const reqId = res.headers.get("x-request-id")
     expect(reqId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+  })
+
+  test("emits stable route labels and response byte metrics without exposing path ids", async () => {
+    const entries: Array<Record<string, unknown>> = []
+    const rootLog = pino({ level: "info" }, { write: (line) => entries.push(JSON.parse(line)) })
+    const app = new Hono<{ Variables: { log: ReturnType<typeof testLog> } }>()
+    app.use(loggingMiddleware(rootLog))
+    app.get("/sessions/:id", (c) =>
+      c.body('{"value":"é"}', 200, {
+        "content-length": "14",
+        "content-type": "application/json",
+      }),
+    )
+
+    const res = await app.request("/sessions/session-private")
+    expect(res.status).toBe(200)
+    expect(entries).toContainEqual(
+      expect.objectContaining({
+        route: "/sessions/:id",
+        contentType: "application/json",
+        contentEncoding: "identity",
+        responseBytesUncompressed: Buffer.byteLength('{"value":"é"}'),
+        responseBytesWire: Buffer.byteLength('{"value":"é"}'),
+      }),
+    )
+    expect(JSON.stringify(entries)).not.toContain("session-private")
+  })
+
+  test("records undefined byte fields when no byte headers are available", async () => {
+    const entries: Array<Record<string, unknown>> = []
+    const rootLog = pino({ level: "info" }, { write: (line) => entries.push(JSON.parse(line)) })
+    const app = new Hono<{ Variables: { log: ReturnType<typeof testLog> } }>()
+    app.use(loggingMiddleware(rootLog))
+    app.get("/stream", (c) => c.text("body without content length"))
+
+    await app.request("/stream")
+    expect(entries).toContainEqual(
+      expect.not.objectContaining({ responseBytesUncompressed: expect.anything() }),
+    )
+    expect(entries).toContainEqual(
+      expect.not.objectContaining({ responseBytesWire: expect.anything() }),
+    )
+  })
+
+  test("emits Server-Timing only when enabled by server configuration", async () => {
+    const disabled = buildTestApp()
+    expect(
+      (await disabled.request("/ok", { headers: { "x-server-timing": "1" } })).headers.get(
+        "server-timing",
+      ),
+    ).toBeNull()
+
+    const app = new Hono<{ Variables: { log: ReturnType<typeof testLog> } }>()
+    app.use(loggingMiddleware(testLog(), { serverTiming: true }))
+    app.get("/ok", (c) => c.text("ok"))
+    expect((await app.request("/ok")).headers.get("server-timing")).toMatch(/handler;dur=/)
   })
 
   test("S11: the real buildApp app routes an unhandled throw through onError as 500", async () => {
