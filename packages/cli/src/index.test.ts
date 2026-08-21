@@ -1,6 +1,10 @@
 import { execFileSync } from "node:child_process"
+import { mkdtempSync, symlinkSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { expect, test } from "vitest"
+import { isEntrypoint } from "./index.js"
 
 const entry = fileURLToPath(new URL("./index.ts", import.meta.url))
 
@@ -33,4 +37,17 @@ test("capture lifecycle commands are exposed while ensure remains hidden", () =>
     ]),
   )
   expect(listed).not.toContain("ensure")
+})
+
+test("a symlinked bin counts as the entrypoint, as a global install invokes it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "samskara-bin-"))
+  const link = join(dir, "samskara")
+  symlinkSync(entry, link)
+  expect(isEntrypoint(link, import.meta.url.replace("index.test.ts", "index.ts"))).toBe(true)
+})
+
+test("an unrelated argv[1] is not the entrypoint", () => {
+  expect(isEntrypoint(entry.replace("index.ts", "login.ts"), import.meta.url)).toBe(false)
+  expect(isEntrypoint(undefined, import.meta.url)).toBe(false)
+  expect(isEntrypoint("/nope/does-not-exist", import.meta.url)).toBe(false)
 })

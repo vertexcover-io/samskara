@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { realpathSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { Command } from "commander"
 import { disableCommand } from "./commands/disable.js"
@@ -18,7 +19,18 @@ import { startWatcherDaemon, stopWatcherDaemon } from "./config/daemon.js"
 import { artifactQueuePath, artifactStatePath, statePath } from "./config/paths.js"
 import { login } from "./login.js"
 
-const isMain = process.argv[1] === fileURLToPath(import.meta.url)
+/** Compare real paths: a global install invokes the bin through a symlink, and Node keeps that
+ * symlink in `argv[1]` while `import.meta.url` already points at the resolved file. */
+export const isEntrypoint = (argv1: string | undefined, moduleUrl: string): boolean => {
+  if (argv1 === undefined) return false
+  try {
+    return realpathSync(argv1) === realpathSync(fileURLToPath(moduleUrl))
+  } catch {
+    return false
+  }
+}
+
+const isMain = isEntrypoint(process.argv[1], import.meta.url)
 
 const program = new Command()
 
