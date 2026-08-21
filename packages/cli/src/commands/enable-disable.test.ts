@@ -375,6 +375,32 @@ describe("enable command", () => {
     expect((await getProject("acme-widget"))?.projectId).toBe(FAKE_PROJECT_ID)
   })
 
+  test("SC37b: enable prints the plain personal-project line when notMember arrives without a remote", async () => {
+    const { output } = await setup()
+    vi.mocked(resolveProject).mockResolvedValue({ name: "widget", slug: "widget" })
+    const fetch: typeof globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          id: FAKE_PROJECT_ID,
+          owner: { type: "user", slug: "e2e-user" },
+          reason: "notMember",
+        }),
+        { status: 201 },
+      )
+
+    const code = await enableCommand({
+      apiBase: "http://test",
+      readToken: async () => "test-token",
+      fetch,
+      cwd: "/work/widget",
+      stdout: { write: (text) => output.push(text) },
+    })
+
+    expect(code).toBe(0)
+    expect(output.join("")).not.toContain("undefined")
+    expect(output.join("")).toContain("personal project")
+  })
+
   test("SC38: enable without a token exits 1 and writes nothing", async () => {
     const { output } = await setup()
     const errors: string[] = []

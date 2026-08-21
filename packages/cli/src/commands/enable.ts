@@ -69,8 +69,8 @@ export const registerProject = async (
 }
 
 const ownerLine = (identity: ProjectIdentity, registered: CreateProjectResponse): string => {
-  if (registered.reason === "notMember") {
-    return `This repo belongs to the GitHub org "${identity.remote?.owner}", but you are not a member there. Sessions go to your personal project "${identity.slug}".\n`
+  if (registered.reason === "notMember" && identity.remote !== undefined) {
+    return `This repo belongs to the GitHub org "${identity.remote.owner}", but you are not a member there. Sessions go to your personal project "${identity.slug}".\n`
   }
   return registered.owner.type === "org"
     ? `Sessions from this folder go to the org project "${identity.slug}" owned by "${registered.owner.slug}".\n`
