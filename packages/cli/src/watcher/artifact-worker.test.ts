@@ -111,6 +111,41 @@ describe("artifact workers", () => {
     recorder = spyLogger()
   })
 
+  test("a 401 is retried rather than dropped, so a later `samskara login` still syncs the artifact", async () => {
+    const sink = scriptedSink([401, 200])
+    const target = entry()
+    const key = stateKey(target.sessionId, target.path)
+    await enqueue(queuePath, [target])
+
+    const now = 1_800_000_000_000
+    const config = { queuePath, statePath, workers: 1, drainOnce: true }
+
+    // Stale credentials: the entry must survive, because logging in again fixes it.
+    await runArtifactWorkers(config, deps(sink, now))
+    const afterFirst = await readQueue(queuePath)
+    expect(afterFirst.entries).toHaveLength(1)
+    expect(afterFirst.entries[0]?.attempts).toBe(1)
+    expect((await readArtifactState(statePath)).artifacts[key]).toBeUndefined()
+
+    // After the re-pair the same entry uploads.
+    const later = Date.parse(afterFirst.entries[0]?.nextAttemptAt ?? "") + 1
+    await runArtifactWorkers(config, deps(sink, later))
+    expect((await readQueue(queuePath)).entries).toHaveLength(0)
+    expect((await readArtifactState(statePath)).artifacts[key]).toBeDefined()
+  })
+
+  test("a 400 is still dropped without retrying: no login fixes a payload the server refuses", async () => {
+    const sink = scriptedSink([400])
+    await enqueue(queuePath, [entry()])
+
+    await runArtifactWorkers(
+      { queuePath, statePath, workers: 1, drainOnce: true },
+      deps(sink, 1_800_000_000_000),
+    )
+
+    expect((await readQueue(queuePath)).entries).toHaveLength(0)
+  })
+
   test("S34: a transient failure is retried with backoff and advances no state", async () => {
     const sink = scriptedSink([500, 409, 200])
     const target = entry()

@@ -314,9 +314,12 @@ const processOne = async (
 
     // Retryable for reasons the statuses would not usually suggest: 409 is the session row not
     // existing *yet*, since artifacts can reach the server before the transcript that owns them,
-    // and 0 is the sink's marker for a network error rather than any HTTP reply. The rest of 4xx
-    // is the server refusing this payload, which no amount of retrying changes.
-    const retryable = status === 409 || status >= 500 || status === 0
+    // and 0 is the sink's marker for a network error rather than any HTTP reply. 401 and 403 say
+    // the stored credentials are stale, which `samskara login` fixes without touching this
+    // payload -- dropping the entry would lose an artifact a re-pair would otherwise have synced.
+    // The rest of 4xx is the server refusing this payload, which no amount of retrying changes.
+    const retryable =
+      status === 409 || status === 401 || status === 403 || status >= 500 || status === 0
     const context = { path: entry.path, status, attempts: entry.attempts + 1 }
 
     if (retryable && entry.attempts + 1 < MAX_ATTEMPTS) {

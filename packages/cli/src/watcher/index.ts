@@ -80,8 +80,9 @@ export const drainWorkers = (
 
 export const watch = async (options: WatchOptions): Promise<void> => {
   const { log, projectOverride } = options
-  const token = await readToken()
-  if (!token) throw new Error("no token found; run `samskara login` first")
+  // Checked once so a daemon with no credentials at all fails loudly at startup; the sinks read
+  // the token again on every request, so a later `samskara login` lands without a restart.
+  if (!(await readToken())) throw new Error("no token found; run `samskara login` first")
   // Read at call time, not module load: SAMSKARA_HOME decides where the queue lives, and the
   // daemon must write under whichever home the process was started with.
   const config: WatcherConfig = { statePath: statePath(), artifactQueuePath: artifactQueuePath() }
@@ -96,7 +97,7 @@ export const watch = async (options: WatchOptions): Promise<void> => {
   const deps: WatcherDeps = {
     fs: nodeFs,
     clock: { now: () => Date.now() },
-    sink: createHttpSink({ apiBase, token, fetch: globalThis.fetch }),
+    sink: createHttpSink({ apiBase, readToken, fetch: globalThis.fetch }),
     glob: globAll,
     plugin: createClaudePlugin(nodeFs),
     resolveProject: projectOverride ? async () => projectOverride : resolveProject,
@@ -114,7 +115,7 @@ export const watch = async (options: WatchOptions): Promise<void> => {
     {
       fileHistoryDir: fileHistoryDir(),
       log,
-      sink: createArtifactSink({ apiBase, token, fetch: globalThis.fetch }),
+      sink: createArtifactSink({ apiBase, readToken, fetch: globalThis.fetch }),
       clock: { now: () => Date.now() },
       stopped: () => stopping,
     },
