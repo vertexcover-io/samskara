@@ -2,7 +2,7 @@ import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, test, vi } from "vitest"
-import { login } from "./login.js"
+import { checkToken, login } from "./login.js"
 
 const originalHome = process.env.SAMSKARA_HOME
 
@@ -160,6 +160,18 @@ describe("login command", () => {
     expect(errors.join("")).toContain("already been used")
     expect(errors.join("")).not.toContain("expires")
     expect(errors.join("")).toContain("Pair the CLI")
+  })
+
+  test("checkToken gives up on a server that never answers, rather than hanging the hook", async () => {
+    vi.stubGlobal("fetch", (_url: string, init?: RequestInit) => {
+      // A blackholed connection: only the caller's own deadline ends this.
+      const signal = init?.signal
+      return new Promise<Response>((_resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(new Error("aborted")))
+      })
+    })
+
+    await expect(checkToken("stale")).resolves.toBe("unreachable")
   })
 
   test("a missing code tells the user where to get one", async () => {

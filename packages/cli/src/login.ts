@@ -82,10 +82,15 @@ export const verifyToken = async (token: string): Promise<PublicUser> => {
  */
 export type TokenCheck = "ok" | "rejected" | "unreachable"
 
+const CHECK_TIMEOUT_MS = 3_000
+
 export const checkToken = async (token: string): Promise<TokenCheck> => {
   try {
     const res = await fetch(`${apiBase}/api/auth/me`, {
       headers: { authorization: `Bearer ${token}` },
+      // A refused connection fails fast, but a blackholed one hangs until the network stack
+      // gives up. The SessionStart hook awaits this, so the wait needs its own ceiling.
+      signal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
     })
     if (res.status === 401 || res.status === 403) return "rejected"
     return res.ok ? "ok" : "unreachable"

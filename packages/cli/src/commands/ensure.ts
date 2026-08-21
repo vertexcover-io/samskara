@@ -3,6 +3,7 @@ import { reviveWatcher, watcherPid } from "../config/daemon.js"
 import { watchLogDir } from "../config/paths.js"
 import { isProjectEnabled } from "../config/projects.js"
 import { type Writer, errorMessage, resolveIo } from "../io.js"
+import { checkToken } from "../login.js"
 import { resolveProject } from "../watcher/resolveProject.js"
 
 export type EnsureOptions = {
@@ -48,6 +49,17 @@ export const ensureCommand = async (options: EnsureOptions = {}): Promise<number
     if (!(await isProjectEnabled(project.slug))) {
       context.push(
         `This project (${project.slug}) is not enabled for Samskara capture. Ask the user whether to enable it; if they agree, run \`samskara enable\`.`,
+      )
+      // A disabled project uploads nothing, so a server round trip would only add startup latency.
+      emitContext(stdout, context)
+      return 0
+    }
+
+    // An enabled project is about to upload, so a token the server no longer accepts is a real
+    // outage. An unreachable server is not: the hook fails open rather than crying wolf.
+    if ((await checkToken(token)) === "rejected") {
+      context.push(
+        `Samskara capture is OFF for this project (${project.slug}) because the server rejected the stored credentials. Tell the user to run \`samskara login\` to pair again.`,
       )
     }
     emitContext(stdout, context)
