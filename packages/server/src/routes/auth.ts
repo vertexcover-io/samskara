@@ -61,73 +61,61 @@ const publicUser = (user: User): PublicUser =>
     avatarUrl: user.avatarUrl,
   })
 
-export const authRoutes = ({
-  db,
-  env,
-  githubClient,
-  pairingStore,
-}: Deps): Hono<{ Variables: AuthVariables }> => {
-  const app = new Hono<{ Variables: AuthVariables }>()
-
-  app.get("/github/start", (c) => {
-    const state = randomBytes(16).toString("hex")
-    setStateCookie(c, state, env)
-    return c.redirect(authorizeUrl(env, state))
-  })
-
-  app.get("/github/callback", zValidator("query", callbackQuerySchema), async (c) => {
-    const { code, state: queryState } = c.req.valid("query")
-    const cookieState = readStateCookie(c)
-    if (!queryState || !cookieState || queryState !== cookieState) {
-      clearStateCookie(c)
-      return c.redirect(webUrl(env, "/?error=bad_state"))
-    }
-    clearStateCookie(c)
-
-    if (!code) return c.redirect(webUrl(env, "/?error=bad_state"))
-
-    const { accessToken } = await githubClient.exchangeCode(code, callbackUrl(env))
-    const profile = await githubClient.getProfile(accessToken)
-    const orgSlugs = await githubClient.getOrgs(accessToken)
-
-    let registered: ReadonlyArray<RegisteredOrg>
-    try {
-      registered = (await gateOrgs(db, orgSlugs)).registered
-    } catch (error) {
-      if (error instanceof NotMemberError) {
-        await dropUserOrgs(db, profile.githubId)
-        return c.redirect(webUrl(env, "/?error=not_member"))
+export const authRoutes = ({ db, env, githubClient, pairingStore }: Deps) =>
+  new Hono<{ Variables: AuthVariables }>()
+    .get("/github/start", (c) => {
+      const state = randomBytes(16).toString("hex")
+      setStateCookie(c, state, env)
+      return c.redirect(authorizeUrl(env, state))
+    })
+    .get("/github/callback", zValidator("query", callbackQuerySchema), async (c) => {
+      const { code, state: queryState } = c.req.valid("query")
+      const cookieState = readStateCookie(c)
+      if (!queryState || !cookieState || queryState !== cookieState) {
+        clearStateCookie(c)
+        return c.redirect(webUrl(env, "/?error=bad_state"))
       }
-      throw error
-    }
+      clearStateCookie(c)
 
-    const user = await upsertUserFromGithub(db, profile)
-    await syncUserOrgs(db, user.id, registered)
+      if (!code) return c.redirect(webUrl(env, "/?error=bad_state"))
 
-    const token = await signToken(env, { sub: user.id, aud: "web" })
-    setSessionCookie(c, token, env)
-    return c.redirect(webUrl(env, "/"))
-  })
+      const { accessToken } = await githubClient.exchangeCode(code, callbackUrl(env))
+      const profile = await githubClient.getProfile(accessToken)
+      const orgSlugs = await githubClient.getOrgs(accessToken)
 
-  app.get("/me", requireAuth({ db, env }, ["web", "cli"]), (c) => c.json(publicUser(c.get("user"))))
+      let registered: ReadonlyArray<RegisteredOrg>
+      try {
+        registered = (await gateOrgs(db, orgSlugs)).registered
+      } catch (error) {
+        if (error instanceof NotMemberError) {
+          await dropUserOrgs(db, profile.githubId)
+          return c.redirect(webUrl(env, "/?error=not_member"))
+        }
+        throw error
+      }
 
-  app.post("/logout", requireAuth({ db, env }, ["web"]), (c) => {
-    clearSessionCookie(c)
-    return c.json({ ok: true })
-  })
+      const user = await upsertUserFromGithub(db, profile)
+      await syncUserOrgs(db, user.id, registered)
 
-  app.post("/cli-code", requireAuth({ db, env }, ["web"]), (c) =>
-    c.json({ code: pairingStore.mint(c.get("user").id) }),
-  )
+      const token = await signToken(env, { sub: user.id, aud: "web" })
+      setSessionCookie(c, token, env)
+      return c.redirect(webUrl(env, "/"))
+    })
+    .get("/me", requireAuth({ db, env }, ["web", "cli"]), (c) =>
+      c.json(publicUser(c.get("user")), 200),
+    )
+    .post("/logout", requireAuth({ db, env }, ["web"]), (c) => {
+      clearSessionCookie(c)
+      return c.json({ ok: true }, 200)
+    })
+    .post("/cli-code", requireAuth({ db, env }, ["web"]), (c) =>
+      c.json({ code: pairingStore.mint(c.get("user").id) }, 200),
+    )
+    .post("/cli-exchange", zValidator("json", cliExchangeSchema), async (c) => {
+      const { code } = c.req.valid("json")
+      const userId = pairingStore.redeem(code)
+      if (!userId) return c.json({ error: "unauthorized" }, 401)
 
-  app.post("/cli-exchange", zValidator("json", cliExchangeSchema), async (c) => {
-    const { code } = c.req.valid("json")
-    const userId = pairingStore.redeem(code)
-    if (!userId) return c.json({ error: "unauthorized" }, 401)
-
-    const token = await signToken(env, { sub: userId, aud: "cli" })
-    return c.json({ token })
-  })
-
-  return app
-}
+      const token = await signToken(env, { sub: userId, aud: "cli" })
+      return c.json({ token }, 200)
+    })

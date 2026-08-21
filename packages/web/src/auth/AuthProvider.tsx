@@ -1,7 +1,6 @@
 import { type ReactNode, createContext, useCallback, useContext, useEffect, useState } from "react"
-import { getJson } from "../api/client.js"
-import { parseCurrentUser } from "../api/parse.js"
-import type { CurrentUser } from "../api/types.js"
+import { client, request } from "../api/client.js"
+import type { CurrentUser } from "../api/shapes.js"
 
 export type AuthStatus = "loading" | "authed" | "anon"
 
@@ -23,7 +22,7 @@ const ANON: AuthState = { status: "anon", user: null }
 const AuthContext = createContext<Auth | null>(null)
 
 const resolveSession = (): Promise<AuthState> =>
-  getJson("/api/auth/me", parseCurrentUser).then((result) =>
+  request(() => client.api.auth.me.$get()).then((result) =>
     result.ok ? { status: "authed", user: result.data } : ANON,
   )
 

@@ -1,17 +1,3 @@
-export type ProjectOwner = {
-  readonly type: "user" | "org"
-  readonly slug: string
-}
-
-export type ProjectSummary = {
-  readonly id: string
-  readonly name: string
-  readonly slug: string
-  readonly owner: ProjectOwner
-  readonly sessionCount: number
-  readonly lastActiveAt: string | null
-}
-
 /** `host` is `local` for a repo with no remote — there `owner` is its absolute root path. */
 export type SessionRepo = {
   readonly host: string
@@ -188,20 +174,4 @@ export type CapturedArtifact = {
   readonly editCount: number
   readonly firstSeenAt: string
   readonly lastSeenAt: string
-}
-
-export type CurrentUser = {
-  readonly id: string
-  readonly githubLogin: string
-  readonly email: string | null
-  readonly name: string | null
-  readonly avatarUrl: string | null
-}
-
-export type PairingCode = {
-  readonly code: string
-}
-
-export type LogoutAck = {
-  readonly ok: true
 }

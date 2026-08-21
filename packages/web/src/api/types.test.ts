@@ -1,5 +1,5 @@
 import { expect, test } from "vitest"
-import { parseProjectList, parseSessionArtifacts, parseSessionList } from "./parse.js"
+import { parseSessionArtifacts, parseSessionList } from "./parse.js"
 import type { CapturedArtifact } from "./types.js"
 
 const ROW = {
@@ -133,30 +133,6 @@ test("malformed decorative match evidence is dropped rather than poisoning a val
     sessions: [{ ...session, match: { sourceKind: "artifact", sourceRowId: "a", snippet: [] } }],
   })
   expect(parsed?.sessions[0]?.match).toBeNull()
-})
-
-const project = {
-  id: "p-1",
-  name: "Samskara",
-  slug: "samskara",
-  owner: { type: "user", slug: "ritesh" },
-  sessionCount: 3,
-  lastActiveAt: null,
-}
-
-test("SC33: a project without an owner fails to parse, one with a complete owner does", () => {
-  expect(parseProjectList({ projects: [project] })).toEqual([project])
-
-  const { owner: _owner, ...withoutOwner } = project
-  expect(parseProjectList({ projects: [withoutOwner] })).toBeNull()
-})
-
-test("SC33: a project whose owner type is not user or org fails to parse", () => {
-  expect(
-    parseProjectList({
-      projects: [{ ...project, owner: { type: "team", slug: "acme" } }],
-    }),
-  ).toBeNull()
 })
 
 test("SC33: a session row without projectId fails to parse, a complete one succeeds", () => {

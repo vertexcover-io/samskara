@@ -1,8 +1,5 @@
 import type {
   CapturedArtifact,
-  CurrentUser,
-  ProjectOwner,
-  ProjectSummary,
   RawMessage,
   RawSubagent,
   RawToolCall,
@@ -33,60 +30,6 @@ const nullableStr = (value: unknown): string | null | undefined => {
 
 const num = (value: unknown): number | null =>
   typeof value === "number" && Number.isFinite(value) ? value : null
-
-export const parseCurrentUser = (body: unknown): CurrentUser | null => {
-  const fields = asFields(body)
-  if (!fields) return null
-
-  const id = str(fields.id)
-  const githubLogin = str(fields.githubLogin)
-  if (id === null || githubLogin === null) return null
-
-  const email = nullableStr(fields.email)
-  const name = nullableStr(fields.name)
-  const avatarUrl = nullableStr(fields.avatarUrl)
-  if (email === undefined || name === undefined || avatarUrl === undefined) return null
-
-  return { id, githubLogin, email, name, avatarUrl }
-}
-
-const parseProjectOwner = (value: unknown): ProjectOwner | null => {
-  const fields = asFields(value)
-  if (!fields) return null
-
-  const type = str(fields.type)
-  const slug = str(fields.slug)
-  if (type !== "user" && type !== "org") return null
-  if (slug === null) return null
-
-  return { type, slug }
-}
-
-const parseProjectSummary = (value: unknown): ProjectSummary | null => {
-  const fields = asFields(value)
-  if (!fields) return null
-
-  const id = str(fields.id)
-  const name = str(fields.name)
-  const slug = str(fields.slug)
-  const sessionCount = num(fields.sessionCount)
-  const owner = parseProjectOwner(fields.owner)
-  if (id === null || name === null || slug === null || sessionCount === null || owner === null)
-    return null
-
-  const lastActiveAt = nullableStr(fields.lastActiveAt)
-  if (lastActiveAt === undefined) return null
-
-  return { id, name, slug, owner, sessionCount, lastActiveAt }
-}
-
-export const parseProjectList = (body: unknown): ReadonlyArray<ProjectSummary> | null => {
-  const fields = asFields(body)
-  if (!fields || !Array.isArray(fields.projects)) return null
-
-  const parsed = fields.projects.map(parseProjectSummary)
-  return parsed.every((project): project is ProjectSummary => project !== null) ? parsed : null
-}
 
 const nullableNum = (value: unknown): number | null | undefined => {
   if (value === null) return null

@@ -1,6 +1,6 @@
 import { render, screen, within } from "@testing-library/react"
 import { expect, test } from "vitest"
-import type { ProjectSummary } from "../api/types.js"
+import type { ProjectSummary } from "../api/shapes.js"
 import { TestRouter } from "../tests/test-router.js"
 import { ProjectCard } from "./ProjectCard.js"
 

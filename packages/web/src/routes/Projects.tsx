@@ -1,8 +1,6 @@
 import { useEffect, useState } from "react"
-import { getJson } from "../api/client.js"
-import type { ApiError } from "../api/client.js"
-import { parseProjectList } from "../api/parse.js"
-import type { ProjectSummary } from "../api/types.js"
+import { type ApiError, client, request } from "../api/client.js"
+import type { ProjectSummary } from "../api/shapes.js"
 import { SessionExpired } from "../auth/SessionExpired.js"
 import { ProjectCard } from "../components/ProjectCard.js"
 import { LoadingShell } from "../shell/LoadingShell.js"
@@ -43,11 +41,11 @@ export const Projects = () => {
   useEffect(() => {
     let active = true
 
-    getJson("/api/projects", parseProjectList).then((result) => {
+    request(() => client.api.projects.$get()).then((result) => {
       if (!active) return
       setState(
         result.ok
-          ? { phase: "ready", projects: result.data }
+          ? { phase: "ready", projects: result.data.projects }
           : { phase: "failed", error: result.error },
       )
     })

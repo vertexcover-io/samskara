@@ -44,6 +44,16 @@ test("S30: a pending cli-code request renders 'Generating…' and marks the gene
   expect(generating).toBeDisabled()
 })
 
+test("SC12: requesting a pairing code shows the code the API minted, with no error shown", async () => {
+  stubCliCode(() => Promise.resolve(jsonResponse(200, { code: "minted-code-42" })))
+
+  renderDialog()
+  await userEvent.click(screen.getByRole("button", { name: /generate code/i }))
+
+  expect(await screen.findByTestId("pairing-code")).toHaveTextContent("minted-code-42")
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+})
+
 test("S31: a returned code renders the code itself and a Copy action, and never claims an expiry - the code does not expire", async () => {
   stubCliCode(() => Promise.resolve(jsonResponse(200, { code: "abc123" })))
 

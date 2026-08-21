@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, test, vi } from "vitest"
 import { AppRoutes } from "./App.js"
-import type { CurrentUser, ProjectSummary } from "./api/types.js"
+import type { CurrentUser, ProjectSummary } from "./api/shapes.js"
 import { TestRouter } from "./tests/test-router.js"
 
 const user: CurrentUser = {
@@ -97,6 +97,40 @@ test("S12: an empty project list renders CLI-capture guidance and no grid - not 
   // Scoped to main: the shell's own wordmark links to /projects and is not a project card.
   const main = within(screen.getByRole("main"))
   expect(main.queryByRole("link", { name: /samskara(?! capture)/i })).not.toBeInTheDocument()
+})
+
+test("SC10: the projects page renders one card for each project the API returns", async () => {
+  const andromeda: ProjectSummary = {
+    id: "p-2",
+    name: "Andromeda",
+    slug: "andromeda",
+    sessionCount: 0,
+    lastActiveAt: null,
+  }
+  stubFetch({
+    me: () => Promise.resolve(jsonResponse(200, user)),
+    projects: () => Promise.resolve(jsonResponse(200, { projects: [samskara, andromeda] })),
+  })
+
+  renderAt("/projects")
+
+  const main = await screen.findByRole("main")
+  expect(within(main).getByText("Samskara")).toBeInTheDocument()
+  expect(within(main).getByText("Andromeda")).toBeInTheDocument()
+  expect(within(main).getByText("3")).toBeInTheDocument()
+  expect(within(main).getByText(/unavailable/i)).toBeInTheDocument()
+})
+
+test("SC11: a 401 on the projects page paints SessionExpired - no project card renders and the page navigates to /login", async () => {
+  stubFetch({
+    me: () => Promise.resolve(jsonResponse(200, user)),
+    projects: () => Promise.resolve(jsonResponse(401, { error: "unauthorized" })),
+  })
+
+  renderAt("/projects")
+
+  await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("/login"))
+  expect(screen.queryByText("Samskara", { exact: true })).not.toBeInTheDocument()
 })
 
 test("S10: a session that expires after /api/auth/me resolved lands on /login and stops requesting - it does not ping-pong between /login and /projects forever", async () => {

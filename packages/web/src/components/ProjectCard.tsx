@@ -1,6 +1,6 @@
 import type { ReactNode } from "react"
 import { Link } from "react-router-dom"
-import type { ProjectSummary } from "../api/types.js"
+import type { ProjectSummary } from "../api/shapes.js"
 import { absoluteTime } from "../time.js"
 
 const Field = ({ label, children }: { label: string; children: ReactNode }) => (
