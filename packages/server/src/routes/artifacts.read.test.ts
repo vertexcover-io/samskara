@@ -111,6 +111,8 @@ type SeedArtifact = {
   readonly changeKind?: string
   readonly current: Buffer
   readonly base?: Buffer
+  readonly baseHash?: string | null
+  readonly baseHashVerified?: boolean
   readonly diff?: string
   readonly sessionId?: string
 }
@@ -141,7 +143,8 @@ describe.skipIf(!dockerAvailable())("artifact read routes", () => {
         currentContent: input.current,
         currentHash: sha256(input.current),
         baseContent: input.base ?? null,
-        baseHash: input.base === undefined ? null : sha256(input.base),
+        baseHash: input.base === undefined ? null : (input.baseHash ?? sha256(input.base)),
+        baseHashVerified: input.baseHashVerified ?? true,
         diff: input.diff ?? null,
       })
       .returning({ id: artifact.id })
@@ -542,6 +545,50 @@ describe.skipIf(!dockerAvailable())("artifact read routes", () => {
     const current = await get(`/api/artifacts/${id}/raw?which=current`, ownerToken)
     expect(current.status).toBe(200)
     expect(await current.text()).toBe("brand new\n")
+  })
+
+  test("base raw reads repair legacy missing hashes before issuing a strong ETag", async () => {
+    const base = Buffer.from("legacy base\n", "utf8")
+    const id = await seedArtifact({
+      path: "/work/legacy-missing-hash.md",
+      relativePath: "legacy-missing-hash.md",
+      mimeType: "text/markdown",
+      isBinary: false,
+      current: Buffer.from("current\n", "utf8"),
+      base,
+      baseHash: null,
+      baseHashVerified: false,
+    })
+
+    const first = await get(`/api/artifacts/${id}/raw?which=base`, ownerToken)
+    expect(first.status).toBe(200)
+    expect(await first.text()).toBe("legacy base\n")
+    expect(first.headers.get("etag")).toBe(`"${sha256(base)}"`)
+
+    const [stored] = await db.select().from(artifact).where(eq(artifact.id, id))
+    expect(stored?.baseHash).toBe(sha256(base))
+    expect(stored?.baseHashVerified).toBe(true)
+  })
+
+  test("base raw reads repair legacy wrong hashes before conditional matching", async () => {
+    const base = Buffer.from("legacy correct bytes\n", "utf8")
+    const id = await seedArtifact({
+      path: "/work/legacy-wrong-hash.md",
+      relativePath: "legacy-wrong-hash.md",
+      mimeType: "text/markdown",
+      isBinary: false,
+      current: Buffer.from("current\n", "utf8"),
+      base,
+      baseHash: "wrong-client-hash",
+      baseHashVerified: false,
+    })
+
+    const first = await get(`/api/artifacts/${id}/raw?which=base`, ownerToken, {
+      "if-none-match": '"wrong-client-hash"',
+    })
+    expect(first.status).toBe(200)
+    expect(first.headers.get("etag")).toBe(`"${sha256(base)}"`)
+    expect(await first.text()).toBe("legacy correct bytes\n")
   })
 
   test("S46: raw responses return stored strong ETags and honor matching conditionals", async () => {

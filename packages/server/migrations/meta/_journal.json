@@ -92,6 +92,13 @@
       "when": 1787200000000,
       "tag": "0012_session_search_helpers",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1787270400000,
+      "tag": "0013_artifact_base_hash_verified",
+      "breakpoints": true
     }
   ]
 }

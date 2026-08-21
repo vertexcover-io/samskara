@@ -1,10 +1,12 @@
 import { execFileSync } from "node:child_process"
+import { createHash } from "node:crypto"
 import { fileURLToPath } from "node:url"
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql"
 import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
 import { type Db, createDb } from "../db/client.js"
 import {
+  artifact,
   commits,
   projects,
   pullRequests,
@@ -15,6 +17,7 @@ import {
   toolCall,
   users,
 } from "../db/schema.js"
+import * as artifactsRepo from "./artifacts.repo.js"
 import * as commitsRepo from "./commits.repo.js"
 import * as messagesRepo from "./messages.repo.js"
 import * as projectsRepo from "./projects.repo.js"
@@ -86,6 +89,28 @@ describe.skipIf(!dockerAvailable())("ingest repositories", () => {
 
   afterAll(async () => {
     await teardown?.()
+  })
+
+  test("artifacts.upsert derives the base hash instead of trusting client input", async () => {
+    await seedSession("artifact-server-base-hash")
+    const base = Buffer.from("trusted base\n", "utf8")
+    const current = Buffer.from("current\n", "utf8")
+
+    const { artifactId } = await artifactsRepo.upsertArtifact(db, {
+      sessionId: "artifact-server-base-hash",
+      path: "/work/base.md",
+      relativePath: "base.md",
+      mimeType: "text/markdown",
+      isBinary: false,
+      changeKind: "edited",
+      baseContent: base,
+      currentContent: current,
+      currentHash: createHash("sha256").update(current).digest("hex"),
+    })
+
+    const [stored] = await db.select().from(artifact).where(eq(artifact.id, artifactId))
+    expect(stored?.baseHash).toBe(createHash("sha256").update(base).digest("hex"))
+    expect(stored?.baseHashVerified).toBe(true)
   })
 
   test("sessions.upsert enriches the title without changing id; null keeps existing", async () => {

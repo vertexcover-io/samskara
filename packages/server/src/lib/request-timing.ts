@@ -3,8 +3,6 @@ import { AsyncLocalStorage } from "node:async_hooks"
 export const REQUEST_TIMING_PHASES = [
   "auth.jwt",
   "auth.user",
-  "db.queue",
-  "db.execute",
   "serialize",
   "compress",
   "handler",

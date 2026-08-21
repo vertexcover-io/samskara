@@ -189,8 +189,10 @@ export const artifactRoutes = ({ db, env }: Deps): Hono<{ Variables: AuthVariabl
         changeKind: payload.changeKind,
         currentContent: current,
         currentHash: payload.currentHash,
+        // `baseHash` remains accepted in the wire schema for older CLIs, but unlike current bytes
+        // it is not validated before storage. The repository derives the stored digest from these
+        // decoded bytes so raw metadata and ETags never trust a client-supplied base hash.
         ...(base === undefined ? {} : { baseContent: base }),
-        ...(payload.baseHash === undefined ? {} : { baseHash: payload.baseHash }),
         ...(payload.diff === undefined ? {} : { diff: payload.diff }),
         ...(payload.oldFragment === undefined ? {} : { oldFragment: payload.oldFragment }),
       })

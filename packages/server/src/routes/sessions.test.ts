@@ -314,6 +314,78 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     expect(idsOf(await listAs(db, owner))).toEqual(["newest", "middle", "oldest"])
   })
 
+  test("S21: oldest, tokens, project, and relevance sorts survive list serialization", async () => {
+    const owner = await seedUser(db, 1221, "sort-owner")
+    const alpha = await projectsRepo.upsert(db, {
+      identity: { name: "Alpha", slug: "alpha-sort" },
+      ownerId: owner,
+    })
+    const zulu = await projectsRepo.upsert(db, {
+      identity: { name: "Zulu", slug: "zulu-sort" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "alpha-old",
+      userId: owner,
+      projectId: alpha,
+      title: "needle",
+      updatedAt: new Date("2026-02-01T00:00:00Z"),
+    })
+    await seedSession(db, {
+      id: "zulu-middle",
+      userId: owner,
+      projectId: zulu,
+      title: "needle",
+      updatedAt: new Date("2026-02-02T00:00:00Z"),
+    })
+    await seedSession(db, {
+      id: "alpha-new",
+      userId: owner,
+      projectId: alpha,
+      title: "needle",
+      updatedAt: new Date("2026-02-03T00:00:00Z"),
+    })
+    await seedMessage(db, {
+      sessionId: "alpha-old",
+      lineNumber: 1,
+      timestamp: new Date("2026-02-01T00:00:00Z"),
+      tokens: 30,
+    })
+    await seedMessage(db, {
+      sessionId: "zulu-middle",
+      lineNumber: 1,
+      timestamp: new Date("2026-02-02T00:00:00Z"),
+      tokens: 10,
+    })
+    await seedMessage(db, {
+      sessionId: "alpha-new",
+      lineNumber: 1,
+      timestamp: new Date("2026-02-03T00:00:00Z"),
+      tokens: 20,
+    })
+
+    expect(idsOf(await listAs(db, owner, "?sort=oldest"))).toEqual([
+      "alpha-old",
+      "zulu-middle",
+      "alpha-new",
+    ])
+    expect(idsOf(await listAs(db, owner, "?sort=tokens"))).toEqual([
+      "alpha-old",
+      "alpha-new",
+      "zulu-middle",
+    ])
+    expect(idsOf(await listAs(db, owner, "?sort=project"))).toEqual([
+      "alpha-new",
+      "alpha-old",
+      "zulu-middle",
+    ])
+    expect(idsOf(await listAs(db, owner, "?q=needle&sort=relevance"))).toEqual([
+      "alpha-new",
+      "zulu-middle",
+      "alpha-old",
+    ])
+  })
+
   test("keyword search, pagination, and structured validation use the paginated list envelope", async () => {
     const owner = await seedUser(db, 1251, "search-owner")
     const projectId = await projectsRepo.upsert(db, {
@@ -354,6 +426,13 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     expect(body.sessions[0]?.match?.sourceKind).toBe("session")
     expect(body.pagination).toEqual({ page: 2, limit: 1, total: 2, totalPages: 2 })
     expect(body.filterOptions.projects.map((option) => option.value)).toEqual(["search"])
+
+    const emptyPage = await request(db, owner, "?q=needle&limit=1&page=3")
+    expect(emptyPage.status).toBe(200)
+    expect(await emptyPage.json()).toMatchObject({
+      sessions: [],
+      pagination: { page: 3, limit: 1, total: 2, totalPages: 2 },
+    })
 
     for (const query of [
       "?pr=01",

@@ -46,6 +46,7 @@ type UploadOverrides = {
   readonly currentContent?: string
   readonly currentHash?: string
   readonly baseContent?: string | null
+  readonly baseHash?: string
   readonly encoding?: "utf8" | "base64"
   readonly mimeType?: string
 }
@@ -65,7 +66,7 @@ const upload = (over: UploadOverrides = {}) => {
     currentContent,
     currentHash: over.currentHash ?? sha256(Buffer.from(currentContent, encoding)),
     ...(base === undefined ? {} : { baseContent: base }),
-    ...(decodedBase === undefined ? {} : { baseHash: sha256(decodedBase) }),
+    ...(decodedBase === undefined ? {} : { baseHash: over.baseHash ?? sha256(decodedBase) }),
     ...(base === undefined ? {} : { diff: "--- a\n+++ b\n-original\n+changed\n" }),
     observedAt: "2026-07-28T12:00:00.000Z",
   }
@@ -157,6 +158,29 @@ describe.skipIf(!dockerAvailable())("artifacts route", () => {
     expect(row.mimeType).toBe("text/markdown")
     expect(row.isBinary).toBe(false)
     expect(row.editCount).toBe(1)
+    expect(row.baseHash).toBe(sha256("original content\n"))
+    expect(row.baseHashVerified).toBe(true)
+  })
+
+  test("baseContent stores a server-derived hash when the client omits baseHash", async () => {
+    const { baseHash: _baseHash, ...payload } = upload()
+
+    const res = await post(payload)
+    expect(res.status).toBe(200)
+    const { artifactId } = (await res.json()) as { artifactId: string }
+    const [row] = await db.select().from(artifact).where(eq(artifact.id, artifactId))
+    expect(row?.baseHash).toBe(sha256("original content\n"))
+    expect(row?.baseHashVerified).toBe(true)
+  })
+
+  test("baseContent ignores a wrong client baseHash", async () => {
+    const res = await post(upload({ baseHash: "client-supplied-wrong-hash" }))
+    expect(res.status).toBe(200)
+
+    const { artifactId } = (await res.json()) as { artifactId: string }
+    const [row] = await db.select().from(artifact).where(eq(artifact.id, artifactId))
+    expect(row?.baseHash).toBe(sha256("original content\n"))
+    expect(row?.baseHashVerified).toBe(true)
   })
 
   test("S26: a binary artifact round-trips its exact bytes through base64", async () => {

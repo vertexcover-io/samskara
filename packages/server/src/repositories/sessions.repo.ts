@@ -417,16 +417,18 @@ export const listAccessible = async (
           : query !== undefined && (filter.sort === undefined || filter.sort === "relevance")
             ? sql`score desc, "matchedRows" desc, "updatedAt" desc, id asc`
             : sql`"updatedAt" desc, id asc`
-  const finalOrder =
+  // `UNION ALL` below discards the result_rows CTE's presentation order. Keep the exact same
+  // sort keys available on the union and apply them only to the outermost result.
+  const outerOrder =
     filter.sort === "oldest"
-      ? sql`p."updatedAt" asc, p.id asc`
+      ? sql`"lastActiveAt" asc, id asc`
       : isTokenSort
-        ? sql`p."tokensTotal" desc, p.id asc`
+        ? sql`"tokensTotal" desc, id asc`
         : filter.sort === "project"
-          ? sql`p."projectName" asc, p.id asc`
+          ? sql`"projectName" asc, id asc`
           : query !== undefined && (filter.sort === undefined || filter.sort === "relevance")
-            ? sql`p.score desc, p."matchedRows" desc, p."updatedAt" desc, p.id asc`
-            : sql`p."updatedAt" desc, p.id asc`
+            ? sql`score desc, "matchedRows" desc, "lastActiveAt" desc, id asc`
+            : sql`"lastActiveAt" desc, id asc`
   const ranked = isTokenSort
     ? sql`ranked as (
         select ms.*, coalesce(tt."tokensTotal", 0)::bigint as "tokensTotal"
@@ -500,7 +502,7 @@ export const listAccessible = async (
         r.host as "repoHost", r.owner as "repoOwner", r."repo_name" as "repoName",
         mf."durationMs", ${isTokenSort ? sql`p."tokensTotal"` : sql`mf."tokensTotal"`} as "tokensTotal",
         case when mf."messageCount" = 0 then 'empty' else 'complete' end as status,
-        p."updatedAt" as "lastActiveAt", p."sourceKind", p."sourceRowId", p."sourceText", p.score, totals.total,
+        p."updatedAt" as "lastActiveAt", p."sourceKind", p."sourceRowId", p."sourceText", p.score, p."matchedRows", totals.total,
         case when p."sourceText" is null then null else ts_headline('simple'::regconfig, p."sourceText", ${query ?? sql`null::tsquery`}, ${SNIPPET_OPTIONS}) end as headline
       from paged p
       cross join totals
@@ -508,17 +510,20 @@ export const listAccessible = async (
       left join dominant_repos dr on dr.id = p.id
       left join "repos" r on r.id = dr."repoId"
       left join derived_titles dt on dt.id = p.id
-      order by ${finalOrder}
+    ),
+    rows_with_total as (
+      select * from result_rows
+      union all
+      select
+        null::text as id, null::text as title, null::text as "projectName", null::text as "projectSlug", null::text as "userLogin",
+        null::text as "repoHost", null::text as "repoOwner", null::text as "repoName", null::bigint as "durationMs",
+        null::bigint as "tokensTotal", null::text as status, null::timestamptz as "lastActiveAt", null::text as "sourceKind",
+        null::text as "sourceRowId", null::text as "sourceText", null::real as score, null::int as "matchedRows", totals.total, null::text as headline
+      from totals
+      where not exists (select 1 from result_rows)
     )
-    select * from result_rows
-    union all
-    select
-      null::text as id, null::text as title, null::text as "projectName", null::text as "projectSlug", null::text as "userLogin",
-      null::text as "repoHost", null::text as "repoOwner", null::text as "repoName", null::bigint as "durationMs",
-      null::bigint as "tokensTotal", null::text as status, null::timestamptz as "lastActiveAt", null::text as "sourceKind",
-      null::text as "sourceRowId", null::text as "sourceText", null::real as score, totals.total, null::text as headline
-    from totals
-    where not exists (select 1 from result_rows)
+    select * from rows_with_total
+    order by ${outerOrder}
   `)) as ReadonlyArray<Record<string, unknown>>
   const total = Number(rows[0]?.total ?? 0)
   const mapped = rows

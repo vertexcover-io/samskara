@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { and, asc, eq, sql } from "drizzle-orm"
 import type { Querier } from "../db/client.js"
 import { artifact, projects, sessions } from "../db/schema.js"
@@ -13,7 +14,6 @@ export type UpsertArtifactInput = {
   readonly currentContent: Buffer
   readonly currentHash: string
   readonly baseContent?: Buffer
-  readonly baseHash?: string
   readonly diff?: string
   readonly oldFragment?: string
 }
@@ -34,7 +34,18 @@ export type UpsertArtifactResult = {
  */
 const set = {
   baseContent: sql`coalesce("artifact"."baseContent", excluded."baseContent")`,
-  baseHash: sql`coalesce("artifact"."baseHash", excluded."baseHash")`,
+  // The content and its server-derived digest must be repaired together for legacy rows whose
+  // nullable client hash was absent or incorrect. Existing valid bases remain immutable.
+  baseHash: sql`case
+    when "artifact"."baseContent" is null then excluded."baseHash"
+    when "artifact"."baseHash" is null or "artifact"."baseHash" <> encode(sha256("artifact"."baseContent"), 'hex')
+      then encode(sha256("artifact"."baseContent"), 'hex')
+    else "artifact"."baseHash"
+  end`,
+  baseHashVerified: sql`case
+    when "artifact"."baseContent" is null then excluded."baseHashVerified"
+    else true
+  end`,
   currentContent: sql`excluded."currentContent"`,
   currentHash: sql`excluded."currentHash"`,
   mimeType: sql`excluded."mimeType"`,
@@ -46,6 +57,8 @@ const set = {
   editCount: sql`"artifact"."editCount" + 1`,
   lastSeenAt: sql`now()`,
 }
+
+const sha256 = (content: Buffer): string => createHash("sha256").update(content).digest("hex")
 
 export const upsertArtifact = async (
   db: Querier,
@@ -63,7 +76,8 @@ export const upsertArtifact = async (
       currentContent: input.currentContent,
       currentHash: input.currentHash,
       baseContent: input.baseContent ?? null,
-      baseHash: input.baseHash ?? null,
+      baseHash: input.baseContent === undefined ? null : sha256(input.baseContent),
+      baseHashVerified: input.baseContent !== undefined,
       diff: input.diff ?? null,
       oldFragment: input.oldFragment ?? null,
     })
@@ -226,6 +240,7 @@ const byteMetadataProjection = (which: ArtifactSide) => {
     isBinary: artifact.isBinary,
     mimeType: artifact.mimeType,
     hash: sideHash(which),
+    baseHashVerified: artifact.baseHashVerified,
     // Enough bytes for every signature inspected by serveHeadersFor, without pulling the body.
     sample: sql<Buffer | null>`substring(${content} from 1 for 512)`,
   }
@@ -244,7 +259,23 @@ const byteMetadataFor = async (
     .innerJoin(projects, eq(projects.id, sessions.projectId))
     .where(and(where, visibleToUser(db, userId)))
     .limit(1)
-  return row ?? null
+  if (!row) return null
+
+  // New rows get their hash during upsert. The marker makes existing rows self-heal only when their
+  // base is actually read, avoiding an unbounded full-blob migration. Do not trust the old nullable
+  // client hash even when it happens to be present.
+  if (which === "base" && row.byteSize !== null && !row.baseHashVerified) {
+    const [repaired] = await db
+      .update(artifact)
+      .set({
+        baseHash: sql`encode(sha256("baseContent"), 'hex')`,
+        baseHashVerified: true,
+      })
+      .where(and(where, eq(artifact.baseHashVerified, false)))
+      .returning({ hash: artifact.baseHash })
+    return repaired ? { ...row, hash: repaired.hash } : byteMetadataFor(db, userId, where, which)
+  }
+  return row
 }
 
 export const getArtifactByteMetadata = (

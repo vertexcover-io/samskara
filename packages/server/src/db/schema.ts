@@ -352,6 +352,9 @@ export const artifact = pgTable(
     isBinary: boolean("isBinary").notNull(),
     baseContent: bytea("baseContent"),
     baseHash: text("baseHash"),
+    // New writes derive this server-side. Existing rows are verified lazily on their first base read
+    // so deployment does not rewrite every stored artifact in one migration transaction.
+    baseHashVerified: boolean("baseHashVerified").notNull().default(false),
     currentContent: bytea("currentContent").notNull(),
     currentHash: text("currentHash").notNull(),
     diff: text("diff"),

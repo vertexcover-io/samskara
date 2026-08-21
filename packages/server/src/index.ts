@@ -12,7 +12,7 @@ if (!databaseUrl) throw new Error("DATABASE_URL is required")
 
 const dbConfig = env.db
 if (!dbConfig) throw new Error("Database configuration is required")
-const { db, client, queryMetrics } = createDb(databaseUrl, dbConfig)
+const { db, client } = createDb(databaseUrl, dbConfig)
 const app = buildApp(db, env, { rootLog })
 
 const port = Number(process.env.PORT ?? 3000)
@@ -34,7 +34,7 @@ let shuttingDown = false
 const shutdown = (signal: NodeJS.Signals) => {
   if (shuttingDown) return
   shuttingDown = true
-  rootLog.info({ signal, ...queryMetrics.snapshot() }, "server shutting down")
+  rootLog.info({ signal }, "server shutting down")
   server.close((error) => {
     void client.end({ timeout: 5 }).then(
       () => {
