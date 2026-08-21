@@ -1,5 +1,11 @@
 import { expect, test } from "vitest"
-import { type ParsedRecord, ingestPayloadSchema, projectIdentitySchema } from "./types.js"
+import {
+  type ParsedRecord,
+  createProjectRequestSchema,
+  createProjectResponseSchema,
+  ingestPayloadSchema,
+  projectIdentitySchema,
+} from "./types.js"
 
 const records: ReadonlyArray<ParsedRecord> = [
   {
@@ -55,6 +61,67 @@ test("S15: the strict project schema still rejects an unknown key", () => {
 
 test("S15: the project schema rejects an empty root rather than storing a meaningless path", () => {
   expect(projectIdentitySchema.safeParse({ name: "w", slug: "a-w", root: "" }).success).toBe(false)
+})
+
+test("the project schema accepts an optional projectId and remote, preserving both", () => {
+  const parsed = projectIdentitySchema.safeParse({
+    name: "w",
+    slug: "a-w",
+    projectId: "0191d942-3ba5-7dba-9a7d-22d65b30258c",
+    remote: { host: "github.com", owner: "acme", repoName: "widget" },
+  })
+
+  expect(parsed.success).toBe(true)
+  expect(parsed.success && parsed.data.projectId).toBe("0191d942-3ba5-7dba-9a7d-22d65b30258c")
+  expect(parsed.success && parsed.data.remote).toEqual({
+    host: "github.com",
+    owner: "acme",
+    repoName: "widget",
+  })
+})
+
+test("the project schema rejects a projectId that is not a UUID", () => {
+  expect(
+    projectIdentitySchema.safeParse({ name: "w", slug: "a-w", projectId: "not-a-uuid" }).success,
+  ).toBe(false)
+})
+
+test("createProjectRequestSchema accepts a body with or without remote and rejects an unknown key", () => {
+  expect(
+    createProjectRequestSchema.safeParse({ name: "widget", slug: "acme-widget" }).success,
+  ).toBe(true)
+  expect(
+    createProjectRequestSchema.safeParse({
+      name: "widget",
+      slug: "acme-widget",
+      remote: { host: "github.com", owner: "acme", repoName: "widget" },
+    }).success,
+  ).toBe(true)
+  expect(
+    createProjectRequestSchema.safeParse({ name: "widget", slug: "acme-widget", root: "/work" })
+      .success,
+  ).toBe(false)
+})
+
+test("createProjectResponseSchema accepts an org owner with no reason and a user owner with notMember", () => {
+  const org = createProjectResponseSchema.safeParse({
+    id: "0191d942-3ba5-7dba-9a7d-22d65b30258c",
+    owner: { type: "org", slug: "acme" },
+  })
+  const userWithReason = createProjectResponseSchema.safeParse({
+    id: "0191d942-3ba5-7dba-9a7d-22d65b30258c",
+    owner: { type: "user", slug: "maya" },
+    reason: "notMember",
+  })
+
+  expect(org.success).toBe(true)
+  expect(userWithReason.success).toBe(true)
+  expect(
+    createProjectResponseSchema.safeParse({
+      id: "0191d942-3ba5-7dba-9a7d-22d65b30258c",
+      owner: { type: "team", slug: "acme" },
+    }).success,
+  ).toBe(false)
 })
 
 test("a pull request git event carries its own repo on the ingest wire, and the union still admits commits", () => {
