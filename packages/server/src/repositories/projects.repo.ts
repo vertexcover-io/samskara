@@ -107,15 +107,17 @@ export const authorityFor = async (
     .where(and(eq(projects.id, projectId), eq(projects.ownerUserId, userId)))
   if (owned) return "admin"
 
-  const [member] = await db
-    .select({ id: projects.id })
-    .from(projects)
-    .innerJoin(userOrgs, eq(userOrgs.orgId, projects.ownerOrgId))
-    .where(and(eq(projects.id, projectId), eq(userOrgs.userId, userId)))
-  const [granted] = await db
-    .select({ scope: userProjectGrant.scope })
-    .from(userProjectGrant)
-    .where(and(eq(userProjectGrant.projectId, projectId), eq(userProjectGrant.userId, userId)))
+  const [[member], [granted]] = await Promise.all([
+    db
+      .select({ id: projects.id })
+      .from(projects)
+      .innerJoin(userOrgs, eq(userOrgs.orgId, projects.ownerOrgId))
+      .where(and(eq(projects.id, projectId), eq(userOrgs.userId, userId))),
+    db
+      .select({ scope: userProjectGrant.scope })
+      .from(userProjectGrant)
+      .where(and(eq(userProjectGrant.projectId, projectId), eq(userProjectGrant.userId, userId))),
+  ])
 
   const held: Scope[] = [
     ...(member ? (["editor"] as const) : []),
