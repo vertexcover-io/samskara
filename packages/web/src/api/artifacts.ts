@@ -1,11 +1,12 @@
-import { type ApiResult, getJson } from "./client.js"
-import { parseSessionArtifacts } from "./parse.js"
-import type { CapturedArtifact } from "./types.js"
+import { type ApiResult, client, request } from "./client.js"
+import type { CapturedArtifact } from "./shapes.js"
 
 export const fetchSessionArtifacts = (
   sessionId: string,
 ): Promise<ApiResult<ReadonlyArray<CapturedArtifact>>> =>
-  getJson(`/api/sessions/${encodeURIComponent(sessionId)}/artifacts`, parseSessionArtifacts)
+  request(() => client.api.sessions[":id"].artifacts.$get({ param: { id: sessionId } })).then(
+    (result) => (result.ok ? { ok: true, data: result.data.artifacts } : result),
+  )
 
 export const rawArtifactUrl = (artifactId: string, which: "base" | "current" = "current"): string =>
   `/api/artifacts/${encodeURIComponent(artifactId)}/raw?which=${which}`

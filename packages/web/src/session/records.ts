@@ -5,7 +5,7 @@ import type {
   SessionDetailPayload,
   SessionFacts,
   TokenTotals,
-} from "../api/types.js"
+} from "../api/shapes.js"
 
 export type ToolEvidence = RawToolCall
 

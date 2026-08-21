@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { Route, Routes } from "react-router-dom"
 import { afterEach, beforeEach, expect, test, vi } from "vitest"
-import type { SessionDetailPayload } from "../api/types.js"
+import type { SessionDetailPayload } from "../api/shapes.js"
 import {
   buildPayload,
   commit,
@@ -534,6 +534,34 @@ test("SC32: the breadcrumb links to the session's project by id, not its slug", 
   expect(link).toHaveAttribute("href", "/sessions?project=22222222-2222-4222-8222-222222222222")
 })
 
+test("SC20: the session detail page renders the transcript from the inferred payload - title, messages and token totals all appear", async () => {
+  renderDetail()
+
+  expect(await screen.findByRole("heading", { name: "Make ingest idempotent" })).toBeInTheDocument()
+
+  const panel = panelOf()
+  expect(within(panel).getByText(/Make it idempotent/)).toBeInTheDocument()
+  expect(within(panel).getByText(/Here is the plan for the upsert/)).toBeInTheDocument()
+
+  const facts = screen.getByRole("group", { name: /session facts/i })
+  expect(within(facts).getByText("214,600")).toBeInTheDocument()
+  expect(within(facts).getByText("18,200")).toBeInTheDocument()
+})
+
+test("SC25: the session facts always show an absolute created-at time, while duration keeps its unavailable placeholder when null", async () => {
+  renderDetail(buildPayload({ ...PAYLOAD, session: { durationMs: null } }))
+
+  await waitFor(() => expect(tabs()).toHaveLength(5))
+
+  const facts = screen.getByRole("group", { name: /session facts/i })
+  const createdValue = within(facts).getByText("Created").nextElementSibling
+  expect(createdValue?.textContent).not.toMatch(/unavailable/i)
+  expect(createdValue?.textContent).toBe("Mar 1, 2026, 10:00")
+
+  const durationValue = within(facts).getByText("Duration").nextElementSibling
+  expect(durationValue?.textContent).toMatch(/unavailable/i)
+})
+
 const metaLineOf = async (): Promise<string> => {
   await screen.findByRole("heading", { name: "Make ingest idempotent" })
   // The title is pinned in its own bar now, so the meta line is found from the facts it sits above.
@@ -614,6 +642,50 @@ test("S48: the artifacts tab lists the session's captured files as a folder tree
   expect(within(viewer).getByText("+The replacement line.")).toBeInTheDocument()
 })
 
+test("SC22: the artifacts panel lists the captured files for the session - both paths appear, a binary artifact shows its preview rather than a text body, and a null diff still renders", async () => {
+  const user = userEvent.setup()
+  renderDetail(PAYLOAD, {
+    status: 200,
+    body: {
+      artifacts: [
+        {
+          ...CAPTURED,
+          id: "cap-text",
+          relativePath: "docs/notes.md",
+          diff: null,
+          oldFragment: "The original note.",
+        },
+        {
+          ...CAPTURED,
+          id: "cap-bin",
+          relativePath: "docs/screenshot.png",
+          mimeType: "image/png",
+          isBinary: true,
+          changeKind: "created",
+          diff: null,
+          oldFragment: null,
+        },
+      ],
+    },
+  })
+
+  await waitFor(() => expect(tabs()).toHaveLength(5))
+  await user.click(screen.getByRole("tab", { name: /Artifacts/ }))
+
+  const list = await screen.findByRole("list", { name: /filed artifacts/i })
+  expect(within(list).getByRole("button", { name: /notes\.md/ })).toBeInTheDocument()
+  expect(within(list).getByRole("button", { name: /screenshot\.png/ })).toBeInTheDocument()
+
+  const viewer = screen.getByRole("region", { name: /artifact viewer/i })
+  expect(within(viewer).getByText(/The original note\./)).toBeInTheDocument()
+
+  await user.click(within(list).getByRole("button", { name: /screenshot\.png/ }))
+  expect(within(viewer).getByRole("img")).toHaveAttribute(
+    "src",
+    "/api/artifacts/cap-bin/raw?which=current",
+  )
+})
+
 test("S49: a session with no captured artifacts reads empty rather than showing demo fixtures", async () => {
   const user = userEvent.setup()
   renderDetail(buildPayload({ messages: [message({ lineNumber: 1, msgType: "message" })] }))
@@ -657,24 +729,6 @@ test("S54: a failed artifact fetch leaves the other tabs working and shows a fai
   await user.click(screen.getByRole("tab", { name: /Artifacts/ }))
   const notice = await screen.findByText(/captured artifacts could not be retrieved/i)
   expect(notice).toBeInTheDocument()
-})
-
-test("S54: a 200 whose artifact rows are malformed is refused at the parse boundary rather than rendered as partial data", async () => {
-  const user = userEvent.setup()
-  // A row missing `relativePath` and `mimeType` -- the shape a schema drift would produce.
-  renderDetail(PAYLOAD, {
-    status: 200,
-    body: { artifacts: [{ id: "cap-1", path: "/work/acme/docs/notes.md" }] },
-  })
-
-  await waitFor(() => expect(tabs()).toHaveLength(5))
-  await user.click(screen.getByRole("tab", { name: /Artifacts/ }))
-
-  expect(await screen.findByText(/captured artifacts could not be retrieved/i)).toBeInTheDocument()
-  // Nothing from the malformed payload leaks through; the transcript's own frame-link is
-  // unaffected, so the count reflects it alone.
-  expect(screen.queryByText("docs/notes.md")).not.toBeInTheDocument()
-  expect(screen.getByRole("tab", { name: /Artifacts/ })).toHaveTextContent("1")
 })
 
 test("S63: a branch reads like the main spine - its system events are dropped and its two assistant turns merge into a single block", async () => {

@@ -1,4 +1,4 @@
-import type { RawSubagent } from "../api/types.js"
+import type { RawSubagent } from "../api/shapes.js"
 import type { TimelineRecord } from "./records.js"
 
 const LANES = [

@@ -64,37 +64,3 @@ export const request = async <R extends Response>(
 
   return { ok: true, data: body as OkBody<R> }
 }
-
-const requestJson = async <T>(
-  path: string,
-  parse: (body: unknown) => T | null,
-  init: RequestInit,
-): Promise<ApiResult<T>> => {
-  let response: Response
-  try {
-    response = await fetch(path, { credentials: "same-origin", ...init })
-  } catch (error) {
-    return { ok: false, error: networkFailure(error) }
-  }
-
-  const body = await response.json().catch(() => MALFORMED)
-  if (!response.ok) return { ok: false, error: errorForStatus(response.status, errorCode(body)) }
-
-  const parsed = body === MALFORMED ? null : parse(body)
-  if (parsed === null) {
-    return { ok: false, error: failure("server", "The server sent a malformed response.") }
-  }
-
-  return { ok: true, data: parsed }
-}
-
-export const getJson = <T>(
-  path: string,
-  parse: (body: unknown) => T | null,
-  init?: RequestInit,
-): Promise<ApiResult<T>> => requestJson(path, parse, { ...init })
-
-export const postJson = <T>(
-  path: string,
-  parse: (body: unknown) => T | null,
-): Promise<ApiResult<T>> => requestJson(path, parse, { method: "POST" })

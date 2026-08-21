@@ -8,10 +8,8 @@ import { ingest } from "../services/ingest.js"
 
 type Deps = { readonly db: Db; readonly env: Env }
 
-export const ingestRoutes = ({ db, env }: Deps): Hono<{ Variables: AuthVariables }> => {
-  const app = new Hono<{ Variables: AuthVariables }>()
-
-  app.post(
+export const ingestRoutes = ({ db, env }: Deps) =>
+  new Hono<{ Variables: AuthVariables }>().post(
     "/",
     requireAuth({ db, env }, ["cli"]),
     zValidator("json", ingestPayloadSchema),
@@ -30,6 +28,3 @@ export const ingestRoutes = ({ db, env }: Deps): Hono<{ Variables: AuthVariables
       return context.json(result, 200)
     },
   )
-
-  return app
-}

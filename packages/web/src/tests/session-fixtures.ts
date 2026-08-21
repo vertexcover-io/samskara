@@ -7,7 +7,7 @@ import type {
   SessionFacts,
   SessionPullRequest,
   TokenTotals,
-} from "../api/types.js"
+} from "../api/shapes.js"
 
 let counter = 0
 
@@ -78,8 +78,10 @@ export const buildPayload = (parts: PayloadParts = {}): SessionDetailPayload => 
     toolCalls,
     subagents,
     tokenUsage: tokens(parts.tokenUsage),
-    commits: parts.commits ?? [],
-    pullRequests: parts.pullRequests ?? [],
+    // Spread into a fresh array: the server's inferred `commits`/`pullRequests` fields are
+    // built with `.map(...)` and come back mutable, where `parts.commits` is `readonly`.
+    commits: [...(parts.commits ?? [])],
+    pullRequests: [...(parts.pullRequests ?? [])],
   }
 }
 

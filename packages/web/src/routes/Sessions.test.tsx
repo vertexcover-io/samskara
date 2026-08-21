@@ -31,12 +31,17 @@ const jsonResponse = (status: number, body: unknown): Response =>
 
 type SessionsHandler = (url: URL) => Promise<Response>
 
+// Only the list endpoint (`/api/sessions` or `/api/sessions?...`) matches: a sub-resource path
+// like `/api/sessions/s-1` is a different response shape, and no test here asserts on it.
+const isSessionsList = (path: string): boolean =>
+  path === "/api/sessions" || path.startsWith("/api/sessions?")
+
 const stubFetch = (sessions: SessionsHandler): ReadonlyArray<string> => {
   const calls: Array<string> = []
   vi.stubGlobal("fetch", (input: RequestInfo | URL) => {
     const path = typeof input === "string" ? input : input.toString()
     if (path.endsWith("/api/auth/me")) return Promise.resolve(jsonResponse(200, user))
-    if (path.startsWith("/api/sessions")) {
+    if (isSessionsList(path)) {
       calls.push(path)
       return sessions(new URL(path, "http://localhost"))
     }

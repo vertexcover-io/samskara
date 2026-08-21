@@ -103,127 +103,129 @@ export const rangeResponse = (
   }
 }
 
-export const artifactRoutes = ({ db, env }: Deps): Hono<{ Variables: AuthVariables }> => {
-  const app = new Hono<{ Variables: AuthVariables }>()
+export const artifactRoutes = ({ db, env }: Deps) =>
+  new Hono<{ Variables: AuthVariables }>()
+    .post(
+      "/",
+      requireAuth({ db, env }, ["cli"]),
+      zValidator("json", artifactUploadSchema),
+      async (context) => {
+        const payload = context.req.valid("json")
+        const isBinary = payload.encoding === "base64"
+        const current = decode(payload, payload.currentContent)
 
-  app.post(
-    "/",
-    requireAuth({ db, env }, ["cli"]),
-    zValidator("json", artifactUploadSchema),
-    async (context) => {
-      const payload = context.req.valid("json")
-      const isBinary = payload.encoding === "base64"
-      const current = decode(payload, payload.currentContent)
+        // The client hashed the decoded bytes before the network hop, so this catches transport
+        // corruption before it becomes a permanently stored wrong artifact.
+        if (sha256(current) !== payload.currentHash) {
+          return context.json({ error: "hashMismatch" } as const, 400)
+        }
 
-      // The client hashed the decoded bytes before the network hop, so this catches transport
-      // corruption before it becomes a permanently stored wrong artifact.
-      if (sha256(current) !== payload.currentHash) {
-        return context.json({ error: "hashMismatch" } as const, 400)
-      }
+        // The client already skips oversize files; the server does not trust that.
+        if (current.byteLength > (isBinary ? MAX_BINARY_BYTES : MAX_TEXT_BYTES)) {
+          return context.json({ error: "artifactTooLarge" } as const, 413)
+        }
 
-      // The client already skips oversize files; the server does not trust that.
-      if (current.byteLength > (isBinary ? MAX_BINARY_BYTES : MAX_TEXT_BYTES)) {
-        return context.json({ error: "artifactTooLarge" } as const, 413)
-      }
+        // Scoped to the caller, not just existence: an `aud:cli` token is valid for any CLI
+        // installation, so an unscoped check would let one user's daemon attach artifacts to
+        // another user's session by guessing its id. Absent-or-not-yours both retry as 409 --
+        // the worker backs off the same way for "not synced yet" as for "not mine".
+        if (!(await sessionsRepo.existsForUser(db, payload.sessionId, context.get("user").id))) {
+          return context.json({ error: "sessionNotFound" } as const, 409)
+        }
 
-      // Scoped to the caller, not just existence: an `aud:cli` token is valid for any CLI
-      // installation, so an unscoped check would let one user's daemon attach artifacts to
-      // another user's session by guessing its id. Absent-or-not-yours both retry as 409 --
-      // the worker backs off the same way for "not synced yet" as for "not mine".
-      if (!(await sessionsRepo.existsForUser(db, payload.sessionId, context.get("user").id))) {
-        return context.json({ error: "sessionNotFound" } as const, 409)
-      }
+        const base =
+          payload.baseContent === undefined ? undefined : decode(payload, payload.baseContent)
 
-      const base =
-        payload.baseContent === undefined ? undefined : decode(payload, payload.baseContent)
+        const result = await upsertArtifact(db, {
+          sessionId: payload.sessionId,
+          path: payload.path,
+          relativePath: payload.relativePath,
+          mimeType: payload.mimeType,
+          isBinary,
+          changeKind: payload.changeKind,
+          currentContent: current,
+          currentHash: payload.currentHash,
+          ...(base === undefined ? {} : { baseContent: base }),
+          ...(payload.baseHash === undefined ? {} : { baseHash: payload.baseHash }),
+          ...(payload.diff === undefined ? {} : { diff: payload.diff }),
+          ...(payload.oldFragment === undefined ? {} : { oldFragment: payload.oldFragment }),
+        })
 
-      const result = await upsertArtifact(db, {
-        sessionId: payload.sessionId,
-        path: payload.path,
-        relativePath: payload.relativePath,
-        mimeType: payload.mimeType,
-        isBinary,
-        changeKind: payload.changeKind,
-        currentContent: current,
-        currentHash: payload.currentHash,
-        ...(base === undefined ? {} : { baseContent: base }),
-        ...(payload.baseHash === undefined ? {} : { baseHash: payload.baseHash }),
-        ...(payload.diff === undefined ? {} : { diff: payload.diff }),
-        ...(payload.oldFragment === undefined ? {} : { oldFragment: payload.oldFragment }),
-      })
+        context.get("log")?.setBindings({
+          sessionId: payload.sessionId,
+          relativePath: payload.relativePath,
+          updated: result.updated,
+        })
+        return context.json(result, 200)
+      },
+    )
+    .get("/:artifactId", requireAuth({ db, env }, ["web"]), async (context) => {
+      const row = await getArtifact(db, context.get("user").id, context.req.param("artifactId"))
+      if (row === null) return context.json({ error: "artifactNotFound" } as const, 404)
+      return context.json({ artifact: serializeArtifact<ArtifactDetailRow>(row) }, 200)
+    })
+    /**
+     * The same bytes as `/:artifactId/raw`, addressed by the path the artifact had on disk. A
+     * captured report links its screenshots and recordings relatively, so serving the document
+     * from a path-shaped URL is what lets the browser resolve those references -- no html is
+     * rewritten.
+     *
+     * Registered before `/:artifactId` so the static `session` segment wins the match.
+     */
+    .get(
+      "/session/:sessionId/files/*",
+      requireAuth({ db, env }, ["web"]),
+      zValidator("query", rawQuerySchema),
+      async (context) => {
+        const { which } = context.req.valid("query")
+        const marker = "/files/"
+        const at = context.req.path.indexOf(marker)
+        const relativePath = decodeURIComponent(context.req.path.slice(at + marker.length))
 
-      context.get("log")?.setBindings({
-        sessionId: payload.sessionId,
-        relativePath: payload.relativePath,
-        updated: result.updated,
-      })
-      return context.json(result, 200)
-    },
-  )
+        const found = await getArtifactBytesByPath(
+          db,
+          context.get("user").id,
+          context.req.param("sessionId"),
+          relativePath,
+          which,
+        )
+        if (found === null) return context.json({ error: "artifactNotFound" } as const, 404)
 
-  app.get("/:artifactId", requireAuth({ db, env }, ["web"]), async (context) => {
-    const row = await getArtifact(db, context.get("user").id, context.req.param("artifactId"))
-    if (row === null) return context.json({ error: "artifactNotFound" } as const, 404)
-    return context.json({ artifact: serializeArtifact<ArtifactDetailRow>(row) })
-  })
+        const serve = serveHeadersFor(found.bytes, found.isBinary)
+        const response = rangeResponse(found.bytes, serve, context.req.header("range"))
 
-  /**
-   * The same bytes as `/:artifactId/raw`, addressed by the path the artifact had on disk. A
-   * captured report links its screenshots and recordings relatively, so serving the document from a
-   * path-shaped URL is what lets the browser resolve those references -- no html is rewritten.
-   *
-   * Registered before `/:artifactId` so the static `session` segment wins the match.
-   */
-  app.get(
-    "/session/:sessionId/files/*",
-    requireAuth({ db, env }, ["web"]),
-    zValidator("query", rawQuerySchema),
-    async (context) => {
-      const { which } = context.req.valid("query")
-      const marker = "/files/"
-      const at = context.req.path.indexOf(marker)
-      const relativePath = decodeURIComponent(context.req.path.slice(at + marker.length))
+        if (response.kind === "unsatisfiable") return context.body(null, 416, response.headers)
+        return context.body(
+          response.body,
+          response.kind === "partial" ? 206 : 200,
+          response.headers,
+        )
+      },
+    )
+    .get(
+      "/:artifactId/raw",
+      requireAuth({ db, env }, ["web"]),
+      zValidator("query", rawQuerySchema),
+      async (context) => {
+        const { which } = context.req.valid("query")
+        const found = await getArtifactBytes(
+          db,
+          context.get("user").id,
+          context.req.param("artifactId"),
+          which,
+        )
+        if (found === null) return context.json({ error: "artifactNotFound" } as const, 404)
 
-      const found = await getArtifactBytesByPath(
-        db,
-        context.get("user").id,
-        context.req.param("sessionId"),
-        relativePath,
-        which,
-      )
-      if (found === null) return context.json({ error: "artifactNotFound" } as const, 404)
+        // `found.mimeType` is what the client claimed on upload and is never consulted here:
+        // echoing it is the stored-XSS vector this route exists to close.
+        const serve = serveHeadersFor(found.bytes, found.isBinary)
+        const response = rangeResponse(found.bytes, serve, context.req.header("range"))
 
-      const serve = serveHeadersFor(found.bytes, found.isBinary)
-      const response = rangeResponse(found.bytes, serve, context.req.header("range"))
-
-      if (response.kind === "unsatisfiable") return context.body(null, 416, response.headers)
-      return context.body(response.body, response.kind === "partial" ? 206 : 200, response.headers)
-    },
-  )
-
-  app.get(
-    "/:artifactId/raw",
-    requireAuth({ db, env }, ["web"]),
-    zValidator("query", rawQuerySchema),
-    async (context) => {
-      const { which } = context.req.valid("query")
-      const found = await getArtifactBytes(
-        db,
-        context.get("user").id,
-        context.req.param("artifactId"),
-        which,
-      )
-      if (found === null) return context.json({ error: "artifactNotFound" } as const, 404)
-
-      // `found.mimeType` is what the client claimed on upload and is never consulted here:
-      // echoing it is the stored-XSS vector this route exists to close.
-      const serve = serveHeadersFor(found.bytes, found.isBinary)
-      const response = rangeResponse(found.bytes, serve, context.req.header("range"))
-
-      if (response.kind === "unsatisfiable") return context.body(null, 416, response.headers)
-      return context.body(response.body, response.kind === "partial" ? 206 : 200, response.headers)
-    },
-  )
-
-  return app
-}
+        if (response.kind === "unsatisfiable") return context.body(null, 416, response.headers)
+        return context.body(
+          response.body,
+          response.kind === "partial" ? 206 : 200,
+          response.headers,
+        )
+      },
+    )

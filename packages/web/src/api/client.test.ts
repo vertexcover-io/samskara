@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest"
-import { getJson, request } from "./client.js"
+import { request } from "./client.js"
 
 const response = (status: number, body: unknown): Response =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
@@ -49,25 +49,5 @@ test("SC5: an aborted request becomes a network error that says it was cancelled
   expect(result).toEqual({
     ok: false,
     error: { kind: "network", code: null, message: "The request was cancelled." },
-  })
-})
-
-test("preserves stable server error codes from JSON failure responses", async () => {
-  vi.stubGlobal("fetch", () => Promise.resolve(response(400, { error: "ambiguousCommit" })))
-
-  const result = await getJson("/api/sessions", () => null)
-  expect(result).toEqual({
-    ok: false,
-    error: { kind: "server", code: "ambiguousCommit", message: "The server responded with 400." },
-  })
-})
-
-test("keeps status semantics while retaining a stable not-found code", async () => {
-  vi.stubGlobal("fetch", () => Promise.resolve(response(404, { error: "projectNotFound" })))
-
-  const result = await getJson("/api/sessions?project=private", () => null)
-  expect(result).toEqual({
-    ok: false,
-    error: { kind: "notFound", code: "projectNotFound", message: "That resource does not exist." },
   })
 })
