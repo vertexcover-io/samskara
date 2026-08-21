@@ -17,6 +17,11 @@ export const findById = async (db: Db, id: string): Promise<User | null> => {
   return user ?? null
 }
 
+export const findByGithubId = async (db: Db, githubId: number): Promise<User | null> => {
+  const [user] = await db.select().from(users).where(eq(users.githubId, githubId))
+  return user ?? null
+}
+
 export const upsertByGithubId = async (db: Db, input: UpsertUserInput): Promise<User> => {
   const [user] = await db
     .insert(users)

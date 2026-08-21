@@ -12,16 +12,24 @@ export class NotMemberError extends Error {
 }
 
 export type User = usersRepo.User
+export type { RegisteredOrg } from "../repositories/orgs.repo.js"
+
+export const planMembership = (
+  registered: ReadonlyArray<orgsRepo.RegisteredOrg>,
+): { readonly add: ReadonlyArray<string>; readonly keep: ReadonlyArray<string> } => ({
+  add: registered.filter((org) => org.autoAddMembers).map((org) => org.id),
+  keep: registered.map((org) => org.id),
+})
 
 export const gateOrgs = async (
   db: Db,
   userOrgSlugs: ReadonlyArray<string>,
-): Promise<{ orgIds: ReadonlyArray<string> }> => {
+): Promise<{ registered: ReadonlyArray<orgsRepo.RegisteredOrg> }> => {
   if (userOrgSlugs.length === 0) throw new NotMemberError()
 
-  const matched = await orgsRepo.findBySlugs(db, userOrgSlugs)
-  if (matched.length === 0) throw new NotMemberError()
-  return { orgIds: matched.map((org) => org.id) }
+  const registered = await orgsRepo.findBySlugs(db, userOrgSlugs)
+  if (registered.length === 0) throw new NotMemberError()
+  return { registered }
 }
 
 export const getUserById = (db: Db, id: string): Promise<User | null> => usersRepo.findById(db, id)
@@ -38,5 +46,10 @@ export const upsertUserFromGithub = (db: Db, profile: GithubProfile): Promise<Us
 export const syncUserOrgs = (
   db: Db,
   userId: string,
-  orgIds: ReadonlyArray<string>,
-): Promise<void> => userOrgsRepo.linkMany(db, userId, orgIds)
+  registered: ReadonlyArray<orgsRepo.RegisteredOrg>,
+): Promise<void> => userOrgsRepo.sync(db, userId, planMembership(registered))
+
+export const dropUserOrgs = async (db: Db, githubId: number): Promise<void> => {
+  const user = await usersRepo.findByGithubId(db, githubId)
+  if (user) await userOrgsRepo.sync(db, user.id, { add: [], keep: [] })
+}

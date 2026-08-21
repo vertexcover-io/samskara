@@ -85,6 +85,22 @@ describe.skipIf(!dockerAvailable())("auth routes (callback + start)", () => {
     await seedOrg(db, "vertexcover-io")
   })
 
+  const seedOrgWithFlag = async (slug: string, autoAddMembers: boolean) => {
+    await seedOrg(db, slug, { autoAddMembers })
+    const [org] = await db.select().from(orgs).where(eq(orgs.githubSlug, slug))
+    if (!org) throw new Error("no seeded org")
+    return org
+  }
+
+  const insertUser = async (githubId: number, githubLogin: string) => {
+    const [user] = await db
+      .insert(users)
+      .values({ githubId, githubLogin, email: null, name: githubLogin, avatarUrl: null })
+      .returning()
+    if (!user) throw new Error("no inserted user")
+    return user
+  }
+
   test("S1: happy-path callback creates user + membership + aud:web session", async () => {
     const app = buildApp(db, env, {
       githubClient: stubClient({
@@ -113,7 +129,7 @@ describe.skipIf(!dockerAvailable())("auth routes (callback + start)", () => {
     expect(memberships).toHaveLength(1)
   })
 
-  test("S2: non-member is rejected and no user row is persisted", async () => {
+  test("S2/SC14: a brand-new user in no registered org is refused and no user row is created", async () => {
     const app = buildApp(db, env, {
       githubClient: stubClient({
         orgs: ["some-other-org"],
@@ -180,6 +196,104 @@ describe.skipIf(!dockerAvailable())("auth routes (callback + start)", () => {
     if (!rows[0]) throw new Error("no user")
     const memberships = await db.select().from(userOrgs).where(eq(userOrgs.userId, rows[0].id))
     expect(memberships).toHaveLength(1)
+  })
+
+  test("SC10: login links only registered orgs with autoAddMembers on", async () => {
+    const on = await seedOrgWithFlag("sc10-on", true)
+    await seedOrgWithFlag("sc10-off", false)
+    const app = buildApp(db, env, {
+      githubClient: stubClient({
+        orgs: ["sc10-on", "sc10-off"],
+        profile: { githubId: 8001, login: "sc10-user" },
+      }),
+    })
+
+    const res = await app.request("/api/auth/github/callback?code=x&state=s", {
+      headers: { cookie: "oauth_state=s" },
+    })
+
+    expect(res.status).toBe(302)
+    const token = sessionFrom(res.headers.get("set-cookie"))
+    expect(token).toBeTruthy()
+
+    const [user] = await db.select().from(users).where(eq(users.githubId, 8001))
+    if (!user) throw new Error("no user")
+    const memberships = await db.select().from(userOrgs).where(eq(userOrgs.userId, user.id))
+    expect(memberships.map((m) => m.orgId)).toEqual([on.id])
+  })
+
+  test("SC11: login removes a link GitHub no longer lists", async () => {
+    const acme = await seedOrgWithFlag("sc11-acme", false)
+    const beta = await seedOrgWithFlag("sc11-beta", false)
+    const user = await insertUser(8002, "sc11-user")
+    await db.insert(userOrgs).values([
+      { userId: user.id, orgId: acme.id },
+      { userId: user.id, orgId: beta.id },
+    ])
+
+    const app = buildApp(db, env, {
+      githubClient: stubClient({
+        orgs: ["sc11-beta"],
+        profile: { githubId: 8002, login: "sc11-user" },
+      }),
+    })
+
+    const res = await app.request("/api/auth/github/callback?code=x&state=s", {
+      headers: { cookie: "oauth_state=s" },
+    })
+
+    expect(res.status).toBe(302)
+    const memberships = await db.select().from(userOrgs).where(eq(userOrgs.userId, user.id))
+    expect(memberships.map((m) => m.orgId)).toEqual([beta.id])
+  })
+
+  test("SC12: a link to an org with autoAddMembers off survives while GitHub still lists it", async () => {
+    const off = await seedOrgWithFlag("sc12-off", false)
+    const on = await seedOrgWithFlag("sc12-on", true)
+    const user = await insertUser(8004, "sc12-user")
+    await db.insert(userOrgs).values([{ userId: user.id, orgId: off.id }])
+
+    const app = buildApp(db, env, {
+      githubClient: stubClient({
+        orgs: ["sc12-off", "sc12-on"],
+        profile: { githubId: 8004, login: "sc12-user" },
+      }),
+    })
+
+    const res = await app.request("/api/auth/github/callback?code=x&state=s", {
+      headers: { cookie: "oauth_state=s" },
+    })
+
+    expect(res.status).toBe(302)
+    const memberships = await db.select().from(userOrgs).where(eq(userOrgs.userId, user.id))
+    expect(memberships.map((m) => m.orgId).sort()).toEqual([off.id, on.id].sort())
+  })
+
+  test("SC13: a user in zero registered orgs is refused and loses stale links", async () => {
+    const acme = await seedOrgWithFlag("sc13-acme", true)
+    const user = await insertUser(8005, "sc13-user")
+    await db.insert(userOrgs).values([{ userId: user.id, orgId: acme.id }])
+
+    const app = buildApp(db, env, {
+      githubClient: stubClient({
+        orgs: ["sc13-unregistered"],
+        profile: { githubId: 8005, login: "sc13-user" },
+      }),
+    })
+
+    const res = await app.request("/api/auth/github/callback?code=x&state=s", {
+      headers: { cookie: "oauth_state=s" },
+    })
+
+    expect(res.status).toBe(302)
+    expect(res.headers.get("location")).toBe("http://localhost:8000/?error=not_member")
+    expect(sessionFrom(res.headers.get("set-cookie"))).toBeUndefined()
+
+    const memberships = await db.select().from(userOrgs).where(eq(userOrgs.userId, user.id))
+    expect(memberships).toHaveLength(0)
+
+    const rows = await db.select().from(users).where(eq(users.githubId, 8005))
+    expect(rows).toHaveLength(1)
   })
 
   test("S7: /start redirects to GitHub authorize with matching state cookie and scopes", async () => {

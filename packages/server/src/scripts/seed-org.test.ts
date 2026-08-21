@@ -57,4 +57,16 @@ describe.skipIf(!dockerAvailable())("S6: seed:org upserts an org row", () => {
     const rows = await db.select().from(orgs).where(eq(orgs.githubSlug, "vertexcover-io"))
     expect(rows).toHaveLength(1)
   })
+
+  test("SC15: sets the flag on by default and --no-auto-add turns it off", async () => {
+    await seedOrg(db, "sc15-acme")
+    const afterFirst = await db.select().from(orgs).where(eq(orgs.githubSlug, "sc15-acme"))
+    expect(afterFirst).toHaveLength(1)
+    expect(afterFirst[0]?.autoAddMembers).toBe(true)
+
+    await seedOrg(db, "sc15-acme", { autoAddMembers: false })
+    const afterSecond = await db.select().from(orgs).where(eq(orgs.githubSlug, "sc15-acme"))
+    expect(afterSecond).toHaveLength(1)
+    expect(afterSecond[0]?.autoAddMembers).toBe(false)
+  })
 })
