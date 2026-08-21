@@ -11,7 +11,7 @@
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
-    "seed:org": "tsx src/scripts/seed-org.ts",
+    "seed:org": "tsx --env-file=../../.env src/scripts/seed-org.ts",
     "db:index-search": "tsx --env-file=../../.env src/scripts/create-search-indexes.ts",
     "db:verify-search-indexes": "tsx --env-file=../../.env src/scripts/create-search-indexes.ts --verify",
     "db:drop-stale-search-indexes": "tsx --env-file=../../.env src/scripts/create-search-indexes.ts --drop-stale"
