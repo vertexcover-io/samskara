@@ -211,6 +211,10 @@ export const seedDatabase = async (spec: SeedSpec): Promise<void> => {
       await sql`delete from "userProjectGrant" where "projectId" in ${sql(projectIds)}`
       await sql`delete from projects where id in ${sql(projectIds)}`
     }
+    // A prior run's capture-pipeline specs can leave messages pointing at these users' repos
+    // outside any spec's own project cleanup; clear them first so the repos delete below is not
+    // blocked by messages_repoId_repos_id_fk, which has no cascade.
+    await sql`delete from messages where "repoId" in (select id from repos where "userId" in (${E2E_USER_ID}, ${E2E_OTHER_USER_ID}))`
     await sql`delete from repos where "userId" in (${E2E_USER_ID}, ${E2E_OTHER_USER_ID})`
 
     await sql`

@@ -1,5 +1,5 @@
 import { expect, test } from "vitest"
-import { parseSessionArtifacts, parseSessionList } from "./parse.js"
+import { parseSessionArtifacts, parseSessionList, parseSyncStatusRows } from "./parse.js"
 import type { CapturedArtifact } from "./types.js"
 
 const ROW = {
@@ -133,4 +133,24 @@ test("malformed decorative match evidence is dropped rather than poisoning a val
     sessions: [{ ...session, match: { sourceKind: "artifact", sourceRowId: "a", snippet: [] } }],
   })
   expect(parsed?.sessions[0]?.match).toBeNull()
+})
+
+const SYNC_STATUS_ROW = {
+  userId: "u-1",
+  githubLogin: "maya",
+  name: "Maya",
+  avatarUrl: "https://example.com/maya.png",
+  projectId: "p-1",
+  projectName: "Samskara",
+  projectSlug: "samskara",
+  sessionCount: 3,
+  lastSyncedAt: "2026-08-20T10:00:00.000Z",
+}
+
+test("S1: a row missing a field is rejected by the parser, and a well-formed body returns an array of the same length", () => {
+  const { lastSyncedAt: _dropped, ...broken } = SYNC_STATUS_ROW
+  expect(parseSyncStatusRows({ rows: [broken] })).toBeNull()
+
+  const parsed = parseSyncStatusRows({ rows: [SYNC_STATUS_ROW, SYNC_STATUS_ROW] })
+  expect(parsed).toHaveLength(2)
 })

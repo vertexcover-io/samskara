@@ -147,7 +147,10 @@ export const sessions = pgTable(
     createdAt: createdAtCamel,
     updatedAt: updatedAtCamel,
   },
-  (t) => [index("sessions_projectId_idx").on(t.projectId)],
+  (t) => [
+    index("sessions_projectId_idx").on(t.projectId),
+    index("sessions_user_project_updated_idx").on(t.userId, t.projectId, t.updatedAt),
+  ],
 )
 
 export const messages = pgTable(
