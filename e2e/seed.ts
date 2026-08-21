@@ -87,13 +87,17 @@ export type SeedSpec = {
   readonly orgMembers?: Record<string, ReadonlyArray<"primary" | "other">>
 }
 
+// Forces the version (4) and variant (8-b) nibbles so the result satisfies zod's `.uuid()`
+// format check -- a raw hash slice lands outside that range often enough to break any schema
+// that validates a seeded id (e.g. `projectId` on the ingest payload).
 const deterministicUuid = (value: string): string => {
   const hex = createHash("sha1").update(value).digest("hex")
+  const variant = "89ab"[Number.parseInt(hex[16] ?? "0", 16) % 4]
   return [
     hex.slice(0, 8),
     hex.slice(8, 12),
-    hex.slice(12, 16),
-    hex.slice(16, 20),
+    `4${hex.slice(13, 16)}`,
+    `${variant}${hex.slice(17, 20)}`,
     hex.slice(20, 32),
   ].join("-")
 }

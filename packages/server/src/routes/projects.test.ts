@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql"
+import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import { buildApp } from "../app.js"
 import { type Db, createDb } from "../db/client.js"
@@ -233,5 +234,149 @@ describe.skipIf(!dockerAvailable())("GET /api/projects", () => {
     })
     expect(cli.status).toBe(401)
     expect(await cli.json()).toEqual({ error: "unauthorized" })
+  })
+})
+
+type CreateProjectResponse = {
+  readonly id: string
+  readonly owner: { readonly type: "user" | "org"; readonly slug: string }
+  readonly reason?: "notMember"
+}
+
+describe.skipIf(!dockerAvailable())("POST /api/projects", () => {
+  let container: StartedPostgreSqlContainer
+  let teardown: () => Promise<void>
+  let db: Db
+
+  beforeAll(async () => {
+    container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start()
+    const url = container.getConnectionUri()
+    execFileSync("bun", ["run", "db:migrate"], {
+      cwd: packageDir,
+      env: { ...process.env, DATABASE_URL: url },
+      stdio: "inherit",
+    })
+    const created = createDb(url)
+    db = created.db
+    teardown = async () => {
+      await created.client.end()
+      await container.stop()
+    }
+  }, 120_000)
+
+  afterAll(async () => {
+    await teardown?.()
+  })
+
+  beforeEach(async () => {
+    await db.delete(sessions)
+    await db.delete(userProjectGrant)
+    await db.delete(projects)
+    await db.delete(userOrgs)
+    await db.delete(orgs)
+    await db.delete(users)
+  })
+
+  const seedOrg = async (slug: string): Promise<string> => {
+    const [org] = await db.insert(orgs).values({ githubSlug: slug, name: slug }).returning({
+      id: orgs.id,
+    })
+    if (!org) throw new Error("seed org failed")
+    return org.id
+  }
+
+  const postAs = async (
+    userId: string,
+    body: unknown,
+  ): Promise<{ status: number; body: CreateProjectResponse }> => {
+    const token = await signToken(env, { sub: userId, aud: "cli" })
+    const res = await buildApp(db, env).request("/api/projects", {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    })
+    return { status: res.status, body: (await res.json()) as CreateProjectResponse }
+  }
+
+  test("SC18: a member's first POST creates the org project and the second returns it", async () => {
+    const member = await seedUser(db, 801, "sc18-member")
+    const orgId = await seedOrg("acme")
+    await db.insert(userOrgs).values({ userId: member, orgId })
+    const body = {
+      name: "widget",
+      slug: "acme-widget",
+      remote: { host: "github.com", owner: "Acme", repoName: "widget" },
+    }
+
+    const first = await postAs(member, body)
+    expect(first.status).toBe(201)
+    expect(first.body.owner).toEqual({ type: "org", slug: "acme" })
+    expect(first.body.reason).toBeUndefined()
+
+    const second = await postAs(member, body)
+    expect(second.status).toBe(200)
+    expect(second.body.id).toBe(first.body.id)
+
+    const rows = await db.select().from(projects).where(eq(projects.slug, "acme-widget"))
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ ownerOrgId: orgId, ownerUserId: null })
+  })
+
+  test("SC19: a non-member's POST creates a personal project and says why", async () => {
+    const outsider = await seedUser(db, 802, "sc19-outsider")
+    await seedOrg("acme")
+    const body = {
+      name: "widget",
+      slug: "acme-widget-2",
+      remote: { host: "github.com", owner: "acme", repoName: "widget" },
+    }
+
+    const res = await postAs(outsider, body)
+    expect(res.status).toBe(201)
+    expect(res.body.owner).toEqual({ type: "user", slug: "sc19-outsider" })
+    expect(res.body.reason).toBe("notMember")
+
+    const [row] = await db.select().from(projects).where(eq(projects.slug, "acme-widget-2"))
+    expect(row).toMatchObject({ ownerUserId: outsider, ownerOrgId: null })
+  })
+
+  test("SC20: a repo with no remote or a non-GitHub host is personal", async () => {
+    const caller = await seedUser(db, 803, "sc20-caller")
+    await seedOrg("acme")
+
+    const noRemote = await postAs(caller, { name: "solo", slug: "sc20-solo" })
+    expect(noRemote.status).toBe(201)
+    expect(noRemote.body.owner.type).toBe("user")
+    expect(noRemote.body.reason).toBeUndefined()
+
+    const nonGithub = await postAs(caller, {
+      name: "gitlab-widget",
+      slug: "sc20-gitlab-widget",
+      remote: { host: "gitlab.com", owner: "acme", repoName: "widget" },
+    })
+    expect(nonGithub.status).toBe(201)
+    expect(nonGithub.body.owner.type).toBe("user")
+    expect(nonGithub.body.reason).toBeUndefined()
+  })
+
+  test("SC21: the route needs a CLI token", async () => {
+    const caller = await seedUser(db, 804, "sc21-caller")
+    const webToken = await signToken(env, { sub: caller, aud: "web" })
+    const app = buildApp(db, env)
+    const body = { name: "x", slug: "sc21-x" }
+
+    const withWebCookie = await app.request("/api/projects", {
+      method: "POST",
+      headers: { cookie: `session=${webToken}`, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    })
+    expect(withWebCookie.status).toBe(401)
+
+    const withNothing = await app.request("/api/projects", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    })
+    expect(withNothing.status).toBe(401)
   })
 })

@@ -26,6 +26,7 @@ export const ingestRoutes = ({ db, env }: Deps): Hono<{ Variables: AuthVariables
       })
       const result = await ingest({ db, log, userId: context.get("user").id }, payload)
       if ("error" in result && result.error === "sessionNotFound") return context.json(result, 409)
+      if ("error" in result && result.error === "projectForbidden") return context.json(result, 403)
       return context.json(result, 200)
     },
   )

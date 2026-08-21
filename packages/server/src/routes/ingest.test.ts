@@ -12,15 +12,19 @@ import { buildApp } from "../app.js"
 import { type Db, createDb } from "../db/client.js"
 import {
   messages,
+  orgs,
+  projects,
   sessions,
   subagents,
   tokenUsage,
   toolCall,
   toolResult,
+  userOrgs,
   users,
 } from "../db/schema.js"
 import type { Env } from "../lib/env.js"
 import { signToken } from "../lib/jwt.js"
+import * as projectsRepo from "../repositories/projects.repo.js"
 
 const dockerAvailable = () => {
   try {
@@ -72,11 +76,14 @@ const isCoverageTrack = (value: unknown): value is CoverageTrack =>
   "parsedRecordCount" in value &&
   typeof value.parsedRecordCount === "number"
 
-const mainPayload = (sessionId: string): IngestPayload => ({
+const mainPayload = (
+  sessionId: string,
+  overrideProject: IngestPayload["project"] = project,
+): IngestPayload => ({
   type: "main",
   sessionId,
   sourceRelativePath: `${sessionId}.jsonl`,
-  project,
+  project: overrideProject,
   title: "hello",
   records: [
     {
@@ -116,6 +123,7 @@ describe.skipIf(!dockerAvailable())("ingest route", () => {
   let db: Db
   let app: ReturnType<typeof buildApp>
   let cliToken: string
+  let routeUserId: string
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start()
@@ -132,6 +140,7 @@ describe.skipIf(!dockerAvailable())("ingest route", () => {
       .values({ githubId: 4242, githubLogin: "route-user" })
       .returning()
     if (!user) throw new Error("seed user failed")
+    routeUserId = user.id
     cliToken = await signToken(env, { sub: user.id, aud: "cli" })
     app = buildApp(db, env, {
       githubClient: {
@@ -642,5 +651,109 @@ describe.skipIf(!dockerAvailable())("ingest route", () => {
 
     expect(first.ingested).toBeGreaterThan(0)
     expect(second).toEqual({ ingested: 0, deduped: first.ingested })
+  })
+
+  test("SC22: ingest with a writable projectId stores the session there", async () => {
+    const [member] = await db
+      .insert(users)
+      .values({ githubId: 9101, githubLogin: "sc22-member" })
+      .returning()
+    if (!member) throw new Error("seed member failed")
+    const [org] = await db
+      .insert(orgs)
+      .values({ githubSlug: "sc22-acme", name: "Acme" })
+      .returning({ id: orgs.id })
+    if (!org) throw new Error("seed org failed")
+    await db.insert(userOrgs).values({ userId: member.id, orgId: org.id })
+    const { id: projectId } = await projectsRepo.upsertOwned(db, {
+      identity: { name: "widget", slug: "sc22-widget" },
+      owner: { kind: "org", orgId: org.id },
+    })
+    const memberToken = await signToken(env, { sub: member.id, aud: "cli" })
+    const projectCountBefore = (await db.select({ id: projects.id }).from(projects)).length
+
+    const res = await post(
+      app,
+      mainPayload("sess-sc22", { name: "ignored", slug: "sc22-ignored-slug", projectId }),
+      memberToken,
+    )
+    expect(res.status).toBe(200)
+
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, "sess-sc22"))
+    expect(session?.projectId).toBe(projectId)
+    expect((await db.select({ id: projects.id }).from(projects)).length).toBe(projectCountBefore)
+  })
+
+  test("SC23: ingest with a projectId the caller cannot write is refused", async () => {
+    const [otherOwner] = await db
+      .insert(users)
+      .values({ githubId: 9102, githubLogin: "sc23-owner" })
+      .returning()
+    if (!otherOwner) throw new Error("seed owner failed")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "private", slug: "sc23-private" },
+      ownerId: otherOwner.id,
+    })
+
+    const res = await post(
+      app,
+      mainPayload("sess-sc23", { name: "ignored", slug: "sc23-ignored-slug", projectId }),
+      cliToken,
+    )
+    expect(res.status).toBe(403)
+    expect(await res.json()).toEqual({ error: "projectForbidden" })
+    expect(await db.select().from(sessions).where(eq(sessions.id, "sess-sc23"))).toHaveLength(0)
+    expect(
+      await db.select().from(messages).where(eq(messages.sessionId, "sess-sc23")),
+    ).toHaveLength(0)
+  })
+
+  test("SC24: ingest without projectId applies the owner rule", async () => {
+    const [member] = await db
+      .insert(users)
+      .values({ githubId: 9103, githubLogin: "sc24-member" })
+      .returning()
+    if (!member) throw new Error("seed member failed")
+    const [org] = await db
+      .insert(orgs)
+      .values({ githubSlug: "sc24-acme", name: "Acme" })
+      .returning({ id: orgs.id })
+    if (!org) throw new Error("seed org failed")
+    await db.insert(userOrgs).values({ userId: member.id, orgId: org.id })
+    const memberToken = await signToken(env, { sub: member.id, aud: "cli" })
+
+    const res = await post(
+      app,
+      mainPayload("sess-sc24", {
+        name: "widget",
+        slug: "sc24-widget",
+        remote: { host: "github.com", owner: "sc24-acme", repoName: "widget" },
+      }),
+      memberToken,
+    )
+    expect(res.status).toBe(200)
+
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, "sess-sc24"))
+    const [sessionProject] = await db
+      .select()
+      .from(projects)
+      .where(eq(projects.id, session?.projectId ?? ""))
+    expect(sessionProject?.ownerOrgId).toBe(org.id)
+  })
+
+  test("SC26 (regression): a payload with only name and slug still lands in the caller's personal project", async () => {
+    const res = await post(
+      app,
+      mainPayload("sess-sc26", { name: "solo", slug: "sc26-solo" }),
+      cliToken,
+    )
+    expect(res.status).toBe(200)
+
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, "sess-sc26"))
+    const [sessionProject] = await db
+      .select()
+      .from(projects)
+      .where(eq(projects.id, session?.projectId ?? ""))
+    expect(sessionProject?.ownerUserId).toBe(routeUserId)
   })
 })
