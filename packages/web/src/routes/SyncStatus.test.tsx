@@ -107,7 +107,12 @@ test("SC6: an expired session paints the session-expired panel, not the retrieva
 
   renderPage()
 
-  expect(await screen.findByTestId("location")).toHaveTextContent("/login")
+  // The redirect crosses three async hops: the fetch settles, the guard reads `unauthorized`, then
+  // the router navigates. One second is not enough on a loaded machine, and the assertion below is
+  // exact either way -- only the patience changes.
+  expect(await screen.findByTestId("location", undefined, { timeout: 5000 })).toHaveTextContent(
+    "/login",
+  )
   expect(screen.queryByText(/retrieval failed/i)).not.toBeInTheDocument()
 })
 

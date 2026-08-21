@@ -151,6 +151,14 @@ test("S1: a row missing a field is rejected by the parser, and a well-formed bod
   const { lastSyncedAt: _dropped, ...broken } = SYNC_STATUS_ROW
   expect(parseSyncStatusRows({ rows: [broken] })).toBeNull()
 
+  // parseSyncStatusRow checks required fields in two separate guards; a row missing a field from
+  // either one must be rejected, not just the second guard covered above.
+  const { userId: _droppedUserId, ...missingUserId } = SYNC_STATUS_ROW
+  expect(parseSyncStatusRows({ rows: [missingUserId] })).toBeNull()
+
+  const { githubLogin: _droppedLogin, ...missingLogin } = SYNC_STATUS_ROW
+  expect(parseSyncStatusRows({ rows: [missingLogin] })).toBeNull()
+
   const parsed = parseSyncStatusRows({ rows: [SYNC_STATUS_ROW, SYNC_STATUS_ROW] })
   expect(parsed).toHaveLength(2)
 })
