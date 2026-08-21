@@ -22,14 +22,19 @@ describe("resolveProject", () => {
 
     // A linked worktree resolves to its parent repo's root, because the root comes from
     // `--git-common-dir` rather than the working directory.
-    expect(project).toEqual({ name: "andromeda", slug: "refrens-andromeda", root: "/work/app" })
+    expect(project).toEqual({
+      name: "andromeda",
+      slug: "refrens-andromeda",
+      root: "/work/app",
+      remote: { host: "github.com", owner: "refrens", repoName: "andromeda" },
+    })
     expect(git.mock.calls).toEqual([
       [["rev-parse", "--path-format=absolute", "--git-common-dir"], "/work/app/.worktrees/feature"],
       [["config", "--get", "remote.origin.url"], "/work/app"],
     ])
   })
 
-  test("parses an https github remote", async () => {
+  test("SC42: resolveProject returns the remote for a repo with an origin, and none without", async () => {
     gitReturning({
       "config --get remote.origin.url": "https://github.com/acme/widget.git",
     })
@@ -38,6 +43,15 @@ describe("resolveProject", () => {
       name: "widget",
       slug: "acme-widget",
       root: "/work/app",
+      remote: { host: "github.com", owner: "acme", repoName: "widget" },
+    })
+
+    gitReturning({ "config --get remote.origin.url": null })
+
+    expect(await resolveProject("/tmp/loose")).toEqual({
+      name: "loose",
+      slug: "-tmp-loose",
+      root: "/tmp/loose",
     })
   })
 

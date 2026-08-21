@@ -92,6 +92,9 @@ program
       ...(path === undefined ? {} : { path }),
       ...(flags.all === true ? { all: true } : {}),
       ...(flags.syncFrom === undefined ? {} : { syncFrom: flags.syncFrom }),
+      apiBase,
+      readToken,
+      fetch: globalThis.fetch,
     })
   })
 

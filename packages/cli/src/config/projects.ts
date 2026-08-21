@@ -9,6 +9,7 @@ const projectEntrySchema = z
     enabled: z.boolean(),
     enabledAt: z.string().datetime(),
     syncFrom: z.string().datetime().optional(),
+    projectId: z.string().uuid().optional(),
   })
   .strict()
   .readonly()

@@ -103,7 +103,7 @@ const deterministicUuid = (value: string): string => {
 }
 
 export const projectId = (slug: string): string => deterministicUuid(`e2e:${slug}`)
-const orgId = (slug: string): string => deterministicUuid(`org:${slug}`)
+export const orgId = (slug: string): string => deterministicUuid(`org:${slug}`)
 const seededMessageId = (sessionId: string, line: number): string =>
   deterministicUuid(`e2e:${sessionId}:${line}`)
 

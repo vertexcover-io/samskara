@@ -86,8 +86,10 @@ export const sliceByMessages = (
  */
 export const flushCause = (status: number): string => {
   if (status === 0) return "the server could not be reached; the chunk retries next cycle"
-  if (status === 401 || status === 403)
+  if (status === 401)
     return "the server rejected this CLI's credentials -- run `samskara login` to pair again"
+  if (status === 403)
+    return "the server no longer lets this CLI write to that project -- run `samskara enable` in that folder again"
   if (status === 409) return "the server has no session to attach these records to yet"
   if (status === 413) return "the chunk was larger than the server accepts"
   if (status === 429) return "the server is rate limiting this CLI; the chunk retries next cycle"

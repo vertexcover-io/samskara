@@ -1,9 +1,22 @@
 import { resolve } from "node:path"
+import {
+  type CreateProjectResponse,
+  type ProjectIdentity,
+  createProjectResponseSchema,
+} from "@samskara/core"
+import { apiBase as defaultApiBase } from "../config.js"
+import { readToken as defaultReadToken } from "../config/credentials.js"
 import { reviveWatcher } from "../config/daemon.js"
 import { watchLogDir } from "../config/paths.js"
 import { getProject, upsertProject } from "../config/projects.js"
-import { type Writer, resolveIo } from "../io.js"
+import { type Writer, errorMessage, reportError, resolveIo } from "../io.js"
 import { resolveProject } from "../watcher/resolveProject.js"
+
+export type RegisterDeps = {
+  readonly apiBase: string
+  readonly readToken: () => Promise<string | null>
+  readonly fetch: typeof globalThis.fetch
+}
 
 export type EnableOptions = {
   readonly path?: string
@@ -13,6 +26,55 @@ export type EnableOptions = {
   readonly now?: () => Date
   readonly stdout?: Writer
   readonly stderr?: Writer
+  readonly apiBase?: string
+  readonly readToken?: () => Promise<string | null>
+  readonly fetch?: typeof globalThis.fetch
+}
+
+/**
+ * Finds or creates the project this folder belongs to, server-side. Throws a user-facing
+ * `Error` on every failure mode -- no token, an unreachable server, a rejected token, or a
+ * response this CLI's schema does not recognize -- so `enableCommand` can turn every one into
+ * `reportError` without re-deriving the message.
+ */
+export const registerProject = async (
+  deps: RegisterDeps,
+  identity: ProjectIdentity,
+): Promise<CreateProjectResponse> => {
+  const token = await deps.readToken()
+  if (!token) throw new Error("Not logged in. Run `samskara login` first, then enable this folder.")
+  let res: Response
+  try {
+    res = await deps.fetch(`${deps.apiBase}/api/projects`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        name: identity.name,
+        slug: identity.slug,
+        ...(identity.remote === undefined ? {} : { remote: identity.remote }),
+      }),
+    })
+  } catch (error) {
+    throw new Error(
+      `Could not reach the server at ${deps.apiBase} (${errorMessage(error)}). Start it or check SAMSKARA_API_URL, then try again.`,
+    )
+  }
+  if (res.status === 401)
+    throw new Error("The server rejected the stored login. Run `samskara login` again.")
+  if (!res.ok) throw new Error(`The server answered ${res.status} while registering this folder.`)
+  const parsed = createProjectResponseSchema.safeParse(await res.json())
+  if (!parsed.success)
+    throw new Error("The server returned a project record this CLI does not recognize.")
+  return parsed.data
+}
+
+const ownerLine = (identity: ProjectIdentity, registered: CreateProjectResponse): string => {
+  if (registered.reason === "notMember") {
+    return `This repo belongs to the GitHub org "${identity.remote?.owner}", but you are not a member there. Sessions go to your personal project "${identity.slug}".\n`
+  }
+  return registered.owner.type === "org"
+    ? `Sessions from this folder go to the org project "${identity.slug}" owned by "${registered.owner.slug}".\n`
+    : `Sessions from this folder go to your personal project "${identity.slug}".\n`
 }
 
 /**
@@ -44,14 +106,33 @@ export const enableCommand = async (options: EnableOptions = {}): Promise<number
     return 1
   }
 
+  const deps: RegisterDeps = {
+    apiBase: options.apiBase ?? defaultApiBase,
+    readToken: options.readToken ?? defaultReadToken,
+    fetch: options.fetch ?? globalThis.fetch,
+  }
+  let registered: CreateProjectResponse
+  try {
+    registered = await registerProject(deps, project)
+  } catch (error) {
+    return reportError(stderr, error)
+  }
+
   // A bare re-enable is a no-op so an accidental second run cannot move the cutoff forward and
   // silently drop sessions. A cutoff flag is not accidental, so it wins even when already
   // enabled -- otherwise the only way to widen a cutoff is `disable` then `enable`.
   const askedForCutoff = options.all === true || options.syncFrom !== undefined
   if (existing?.enabled === true && !askedForCutoff) {
-    stdout.write(
-      `Capture is already enabled for "${project.slug}" (since ${existing.enabledAt}). Nothing to change.\n`,
-    )
+    if (existing.projectId === registered.id) {
+      stdout.write(
+        `Capture is already enabled for "${project.slug}" (since ${existing.enabledAt}). Nothing to change.\n`,
+      )
+    } else {
+      // The owner was decided after this project was already enabled -- refresh the stored id
+      // without touching enabledAt or syncFrom.
+      await upsertProject(project.slug, { ...existing, projectId: registered.id })
+      stdout.write(ownerLine(project, registered))
+    }
   } else {
     // Re-enabling keeps the original opt-in date: `enabledAt` records when capture was first
     // asked for, and only `syncFrom` says what is eligible.
@@ -62,12 +143,14 @@ export const enableCommand = async (options: EnableOptions = {}): Promise<number
       enabled: true,
       enabledAt: since,
       ...(syncFrom === undefined ? {} : { syncFrom }),
+      projectId: registered.id,
     })
     stdout.write(
       syncFrom === undefined
         ? `Capture enabled for "${project.slug}" at ${path}, including sessions recorded earlier.\n`
         : `Capture enabled for "${project.slug}" at ${path}, for sessions started after ${syncFrom}.\n`,
     )
+    stdout.write(ownerLine(project, registered))
   }
 
   // `reviveWatcher` returns the running pid when there is one, so the message says what is true

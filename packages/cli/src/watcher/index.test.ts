@@ -1,8 +1,35 @@
 import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { expect, test, vi } from "vitest"
-import { drainWorkers, globAll } from "./index.js"
+import type { ProjectIdentity } from "@samskara/core"
+import { afterEach, expect, test, vi } from "vitest"
+import { upsertProject } from "../config/projects.js"
+import { drainWorkers, globAll, withStoredProjectId } from "./index.js"
+
+const originalHome = process.env.SAMSKARA_HOME
+
+afterEach(() => {
+  process.env.SAMSKARA_HOME = originalHome
+})
+
+test("SC43: the watcher stamps the stored projectId onto the identity", async () => {
+  const home = await mkdtemp(join(tmpdir(), "samskara-watcher-index-"))
+  process.env.SAMSKARA_HOME = home
+  const projectId = "00000000-0000-4000-8000-000000000009"
+  await upsertProject("acme-widget", {
+    name: "widget",
+    path: "/work/widget",
+    enabled: true,
+    enabledAt: "2026-07-25T10:00:00.000Z",
+    projectId,
+  })
+
+  const withId: ProjectIdentity = { name: "widget", slug: "acme-widget" }
+  const withoutId: ProjectIdentity = { name: "other", slug: "other" }
+
+  expect(await withStoredProjectId(withId)).toEqual({ ...withId, projectId })
+  expect(await withStoredProjectId(withoutId)).toEqual(withoutId)
+})
 
 test("watch discovery ignores broken symlinks and returns every nested JSONL", async () => {
   const root = await mkdtemp(join(tmpdir(), "samskara-discovery-"))

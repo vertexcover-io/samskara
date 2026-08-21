@@ -8,7 +8,7 @@ import { SignJWT } from "jose"
 import postgres from "postgres"
 import { expect, mintSessionToken, test } from "./fixtures/auth.js"
 import { API_BASE } from "./playwright.config.js"
-import { E2E_OTHER_USER_ID, E2E_USER_ID, seedDatabase } from "./seed.js"
+import { E2E_OTHER_USER_ID, E2E_USER_ID, orgId, seedDatabase } from "./seed.js"
 import {
   assistantLine,
   createTranscriptWriter,
@@ -80,6 +80,8 @@ type Harness = {
   readonly cwd: string
   readonly sql: Sql
   readonly writer: ReturnType<typeof createTranscriptWriter>
+  /** stdout from the real `samskara enable` run; only set when `viaEnable` was used. */
+  readonly enableOutput?: string
   stop(): Promise<void>
 }
 
@@ -94,6 +96,12 @@ type HarnessOptions = {
   readonly enabled?: boolean | null
   /** The cutoff `samskara enable` would have stored; omitted means capture everything. */
   readonly syncFrom?: string
+  /**
+   * Drives the real `samskara enable <cwd>` instead of writing `projects.json` and spawning
+   * `watch --foreground` directly -- so the harness proves the actual command a user runs,
+   * including the project registration it performs and the daemon it starts on its own.
+   */
+  readonly viaEnable?: boolean
 }
 
 /**
@@ -102,7 +110,7 @@ type HarnessOptions = {
  * glob and its real state file are exercised — no test seam substitutes for either.
  */
 const startHarness = async (options: HarnessOptions = {}): Promise<Harness> => {
-  const { projectOverride = true, enabled = true, syncFrom } = options
+  const { projectOverride = true, enabled = true, syncFrom, viaEnable = false } = options
   const home = await mkdtemp(join(tmpdir(), "samskara-e2e-"))
   const samskaraHome = join(home, ".samskara")
   const cwd = join(home, "work", PROJECT_NAME)
@@ -117,25 +125,27 @@ const startHarness = async (options: HarnessOptions = {}): Promise<Harness> => {
   // The watcher only captures projects marked enabled, and reads its token from disk —
   // both are the real files `samskara login` and `samskara enable` would have written.
   await writeFile(join(samskaraHome, "token"), await mintCliToken(), "utf8")
-  await writeFile(
-    join(samskaraHome, "projects.json"),
-    JSON.stringify({
-      version: 1,
-      projects:
-        enabled === null
-          ? {}
-          : {
-              [PROJECT_SLUG]: {
-                name: PROJECT_NAME,
-                path: cwd,
-                enabled,
-                enabledAt: new Date(Date.UTC(2026, 5, 1, 11)).toISOString(),
-                ...(syncFrom === undefined ? {} : { syncFrom }),
+  if (!viaEnable) {
+    await writeFile(
+      join(samskaraHome, "projects.json"),
+      JSON.stringify({
+        version: 1,
+        projects:
+          enabled === null
+            ? {}
+            : {
+                [PROJECT_SLUG]: {
+                  name: PROJECT_NAME,
+                  path: cwd,
+                  enabled,
+                  enabledAt: new Date(Date.UTC(2026, 5, 1, 11)).toISOString(),
+                  ...(syncFrom === undefined ? {} : { syncFrom }),
+                },
               },
-            },
-    }),
-    "utf8",
-  )
+      }),
+      "utf8",
+    )
+  }
 
   // Fail loudly here rather than as a silent 45s ingest timeout: an auth mismatch
   // between the token and the server makes every upload 401, which otherwise looks
@@ -154,34 +164,47 @@ const startHarness = async (options: HarnessOptions = {}): Promise<Harness> => {
     )
   }
 
-  const child: ChildProcess = spawn(
-    "bun",
-    [
-      CLI_ENTRY,
-      "watch",
-      "--foreground",
-      ...(projectOverride ? ["--project-name", PROJECT_NAME, "--project-slug", PROJECT_SLUG] : []),
-    ],
-    {
+  const env = {
+    ...process.env,
+    HOME: home,
+    SAMSKARA_HOME: samskaraHome,
+    SAMSKARA_API_URL: API_BASE,
+  }
+
+  let child: ChildProcess | undefined
+  let enableOutput: string | undefined
+  if (viaEnable) {
+    // `enable` registers the project, stores its id in `projects.json`, and starts the
+    // watcher daemon itself (`reviveWatcher`) -- no separate `watch --foreground` spawn.
+    // `--all`: the fixture transcripts carry a fixed 2026-06-01 timestamp, which a default
+    // now-cutoff would exclude as "recorded before enabling".
+    const result = await execFileAsync("bun", [CLI_ENTRY, "enable", cwd, "--all"], {
       cwd: REPO_ROOT,
-      env: {
-        ...process.env,
-        HOME: home,
-        SAMSKARA_HOME: samskaraHome,
-        SAMSKARA_DAEMON: "1",
-        SAMSKARA_API_URL: API_BASE,
-      },
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  )
-  const logs: string[] = []
-  child.stdout?.on("data", (chunk: Buffer) => logs.push(chunk.toString()))
-  child.stderr?.on("data", (chunk: Buffer) => logs.push(chunk.toString()))
-  child.on("exit", (code) => {
-    if (code !== 0 && code !== null) {
-      logs.push(`watcher exited with code ${code}`)
-    }
-  })
+      env,
+    })
+    enableOutput = result.stdout
+  } else {
+    child = spawn(
+      "bun",
+      [
+        CLI_ENTRY,
+        "watch",
+        "--foreground",
+        ...(projectOverride
+          ? ["--project-name", PROJECT_NAME, "--project-slug", PROJECT_SLUG]
+          : []),
+      ],
+      { cwd: REPO_ROOT, env: { ...env, SAMSKARA_DAEMON: "1" }, stdio: ["ignore", "pipe", "pipe"] },
+    )
+    const logs: string[] = []
+    child.stdout?.on("data", (chunk: Buffer) => logs.push(chunk.toString()))
+    child.stderr?.on("data", (chunk: Buffer) => logs.push(chunk.toString()))
+    child.on("exit", (code) => {
+      if (code !== 0 && code !== null) {
+        logs.push(`watcher exited with code ${code}`)
+      }
+    })
+  }
 
   const sql = postgres(DATABASE_URL)
 
@@ -191,8 +214,23 @@ const startHarness = async (options: HarnessOptions = {}): Promise<Harness> => {
     cwd,
     sql,
     writer: createTranscriptWriter({ home, cwd, sessionId: SESSION_ID }),
+    ...(enableOutput === undefined ? {} : { enableOutput }),
     stop: async () => {
-      child.kill("SIGTERM")
+      if (child) {
+        child.kill("SIGTERM")
+      } else {
+        // `enable` started the daemon in a detached process of its own; its pid lives in
+        // `watch.pid` under this harness's SAMSKARA_HOME.
+        try {
+          const pid = Number.parseInt(
+            (await readFile(join(samskaraHome, "watch.pid"), "utf8")).trim(),
+            10,
+          )
+          if (Number.isFinite(pid)) process.kill(pid, "SIGTERM")
+        } catch {
+          // no watcher was running -- nothing to stop
+        }
+      }
       await sql.end()
       await rm(home, { recursive: true, force: true })
     },
@@ -464,6 +502,64 @@ test.describe("capture pipeline", () => {
     `
     expect(project?.slug).toBe(PROJECT_SLUG)
     expect(project?.name).toBe("widgets")
+  })
+
+  test("SC45: real `samskara enable` in an org repo, then a captured session appears in the org project for another member", async ({
+    authedPage: page,
+    context,
+  }) => {
+    // The global beforeEach's plain seed clears every e2e user's org links; this test needs
+    // both minted as members of `acme`, with auto-add on.
+    await seedDatabase({ projects: [], orgMembers: { acme: ["primary", "other"] } })
+
+    const { writer, sql, samskaraHome, enableOutput } = await useHarness({ viaEnable: true })
+
+    expect(enableOutput).toContain("acme")
+
+    const projectsFile = JSON.parse(
+      await readFile(join(samskaraHome, "projects.json"), "utf8"),
+    ) as { projects: Record<string, { projectId?: string }> }
+    const storedProjectId = projectsFile.projects[PROJECT_SLUG]?.projectId
+    if (!storedProjectId) throw new Error("`samskara enable` did not store a projectId")
+
+    await writer.append([
+      userLine("Captured through a real enable.", 0),
+      assistantLine("Resolved via enable.", 1),
+    ])
+
+    await pollUntil(
+      () => sql<{ count: string }[]>`
+        select count(*)::text as count from messages where "sessionId" = ${SESSION_ID}
+      `,
+      (r) => Number(r[0]?.count ?? 0) >= 2,
+      (r) => `${r[0]?.count ?? 0} rows`,
+    )
+
+    const [project] = await sql<{ id: string; ownerOrgId: string | null }[]>`
+      select id, "ownerOrgId" from projects where slug = ${PROJECT_SLUG}
+    `
+    if (!project) throw new Error(`no project row for slug ${PROJECT_SLUG}`)
+    expect(project.id).toBe(storedProjectId)
+    expect(project.ownerOrgId).toBe(orgId("acme"))
+
+    const [session] = await sql<{ projectId: string }[]>`
+      select "projectId" from sessions where id = ${SESSION_ID}
+    `
+    expect(session?.projectId).toBe(project.id)
+
+    const otherToken = await mintSessionToken(E2E_OTHER_USER_ID)
+    await context.addCookies([
+      {
+        name: "session",
+        value: otherToken,
+        domain: "localhost",
+        path: "/",
+        httpOnly: true,
+        sameSite: "Lax",
+      },
+    ])
+    await page.goto(`/sessions?project=${project.id}`)
+    await expect(page.getByRole("link", { name: /Captured through a real enable/ })).toBeVisible()
   })
 
   test("P6: a project marked disabled in projects.json is skipped -- the daemon completes cycles and checkpoints nothing, and no rows reach Postgres", async () => {

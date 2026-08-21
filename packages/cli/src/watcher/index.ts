@@ -6,7 +6,7 @@ import type pino from "pino"
 import { apiBase } from "../config.js"
 import { readToken } from "../config/credentials.js"
 import { artifactQueuePath, artifactStatePath, fileHistoryDir, statePath } from "../config/paths.js"
-import { isProjectEnabled, syncFromFor } from "../config/projects.js"
+import { getProject, isProjectEnabled, syncFromFor } from "../config/projects.js"
 import { sleep } from "../io.js"
 import { runArtifactWorkers } from "./artifact-worker.js"
 import { type WatcherConfig, type WatcherDeps, runCycle } from "./driver.js"
@@ -66,6 +66,17 @@ export type WatchOptions = {
 }
 
 /**
+ * Stamps the id `samskara enable` stored for this project onto the identity the daemon just
+ * resolved, so every payload carries it. A daemon that has cached the identity since before
+ * `enable` ran (`claude.ts`'s per-directory cache) keeps sending none until it restarts -- the
+ * server's owner rule picks the same project in that case, so nothing is lost.
+ */
+export const withStoredProjectId = async (identity: ProjectIdentity): Promise<ProjectIdentity> => {
+  const stored = (await getProject(identity.slug))?.projectId
+  return stored === undefined ? identity : { ...identity, projectId: stored }
+}
+
+/**
  * Races the in-flight workers against a grace deadline and calls `onDrained` once, whichever
  * settles first. Extracted so the race itself -- the part that decides whether a slow upload
  * gets torn down mid-write or is allowed to finish -- is testable without real signals, a real
@@ -100,7 +111,9 @@ export const watch = async (options: WatchOptions): Promise<void> => {
     sink: createHttpSink({ apiBase, readToken, fetch: globalThis.fetch }),
     glob: globAll,
     plugin: createClaudePlugin(nodeFs),
-    resolveProject: projectOverride ? async () => projectOverride : resolveProject,
+    resolveProject: projectOverride
+      ? async () => projectOverride
+      : async (dir) => withStoredProjectId(await resolveProject(dir)),
     ...(shouldCapture ? { shouldCapture } : {}),
     ...(cutoffFor ? { syncFromFor: cutoffFor } : {}),
     log,
