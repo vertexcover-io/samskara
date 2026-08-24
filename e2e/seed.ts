@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto"
 import postgres from "postgres"
+import { requireDatabaseUrl } from "./db.js"
 
 export const E2E_USER_ID = "00000000-0000-0000-0000-000000000001"
 export const E2E_USER_LOGIN = "e2e-user"
@@ -7,8 +8,7 @@ export const E2E_USER_LOGIN = "e2e-user"
 export const E2E_OTHER_USER_ID = "00000000-0000-0000-0000-000000000002"
 export const E2E_OTHER_USER_LOGIN = "e2e-maya"
 
-const DATABASE_URL =
-  process.env.DATABASE_URL ?? "postgres://samskara:samskara@localhost:5433/samskara"
+const DATABASE_URL = requireDatabaseUrl()
 
 export type SeedRepository = {
   readonly key: string

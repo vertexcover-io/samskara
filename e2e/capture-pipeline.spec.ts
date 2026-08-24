@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 import { SignJWT } from "jose"
 import postgres from "postgres"
+import { requireDatabaseUrl } from "./db.js"
 import { expect, mintSessionToken, test } from "./fixtures/auth.js"
 import { API_BASE } from "./playwright.config.js"
 import { E2E_OTHER_USER_ID, E2E_USER_ID, seedDatabase } from "./seed.js"
@@ -21,8 +22,7 @@ import {
 } from "./transcript.js"
 
 const JWT_SECRET = process.env.JWT_SECRET ?? "e2e-secret"
-const DATABASE_URL =
-  process.env.DATABASE_URL ?? "postgres://samskara:samskara@localhost:5433/samskara"
+const DATABASE_URL = requireDatabaseUrl()
 const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url))
 const CLI_ENTRY = join(REPO_ROOT, "packages/cli/src/index.ts")
 

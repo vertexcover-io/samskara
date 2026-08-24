@@ -264,7 +264,7 @@ bun run typecheck    # every package, plus the e2e project
 bun run lint         # biome check .
 bun run format       # biome format --write .
 bun run test         # every package's unit tests
-bun run e2e          # Playwright, boots server + web and seeds the DB
+bun run e2e          # Playwright, on a throwaway database it creates and drops
 bun run e2e:ui       # the same suite in Playwright's UI mode
 bun run cli -- status   # run the CLI from source, without linking
 ```
