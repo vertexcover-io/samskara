@@ -100,6 +100,7 @@ const env: Env = {
   cookieSecure: false,
   jwtSecret: "test-secret-value",
   jwtExpiresIn: "7d",
+  superAdminLogins: [],
 }
 
 const sha256 = (content: Buffer): string => createHash("sha256").update(content).digest("hex")

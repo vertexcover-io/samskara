@@ -10,11 +10,16 @@ export type UpsertUserInput = {
   readonly email: string | null
   readonly name: string
   readonly avatarUrl: string | null
+  readonly isSuperAdmin: boolean
 }
 
 export const findById = async (db: Db, id: string): Promise<User | null> => {
   const [user] = await db.select().from(users).where(eq(users.id, id))
   return user ?? null
+}
+
+export const demote = async (db: Db, id: string): Promise<void> => {
+  await db.update(users).set({ isSuperAdmin: false, updatedAt: new Date() }).where(eq(users.id, id))
 }
 
 export const findByGithubId = async (db: Db, githubId: number): Promise<User | null> => {
@@ -31,6 +36,7 @@ export const upsertByGithubId = async (db: Db, input: UpsertUserInput): Promise<
       email: input.email,
       name: input.name,
       avatarUrl: input.avatarUrl,
+      isSuperAdmin: input.isSuperAdmin,
     })
     .onConflictDoUpdate({
       target: users.githubId,
@@ -39,6 +45,7 @@ export const upsertByGithubId = async (db: Db, input: UpsertUserInput): Promise<
         email: input.email,
         name: input.name,
         avatarUrl: input.avatarUrl,
+        isSuperAdmin: input.isSuperAdmin,
         updatedAt: new Date(),
       },
     })

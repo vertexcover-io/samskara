@@ -1,5 +1,5 @@
 import type { ProjectIdentity } from "@samskara/core"
-import { type AnyColumn, type SQL, and, desc, eq, exists, or, sql } from "drizzle-orm"
+import { type AnyColumn, type SQL, aliasedTable, and, desc, eq, exists, or, sql } from "drizzle-orm"
 import type { Querier } from "../db/client.js"
 import { orgs, projects, userOrgs, userProjectGrant, users } from "../db/schema.js"
 
@@ -30,6 +30,18 @@ export const memberOfProject = (db: Querier, userId: string | AnyColumn): SQL | 
     orgMemberOfProject(db, userId),
   )
 
+/** Aliased so the EXISTS still resolves in queries that already have `users` in scope. */
+const superUsers = aliasedTable(users, "super_users")
+
+/** Never fold into `memberOfProject` -- that asks about the row's user, not the viewer. */
+const isSuperAdmin = (db: Querier, userId: string | AnyColumn): SQL | undefined =>
+  exists(
+    db
+      .select({ one: sql`1` })
+      .from(superUsers)
+      .where(and(eq(superUsers.id, userId), eq(superUsers.isSuperAdmin, true))),
+  )
+
 /**
  * May this user read this project. One definition rather than a copy per repository: two
  * divergent copies of an authorization predicate is how one of them silently stops matching the
@@ -37,7 +49,7 @@ export const memberOfProject = (db: Querier, userId: string | AnyColumn): SQL | 
  * readable without membership would pair every user in the table with it if these were merged.
  */
 export const visibleToUser = (db: Querier, userId: string | AnyColumn): SQL | undefined =>
-  memberOfProject(db, userId)
+  or(memberOfProject(db, userId), isSuperAdmin(db, userId))
 
 export type UpsertProjectInput = {
   readonly identity: ProjectIdentity
@@ -117,7 +129,12 @@ export const authorityFor = async (
     db
       .select({ id: projects.id })
       .from(projects)
-      .where(and(eq(projects.id, projectId), eq(projects.ownerUserId, userId))),
+      .where(
+        and(
+          eq(projects.id, projectId),
+          or(eq(projects.ownerUserId, userId), isSuperAdmin(db, userId)),
+        ),
+      ),
     db
       .select({ id: projects.id })
       .from(projects)

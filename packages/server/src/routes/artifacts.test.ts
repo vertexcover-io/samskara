@@ -30,6 +30,7 @@ const env: Env = {
   cookieSecure: false,
   jwtSecret: "test-secret-value",
   jwtExpiresIn: "7d",
+  superAdminLogins: [],
 }
 
 const sha256 = (content: string | Buffer): string =>

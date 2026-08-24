@@ -11,6 +11,7 @@ const user: CurrentUser = {
   email: "e2e@example.com",
   name: "E2E User",
   avatarUrl: null,
+  isSuperAdmin: false,
 }
 
 const session: SessionSummary = {

@@ -46,11 +46,11 @@ describe.skipIf(!dockerAvailable())("ingest repositories", () => {
   let db: Db
 
   let counter = 0
-  const seedUser = async () => {
+  const seedUser = async (isSuperAdmin = false) => {
     counter += 1
     const [user] = await db
       .insert(users)
-      .values({ githubId: 500 + counter, githubLogin: `repo-user-${counter}` })
+      .values({ githubId: 500 + counter, githubLogin: `repo-user-${counter}`, isSuperAdmin })
       .returning()
     if (!user) throw new Error("seed user failed")
     return user
@@ -254,6 +254,29 @@ describe.skipIf(!dockerAvailable())("ingest repositories", () => {
       ownerId: personalOwner.id,
     })
     expect(await projectsRepo.authorityFor(db, personalOwner.id, personalProjectId)).toBe("admin")
+  })
+
+  test("a super admin reads and writes every project, while a plain user still sees nothing", async () => {
+    const stranger = await seedUser()
+    const admin = await seedUser(true)
+    const plain = await seedUser()
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "private", slug: "super-admin-private" },
+      ownerId: stranger.id,
+    })
+
+    expect(await projectsRepo.authorityFor(db, admin.id, projectId)).toBe("admin")
+    expect(await projectsRepo.canRead(db, admin.id, projectId)).toBe(true)
+    expect(await projectsRepo.canWrite(db, admin.id, projectId)).toBe(true)
+    expect((await projectsRepo.listAccessibleSummaries(db, admin.id)).map((r) => r.slug)).toContain(
+      "super-admin-private",
+    )
+
+    expect(await projectsRepo.authorityFor(db, plain.id, projectId)).toBeNull()
+    expect(await projectsRepo.canRead(db, plain.id, projectId)).toBe(false)
+    expect(
+      (await projectsRepo.listAccessibleSummaries(db, plain.id)).map((r) => r.slug),
+    ).not.toContain("super-admin-private")
   })
 
   test("SC9: a new org row defaults to autoAddMembers off, and orgsRepo.findBySlug reads it back", async () => {

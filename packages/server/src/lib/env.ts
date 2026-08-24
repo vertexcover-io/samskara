@@ -8,6 +8,15 @@ const EnvSchema = z.object({
   COOKIE_SECURE: z.enum(["true", "false"]).transform((value) => value === "true"),
   JWT_SECRET: z.string().min(1),
   JWT_EXPIRES_IN: z.string().min(1).default("7d"),
+  SUPER_ADMIN_LOGINS: z
+    .string()
+    .default("")
+    .transform((raw) =>
+      raw
+        .split(",")
+        .map((login) => login.trim().toLowerCase())
+        .filter((login) => login.length > 0),
+    ),
 })
 
 export type Env = {
@@ -18,6 +27,7 @@ export type Env = {
   readonly cookieSecure: boolean
   readonly jwtSecret: string
   readonly jwtExpiresIn: string
+  readonly superAdminLogins: ReadonlyArray<string>
 }
 
 type Source = Record<string, string | undefined>
@@ -36,5 +46,6 @@ export const loadEnv = (source: Source = process.env): Env => {
     cookieSecure: parsed.data.COOKIE_SECURE,
     jwtSecret: parsed.data.JWT_SECRET,
     jwtExpiresIn: parsed.data.JWT_EXPIRES_IN,
+    superAdminLogins: parsed.data.SUPER_ADMIN_LOGINS,
   }
 }

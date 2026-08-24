@@ -6,6 +6,7 @@ export const publicUserSchema = z.object({
   email: z.string().nullable(),
   name: z.string().nullable(),
   avatarUrl: z.string().nullable(),
+  isSuperAdmin: z.boolean().default(false),
 })
 
 export type PublicUser = z.infer<typeof publicUserSchema>

@@ -10,6 +10,7 @@ const env: Env = {
   cookieSecure: false,
   jwtSecret: "test-secret-value",
   jwtExpiresIn: "7d",
+  superAdminLogins: [],
 }
 
 const orgsPage = (logins: ReadonlyArray<string>): Response =>

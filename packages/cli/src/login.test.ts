@@ -33,6 +33,7 @@ const pairingFetch = (options: StubOptions = {}) => {
         email: null,
         name: null,
         avatarUrl: null,
+        isSuperAdmin: false,
       }
       return new Response(JSON.stringify(body), { status })
     }

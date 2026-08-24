@@ -42,6 +42,7 @@ export const users = pgTable("users", {
   email: text("email"),
   name: text("name"),
   avatarUrl: text("avatar_url"),
+  isSuperAdmin: boolean("is_super_admin").notNull().default(false),
   createdAt,
   updatedAt,
 })

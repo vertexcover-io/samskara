@@ -21,7 +21,18 @@ describe("loadEnv", () => {
       cookieSecure: false,
       jwtSecret: "jwt",
       jwtExpiresIn: "7d",
+      superAdminLogins: [],
     })
+  })
+
+  test("parses SUPER_ADMIN_LOGINS into a trimmed, lowercased list", () => {
+    expect(
+      loadEnv({ ...complete, SUPER_ADMIN_LOGINS: " Harit , riteshK ,, " }).superAdminLogins,
+    ).toEqual(["harit", "riteshk"])
+  })
+
+  test("treats a blank SUPER_ADMIN_LOGINS as an empty list", () => {
+    expect(loadEnv({ ...complete, SUPER_ADMIN_LOGINS: "  " }).superAdminLogins).toEqual([])
   })
 
   test("defaults JWT_EXPIRES_IN to 7d and honors an override", () => {

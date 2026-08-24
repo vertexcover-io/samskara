@@ -18,8 +18,9 @@ import {
   NotMemberError,
   type RegisteredOrg,
   type User,
-  dropUserOrgs,
   gateOrgs,
+  isSuperAdminLogin,
+  revokeAccess,
   syncUserOrgs,
   upsertUserFromGithub,
 } from "../services/auth.js"
@@ -59,6 +60,7 @@ const publicUser = (user: User): PublicUser =>
     email: user.email,
     name: user.name,
     avatarUrl: user.avatarUrl,
+    isSuperAdmin: user.isSuperAdmin,
   })
 
 export const authRoutes = ({ db, env, githubClient, pairingStore }: Deps) =>
@@ -85,18 +87,20 @@ export const authRoutes = ({ db, env, githubClient, pairingStore }: Deps) =>
         githubClient.getOrgs(accessToken),
       ])
 
+      const superAdmin = isSuperAdminLogin(env.superAdminLogins, profile.login)
+
       let registered: ReadonlyArray<RegisteredOrg>
       try {
-        registered = (await gateOrgs(db, orgSlugs)).registered
+        registered = (await gateOrgs(db, orgSlugs, { bypass: superAdmin })).registered
       } catch (error) {
         if (error instanceof NotMemberError) {
-          await dropUserOrgs(db, profile.githubId)
+          await revokeAccess(db, profile.githubId)
           return c.redirect(webUrl(env, "/?error=not_member"))
         }
         throw error
       }
 
-      const user = await upsertUserFromGithub(db, profile)
+      const user = await upsertUserFromGithub(db, profile, superAdmin)
       await syncUserOrgs(db, user.id, registered)
 
       const token = await signToken(env, { sub: user.id, aud: "web" })

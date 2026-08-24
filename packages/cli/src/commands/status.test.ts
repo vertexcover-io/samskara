@@ -126,6 +126,7 @@ describe("status command", () => {
             email: null,
             name: null,
             avatarUrl: null,
+            isSuperAdmin: false,
           }),
           { status: 200 },
         ),

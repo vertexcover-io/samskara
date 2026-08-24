@@ -45,6 +45,7 @@ const env: Env = {
   cookieSecure: false,
   jwtSecret: "test-secret-value",
   jwtExpiresIn: "7d",
+  superAdminLogins: [],
 }
 
 type SessionRepo = {
@@ -67,10 +68,10 @@ type SessionSummary = {
   readonly lastActiveAt: string
 }
 
-const seedUser = (db: Db, githubId: number, login: string): Promise<string> =>
+const seedUser = (db: Db, githubId: number, login: string, isSuperAdmin = false): Promise<string> =>
   db
     .insert(users)
-    .values({ githubId, githubLogin: login })
+    .values({ githubId, githubLogin: login, isSuperAdmin })
     .returning({ id: users.id })
     .then(([row]) => {
       if (!row) throw new Error("no seeded user")
@@ -187,6 +188,31 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     await db.delete(userOrgs)
     await db.delete(orgs)
     await db.delete(users)
+  })
+
+  test("a super admin reads a stranger's session through the search CTE, where the predicate is hand-written SQL", async () => {
+    const stranger = await seedUser(db, 1900, "stranger")
+    const admin = await seedUser(db, 1901, "the-admin", true)
+    const nobody = await seedUser(db, 1902, "nobody")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Locked", slug: "locked" },
+      ownerId: stranger,
+    })
+    await seedSession(db, {
+      id: "locked-session",
+      userId: stranger,
+      projectId,
+      title: "Locked",
+      updatedAt: new Date(),
+    })
+
+    // sessions.repo.ts interpolates visibleToUser into a raw CTE alongside its own `users` join:
+    // an alias collision or a mis-parenthesised OR would surface here and nowhere else.
+    expect(idsOf(await listAs(db, admin))).toEqual(["locked-session"])
+    expect(idsOf(await listAs(db, nobody))).toEqual([])
+
+    const detail = await request(db, admin, "/locked-session")
+    expect(detail.status).toBe(200)
   })
 
   test("S20: project, user, and range each narrow the list on their own - an unfiltered request returns all four sessions", async () => {

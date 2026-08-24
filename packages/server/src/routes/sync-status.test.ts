@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql"
+import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import { buildApp } from "../app.js"
 import { type Db, createDb } from "../db/client.js"
@@ -29,6 +30,7 @@ const env: Env = {
   cookieSecure: false,
   jwtSecret: "test-secret-value",
   jwtExpiresIn: "7d",
+  superAdminLogins: [],
 }
 
 let githubIds = 0
@@ -177,6 +179,30 @@ describe.skipIf(!dockerAvailable())("GET /api/sync-status", () => {
     expect(ownerRow?.lastSyncedAt).toBe(new Date("2026-01-01T00:00:00Z").toISOString())
     expect(granteeRow?.lastSyncedAt).toBe(new Date("2026-02-01T00:00:00Z").toISOString())
     expect(ownerRow?.lastSyncedAt).not.toBe(granteeRow?.lastSyncedAt)
+  })
+
+  test("a super admin sees every user's pairings, while their own row still lists only their own projects", async () => {
+    const owner = await seedUser(db, "watched-owner")
+    const admin = await seedUser(db, "watching-admin")
+    await db.update(users).set({ isSuperAdmin: true }).where(eq(users.id, admin))
+    const projectId = await seedProject(db, "Theirs", "theirs", owner)
+    await seedSession(db, {
+      id: "s-theirs",
+      userId: owner,
+      projectId,
+      updatedAt: new Date("2026-03-01T00:00:00Z"),
+    })
+
+    const rows = await rowsAs(db, admin)
+
+    expect(rows.find((row) => row.userId === owner && row.projectId === projectId)).toMatchObject({
+      sessionCount: 1,
+      lastSyncedAt: new Date("2026-03-01T00:00:00Z").toISOString(),
+    })
+    // memberOfProject is untouched: the admin is paired with nothing it does not actually belong to.
+    expect(rows.filter((row) => row.userId === admin)).toEqual([
+      expect.objectContaining({ projectId: null }),
+    ])
   })
 
   test("S10: a request without a web session is refused, both with no cookie and a cli-audience token", async () => {

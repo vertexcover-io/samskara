@@ -58,6 +58,7 @@ describe("loggingMiddleware", () => {
       cookieSecure: false,
       jwtSecret: "test-secret-value",
       jwtExpiresIn: "7d",
+      superAdminLogins: [],
     }
     const app = buildApp({} as Db, env, { rootLog: testLog() })
     app.get("/__boom", () => {
