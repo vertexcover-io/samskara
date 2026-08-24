@@ -730,9 +730,6 @@ test.describe("capture pipeline", () => {
 
     const inScope = join(cwd, "docs", "adr-001.md")
     const excluded = join(cwd, "node_modules", "pkg", "index.js")
-    // Deliberately NOT a sibling of `cwd`: the harness home lives under the system temp dir,
-    // which the daemon captures as its scratch zone, so a fixture there would be accepted on
-    // purpose and would test nothing. Only a path outside both zones proves containment.
     const outsideDir = await mkdtemp(join(REPO_ROOT, "e2e", "fixtures", "p12-outside-"))
     const outside = join(outsideDir, "elsewhere.md")
     await mkdir(join(cwd, "docs"), { recursive: true })
@@ -1103,10 +1100,6 @@ test.describe("capture pipeline", () => {
     expect(rawJs.headers.get("x-content-type-options")).toBe("nosniff")
     expect(await rawJs.text()).toBe(SCRIPT_JS)
 
-    // HTML and SVG both render as ordinary same-origin pages, carrying no content policy at all
-    // -- that is what lets a captured report load the media it references over an authenticated
-    // session. A script inside one therefore acts as the signed-in user, which suits an internal
-    // deployment where every agent whose output lands here is trusted, and nothing else.
     for (const [row, body] of [
       [html, REPORT_HTML],
       [svg, DIAGRAM_SVG],
