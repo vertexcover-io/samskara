@@ -10,6 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "downshift": "9.4.0",
     "fflate": "^0.8.3",
     "hono": "4.13.4",
     "mermaid": "^11.16.0",

@@ -1,6 +1,13 @@
 import { expect, test } from "vitest"
 import type { SyncStatusRow } from "../api/types.js"
-import { DEFAULT_STATE, filterRows, nextDirection, sortRows } from "./table.js"
+import {
+  DEFAULT_STATE,
+  filterRows,
+  nextDirection,
+  projectOptions,
+  sortRows,
+  userOptions,
+} from "./table.js"
 
 const row = (overrides: Partial<SyncStatusRow>): SyncStatusRow => ({
   userId: "u-1",
@@ -72,4 +79,25 @@ test("SC17: the user and project filters narrow the list together, never past ei
   const both = filterRows(rows, { ...DEFAULT_STATE, user: "ritesh", project: "samskara" })
   expect(both.map((r) => r.userId)).toEqual(["u-1", "u-3"])
   expect(both.length).toBeLessThanOrEqual(Math.min(byUser.length, byProject.length))
+})
+
+test("SC25: the filter suggestions list every user and project once, in alphabetical order", () => {
+  const rows = [
+    row({ userId: "u-1", githubLogin: "ritesh", projectName: "Zeta", projectSlug: "zeta" }),
+    row({ userId: "u-1", githubLogin: "ritesh", projectName: "Andromeda", projectSlug: "and" }),
+    row({ userId: "u-2", githubLogin: "asha", projectName: "Zeta", projectSlug: "zeta" }),
+  ]
+
+  expect(userOptions(rows)).toEqual(["asha", "ritesh"])
+  expect(projectOptions(rows)).toEqual(["Andromeda", "Zeta"])
+})
+
+test("SC26: a user holding no project contributes no project suggestion", () => {
+  const rows = [
+    row({ userId: "u-1", githubLogin: "solo", projectName: null, projectSlug: null }),
+    row({ userId: "u-2", githubLogin: "asha", projectName: "Zeta", projectSlug: "zeta" }),
+  ]
+
+  expect(projectOptions(rows)).toEqual(["Zeta"])
+  expect(userOptions(rows)).toEqual(["asha", "solo"])
 })

@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react"
+import { render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, beforeEach, expect, test, vi } from "vitest"
 import type { SyncStatusRow } from "../api/types.js"
@@ -143,7 +143,7 @@ test("SC19: typing into the Project box writes it into the URL, and the default 
   expect(await screen.findByTestId("location")).toHaveTextContent("/sync-status")
   expect(screen.getByTestId("location")).not.toHaveTextContent("?")
 
-  await user.type(screen.getByRole("textbox", { name: "Project" }), "sams")
+  await user.type(screen.getByRole("combobox", { name: "Project" }), "sams")
 
   expect(screen.getByTestId("location")).toHaveTextContent("project=sams")
 })
@@ -183,4 +183,44 @@ test("SC24: clearing the filters keeps the reader's sort column and direction", 
     "aria-sort",
     "ascending",
   )
+})
+
+test("SC27: the Project box suggests the projects on the page, and picking one filters the table", async () => {
+  const other: SyncStatusRow = {
+    ...ROW,
+    projectId: "p-2",
+    projectName: "Andromeda",
+    projectSlug: "andromeda",
+  }
+  stubFetch(200, { rows: [ROW, other] })
+  const user = userEvent.setup()
+
+  renderPage()
+  await screen.findByText("Samskara")
+
+  await user.click(screen.getByRole("combobox", { name: "Project" }))
+
+  const list = screen.getByRole("listbox", { name: "Project" })
+  expect(within(list).getByRole("option", { name: "Andromeda" })).toBeInTheDocument()
+  expect(within(list).getByRole("option", { name: "Samskara" })).toBeInTheDocument()
+
+  await user.click(within(list).getByRole("option", { name: "Andromeda" }))
+
+  expect(screen.getByTestId("location")).toHaveTextContent("project=Andromeda")
+  expect(screen.queryByText("Samskara")).not.toBeInTheDocument()
+})
+
+test("SC28: typing narrows the suggestions to the matching users only", async () => {
+  const asha: SyncStatusRow = { ...ROW, userId: "u-2", githubLogin: "asha" }
+  stubFetch(200, { rows: [ROW, asha] })
+  const user = userEvent.setup()
+
+  renderPage()
+  await screen.findByText("asha")
+
+  await user.type(screen.getByRole("combobox", { name: "User" }), "ash")
+
+  const list = screen.getByRole("listbox", { name: "User" })
+  expect(within(list).getByRole("option", { name: "asha" })).toBeInTheDocument()
+  expect(within(list).queryByRole("option", { name: "maya" })).not.toBeInTheDocument()
 })

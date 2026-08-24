@@ -105,3 +105,12 @@ export const sortRows = (
   const sign = state.direction === "asc" ? 1 : -1
   return [...rows].sort((a, b) => compare(a, b, sign))
 }
+
+const sortedUnique = (values: ReadonlyArray<string>): ReadonlyArray<string> =>
+  [...new Set(values)].sort((a, b) => a.localeCompare(b))
+
+export const userOptions = (rows: ReadonlyArray<SyncStatusRow>): ReadonlyArray<string> =>
+  sortedUnique(rows.map((row) => row.githubLogin))
+
+export const projectOptions = (rows: ReadonlyArray<SyncStatusRow>): ReadonlyArray<string> =>
+  sortedUnique(rows.flatMap((row) => (row.projectName === null ? [] : [row.projectName])))
