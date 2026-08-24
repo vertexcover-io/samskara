@@ -1,3 +1,4 @@
+import type { JSONValue } from "hono/utils/types"
 import { describe, expect, test } from "vitest"
 import type { SessionDetailPayload } from "../api/types.js"
 import { buildPayload, message, pastedImage } from "../tests/session-fixtures.js"
@@ -616,7 +617,7 @@ describe("prompt turns", () => {
 // Capture stores an assistant turn's thinking as a `reasoning` block. Encrypted thinking arrives
 // as a signature with no text at all, which is every reasoning block this project has captured.
 describe("reasoning blocks", () => {
-  const assistantAt = (content: unknown, index = 0) => {
+  const assistantAt = (content: JSONValue, index = 0) => {
     const payload = buildPayload({
       messages: [message({ lineNumber: 1, msgType: "message", role: "assistant", content })],
     })
@@ -653,7 +654,7 @@ describe("reasoning blocks", () => {
 // A slash command is the one thing in the transcript the user definitely typed. It arrives as a
 // localCommand, which used to shape as an event and be dropped along with the hooks and snapshots.
 describe("slash commands", () => {
-  const commandView = (details: unknown) =>
+  const commandView = (details: JSONValue) =>
     conversationView(
       toDetail(
         buildPayload({ messages: [message({ lineNumber: 1, msgType: "localCommand", details })] }),

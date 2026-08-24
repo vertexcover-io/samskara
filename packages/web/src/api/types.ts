@@ -17,17 +17,11 @@ export type SessionRepo = NonNullable<SessionSummary["repo"]>
 type SessionSearchMatch = NonNullable<SessionSummary["match"]>
 export type SearchSourceKind = SessionSearchMatch["sourceKind"]
 
-/**
- * Restore a field the server declares as `unknown`. Hono's `JSONParsed` maps `unknown` to
- * `never`, which would make every read of the field a dead branch that still compiles.
- */
-type Opaque<T, K extends keyof T> = Omit<T, K> & { readonly [P in K]: unknown }
-
 type DetailBody = Ok<Client["api"]["sessions"][":id"]["$get"]>
 
 export type SessionFacts = DetailBody["session"]
-export type RawMessage = Opaque<DetailBody["messages"][number], "content" | "details">
-export type RawToolCall = Opaque<DetailBody["toolCalls"][number], "toolInput" | "result">
+export type RawMessage = DetailBody["messages"][number]
+export type RawToolCall = DetailBody["toolCalls"][number]
 export type RawSubagent = DetailBody["subagents"][number]
 export type TokenTotals = DetailBody["tokenUsage"]
 export type SessionCommit = DetailBody["commits"][number]
