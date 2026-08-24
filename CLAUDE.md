@@ -75,10 +75,23 @@ One Postgres container (`docker compose -p samskara up -d`) on port 5433, many d
 Main checkout uses `samskara`; a worktree uses `samskara_BRANCH_SLUG`.
 
 - `bun run db:generate` — generate a migration from `packages/server/src/db/schema.ts`
-- `bun run db:migrate` — apply migrations to whatever `DATABASE_URL` the local `.env` names
+- `bun run db:migrate` — the only way to bring a database up to date: drizzle-kit's migrations, then every step in `packages/server/src/db/steps.ts`, against whatever `DATABASE_URL` the local `.env` names
+- `bun run db:verify` — read-only check that every step is already converged
 - `bun run seed:dev` — idempotent dev fixture: dev user, org, project, 3 sessions, plus the real users copied out of the main checkout's database. `--if-empty` makes it a no-op when the database already has projects, which is how `setup` stays safe to re-run
 - `bun run seed:user GITHUB_LOGIN` — escape hatch: copy one named user and pin `SEED_USERS` to them. Not needed normally, since `seed:dev` copies every local user by default
 - `bun run seed:org ORG_SLUG` — register a real GitHub org
+
+**Post-migrate steps.** Some database work cannot live in a migration: `create index
+concurrently` is rejected inside a migration's transaction, so the full-text search indexes are
+built outside the migration journal. `db:migrate` runs drizzle-kit and then every step registered
+in `MIGRATION_STEPS` (`packages/server/src/db/steps.ts`), under one advisory lock. Never migrate a
+database any other way — a setup path that runs only `drizzle-kit migrate` yields a schema-correct
+database with no search indexes, and search then scans and re-tokenizes all of `messages` on every
+query, which looks like a hang rather than a missing step.
+
+A step is a module beside `steps.ts` exporting `{ name, run, verify }`. `run` converges and must be
+idempotent, because it runs on every migrate including ones with no new migrations; `verify` only
+reads, and backs `db:verify`.
 
 `drizzle.config.ts` has no default `DATABASE_URL`. If it is unset the migration fails loudly rather
 than quietly migrating the main checkout's database.

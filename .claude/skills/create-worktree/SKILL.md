@@ -44,22 +44,25 @@ it and seeds dev data.
 
 ### 3. Confirm the isolation actually happened
 
+`wt:setup` prints this worktree's db, api and web urls as it finishes. `DATABASE_URL` must end in
+`samskara_SLUG`, never plain `/samskara`. To re-check later, from the worktree root:
+
 ```bash
-WT=$(git -C . rev-parse --show-toplevel)
-test ! -L "$WT/.env" && grep -E '^(DATABASE_URL|PORT|WEB_PORT)=' "$WT/.env"
+test -L .env && echo "BROKEN: .env is a symlink, so every branch shares one database"
+grep -E '^(DATABASE_URL|PORT|WEB_PORT)=' .env
 ```
 
-`.env` must be a real file, and `DATABASE_URL` must end in `samskara_…`, not plain `/samskara`.
-If it is still a symlink or still points at `samskara`, run `bun run wt:setup` and re-check —
-do not start work until it is isolated.
+If `.env` is a symlink or `DATABASE_URL` is still plain `samskara`, run `bun run wt:setup` and
+re-check — do not start work until it is isolated.
 
 ### 4. Check you can still log in
 
-The worktree database is fresh, so it only knows the users `seed:dev` put there. If `SEED_USERS`
-in the main checkout's `.env` names the developer's GitHub login, `wt:setup` already copied them
-across with their uuid intact and the existing session cookie works — nothing to do.
+The worktree database is fresh, but `wt:setup` copies every user out of the main checkout's
+database with their uuid intact, so the existing session cookie keeps working — normally there is
+nothing to do.
 
-If it does not, run once:
+`SEED_USERS` in the main checkout's `.env` narrows that to a named list. Only if it is set and
+leaves the developer's GitHub login out, run once:
 
 ```bash
 bun run seed:user GITHUB_LOGIN
@@ -80,11 +83,7 @@ breakage indistinguishable from pre-existing breakage.
 
 ### 6. Report
 
-```
-Worktree ready at WORKTREE_PATH
-Branch BRANCH_NAME, database samskara_SLUG, api http://localhost:PORT, web http://localhost:WEB_PORT
-Tests passing (N tests, 0 failures)
-```
+Give the worktree path, the branch, the db/api/web urls `wt:setup` printed, and the test result.
 
 ## Cleanup
 
@@ -94,16 +93,3 @@ wt remove
 
 The `pre-remove` hook drops that worktree's database. Removing the directory by hand leaks it;
 `bun run wt:teardown` from inside the worktree drops it on its own.
-
-## Red flags
-
-**Never:**
-- `git worktree add` in this repo — it skips every hook
-- Symlink `.env` into a worktree
-- Run `db:migrate` in a worktree before confirming `DATABASE_URL` is the branch database
-- Start work while `.env` is still a symlink
-
-**Always:**
-- Start the Postgres container before creating the worktree
-- Check `DATABASE_URL` after creation
-- Verify the test baseline before implementing

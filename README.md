@@ -319,10 +319,20 @@ Database helpers:
 ```sh
 bun run stack:up / stack:down          # Postgres container
 bun run db:generate                    # generate a migration from schema.ts
-bun run db:migrate                     # apply migrations
-bun run db:index-search                # build the search indexes
-bun run db:verify-search-indexes       # check they match the schema
+bun run db:migrate                     # bring a database fully up to date
+bun run db:verify                      # read-only: assert it already is
 ```
+
+`db:migrate` is the only command that touches a database's shape. It runs drizzle-kit's migrations
+and then every post-migrate step in `packages/server/src/db/steps.ts` — work migrations cannot
+carry, because `create index concurrently` is rejected inside a migration's transaction. Today that
+is the full-text search indexes. Steps are idempotent and run on every migrate, so a database is
+never left half-set-up; skipping them leaves a schema-correct database whose every search
+sequentially re-tokenizes every message, which reads as the API hanging rather than as a missing
+step.
+
+To add one: write the module next to `steps.ts`, export a `MigrationStep` with an idempotent `run`
+and a read-only `verify`, and list it in `MIGRATION_STEPS`.
 
 The server's test suite starts a real `pgvector/pgvector:pg16` container via testcontainers and runs
 the migrations against it, so schema and auth are covered end to end. Those tests skip themselves

@@ -1,16 +1,9 @@
 {
   "stages": {
-    "setup": {},
     "worktree": {
       "skill": "create-worktree",
       "note": "Project override. Do not use harness using-git-worktrees: it symlinks .env, which puts every branch back on the shared samskara database. create-worktree drives `wt`, whose .config/wt.toml hooks give each branch its own database and port pair."
-    },
-    "baseline": {},
-    "planning": {},
-    "coder": {},
-    "code-review": {},
-    "verify-finalize": {},
-    "commit-pr": {}
+    }
   },
   "environments": {
     "default": "local",

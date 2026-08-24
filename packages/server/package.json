@@ -21,15 +21,14 @@
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate",
+    "db:migrate": "tsx src/scripts/migrate.ts",
     "seed:org": "tsx --env-file=../../.env src/scripts/seed-org.ts",
-    "db:index-search": "tsx --env-file=../../.env src/scripts/create-search-indexes.ts",
-    "db:verify-search-indexes": "tsx --env-file=../../.env src/scripts/create-search-indexes.ts --verify",
-    "db:drop-stale-search-indexes": "tsx --env-file=../../.env src/scripts/create-search-indexes.ts --drop-stale",
     "seed:dev": "tsx --env-file=../../.env src/scripts/seed-dev.ts",
     "wt:setup": "tsx src/scripts/worktree-env.ts",
     "wt:teardown": "tsx src/scripts/worktree-env.ts --drop",
-    "seed:user": "tsx --env-file=../../.env src/scripts/seed-dev.ts --add-user"
+    "seed:user": "tsx --env-file=../../.env src/scripts/seed-dev.ts --add-user",
+    "db:migrate:schema": "drizzle-kit migrate",
+    "db:verify": "tsx src/scripts/migrate.ts --verify"
   },
   "dependencies": {
     "@hono/node-server": "1.13.8",

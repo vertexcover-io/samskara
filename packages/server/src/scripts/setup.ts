@@ -76,11 +76,6 @@ const main = (): void => {
   console.log("> migrating")
   run("bun", ["run", "db:migrate"])
 
-  // Migrations create the search helper functions but not the GIN indexes over them. Without this
-  // step every search sequentially scans and re-tokenizes every message, which reads as a hang.
-  console.log("> building search indexes")
-  run("bun", ["run", "db:index-search"])
-
   console.log("> seeding")
   run("bun", ["run", "seed:dev", "--if-empty"])
 

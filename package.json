@@ -26,13 +26,11 @@
     "stack:up": "docker compose up -d",
     "stack:down": "docker compose down",
     "prepare": "git config core.hooksPath .githooks 2>/dev/null || true; bun run --cwd packages/core build",
-    "db:index-search": "bun run --cwd packages/server db:index-search",
-    "db:verify-search-indexes": "bun run --cwd packages/server db:verify-search-indexes",
-    "db:drop-stale-search-indexes": "bun run --cwd packages/server db:drop-stale-search-indexes",
     "seed:dev": "bun run --cwd packages/server seed:dev",
     "wt:setup": "bun run --cwd packages/server wt:setup",
     "wt:teardown": "bun run --cwd packages/server wt:teardown",
-    "seed:user": "bun run --cwd packages/server seed:user"
+    "seed:user": "bun run --cwd packages/server seed:user",
+    "db:verify": "bun run --cwd packages/server db:verify"
   },
   "devDependencies": {
     "@biomejs/biome": "1.9.4",

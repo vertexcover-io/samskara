@@ -216,10 +216,6 @@ const setup = async (layout: Layout): Promise<void> => {
 
   run("db:migrate", layout.root, env.DATABASE_URL)
   const packageJson = readFileSync(join(layout.root, "package.json"), "utf8")
-  // Migrations ship the search helper functions; the GIN indexes over them are a separate step and
-  // a worktree without them makes every search scan the whole message table.
-  if (definesScript(packageJson, "db:index-search"))
-    run("db:index-search", layout.root, env.DATABASE_URL)
   if (definesScript(packageJson, "seed:dev")) run("seed:dev", layout.root, env.DATABASE_URL)
   else console.log("this branch has no seed:dev script -- database left empty")
 
