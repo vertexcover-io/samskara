@@ -26,7 +26,7 @@ export const syncStatusRoutes = ({ db, env }: Deps) =>
     "/",
     requireAuth({ db, env }, ["web"]),
     async (c) => {
-      const rows = await listSyncStatus(db)
+      const rows = await listSyncStatus(db, c.get("user").id)
       return c.json({ rows: rows.map(serialize) }, 200)
     },
   )

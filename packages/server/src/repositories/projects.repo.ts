@@ -14,9 +14,9 @@ export const orgMemberOfProject = (db: Querier, userId: string | AnyColumn) =>
 /**
  * A predicate over a query that already has `projects` in scope. One definition rather than a
  * copy per repository: two divergent copies of an authorization predicate is how one of them
- * silently stops matching the other.
+ * silently stops matching the other. `userId` may be a column so a join can correlate it per row.
  */
-export const visibleToUser = (db: Querier, userId: string): SQL | undefined =>
+export const visibleToUser = (db: Querier, userId: string | AnyColumn): SQL | undefined =>
   or(
     eq(projects.ownerUserId, userId),
     exists(
