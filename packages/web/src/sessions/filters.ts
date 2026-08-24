@@ -115,6 +115,8 @@ export const parseFilters = (params: URLSearchParams): SessionFilters => {
   }
 }
 
+// `searchQuery` in packages/cli/src/commands/search.ts hand-mirrors this function so the CLI and
+// the UI build the same query string. Change one, change both.
 export const serializeFilters = (filters: SessionFilters): URLSearchParams => {
   const params = new URLSearchParams()
   if (filters.q !== null) params.set("q", filters.q)

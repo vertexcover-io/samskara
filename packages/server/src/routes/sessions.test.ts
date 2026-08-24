@@ -666,7 +666,7 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     expect(idsOf(await listAs(db, granteeB, `?project=${projectId}`))).toEqual(["granted-session"])
   })
 
-  test("S22: no cookie and a cli-audience token are both 401 unauthorized on the sessions read endpoint", async () => {
+  test("S22: an unauthenticated list read is 401, while a cli-audience bearer token reads the list so `samskara search` can run", async () => {
     const owner = await seedUser(db, 1701, "guard-owner")
     const app = buildApp(db, env)
 
@@ -675,9 +675,10 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     expect(await anonymous.json()).toEqual({ error: "unauthorized" })
 
     const cliToken = await signToken(env, { sub: owner, aud: "cli" })
-    const cli = await app.request("/api/sessions", { headers: { cookie: `session=${cliToken}` } })
-    expect(cli.status).toBe(401)
-    expect(await cli.json()).toEqual({ error: "unauthorized" })
+    const cli = await app.request("/api/sessions", {
+      headers: { authorization: `Bearer ${cliToken}` },
+    })
+    expect(cli.status).toBe(200)
   })
 
   test("S20: an unrecognized range is rejected by validation rather than silently widening the result", async () => {
@@ -1124,6 +1125,19 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions/:id", () => {
 
   test("S41: a detail read with no cookie is 401 unauthorized before any lookup happens", async () => {
     const res = await buildApp(db, env).request("/api/sessions/anything")
+
+    expect(res.status).toBe(401)
+    expect(await res.json()).toEqual({ error: "unauthorized" })
+  })
+
+  // The subject is a real seeded user, so the 401 can only be the audience -- not an unknown sub.
+  test("S43: a cli-audience token is 401 on the detail read, so widening the list route did not widen this one", async () => {
+    const owner = await seedUser(db, 2501, "detail-cli-owner")
+    const cliToken = await signToken(env, { sub: owner, aud: "cli" })
+
+    const res = await buildApp(db, env).request("/api/sessions/anything", {
+      headers: { authorization: `Bearer ${cliToken}` },
+    })
 
     expect(res.status).toBe(401)
     expect(await res.json()).toEqual({ error: "unauthorized" })

@@ -28,3 +28,17 @@ export const reportError = (stderr: Writer, error: unknown, prefix?: string): nu
 
 export const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms))
+
+const MINUTE = 60_000
+const HOUR = 60 * MINUTE
+const DAY = 24 * HOUR
+
+export const relativeTime = (iso: string, now: Date): string => {
+  const elapsed = now.getTime() - new Date(iso).getTime()
+  if (Number.isNaN(elapsed)) return iso
+  if (elapsed < MINUTE) return "just now"
+  if (elapsed < HOUR) return `${Math.floor(elapsed / MINUTE)}m ago`
+  if (elapsed < DAY) return `${Math.floor(elapsed / HOUR)}h ago`
+  if (elapsed < 30 * DAY) return `${Math.floor(elapsed / DAY)}d ago`
+  return iso.slice(0, 10)
+}

@@ -205,10 +205,19 @@ its GitHub org gets seeded).
 
 | Command | What it does |
 |---|---|
+| `samskara search [QUERY]` | Search captured sessions from the terminal and print each hit's URL. |
 | `samskara status` | Projects, capture state, last sync time, watcher PID. Start here when something looks off. |
 | `samskara logs [-f]` | Pretty-print the watcher log. `-f` streams new lines. |
 | `samskara restart` | Stop the watcher and start a fresh one. |
 | `samskara replay SESSION_ID` | Delete a session server-side and locally, then re-capture it from scratch. |
+
+`search` takes the same filters as the web UI's `/sessions` page and the same query grammar (see
+[Using the web UI](#using-the-web-ui)): `--project`, `--user`, `--repo`, `--branch`, `--pr`,
+`--commit`, `--range` (`--from`/`--to` for `custom`), `--tz`, `--sort`, `--page`, `--limit`. `--project`
+and `--repo` take a name or an id — an ambiguous or unrecognized name fails rather than guessing, and
+lists the closest known names. `--here` fills project, repo and branch from the current checkout
+(explicit flags win over it). `--first` keeps only the top hit; `--url` and `--json` print
+machine-readable output instead of the default table; `--open` opens the top hit in a browser.
 
 ### Hooks and the watcher
 
@@ -229,6 +238,7 @@ Everything the CLI stores lives in `~/.samskara` (override the whole directory w
 |---|---|
 | `token` | CLI access token, mode `0600` |
 | `projects.json` | which folders are enabled, and since when |
+| `filter-options.json` | cached `search` project/user/repo/branch names, so resolving one by name costs one request per 5 minutes |
 | `state.json` | per-session ingest checkpoints |
 | `artifacts.json`, `artifact-queue.json` | artifact checkpoints and pending uploads |
 | `watch.pid` | watcher process id |
@@ -262,6 +272,9 @@ Filters you can combine with it: `project`, `user`, `repo`, `branch`, `pr`, `com
 `range` (`hour` / `today` / `week` / `month` / `custom` with `from` and `to`), and
 `sort` (`recent`, `oldest`, `tokens`, `project`, `relevance`).
 
+The same query and filters are available from the terminal with `samskara search` (see
+[CLI reference](#cli-reference)).
+
 ---
 
 ## Repo layout
@@ -287,7 +300,7 @@ Filters you can combine with it: `project`, `user`, `repo`, `branch`, `pr`, `com
 | GET | `/api/projects` | web | projects with session counts |
 | POST | `/api/projects` | cli | find or create the project for a folder; org-owned when its GitHub org is registered and the caller is a member |
 | GET | `/api/sync-status` | web | the projects the caller may read, each member of them, and that member's own last-synced time |
-| GET | `/api/sessions` | web | session list, search and filters |
+| GET | `/api/sessions` | web / cli | session list, search and filters — `cli` reads it so `samskara search` can run |
 | GET | `/api/sessions/:id` | web | one session with messages, tools, subagents, tokens |
 | GET | `/api/sessions/:id/artifacts` | web | artifacts for a session |
 | DELETE | `/api/sessions/:id` | cli | delete a session (used by `replay`) |

@@ -5,7 +5,7 @@ import { readToken } from "../config/credentials.js"
 import { watcherPid } from "../config/daemon.js"
 import { statePath, watchLogDir } from "../config/paths.js"
 import { listProjects } from "../config/projects.js"
-import { resolveIo, type Writer } from "../io.js"
+import { relativeTime, resolveIo, type Writer } from "../io.js"
 import { verifyToken } from "../login.js"
 
 export type StatusOptions = {
@@ -13,22 +13,8 @@ export type StatusOptions = {
   readonly now?: () => Date
 }
 
-const MINUTE = 60_000
-const HOUR = 60 * MINUTE
-const DAY = 24 * HOUR
-
 const shortenPath = (path: string): string =>
   path.startsWith(homedir()) ? `~${path.slice(homedir().length)}` : path
-
-const relativeTime = (iso: string, now: Date): string => {
-  const elapsed = now.getTime() - new Date(iso).getTime()
-  if (Number.isNaN(elapsed)) return iso
-  if (elapsed < MINUTE) return "just now"
-  if (elapsed < HOUR) return `${Math.floor(elapsed / MINUTE)}m ago`
-  if (elapsed < DAY) return `${Math.floor(elapsed / HOUR)}h ago`
-  if (elapsed < 30 * DAY) return `${Math.floor(elapsed / DAY)}d ago`
-  return iso.slice(0, 10)
-}
 
 const authLine = async (): Promise<string> => {
   const token = await readToken()
