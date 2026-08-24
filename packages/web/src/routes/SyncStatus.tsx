@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { useSearchParams } from "react-router-dom"
 import { type ApiError, client, request } from "../api/client.js"
-import type { SyncStatusRow } from "../api/shapes.js"
+import type { SyncStatusRow } from "../api/types.js"
 import { SessionExpired } from "../auth/SessionExpired.js"
 import { TextField } from "../components/TextField.js"
 import { LoadingShell } from "../shell/LoadingShell.js"

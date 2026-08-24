@@ -1,6 +1,6 @@
 import { type ReactNode, createContext, useCallback, useContext, useEffect, useState } from "react"
 import { client, request } from "../api/client.js"
-import type { CurrentUser } from "../api/shapes.js"
+import type { CurrentUser } from "../api/types.js"
 
 export type AuthStatus = "loading" | "authed" | "anon"
 

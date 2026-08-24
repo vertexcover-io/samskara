@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest"
-import type { SessionDetailPayload } from "../api/shapes.js"
+import type { SessionDetailPayload } from "../api/types.js"
 import { buildPayload, message, pastedImage } from "../tests/session-fixtures.js"
 import { artifactsOf, conversationView, locate, toDetail } from "./records.js"
 

@@ -1,5 +1,5 @@
 import { expect, test } from "vitest"
-import type { SyncStatusRow } from "../api/shapes.js"
+import type { SyncStatusRow } from "../api/types.js"
 import { DEFAULT_STATE, filterRows, nextDirection, sortRows } from "./table.js"
 
 const row = (overrides: Partial<SyncStatusRow>): SyncStatusRow => ({

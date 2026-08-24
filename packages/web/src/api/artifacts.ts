@@ -1,5 +1,5 @@
 import { type ApiResult, client, request } from "./client.js"
-import type { CapturedArtifact } from "./shapes.js"
+import type { CapturedArtifact } from "./types.js"
 
 export const fetchSessionArtifacts = (
   sessionId: string,

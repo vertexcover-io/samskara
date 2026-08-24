@@ -1,4 +1,4 @@
-import type { SyncStatusRow } from "../api/shapes.js"
+import type { SyncStatusRow } from "../api/types.js"
 
 export const COLUMNS = ["user", "project", "sessions", "synced"] as const
 

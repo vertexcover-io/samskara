@@ -1,5 +1,5 @@
 import { useEffect, useId, useState } from "react"
-import type { SessionFilterOptions } from "../api/shapes.js"
+import type { SessionFilterOptions } from "../api/types.js"
 import {
   RANGES,
   RANGE_LABEL,

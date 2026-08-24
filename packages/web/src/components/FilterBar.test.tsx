@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { expect, test, vi } from "vitest"
-import type { SessionFilterOptions } from "../api/shapes.js"
+import type { SessionFilterOptions } from "../api/types.js"
 import { EMPTY_FILTERS, type SessionFilters } from "../sessions/filters.js"
 import { FilterBar } from "./FilterBar.js"
 

@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { Route, Routes } from "react-router-dom"
 import { afterEach, beforeEach, expect, test, vi } from "vitest"
-import type { SessionDetailPayload } from "../api/shapes.js"
+import type { SessionDetailPayload } from "../api/types.js"
 import {
   buildPayload,
   commit,

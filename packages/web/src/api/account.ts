@@ -1,5 +1,5 @@
 import { type ApiResult, client, request } from "./client.js"
-import type { LogoutAck, PairingCode } from "./shapes.js"
+import type { LogoutAck, PairingCode } from "./types.js"
 
 export const requestPairingCode = (): Promise<ApiResult<PairingCode>> =>
   request(() => client.api.auth["cli-code"].$post())

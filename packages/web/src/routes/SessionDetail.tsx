@@ -9,7 +9,7 @@ import type {
   SessionFacts,
   SessionRepo,
   TokenTotals,
-} from "../api/shapes.js"
+} from "../api/types.js"
 import { SessionExpired } from "../auth/SessionExpired.js"
 import { AgentRail, agentEntries } from "../session/AgentRail.js"
 import { ArtifactsView } from "../session/ArtifactsView.js"

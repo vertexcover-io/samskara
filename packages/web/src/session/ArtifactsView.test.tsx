@@ -1,7 +1,7 @@
 import { render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, test, vi } from "vitest"
-import type { CapturedArtifact } from "../api/shapes.js"
+import type { CapturedArtifact } from "../api/types.js"
 import { TestRouter } from "../tests/test-router.js"
 import { ArtifactsView } from "./ArtifactsView.js"
 import type { Artifact } from "./records.js"

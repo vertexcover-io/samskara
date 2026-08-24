@@ -1,4 +1,4 @@
-import type { SessionCommit, SessionPullRequest, SessionRepo } from "../api/shapes.js"
+import type { SessionCommit, SessionPullRequest, SessionRepo } from "../api/types.js"
 import { absoluteTime, relativeTime } from "../time.js"
 
 const Unavailable = () => (

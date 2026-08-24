@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { useSearchParams } from "react-router-dom"
 import { type ApiError, client, request } from "../api/client.js"
-import type { SessionListPayload } from "../api/shapes.js"
+import type { SessionListPayload } from "../api/types.js"
 import { SessionExpired } from "../auth/SessionExpired.js"
 import { FilterBar } from "../components/FilterBar.js"
 import { SessionRow } from "../components/SessionRow.js"

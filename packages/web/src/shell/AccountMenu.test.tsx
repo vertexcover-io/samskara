@@ -2,7 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, test, vi } from "vitest"
 import { AppRoutes } from "../App.js"
-import type { CurrentUser } from "../api/shapes.js"
+import type { CurrentUser } from "../api/types.js"
 import { TestRouter } from "../tests/test-router.js"
 
 const user: CurrentUser = {

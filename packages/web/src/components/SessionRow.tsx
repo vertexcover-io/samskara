@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom"
 import { repoLabel } from "../api/repo.js"
-import type { SearchSourceKind, SessionSummary } from "../api/shapes.js"
+import type { SearchSourceKind, SessionSummary } from "../api/types.js"
 import { absoluteTime, relativeTime } from "../time.js"
 
 const Unavailable = () => (

@@ -1,5 +1,5 @@
 import type { ReactNode } from "react"
-import type { RawSubagent } from "../api/shapes.js"
+import type { RawSubagent } from "../api/types.js"
 import { formatSpan, spanOf } from "./AgentRail.js"
 import { RecordItem } from "./RecordItem.js"
 import { type TimelineRecord, anchorOf } from "./records.js"

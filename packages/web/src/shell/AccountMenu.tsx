@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom"
 import { PairingDialog } from "../account/PairingDialog.js"
 import { logout } from "../api/account.js"
 import type { ApiError } from "../api/client.js"
-import type { CurrentUser } from "../api/shapes.js"
+import type { CurrentUser } from "../api/types.js"
 import { useAuth } from "../auth/AuthProvider.js"
 
 const ITEM_CLASS =

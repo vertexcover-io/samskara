@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 import { useSearchParams } from "react-router-dom"
 import { artifactPathUrl, rawArtifactUrl } from "../api/artifacts.js"
-import type { CapturedArtifact } from "../api/shapes.js"
+import type { CapturedArtifact } from "../api/types.js"
 import { absoluteTime } from "../time.js"
 import { Code } from "./Code.js"
 import { Markdown } from "./Markdown.js"

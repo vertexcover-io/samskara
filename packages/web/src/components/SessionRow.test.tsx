@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react"
 import { expect, test } from "vitest"
-import type { SessionSummary } from "../api/shapes.js"
+import type { SessionSummary } from "../api/types.js"
 import { TestRouter } from "../tests/test-router.js"
 import { SessionRow } from "./SessionRow.js"
 

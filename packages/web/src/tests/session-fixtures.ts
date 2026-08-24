@@ -7,7 +7,7 @@ import type {
   SessionFacts,
   SessionPullRequest,
   TokenTotals,
-} from "../api/shapes.js"
+} from "../api/types.js"
 
 let counter = 0
 

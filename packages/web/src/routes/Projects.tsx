@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { type ApiError, client, request } from "../api/client.js"
-import type { ProjectSummary } from "../api/shapes.js"
+import type { ProjectSummary } from "../api/types.js"
 import { SessionExpired } from "../auth/SessionExpired.js"
 import { ProjectCard } from "../components/ProjectCard.js"
 import { LoadingShell } from "../shell/LoadingShell.js"
