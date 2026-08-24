@@ -11,7 +11,7 @@ import {
   runDatabaseName,
   sweepAbandoned,
 } from "./db.js"
-import { seedDatabase } from "./seed.js"
+import { E2E_USER_ID, type SeedSpec, seedDatabase } from "./seed.js"
 
 test.describe("SC30 the database-name guard accepts only names this suite creates", () => {
   test("accepts a name this suite generates", () => {
@@ -110,6 +110,86 @@ test.describe("SC34 the wrapper names the fix when Postgres is not reachable", (
   })
 })
 
+const TWO_PROJECTS: SeedSpec = {
+  repositories: [{ key: "own", host: "github.com", owner: "acme", repoName: "own-repo" }],
+  projects: [
+    {
+      slug: "isolation-first",
+      name: "Isolation First",
+      sessions: [{ id: "22222222-2222-4222-8222-222222222222", title: "First" }],
+    },
+    {
+      slug: "isolation-second",
+      name: "Isolation Second",
+      sessions: [{ id: "33333333-3333-4333-8333-333333333333", title: "Second" }],
+    },
+  ],
+}
+
+test.describe("SC36 a spec sees only its own rows, whatever the last run left behind", () => {
+  test("the wreckage of a crashed capture-pipeline run is gone and the ledger survives", async () => {
+    await seedDatabase({ projects: [] })
+    const sql = postgres(requireDatabaseUrl(), { max: 1 })
+    try {
+      const [repo] = await sql<{ id: string }[]>`
+        insert into repos (host, owner, repo_name, "userId")
+        values ('github.com', 'leftover', 'wreck', ${E2E_USER_ID})
+        returning id
+      `
+      const [project] = await sql<{ id: string }[]>`
+        insert into projects (id, name, slug, "ownerId")
+        values (gen_random_uuid(), 'Leftover', 'leftover-project', ${E2E_USER_ID})
+        returning id
+      `
+      if (!repo || !project) throw new Error("poison insert returned no row")
+      await sql`
+        insert into sessions (id, source, "userId", "projectId", title)
+        values ('leftover-session', 'claude_code', ${E2E_USER_ID}, ${project.id}, 'Leftover')
+      `
+      await sql`
+        insert into messages (
+          "sessionId", "lineUuid", "subIndex", "msgType", "lineNumber", raw,
+          "sourceSchemaVersion", "repoId"
+        )
+        values ('leftover-session', gen_random_uuid(), 0, 'message', 1, '{}'::jsonb, 1, ${repo.id})
+      `
+      const ledgerBefore = await scalar(sql, LEDGER_COUNT)
+
+      await seedDatabase(TWO_PROJECTS)
+
+      const count = (statement: string) => scalar(sql, statement)
+      expect(await count("select count(*) from sessions where id = 'leftover-session'")).toBe(0)
+      expect(await count("select count(*) from projects where slug = 'leftover-project'")).toBe(0)
+
+      const slugs = await sql<{ slug: string }[]>`select slug from projects order by slug`
+      expect(slugs.map((row) => row.slug)).toEqual(["isolation-first", "isolation-second"])
+
+      const repos = await sql<{ repo_name: string }[]>`select repo_name from repos`
+      expect(repos.map((row) => row.repo_name)).toEqual(["own-repo"])
+
+      expect(await scalar(sql, LEDGER_COUNT)).toBe(ledgerBefore)
+    } finally {
+      await sql.end()
+    }
+  })
+})
+
+test.describe("SC37 seeding the same spec twice leaves the same rows as seeding it once", () => {
+  test("the second call raises nothing and lands the same row counts", async () => {
+    await seedDatabase(TWO_PROJECTS)
+    const sql = postgres(requireDatabaseUrl(), { max: 1 })
+    try {
+      const first = await rowCounts(sql)
+      await seedDatabase(TWO_PROJECTS)
+      expect(await rowCounts(sql)).toEqual(first)
+    } finally {
+      await sql.end()
+    }
+  })
+})
+
+type Sql = ReturnType<typeof postgres>
+
 const currentDatabaseName = (): string => new URL(requireDatabaseUrl()).pathname.slice(1)
 
 const databaseNames = async (admin: string): Promise<ReadonlyArray<string>> => {
@@ -120,4 +200,22 @@ const databaseNames = async (admin: string): Promise<ReadonlyArray<string>> => {
   } finally {
     await sql.end()
   }
+}
+
+// Drizzle keeps its ledger outside `public`, so a truncate of that schema must leave it whole.
+const LEDGER_COUNT = 'select count(*) from drizzle."__drizzle_migrations"'
+const COUNTED_TABLES = ["users", "projects", "sessions", "messages", "repos"]
+
+const scalar = async (sql: Sql, statement: string): Promise<number> => {
+  const [row] = await sql.unsafe<{ count: string }[]>(statement)
+  return Number(row?.count)
+}
+
+const rowCounts = async (sql: Sql): Promise<Record<string, number>> => {
+  const entries = await Promise.all(
+    COUNTED_TABLES.map(
+      async (table) => [table, await scalar(sql, `select count(*) from "${table}"`)] as const,
+    ),
+  )
+  return Object.fromEntries(entries)
 }

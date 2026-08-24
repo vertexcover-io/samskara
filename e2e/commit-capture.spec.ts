@@ -189,25 +189,14 @@ const startHarness = async (): Promise<Harness> => {
 
 let harness: Harness
 
-const clearRows = async (): Promise<void> => {
-  const sql = postgres(DATABASE_URL)
-  try {
-    await sql`delete from sessions where id = ${SESSION_ID}`
-    await sql`delete from projects where slug = ${PROJECT_SLUG}`
-    await sql`delete from repos where "repo_name" in (${SUB_REPO_NAME}, 'widgets', 'birds')`
-  } finally {
-    await sql.end()
-  }
-}
-
 const harnessTeardown = async (): Promise<void> => {
   if (harness) await harness.stop()
 }
 
 test.beforeEach(async () => {
-  await seedDatabase({ projects: [] })
+  // Stop the daemon first: it holds a connection and writes rows while the seed truncates.
   await harnessTeardown()
-  await clearRows()
+  await seedDatabase({ projects: [] })
 })
 
 test.afterEach(harnessTeardown)

@@ -200,33 +200,35 @@ const seedStructuredFacts = async (
   }
 }
 
+// Reads the table list from the catalog so a table added later is cleared without an edit here.
+// `schemaname = 'public'` is load-bearing: drizzle's ledger lives in its own schema, and clearing
+// it would make the next `db:migrate` replay all migrations against a database that already has
+// the tables.
+const truncateAll = async (sql: Sql): Promise<void> => {
+  const [row] = await sql<{ statement: string | null }[]>`
+    select 'truncate table '
+           || string_agg(format('%I.%I', schemaname, tablename), ', ')
+           || ' restart identity cascade' as statement
+    from pg_tables
+    where schemaname = 'public'
+  `
+  if (row?.statement) await sql.unsafe(row.statement)
+}
+
 export const seedDatabase = async (spec: SeedSpec): Promise<void> => {
   const sql = postgres(DATABASE_URL)
-  const projectIds = spec.projects.map((project) => projectId(project.slug))
 
   try {
-    // Every project ID is derived from its E2E-only slug, so this clears hidden-project fixtures
-    // as well as visible ones without touching a non-E2E project owned by the second test user.
-    if (projectIds.length > 0) {
-      await sql`delete from "userProjectGrant" where "projectId" in ${sql(projectIds)}`
-      await sql`delete from projects where id in ${sql(projectIds)}`
-    }
-    // A prior run's capture-pipeline specs can leave messages pointing at these users' repos
-    // outside any spec's own project cleanup; clear them first so the repos delete below is not
-    // blocked by messages_repoId_repos_id_fk, which has no cascade.
-    await sql`delete from messages where "repoId" in (select id from repos where "userId" in (${E2E_USER_ID}, ${E2E_OTHER_USER_ID}))`
-    await sql`delete from repos where "userId" in (${E2E_USER_ID}, ${E2E_OTHER_USER_ID})`
+    await truncateAll(sql)
 
     await sql`
       insert into users (id, github_id, github_login, email, name)
       values (${E2E_USER_ID}, 999001, ${E2E_USER_LOGIN}, 'e2e@example.com', 'E2E User')
-      on conflict (id) do update set github_login = excluded.github_login
     `
 
     await sql`
       insert into users (id, github_id, github_login, email, name)
       values (${E2E_OTHER_USER_ID}, 999002, ${E2E_OTHER_USER_LOGIN}, 'maya@example.com', 'Maya')
-      on conflict (id) do update set github_login = excluded.github_login
     `
 
     const repositories = await seedRepositories(sql, spec.repositories ?? [])
