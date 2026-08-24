@@ -277,7 +277,7 @@ Tokens are audience-scoped (`aud: web` or `aud: cli`) and checked per route.
 bun run dev          # API + web, watch mode
 bun run build        # build every package
 bun run typecheck    # every package, plus the e2e project
-bun run lint         # biome check .
+bun run lint         # biome check ., then the DB naming linter
 bun run format       # biome format --write .
 bun run test         # every package's unit tests
 bun run e2e          # Playwright, on a throwaway database it creates and drops
@@ -293,7 +293,12 @@ bun run db:generate                    # generate a migration from schema.ts
 bun run db:migrate                     # apply migrations
 bun run db:index-search                # build the search indexes
 bun run db:verify-search-indexes       # check they match the schema
+bun run lint:db                        # check every table and column name is camelCase
 ```
+
+Every table and column name in the database uses camelCase. `bun run lint` checks this and fails
+the build when a new name uses snake_case. The check also scans hand-written migration files from
+index `0018` onward, so a new migration cannot introduce a snake_case name either.
 
 The server's test suite starts a real `pgvector/pgvector:pg16` container via testcontainers and runs
 the migrations against it, so schema and auth are covered end to end. Those tests skip themselves
