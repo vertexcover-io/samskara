@@ -11,6 +11,7 @@ const env: Env = {
   cookieSecure: false,
   jwtSecret: "test-secret-value",
   jwtExpiresIn: "7d",
+  superAdminLogins: [],
 }
 
 describe("S5: jwt sign/verify", () => {

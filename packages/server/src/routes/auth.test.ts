@@ -33,6 +33,7 @@ const env: Env = {
   cookieSecure: false,
   jwtSecret: "test-secret-value",
   jwtExpiresIn: "7d",
+  superAdminLogins: [],
 }
 
 const stubClient = (opts: {
@@ -147,6 +148,84 @@ describe.skipIf(!dockerAvailable())("auth routes (callback + start)", () => {
 
     const allUsers = await db.select().from(users)
     expect(allUsers).toHaveLength(0)
+  })
+
+  test("a configured super admin logs in with no registered org and the row plus /me carry the flag", async () => {
+    const app = buildApp(
+      db,
+      { ...env, superAdminLogins: ["ceo"] },
+      {
+        githubClient: stubClient({
+          orgs: ["some-other-org"],
+          profile: { githubId: 6060, login: "CEO" },
+        }),
+      },
+    )
+
+    const res = await app.request("/api/auth/github/callback?code=x&state=s", {
+      headers: { cookie: "oauth_state=s" },
+    })
+
+    expect(res.headers.get("location")).toBe("http://localhost:8000/")
+    const token = sessionFrom(res.headers.get("set-cookie"))
+    expect(token).toBeTruthy()
+
+    const [user] = await db.select().from(users).where(eq(users.githubId, 6060))
+    expect(user?.isSuperAdmin).toBe(true)
+
+    const me = await app.request("/api/auth/me", { headers: { cookie: `session=${token}` } })
+    expect(await me.json()).toMatchObject({ githubLogin: "CEO", isSuperAdmin: true })
+  })
+
+  test("dropping a login out of SUPER_ADMIN_LOGINS clears the flag on the next login", async () => {
+    const callback = (superAdminLogins: ReadonlyArray<string>) =>
+      buildApp(
+        db,
+        { ...env, superAdminLogins },
+        {
+          githubClient: stubClient({
+            orgs: ["vertexcover-io"],
+            profile: { githubId: 6161, login: "demoted" },
+          }),
+        },
+      ).request("/api/auth/github/callback?code=x&state=s", {
+        headers: { cookie: "oauth_state=s" },
+      })
+
+    await callback(["demoted"])
+    const [promoted] = await db.select().from(users).where(eq(users.githubId, 6161))
+    expect(promoted?.isSuperAdmin).toBe(true)
+
+    await callback([])
+    const [demoted] = await db.select().from(users).where(eq(users.githubId, 6161))
+    expect(demoted?.isSuperAdmin).toBe(false)
+  })
+
+  test("demoting an org-less super admin revokes the flag even though the org gate refuses them", async () => {
+    const callback = (superAdminLogins: ReadonlyArray<string>) =>
+      buildApp(
+        db,
+        { ...env, superAdminLogins },
+        {
+          githubClient: stubClient({
+            orgs: ["some-other-org"],
+            profile: { githubId: 6262, login: "orgless" },
+          }),
+        },
+      ).request("/api/auth/github/callback?code=x&state=s", {
+        headers: { cookie: "oauth_state=s" },
+      })
+
+    await callback(["orgless"])
+    const [promoted] = await db.select().from(users).where(eq(users.githubId, 6262))
+    expect(promoted?.isSuperAdmin).toBe(true)
+
+    // Refused at the door, but the keys must still be taken: the login upsert never runs here.
+    const res = await callback([])
+    expect(res.headers.get("location")).toBe("http://localhost:8000/?error=not_member")
+
+    const [demoted] = await db.select().from(users).where(eq(users.githubId, 6262))
+    expect(demoted?.isSuperAdmin).toBe(false)
   })
 
   test("S3: state mismatch is rejected as bad_state with no session and no exchange", async () => {
@@ -395,6 +474,7 @@ describe.skipIf(!dockerAvailable())("auth routes (me + logout)", () => {
       email: "authed@example.com",
       name: "Authed User",
       avatarUrl: "https://example.com/a.png",
+      isSuperAdmin: false,
     })
     expect(body).not.toHaveProperty("githubId")
     expect(body).not.toHaveProperty("createdAt")

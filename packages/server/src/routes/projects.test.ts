@@ -30,6 +30,7 @@ const env: Env = {
   cookieSecure: false,
   jwtSecret: "test-secret-value",
   jwtExpiresIn: "7d",
+  superAdminLogins: [],
 }
 
 type ProjectSummary = {
