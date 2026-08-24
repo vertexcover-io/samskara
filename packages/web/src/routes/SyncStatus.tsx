@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom"
 import { type ApiError, client, request } from "../api/client.js"
 import type { SyncStatusRow } from "../api/types.js"
 import { SessionExpired } from "../auth/SessionExpired.js"
-import { TextField } from "../components/TextField.js"
+import { Autocomplete } from "../components/Autocomplete.js"
 import { LoadingShell } from "../shell/LoadingShell.js"
 import {
   COLUMNS,
@@ -13,8 +13,10 @@ import {
   filterRows,
   nextDirection,
   parseState,
+  projectOptions,
   sortRows,
   toParams,
+  userOptions,
 } from "../sync/table.js"
 import { absoluteTime, relativeTime } from "../time.js"
 
@@ -172,23 +174,29 @@ const SyncStatusTable = ({
 )
 
 const FilterBoxes = ({
+  rows,
   state,
   onFilter,
 }: {
+  readonly rows: ReadonlyArray<SyncStatusRow>
   readonly state: TableState
   readonly onFilter: (next: Partial<TableState>) => void
 }) => (
   <div className="grid grid-cols-1 gap-3 min-[560px]:grid-cols-2">
-    <div className="min-w-0">
-      <TextField label="User" value={state.user} onChange={(user) => onFilter({ user })} />
-    </div>
-    <div className="min-w-0">
-      <TextField
-        label="Project"
-        value={state.project}
-        onChange={(project) => onFilter({ project })}
-      />
-    </div>
+    <Autocomplete
+      label="User"
+      value={state.user}
+      options={userOptions(rows)}
+      placeholder="Any user"
+      onChange={(user) => onFilter({ user })}
+    />
+    <Autocomplete
+      label="Project"
+      value={state.project}
+      options={projectOptions(rows)}
+      placeholder="Any project"
+      onChange={(project) => onFilter({ project })}
+    />
   </div>
 )
 
@@ -242,7 +250,7 @@ export const SyncStatus = () => {
     <section>
       <h1 className="text-[1.375rem] font-semibold leading-tight">Sync status</h1>
       <div className="mt-4">
-        <FilterBoxes state={tableState} onFilter={onFilter} />
+        <FilterBoxes rows={fetchState.rows} state={tableState} onFilter={onFilter} />
       </div>
       {filtered ? <ResultCount visible={visible.length} total={fetchState.rows.length} /> : null}
       {visible.length === 0 ? (

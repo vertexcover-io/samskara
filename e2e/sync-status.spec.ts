@@ -54,11 +54,12 @@ test("SC21: a project filter narrows the table and survives a reload", async ({
   await page.goto("/sync-status")
   await expect(page.locator("tr", { hasText: "Secondary Sync Project" }).first()).toBeVisible()
 
-  await page.getByRole("textbox", { name: "Project" }).fill("Primary")
+  await page.getByRole("combobox", { name: "Project" }).fill("Primary")
+  await page.getByRole("option", { name: "Primary Sync Project" }).click()
 
   await expect(page.locator("tr", { hasText: "Primary Sync Project" })).toBeVisible()
   await expect(page.locator("tr", { hasText: "Secondary Sync Project" })).toHaveCount(0)
-  await expect(page).toHaveURL(/project=Primary/)
+  await expect(page).toHaveURL(/project=Primary\+Sync\+Project/)
 
   await page.reload()
 
