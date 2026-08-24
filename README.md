@@ -43,37 +43,47 @@ checkpoint so it only sends what is new, and uploads artifacts in the background
 | Docker | Postgres + pgvector, and the server's DB tests |
 | A GitHub OAuth app | web login |
 | A GitHub org | login is gated to members of an org you seed |
+| [worktrunk](https://worktrunk.dev) | only if you work on more than one branch at a time — see below |
 
 ---
 
 ## Run the server locally
 
-### 1. Install and start Postgres
-
-```sh
-bun install
-bun run stack:up          # Postgres 16 + pgvector on host port 5433
-```
-
-### 2. Create a GitHub OAuth app
+### 1. Create a GitHub OAuth app
 
 Go to **GitHub → Settings → Developer settings → OAuth Apps → New OAuth App** and set:
 
 - **Homepage URL** — `http://localhost:8000`
 - **Authorization callback URL** — `http://localhost:3000/api/auth/github/callback`
 
-Generate a client secret. You need both the client ID and the secret in the next step.
+Generate a client secret. This is the only step nothing can do for you.
 
-### 3. Fill in `.env`
+### 2. Run setup
 
 ```sh
-cp .env.example .env
+bun run setup YOUR_GITHUB_ORG_SLUG
 ```
+
+That installs dependencies, writes `.env` from `.env.example` with a freshly generated
+`JWT_SECRET`, starts Postgres, migrates, seeds demo data, and registers your org. The first run
+stops and tells you to paste the client id and secret from step 1 into `.env`; run it again after
+you have.
+
+Only members of a registered org can log in, which is what the org slug is for. Leave it off and
+setup tells you how to add one later with `bun run seed:org YOUR_GITHUB_ORG_SLUG`; pass
+`--no-auto-add` to that if you would rather grant membership by hand than have GitHub members
+added on first login. Every login re-checks the user's current GitHub orgs and drops any samskara
+org link GitHub no longer lists, so leaving an org on GitHub revokes access on the next login.
+
+`bun run setup` is safe to re-run: it never rotates a secret that is already set, and it leaves a
+database that already has projects alone.
+
+The variables it writes:
 
 | Variable | What it is |
 |---|---|
-| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | from the OAuth app above |
-| `JWT_SECRET` | any long random string — `openssl rand -hex 32` |
+| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | from the OAuth app above — the only two you fill in |
+| `JWT_SECRET` | generated for you |
 | `DATABASE_URL` | `postgres://samskara:samskara@localhost:5433/samskara` (matches `docker-compose.yml`) |
 | `PUBLIC_BASE_URL` | where the API is reachable, `http://localhost:3000` |
 | `WEB_BASE_URL` | where the UI is, `http://localhost:8000` |
@@ -81,33 +91,52 @@ cp .env.example .env
 | `JWT_EXPIRES_IN` | session lifetime, default `7d` |
 | `VITE_API_BASE_URL` | API base the SPA calls, `http://localhost:3000` |
 
-### 4. Migrate and seed your org
-
-```sh
-bun run db:migrate
-bun run seed:org YOUR_GITHUB_ORG_SLUG
-```
-
-Only members of a seeded org can log in. If your GitHub account is not in that org, the callback
-will reject you.
-
-By default, seeding an org auto-adds its GitHub members the first time each of them logs in. Pass
-`--no-auto-add` to seed an org whose membership is granted by hand instead:
-
-```sh
-bun run seed:org YOUR_GITHUB_ORG_SLUG --no-auto-add
-```
-
-Every login re-checks the user's current GitHub orgs and removes any samskara org link GitHub no
-longer lists, so leaving an org on GitHub revokes access to that org's projects on the next login.
-
-### 5. Start it
+### 3. Start it
 
 ```sh
 bun run dev               # API on :3000, web on :8000
 ```
 
 Open http://localhost:8000 and sign in with GitHub.
+
+### 4. Working on more than one branch at a time
+
+Every branch talks to the same Postgres container. Sharing one database means a migration on one
+branch rewrites the schema every other branch is reading, and two branches cannot run the app at
+once. Worktrees created with [worktrunk](https://worktrunk.dev) get their own database and their
+own port pair instead.
+
+```sh
+brew install worktrunk && wt config shell install    # cargo install worktrunk also works
+wt switch --create feat/thing
+```
+
+Worktrunk puts new worktrees in a *sibling* directory by default (`../samskara.feat-thing`). If you
+would rather have them inside the repo, where `.gitignore` already covers them, add this to your
+own `~/.config/worktrunk/config.toml` — it is a personal setting, not a shared one:
+
+```toml
+worktree-path = "{{ repo_path }}/.worktrees/{{ branch | sanitize }}"
+```
+
+`.config/wt.toml` hooks do the rest, in about five seconds — copy your `.env` and `.seed/` in,
+`bun install`, create `samskara_feat_thing`, migrate it, and seed it, restoring your local users
+from `.seed/identity.json` with their uuids intact. `wt switch` asks to approve those commands the first time; add `--yes` in
+a non-interactive session. `wt remove` drops the branch's database again.
+
+Only `.env` and `.seed/` are carried over from your main checkout — `.worktreeinclude` at the repo
+root is an allowlist, and a file has to be both gitignored and listed there to be copied. Everything else
+(`node_modules`, `dist`, `.turbo`) is rebuilt, so no branch ever inherits another branch's stale
+build. Start the Postgres container before creating a worktree; the hooks create a database inside
+it but cannot start it.
+
+**Signing in inside a worktree does not work,** and does not need to. A GitHub OAuth app matches
+host *and* port exactly against its single registered callback on port 3000, so the redirect is
+rejected. But cookies are not scoped by port and every worktree copies your `.env`, so a session
+started at `http://localhost:8000` is already valid on `http://localhost:8252`. What makes it work is
+`.seed/identity.json`, a gitignored snapshot of your users written by `bun run seed:capture` and
+restored by `bun run seed`: it gives the worktree database a row with the same uuid your session
+token names.
 
 ---
 
@@ -290,10 +319,20 @@ Database helpers:
 ```sh
 bun run stack:up / stack:down          # Postgres container
 bun run db:generate                    # generate a migration from schema.ts
-bun run db:migrate                     # apply migrations
-bun run db:index-search                # build the search indexes
-bun run db:verify-search-indexes       # check they match the schema
+bun run db:migrate                     # bring a database fully up to date
+bun run db:verify                      # read-only: assert it already is
 ```
+
+`db:migrate` is the only command that touches a database's shape. It runs drizzle-kit's migrations
+and then every post-migrate step in `packages/server/src/db/steps.ts` — work migrations cannot
+carry, because `create index concurrently` is rejected inside a migration's transaction. Today that
+is the full-text search indexes. Steps are idempotent and run on every migrate, so a database is
+never left half-set-up; skipping them leaves a schema-correct database whose every search
+sequentially re-tokenizes every message, which reads as the API hanging rather than as a missing
+step.
+
+To add one: write the module next to `steps.ts`, export a `MigrationStep` with an idempotent `run`
+and a read-only `verify`, and list it in `MIGRATION_STEPS`.
 
 The server's test suite starts a real `pgvector/pgvector:pg16` container via testcontainers and runs
 the migrations against it, so schema and auth are covered end to end. Those tests skip themselves

@@ -1,3 +1,5 @@
+name: samskara
+
 services:
   db:
     image: pgvector/pgvector:pg16

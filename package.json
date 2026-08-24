@@ -5,6 +5,7 @@
   "packageManager": "bun@1.2.19",
   "workspaces": ["packages/*"],
   "scripts": {
+    "setup": "bun packages/server/src/scripts/setup.ts",
     "dev": "turbo run dev",
     "build": "turbo run build",
     "test": "turbo run test",
@@ -20,14 +21,16 @@
     "lint": "biome check .",
     "format": "biome format --write .",
     "db:generate": "bun run --cwd packages/server db:generate",
-    "db:migrate": "bun run --cwd packages/server db:migrate",
+    "db:migrate": "turbo run db:migrate --filter=@samskara/server --",
     "seed:org": "bun run --cwd packages/server seed:org",
     "stack:up": "docker compose up -d",
     "stack:down": "docker compose down",
-    "prepare": "git config core.hooksPath .githooks 2>/dev/null || true",
-    "db:index-search": "bun run --cwd packages/server db:index-search",
-    "db:verify-search-indexes": "bun run --cwd packages/server db:verify-search-indexes",
-    "db:drop-stale-search-indexes": "bun run --cwd packages/server db:drop-stale-search-indexes"
+    "prepare": "git config core.hooksPath .githooks 2>/dev/null || true; bun run --cwd packages/core build",
+    "wt:setup": "bun run --cwd packages/server wt:setup",
+    "wt:teardown": "bun run --cwd packages/server wt:teardown",
+    "db:verify": "turbo run db:verify --filter=@samskara/server --",
+    "seed": "bun run --cwd packages/server seed",
+    "seed:capture": "bun run --cwd packages/server seed:capture"
   },
   "devDependencies": {
     "@biomejs/biome": "1.9.4",
