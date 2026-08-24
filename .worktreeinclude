@@ -1,6 +1,3 @@
-# Gitignored files a new worktree needs copied in. A file must be BOTH gitignored and listed here,
-# so this is an allowlist -- everything else (node_modules, dist, .turbo, caches) is rebuilt by the
-# worktree's own `bun install`. Without this file worktrunk copies every gitignored file, which for
-# this repo is ~180 MB and drags a stale dist/ into each new branch.
 .env
 .env.*
+.seed/
