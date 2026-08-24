@@ -23,11 +23,12 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/scripts/migrate.ts",
     "seed:org": "tsx --env-file=../../.env src/scripts/seed-org.ts",
-    "seed:dev": "tsx --env-file=../../.env src/scripts/seed-dev.ts",
     "wt:setup": "tsx src/scripts/worktree-env.ts",
     "wt:teardown": "tsx src/scripts/worktree-env.ts --drop",
     "db:migrate:schema": "drizzle-kit migrate",
-    "db:verify": "tsx src/scripts/migrate.ts --verify"
+    "db:verify": "tsx src/scripts/migrate.ts --verify",
+    "seed": "tsx --env-file=../../.env src/scripts/seed.ts",
+    "seed:capture": "tsx --env-file=../../.env src/scripts/seed.ts --capture"
   },
   "dependencies": {
     "@hono/node-server": "1.13.8",

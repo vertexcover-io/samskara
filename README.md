@@ -119,13 +119,13 @@ own `~/.config/worktrunk/config.toml` — it is a personal setting, not a shared
 worktree-path = "{{ repo_path }}/.worktrees/{{ branch | sanitize }}"
 ```
 
-`.config/wt.toml` hooks do the rest, in about five seconds — copy your `.env` in as a real file,
-`bun install`, create `samskara_feat_thing`, migrate it, seed it, and copy your local users across
-with their uuids intact. `wt switch` asks to approve those commands the first time; add `--yes` in
+`.config/wt.toml` hooks do the rest, in about five seconds — copy your `.env` and `.seed/` in,
+`bun install`, create `samskara_feat_thing`, migrate it, and seed it, restoring your local users
+from `.seed/identity.json` with their uuids intact. `wt switch` asks to approve those commands the first time; add `--yes` in
 a non-interactive session. `wt remove` drops the branch's database again.
 
-Only `.env` is carried over from your main checkout — `.worktreeinclude` at the repo root is an
-allowlist, and a file has to be both gitignored and listed there to be copied. Everything else
+Only `.env` and `.seed/` are carried over from your main checkout — `.worktreeinclude` at the repo
+root is an allowlist, and a file has to be both gitignored and listed there to be copied. Everything else
 (`node_modules`, `dist`, `.turbo`) is rebuilt, so no branch ever inherits another branch's stale
 build. Start the Postgres container before creating a worktree; the hooks create a database inside
 it but cannot start it.
@@ -133,8 +133,9 @@ it but cannot start it.
 **Signing in inside a worktree does not work,** and does not need to. A GitHub OAuth app matches
 host *and* port exactly against its single registered callback on port 3000, so the redirect is
 rejected. But cookies are not scoped by port and every worktree copies your `.env`, so a session
-started at `http://localhost:8000` is already valid on `http://localhost:8252` — the copied user
-rows are what make it work, by giving the worktree database a row with the same uuid your session
+started at `http://localhost:8000` is already valid on `http://localhost:8252`. What makes it work is
+`.seed/identity.json`, a gitignored snapshot of your users written by `bun run seed:capture` and
+restored by `bun run seed`: it gives the worktree database a row with the same uuid your session
 token names.
 
 ---

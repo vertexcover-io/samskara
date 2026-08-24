@@ -57,9 +57,10 @@ re-check — do not start work until it is isolated.
 
 ### 4. Check you can still log in
 
-`wt:setup` copies this machine's GitHub users into the new database with their uuids intact, so the
-session cookie the developer already holds works here. Nothing to do — but if `/api/auth/me` comes
-back 401, re-run `bun run wt:setup`.
+`bun run seed` restores `.seed/identity.json` — a snapshot of this machine's users, copied into the
+worktree by `wt step copy-ignored` — so the session cookie the developer already holds works here.
+Nothing to do. If `/api/auth/me` comes back 401, the snapshot is probably missing: run
+`bun run seed:capture` in the main checkout, then `bun run wt:setup` here.
 
 Signing in from inside the worktree will not work: a GitHub OAuth app matches host and port exactly
 against its single registered callback on port 3000. Sign in on the main checkout instead — cookies

@@ -1,3 +1,6 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { dirname, join, resolve } from "node:path"
+import { fileURLToPath } from "node:url"
 import { eq, inArray } from "drizzle-orm"
 import type { Db } from "../db/client.js"
 import { createDb } from "../db/client.js"
@@ -137,72 +140,164 @@ export type CopiedUser = {
 
 export type CopyUsersResult = { readonly copied: ReadonlyArray<CopiedUser> }
 
+const SNAPSHOT_VERSION = 1
+
+type SnapshotUser = {
+  readonly id: string
+  readonly githubId: number
+  readonly githubLogin: string
+  readonly email?: string | null
+  readonly name?: string | null
+  readonly avatarUrl?: string | null
+  readonly isSuperAdmin: boolean
+}
+
+type SnapshotOrg = {
+  readonly id: string
+  readonly githubOrgId?: number | null
+  readonly githubSlug: string
+  readonly name?: string | null
+  readonly autoAddMembers: boolean
+}
+
 /**
- * Copies whole rows, uuid included, rather than re-creating users from a github login. The session
+ * Memberships name their ends by github id and org slug rather than uuid. Those are the same in
+ * every database, so restoring never has to guess which local uuid a foreign one meant.
+ */
+type SnapshotMembership = { readonly userGithubId: number; readonly orgSlug: string }
+
+export type IdentitySnapshot = {
+  readonly version: number
+  readonly users: ReadonlyArray<SnapshotUser>
+  readonly orgs: ReadonlyArray<SnapshotOrg>
+  readonly memberships: ReadonlyArray<SnapshotMembership>
+}
+
+/**
+ * Timestamps are left out on purpose: they carry no meaning for a dev fixture, and keeping them
+ * would mean reviving Date objects out of JSON on every restore.
+ */
+export const captureIdentity = async (db: Db): Promise<IdentitySnapshot> => {
+  const allUsers = (await db.select().from(users)).filter(
+    (user) => user.githubId !== DEV_USER_GITHUB_ID,
+  )
+  const allOrgs = (await db.select().from(orgs)).filter((org) => org.githubSlug !== DEV_ORG_SLUG)
+  const links = await db.select().from(userOrgs)
+
+  const loginById = new Map(allUsers.map((user) => [user.id, user.githubId] as const))
+  const slugById = new Map(allOrgs.map((org) => [org.id, org.githubSlug] as const))
+
+  return {
+    version: SNAPSHOT_VERSION,
+    users: allUsers.map((user) => ({
+      id: user.id,
+      githubId: user.githubId,
+      githubLogin: user.githubLogin,
+      email: user.email,
+      name: user.name,
+      avatarUrl: user.avatarUrl,
+      isSuperAdmin: user.isSuperAdmin,
+    })),
+    orgs: allOrgs.map((org) => ({
+      id: org.id,
+      githubOrgId: org.githubOrgId,
+      githubSlug: org.githubSlug,
+      name: org.name,
+      autoAddMembers: org.autoAddMembers,
+    })),
+    memberships: links.flatMap((link) => {
+      const userGithubId = loginById.get(link.userId)
+      const orgSlug = slugById.get(link.orgId)
+      return userGithubId !== undefined && orgSlug !== undefined ? [{ userGithubId, orgSlug }] : []
+    }),
+  }
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null
+
+/** Returns null rather than throwing: a bad snapshot must not take the whole seed down with it. */
+export const parseSnapshot = (text: string): IdentitySnapshot | null => {
+  const parsed: unknown = (() => {
+    try {
+      return JSON.parse(text)
+    } catch {
+      return null
+    }
+  })()
+  if (!isRecord(parsed)) return null
+  if (parsed.version !== SNAPSHOT_VERSION) return null
+  if (!Array.isArray(parsed.users) || !Array.isArray(parsed.orgs)) return null
+  if (!Array.isArray(parsed.memberships)) return null
+  return parsed as unknown as IdentitySnapshot
+}
+
+/**
+ * Inserts whole rows, uuid included, rather than re-creating users from a github login. The session
  * JWT carries the user's uuid as `sub` and `requireAuth` looks it up in whichever database the
  * worktree points at, so a freshly generated uuid would authenticate as nobody.
  */
-export const copyGithubUsers = async (source: Db, target: Db): Promise<CopyUsersResult> => {
-  const sourceUsers = await source.select().from(users)
-  if (sourceUsers.length === 0) return { copied: [] }
+export const restoreIdentity = async (
+  target: Db,
+  snapshot: IdentitySnapshot,
+): Promise<CopyUsersResult> => {
+  if (snapshot.users.length === 0) return { copied: [] }
 
-  await target.insert(users).values(sourceUsers).onConflictDoNothing({ target: users.githubId })
+  await target
+    .insert(users)
+    .values(snapshot.users.map((user) => ({ ...user })))
+    .onConflictDoNothing({ target: users.githubId })
   const landedUsers = await target
     .select()
     .from(users)
     .where(
       inArray(
         users.githubId,
-        sourceUsers.map((user) => user.githubId),
+        snapshot.users.map((user) => user.githubId),
       ),
     )
-  const targetIdByGithubId = new Map(landedUsers.map((user) => [user.githubId, user.id] as const))
+  const userIdByGithubId = new Map(landedUsers.map((user) => [user.githubId, user.id] as const))
 
-  const sourceUserIds = sourceUsers.map((user) => user.id)
-  const memberships = await source
-    .select()
-    .from(userOrgs)
-    .where(inArray(userOrgs.userId, sourceUserIds))
-  const orgIds = [...new Set(memberships.map((row) => row.orgId))]
-  if (orgIds.length > 0) {
-    const sourceOrgs = await source.select().from(orgs).where(inArray(orgs.id, orgIds))
-    await target.insert(orgs).values(sourceOrgs).onConflictDoNothing({ target: orgs.githubSlug })
-    // Re-read by slug: an org the target already knew keeps its own uuid, and the membership rows
-    // have to point at that one, not the source's.
-    const landedOrgs = await target
-      .select()
-      .from(orgs)
-      .where(
-        inArray(
-          orgs.githubSlug,
-          sourceOrgs.map((org) => org.githubSlug),
-        ),
-      )
-    const targetOrgIdBySlug = new Map(landedOrgs.map((org) => [org.githubSlug, org.id] as const))
-    const slugBySourceOrgId = new Map(sourceOrgs.map((org) => [org.id, org.githubSlug] as const))
-    const sourceIdByUserId = new Map(sourceUsers.map((user) => [user.id, user.githubId] as const))
-
-    const rows = memberships.flatMap((row) => {
-      const githubId = sourceIdByUserId.get(row.userId)
-      const slug = slugBySourceOrgId.get(row.orgId)
-      const userId = githubId === undefined ? undefined : targetIdByGithubId.get(githubId)
-      const orgId = slug === undefined ? undefined : targetOrgIdBySlug.get(slug)
-      return userId && orgId ? [{ userId, orgId }] : []
-    })
-    if (rows.length > 0) await target.insert(userOrgs).values(rows).onConflictDoNothing()
+  if (snapshot.orgs.length > 0) {
+    await target
+      .insert(orgs)
+      .values(snapshot.orgs.map((org) => ({ ...org })))
+      .onConflictDoNothing({ target: orgs.githubSlug })
   }
+  // Read back by slug: an org the target already knew keeps its own uuid, and the membership rows
+  // have to point at that one, not the snapshot's.
+  const landedOrgs =
+    snapshot.orgs.length === 0
+      ? []
+      : await target
+          .select()
+          .from(orgs)
+          .where(
+            inArray(
+              orgs.githubSlug,
+              snapshot.orgs.map((org) => org.githubSlug),
+            ),
+          )
+  const orgIdBySlug = new Map(landedOrgs.map((org) => [org.githubSlug, org.id] as const))
 
-  // Without a grant the copied user logs in and sees an empty app: the demo project belongs to the
-  // seeded org, which a real github account is not a member of.
+  const links = snapshot.memberships.flatMap((membership) => {
+    const userId = userIdByGithubId.get(membership.userGithubId)
+    const orgId = orgIdBySlug.get(membership.orgSlug)
+    return userId && orgId ? [{ userId, orgId }] : []
+  })
+  if (links.length > 0) await target.insert(userOrgs).values(links).onConflictDoNothing()
+
+  // Without a grant the restored user logs in and sees an empty app: the demo project belongs to
+  // the seeded org, which a real github account is not a member of.
   const [demo] = await target.select().from(projects).where(eq(projects.slug, DEV_PROJECT_SLUG))
   if (demo) {
-    for (const userId of targetIdByGithubId.values()) {
+    for (const userId of userIdByGithubId.values()) {
       await projectsRepo.grant(target, userId, demo.id, "admin")
     }
   }
 
-  const copied = sourceUsers.flatMap((user): ReadonlyArray<CopiedUser> => {
-    const targetId = targetIdByGithubId.get(user.githubId)
+  const copied = snapshot.users.flatMap((user): ReadonlyArray<CopiedUser> => {
+    const targetId = userIdByGithubId.get(user.githubId)
     if (!targetId) return []
     return [
       {
@@ -225,32 +320,58 @@ const openTarget = () => {
   return createDb(url)
 }
 
-/**
- * `wt:setup` hands the main checkout's database over in SOURCE_DATABASE_URL. Working it out here
- * instead would mean shelling out to git to find the main worktree, which then has to cope with
- * not being in a repo at all -- and every caller that wants the copy already knows the URL.
- */
-const copyFromMainCheckout = async (target: Db): Promise<void> => {
-  const sourceUrl = process.env.SOURCE_DATABASE_URL
-  if (!sourceUrl) return
-  const source = createDb(sourceUrl)
-  try {
-    const { copied } = await copyGithubUsers(source.db, target)
-    for (const user of copied) {
-      if (user.idPreserved) console.log(`copied ${user.githubLogin}`)
-      else
-        console.log(
-          `copied ${user.githubLogin} -- WARNING: new id, an existing cookie will not work`,
-        )
-    }
-    if (copied.length === 0) console.log("no github users to copy yet")
-  } finally {
-    await source.client.end()
-  }
+export const DEFAULT_SNAPSHOT_PATH = ".seed/identity.json"
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..")
+
+const resolveSnapshotPath = (given: string | undefined): string =>
+  given ? resolve(given) : join(repoRoot, DEFAULT_SNAPSHOT_PATH)
+
+const flagValue = (args: ReadonlyArray<string>, flag: string): string | undefined => {
+  const at = args.indexOf(flag)
+  return at === -1 ? undefined : args[at + 1]
 }
 
-const main = async (): Promise<void> => {
-  const args = process.argv.slice(2)
+const restoreFromFile = async (target: Db, path: string): Promise<void> => {
+  if (!existsSync(path)) {
+    console.log(`no identity snapshot at ${path} -- run \`bun run seed:capture\` to make one`)
+    return
+  }
+  const snapshot = parseSnapshot(readFileSync(path, "utf8"))
+  if (!snapshot) {
+    console.log(`ignoring ${path}: not a snapshot this version understands`)
+    return
+  }
+  const { copied } = await restoreIdentity(target, snapshot)
+  for (const user of copied) {
+    if (user.idPreserved) console.log(`restored ${user.githubLogin}`)
+    else
+      console.log(
+        `restored ${user.githubLogin} -- WARNING: new id, an existing cookie will not work`,
+      )
+  }
+  if (copied.length === 0) console.log(`${path} holds no users`)
+}
+
+/** Writes nothing when there is nobody real to write: an empty snapshot is just noise in a worktree. */
+export const captureToFile = async (db: Db, path: string): Promise<number> => {
+  const snapshot = await captureIdentity(db)
+  if (snapshot.users.length === 0) return 0
+  mkdirSync(dirname(path), { recursive: true })
+  writeFileSync(path, `${JSON.stringify(snapshot, null, 2)}\n`)
+  return snapshot.users.length
+}
+
+const capture = async (args: ReadonlyArray<string>): Promise<void> => {
+  const target = openTarget()
+  const path = resolveSnapshotPath(flagValue(args, "--to"))
+  const count = await captureToFile(target.db, path)
+  await target.client.end()
+  if (count === 0) console.log("no github users to capture yet -- sign in first")
+  else console.log(`captured ${count} user${count === 1 ? "" : "s"} to ${path}`)
+}
+
+const seed = async (args: ReadonlyArray<string>): Promise<void> => {
   const target = openTarget()
   if (args.includes("--if-empty") && (await hasProjects(target.db))) {
     await target.client.end()
@@ -258,11 +379,16 @@ const main = async (): Promise<void> => {
     return
   }
   const summary = await seedDev(target.db)
-  await copyFromMainCheckout(target.db)
+  await restoreFromFile(target.db, resolveSnapshotPath(flagValue(args, "--from")))
   await target.client.end()
   console.log(
     `seeded dev data: org ${summary.orgSlug}, ${summary.sessionIds.length} sessions, ${summary.messages} messages`,
   )
+}
+
+const main = async (): Promise<void> => {
+  const args = process.argv.slice(2)
+  await (args.includes("--capture") ? capture(args) : seed(args))
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

@@ -12,7 +12,7 @@
       "stack_status": "docker compose -p samskara ps",
       "stack_down": "docker compose -p samskara down",
       "migrate": "bun run db:migrate",
-      "seed": "bun run seed:dev && bun run seed:org {ORG}",
+      "seed": "bun run seed && bun run seed:org {ORG}",
       "app_up": "bash -c 'PORT=3100 bun run --cwd packages/server dev & WEB_PORT=8100 API_PROXY_TARGET=http://localhost:3100 bun run --cwd packages/web dev'",
       "app_health": "curl -sf http://localhost:3100/health",
       "stack_urls": "echo web=http://localhost:8100 api=http://localhost:3100 db=postgres://samskara:samskara@localhost:5433/samskara"

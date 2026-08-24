@@ -3,6 +3,7 @@ dist
 .turbo
 *.tsbuildinfo
 .env
+.seed/
 .DS_Store
 .harness/*
 !.harness/knowledge/

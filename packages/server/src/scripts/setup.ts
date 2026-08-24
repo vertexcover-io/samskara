@@ -77,9 +77,14 @@ const main = (): void => {
   run("bun", ["run", "db:migrate"])
 
   console.log("> seeding")
-  run("bun", ["run", "seed:dev", "--if-empty"])
+  run("bun", ["run", "seed", "--if-empty"])
 
   if (orgSlug) run("bun", ["run", "seed:org", orgSlug])
+
+  // Once you have signed in, this database holds the user rows a worktree needs. Capturing here
+  // keeps the snapshot current without anyone having to remember a separate command.
+  console.log("> capturing identity snapshot")
+  run("bun", ["run", "seed:capture"])
 
   const next = [
     "",

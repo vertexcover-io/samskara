@@ -30,12 +30,12 @@ describe("applyEnv", () => {
 
 describe("definesScript", () => {
   test("finds a script the worktree's package.json defines", () => {
-    expect(definesScript('{"scripts":{"seed:dev":"x"}}', "seed:dev")).toBe(true)
+    expect(definesScript('{"scripts":{"seed":"x"}}', "seed")).toBe(true)
   })
 
   test("reports missing for a branch cut before the script existed", () => {
-    expect(definesScript('{"scripts":{"test":"x"}}', "seed:dev")).toBe(false)
-    expect(definesScript("{}", "seed:dev")).toBe(false)
-    expect(definesScript("null", "seed:dev")).toBe(false)
+    expect(definesScript('{"scripts":{"test":"x"}}', "seed")).toBe(false)
+    expect(definesScript("{}", "seed")).toBe(false)
+    expect(definesScript("null", "seed")).toBe(false)
   })
 })

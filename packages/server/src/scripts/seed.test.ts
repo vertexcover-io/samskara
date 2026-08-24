@@ -18,10 +18,12 @@ import {
   DEV_PROJECT_SLUG,
   DEV_USER_LOGIN,
   MESSAGES_PER_SESSION,
-  copyGithubUsers,
+  captureIdentity,
   hasProjects,
+  parseSnapshot,
+  restoreIdentity,
   seedDev,
-} from "./seed-dev.js"
+} from "./seed.js"
 
 const dockerAvailable = () => {
   try {
@@ -34,7 +36,7 @@ const dockerAvailable = () => {
 
 const packageDir = fileURLToPath(new URL("../..", import.meta.url))
 
-describe.skipIf(!dockerAvailable())("seed:dev fills a fresh worktree database", () => {
+describe.skipIf(!dockerAvailable())("seed fills a fresh database", () => {
   let container: StartedPostgreSqlContainer
   let teardown: () => Promise<void>
   let db: Db
@@ -114,7 +116,7 @@ describe.skipIf(!dockerAvailable())("seed:dev fills a fresh worktree database", 
   })
 })
 
-describe.skipIf(!dockerAvailable())("copyGithubUsers carries local identities across", () => {
+describe.skipIf(!dockerAvailable())("capture and restore carry local identities across", () => {
   let container: StartedPostgreSqlContainer
   let teardown: () => Promise<void>
   let source: Db
@@ -167,7 +169,7 @@ describe.skipIf(!dockerAvailable())("copyGithubUsers carries local identities ac
     await source.insert(userOrgs).values({ userId: real.id, orgId: org.id })
 
     await seedDev(target)
-    const result = await copyGithubUsers(source, target)
+    const result = await restoreIdentity(target, await captureIdentity(source))
 
     expect(result.copied[0]?.targetId).toBe(real.id)
     expect(result.copied[0]?.idPreserved).toBe(true)
@@ -176,8 +178,22 @@ describe.skipIf(!dockerAvailable())("copyGithubUsers carries local identities ac
     expect(landed?.githubLogin).toBe("kgritesh")
   })
 
+  test("keeps the snapshot free of the demo rows seedDev recreates anyway", async () => {
+    const snapshot = await captureIdentity(source)
+    expect(snapshot.users.map((u) => u.githubLogin)).not.toContain(DEV_USER_LOGIN)
+    expect(snapshot.orgs.map((o) => o.githubSlug)).not.toContain(DEV_ORG_SLUG)
+  })
+
+  test("names memberships by natural key so no uuid has to be translated by hand", async () => {
+    const snapshot = await captureIdentity(source)
+    expect(snapshot.memberships).toContainEqual({
+      userGithubId: 3_336_623,
+      orgSlug: "vertexcover-io",
+    })
+  })
+
   test("carries org membership across so org-owned projects stay visible", async () => {
-    await copyGithubUsers(source, target)
+    await restoreIdentity(target, await captureIdentity(source))
     const [org] = await target.select().from(orgs).where(eq(orgs.githubSlug, "vertexcover-io"))
     expect(org).toBeDefined()
     const memberships = await target
@@ -188,7 +204,7 @@ describe.skipIf(!dockerAvailable())("copyGithubUsers carries local identities ac
   })
 
   test("grants admin on the demo project so the seeded data is actually browsable", async () => {
-    await copyGithubUsers(source, target)
+    await restoreIdentity(target, await captureIdentity(source))
     const [demo] = await target.select().from(projects).where(eq(projects.slug, DEV_PROJECT_SLUG))
     const [user] = await target.select().from(users).where(eq(users.githubLogin, "kgritesh"))
     const grants = await target
@@ -199,9 +215,9 @@ describe.skipIf(!dockerAvailable())("copyGithubUsers carries local identities ac
   })
 
   test("running it twice changes nothing", async () => {
-    await copyGithubUsers(source, target)
+    await restoreIdentity(target, await captureIdentity(source))
     const before = await target.select().from(users)
-    await copyGithubUsers(source, target)
+    await restoreIdentity(target, await captureIdentity(source))
     const after = await target.select().from(users)
     expect(after).toHaveLength(before.length)
   })
@@ -211,7 +227,33 @@ describe.skipIf(!dockerAvailable())("copyGithubUsers carries local identities ac
       .insert(users)
       .values({ githubId: 4_444_444, githubLogin: "teammate" })
       .onConflictDoNothing()
-    const result = await copyGithubUsers(source, target)
+    const result = await restoreIdentity(target, await captureIdentity(source))
     expect(result.copied.map((u) => u.githubLogin).sort()).toContain("teammate")
+  })
+})
+
+describe("parseSnapshot", () => {
+  const valid = JSON.stringify({
+    version: 1,
+    users: [{ id: "u1", githubId: 1, githubLogin: "a", isSuperAdmin: false }],
+    orgs: [],
+    memberships: [],
+  })
+
+  test("reads a snapshot this version wrote", () => {
+    const snapshot = parseSnapshot(valid)
+    expect(snapshot?.users[0]?.githubLogin).toBe("a")
+  })
+
+  test("refuses a snapshot from a format it does not know", () => {
+    expect(
+      parseSnapshot(JSON.stringify({ version: 99, users: [], orgs: [], memberships: [] })),
+    ).toBe(null)
+  })
+
+  test("refuses junk rather than throwing mid-seed", () => {
+    expect(parseSnapshot("not json")).toBe(null)
+    expect(parseSnapshot("{}")).toBe(null)
+    expect(parseSnapshot("null")).toBe(null)
   })
 })
