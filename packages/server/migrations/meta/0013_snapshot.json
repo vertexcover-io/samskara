@@ -640,8 +640,8 @@
           "primaryKey": false,
           "notNull": false
         },
-        "auto_add_members": {
-          "name": "auto_add_members",
+        "autoAddMembers": {
+          "name": "autoAddMembers",
           "type": "boolean",
           "primaryKey": false,
           "notNull": true,

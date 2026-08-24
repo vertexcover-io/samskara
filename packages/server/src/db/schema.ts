@@ -51,7 +51,7 @@ export const orgs = pgTable("orgs", {
   githubOrgId: bigint("github_org_id", { mode: "number" }).unique(),
   githubSlug: text("github_slug").notNull().unique(),
   name: text("name"),
-  autoAddMembers: boolean("auto_add_members").notNull().default(false),
+  autoAddMembers: boolean("autoAddMembers").notNull().default(false),
   createdAt,
   updatedAt,
 })

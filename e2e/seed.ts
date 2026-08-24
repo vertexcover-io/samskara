@@ -256,9 +256,9 @@ export const seedDatabase = async (spec: SeedSpec): Promise<void> => {
 
     for (const slug of orgSlugs) {
       await sql`
-        insert into orgs (id, github_slug, auto_add_members)
+        insert into orgs (id, github_slug, "autoAddMembers")
         values (${orgId(slug)}, ${slug}, true)
-        on conflict (github_slug) do update set auto_add_members = excluded.auto_add_members
+        on conflict (github_slug) do update set "autoAddMembers" = excluded."autoAddMembers"
       `
       for (const member of spec.orgMembers?.[slug] ?? ["primary"]) {
         const userId = member === "other" ? E2E_OTHER_USER_ID : E2E_USER_ID
