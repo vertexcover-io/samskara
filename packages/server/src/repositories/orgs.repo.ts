@@ -1,4 +1,4 @@
-import { eq, inArray } from "drizzle-orm"
+import { inArray } from "drizzle-orm"
 import type { Querier } from "../db/client.js"
 import { orgs } from "../db/schema.js"
 
@@ -17,20 +17,8 @@ export const findBySlugs = async (
     .from(orgs)
     .where(inArray(orgs.githubSlug, [...slugs]))
 
-export const findBySlug = async (
-  db: Querier,
-  slug: string,
-): Promise<{
-  readonly id: string
-  readonly githubSlug: string
-  readonly autoAddMembers: boolean
-} | null> => {
-  const [row] = await db
-    .select({ id: orgs.id, githubSlug: orgs.githubSlug, autoAddMembers: orgs.autoAddMembers })
-    .from(orgs)
-    .where(eq(orgs.githubSlug, slug))
-  return row ?? null
-}
+export const findBySlug = async (db: Querier, slug: string): Promise<RegisteredOrg | null> =>
+  (await findBySlugs(db, [slug]))[0] ?? null
 
 export const upsertBySlug = async (
   db: Querier,

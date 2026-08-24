@@ -16,7 +16,7 @@ export type { RegisteredOrg } from "../repositories/orgs.repo.js"
 
 export const planMembership = (
   registered: ReadonlyArray<orgsRepo.RegisteredOrg>,
-): { readonly add: ReadonlyArray<string>; readonly keep: ReadonlyArray<string> } => ({
+): userOrgsRepo.MembershipPlan => ({
   add: registered.filter((org) => org.autoAddMembers).map((org) => org.id),
   keep: registered.map((org) => org.id),
 })
@@ -51,5 +51,5 @@ export const syncUserOrgs = (
 
 export const dropUserOrgs = async (db: Db, githubId: number): Promise<void> => {
   const user = await usersRepo.findByGithubId(db, githubId)
-  if (user) await userOrgsRepo.sync(db, user.id, { add: [], keep: [] })
+  if (user) await syncUserOrgs(db, user.id, [])
 }

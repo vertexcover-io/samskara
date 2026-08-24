@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
+import type { CreateProjectResponse } from "@samskara/core"
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql"
 import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
@@ -236,12 +237,6 @@ describe.skipIf(!dockerAvailable())("GET /api/projects", () => {
     expect(await cli.json()).toEqual({ error: "unauthorized" })
   })
 })
-
-type CreateProjectResponse = {
-  readonly id: string
-  readonly owner: { readonly type: "user" | "org"; readonly slug: string }
-  readonly reason?: "notMember"
-}
 
 describe.skipIf(!dockerAvailable())("POST /api/projects", () => {
   let container: StartedPostgreSqlContainer

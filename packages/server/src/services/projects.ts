@@ -1,33 +1,8 @@
-import type { CreateProjectRequest, ProjectRemote } from "@samskara/core"
+import type { CreateProjectRequest } from "@samskara/core"
 import type { Querier } from "../db/client.js"
 import * as orgsRepo from "../repositories/orgs.repo.js"
 import * as projectsRepo from "../repositories/projects.repo.js"
 import * as userOrgsRepo from "../repositories/userOrgs.repo.js"
-
-type RegisteredOrg = NonNullable<Awaited<ReturnType<typeof orgsRepo.findBySlug>>>
-
-export type OwnerChoice =
-  | { readonly kind: "user"; readonly reason?: "notMember" }
-  | { readonly kind: "org" }
-
-export const ownerFor = (input: {
-  readonly remote: ProjectRemote | undefined
-  readonly org: RegisteredOrg | null
-  readonly isMember: boolean
-}): OwnerChoice => {
-  if (input.remote === undefined || input.remote.host !== "github.com" || input.org === null) {
-    return { kind: "user" }
-  }
-  return input.isMember ? { kind: "org" } : { kind: "user", reason: "notMember" }
-}
-
-const registeredOrgFor = (
-  db: Querier,
-  remote: ProjectRemote | undefined,
-): Promise<RegisteredOrg | null> =>
-  remote !== undefined && remote.host === "github.com"
-    ? orgsRepo.findBySlug(db, remote.owner.toLowerCase())
-    : Promise.resolve(null)
 
 export type FindOrCreateResult = {
   readonly id: string
@@ -41,11 +16,13 @@ export const findOrCreateProject = async (
   userId: string,
   identity: CreateProjectRequest,
 ): Promise<FindOrCreateResult> => {
-  const org = await registeredOrgFor(db, identity.remote)
-  const isMember = org !== null && (await userOrgsRepo.isMember(db, userId, org.id))
-  const choice = ownerFor({ remote: identity.remote, org, isMember })
-  if (choice.kind === "org" && org !== null && identity.remote !== undefined) {
-    const remote = identity.remote
+  const { remote } = identity
+  const org =
+    remote !== undefined && remote.host === "github.com"
+      ? await orgsRepo.findBySlug(db, remote.owner.toLowerCase())
+      : null
+
+  if (org !== null && remote !== undefined && (await userOrgsRepo.isMember(db, userId, org.id))) {
     // Derived from the verified remote, not the client-supplied slug: two clones of the same
     // repo can disagree on remote casing, and a client-trusted slug would give each one its own
     // project row instead of sharing the one org row R11 requires.
@@ -58,17 +35,12 @@ export const findOrCreateProject = async (
     })
     return { ...row, owner: { type: "org", slug: org.githubSlug } }
   }
+
   const row = await projectsRepo.upsertOwned(db, { identity, owner: { kind: "user", userId } })
+  // Reaching here with a registered org means the caller is not one of its members.
   return {
     ...row,
     owner: { type: "user" },
-    ...(choice.kind === "user" && choice.reason ? { reason: choice.reason } : {}),
+    ...(org === null ? {} : { reason: "notMember" as const }),
   }
 }
-
-export const writableProjectId = async (
-  db: Querier,
-  userId: string,
-  projectId: string,
-): Promise<string | null> =>
-  (await projectsRepo.canWrite(db, userId, projectId)) ? projectId : null

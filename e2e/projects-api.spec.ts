@@ -1,7 +1,7 @@
 import postgres from "postgres"
 import { expect, mintCliToken, test } from "./fixtures/auth.js"
 import { API_BASE } from "./playwright.config.js"
-import { seedDatabase } from "./seed.js"
+import { projectId, seedDatabase } from "./seed.js"
 
 const DATABASE_URL =
   process.env.DATABASE_URL ?? "postgres://samskara:samskara@localhost:5433/samskara"
@@ -55,15 +55,7 @@ test("SC25: a member creates the org project once and a foreign projectId is ref
   const secondBody = (await second.json()) as { id: string }
   expect(secondBody.id).toBe(firstBody.id)
 
-  const sql = postgres(DATABASE_URL)
-  let mayaPrivateId: string
-  try {
-    const [row] = await sql`select id from projects where slug = 'maya-private'`
-    if (!row) throw new Error("seeded maya-private project not found")
-    mayaPrivateId = row.id as string
-  } finally {
-    await sql.end()
-  }
+  const mayaPrivateId = projectId("maya-private")
 
   const ingestRes = await request.post(`${API_BASE}/api/ingest`, {
     headers: { authorization: `Bearer ${token}` },

@@ -3,6 +3,14 @@ import { type SQL, and, desc, eq, exists, or, sql } from "drizzle-orm"
 import type { Querier } from "../db/client.js"
 import { orgs, projects, userOrgs, userProjectGrant, users } from "../db/schema.js"
 
+const orgMemberOfProject = (db: Querier, userId: string) =>
+  exists(
+    db
+      .select({ one: sql`1` })
+      .from(userOrgs)
+      .where(and(eq(userOrgs.orgId, projects.ownerOrgId), eq(userOrgs.userId, userId))),
+  )
+
 /**
  * A predicate over a query that already has `projects` in scope. One definition rather than a
  * copy per repository: two divergent copies of an authorization predicate is how one of them
@@ -19,12 +27,7 @@ export const visibleToUser = (db: Querier, userId: string): SQL | undefined =>
           and(eq(userProjectGrant.projectId, projects.id), eq(userProjectGrant.userId, userId)),
         ),
     ),
-    exists(
-      db
-        .select({ one: sql`1` })
-        .from(userOrgs)
-        .where(and(eq(userOrgs.orgId, projects.ownerOrgId), eq(userOrgs.userId, userId))),
-    ),
+    orgMemberOfProject(db, userId),
   )
 
 export type UpsertProjectInput = {
@@ -101,30 +104,25 @@ export const authorityFor = async (
   userId: string,
   projectId: string,
 ): Promise<Scope | null> => {
-  const [owned] = await db
-    .select({ id: projects.id })
-    .from(projects)
-    .where(and(eq(projects.id, projectId), eq(projects.ownerUserId, userId)))
-  if (owned) return "admin"
-
-  const [[member], [granted]] = await Promise.all([
+  const [[owned], [member], [granted]] = await Promise.all([
     db
       .select({ id: projects.id })
       .from(projects)
-      .innerJoin(userOrgs, eq(userOrgs.orgId, projects.ownerOrgId))
-      .where(and(eq(projects.id, projectId), eq(userOrgs.userId, userId))),
+      .where(and(eq(projects.id, projectId), eq(projects.ownerUserId, userId))),
+    db
+      .select({ id: projects.id })
+      .from(projects)
+      .where(and(eq(projects.id, projectId), orgMemberOfProject(db, userId))),
     db
       .select({ scope: userProjectGrant.scope })
       .from(userProjectGrant)
       .where(and(eq(userProjectGrant.projectId, projectId), eq(userProjectGrant.userId, userId))),
   ])
 
-  const held: Scope[] = [
-    ...(member ? (["editor"] as const) : []),
-    ...(granted ? ([granted.scope as Scope] as const) : []),
-  ]
-  if (held.length === 0) return null
-  return held.reduce((best, scope) => (SCOPE_RANK[scope] > SCOPE_RANK[best] ? scope : best))
+  if (owned) return "admin"
+  const grantScope = granted ? (granted.scope as Scope) : null
+  if (!member) return grantScope
+  return grantScope !== null && meetsScope(grantScope, "editor") ? grantScope : "editor"
 }
 
 export const canRead = async (db: Querier, userId: string, projectId: string): Promise<boolean> => {

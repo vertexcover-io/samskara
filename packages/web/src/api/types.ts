@@ -37,7 +37,6 @@ export type SessionSummary = {
   readonly title: string | null
   readonly projectId: string
   readonly projectName: string
-  readonly projectSlug: string
   readonly userLogin: string
   readonly repo: SessionRepo | null
   readonly durationMs: number | null
@@ -86,7 +85,6 @@ export type SessionFacts = {
   readonly title: string | null
   readonly projectId: string
   readonly projectName: string
-  readonly projectSlug: string
   readonly userLogin: string
   readonly repo: SessionRepo | null
   readonly durationMs: number | null

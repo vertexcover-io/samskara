@@ -18,7 +18,6 @@ const session: SessionSummary = {
   title: "Port the session detail surface",
   projectId: "p-1",
   projectName: "Samskara",
-  projectSlug: "samskara",
   userLogin: "maya",
   repo: null,
   durationMs: 900_000,

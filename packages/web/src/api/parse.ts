@@ -113,12 +113,11 @@ const parseSessionSummary = (value: unknown): SessionSummary | null => {
   const id = str(fields.id)
   const projectId = str(fields.projectId)
   const projectName = str(fields.projectName)
-  const projectSlug = str(fields.projectSlug)
   const userLogin = str(fields.userLogin)
   const status = str(fields.status)
   const lastActiveAt = str(fields.lastActiveAt)
   const tokensTotal = num(fields.tokensTotal)
-  if (id === null || projectId === null || projectName === null || projectSlug === null) return null
+  if (id === null || projectId === null || projectName === null) return null
   if (userLogin === null || status === null || lastActiveAt === null) return null
   if (tokensTotal === null) return null
 
@@ -131,7 +130,6 @@ const parseSessionSummary = (value: unknown): SessionSummary | null => {
     title,
     projectId,
     projectName,
-    projectSlug,
     userLogin,
     repo: parseRepo(fields.repo),
     durationMs,
@@ -284,10 +282,9 @@ const parseFacts = (value: unknown): SessionFacts | null => {
   const id = str(fields.id)
   const projectId = str(fields.projectId)
   const projectName = str(fields.projectName)
-  const projectSlug = str(fields.projectSlug)
   const userLogin = str(fields.userLogin)
   const lastActiveAt = str(fields.lastActiveAt)
-  if (id === null || projectId === null || projectName === null || projectSlug === null) return null
+  if (id === null || projectId === null || projectName === null) return null
   if (userLogin === null || lastActiveAt === null) return null
 
   const title = nullableStr(fields.title)
@@ -299,7 +296,6 @@ const parseFacts = (value: unknown): SessionFacts | null => {
     title,
     projectId,
     projectName,
-    projectSlug,
     userLogin,
     repo: parseRepo(fields.repo),
     durationMs,

@@ -100,7 +100,6 @@ export const projects = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     name: text("name").notNull(),
     slug: text("slug").notNull(),
-    // The DB column keeps its old name; only the property says which owner kind it holds.
     ownerUserId: uuid("ownerId").references(() => users.id, { onDelete: "cascade" }),
     ownerOrgId: uuid("ownerOrgId").references(() => orgs.id, { onDelete: "cascade" }),
     createdAt: createdAtCamel,

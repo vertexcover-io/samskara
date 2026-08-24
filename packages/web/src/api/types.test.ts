@@ -23,7 +23,6 @@ const session = {
   title: "Search evidence",
   projectId: "p-1",
   projectName: "Samskara",
-  projectSlug: "samskara",
   userLogin: "maya",
   repo: null,
   durationMs: 1_000,

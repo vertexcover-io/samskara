@@ -12,7 +12,7 @@ import { getProject, upsertProject } from "../config/projects.js"
 import { type Writer, errorMessage, reportError, resolveIo } from "../io.js"
 import { resolveProject } from "../watcher/resolveProject.js"
 
-export type RegisterDeps = {
+type RegisterDeps = {
   readonly apiBase: string
   readonly readToken: () => Promise<string | null>
   readonly fetch: typeof globalThis.fetch
@@ -32,7 +32,7 @@ export type EnableOptions = {
 }
 
 /** Every failure mode throws a user-facing `Error`, so `enableCommand` can hand it to `reportError` as is. */
-export const registerProject = async (
+const registerProject = async (
   deps: RegisterDeps,
   identity: ProjectIdentity,
 ): Promise<CreateProjectResponse> => {

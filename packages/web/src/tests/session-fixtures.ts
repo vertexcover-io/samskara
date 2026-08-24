@@ -34,7 +34,6 @@ export const facts = (overrides: Partial<SessionFacts> = {}): SessionFacts => ({
   title: "Make ingest idempotent",
   projectId: "p-1",
   projectName: "Samskara",
-  projectSlug: "samskara",
   userLogin: "ritesh",
   repo: null,
   durationMs: 1_451_000,

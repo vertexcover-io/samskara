@@ -14,13 +14,14 @@ import type { Db, Querier } from "../db/client.js"
 import * as commitsRepo from "../repositories/commits.repo.js"
 import type { MessageRow } from "../repositories/messages.repo.js"
 import * as messagesRepo from "../repositories/messages.repo.js"
+import * as projectsRepo from "../repositories/projects.repo.js"
 import * as pullRequestsRepo from "../repositories/pullRequests.repo.js"
 import * as reposRepo from "../repositories/repos.repo.js"
 import * as sessionsRepo from "../repositories/sessions.repo.js"
 import * as subagentsRepo from "../repositories/subagents.repo.js"
 import * as tokenUsageRepo from "../repositories/tokenUsage.repo.js"
 import * as toolRowsRepo from "../repositories/toolRows.repo.js"
-import { findOrCreateProject, writableProjectId } from "./projects.js"
+import { findOrCreateProject } from "./projects.js"
 
 type FlatMessage = {
   readonly message: NormalizedMessage
@@ -265,11 +266,11 @@ export const ingest = async (ctx: Ctx, payload: IngestPayload): Promise<IngestRe
 
   try {
     return await db.transaction(async (tx) => {
-      const projectId =
-        payload.project.projectId === undefined
-          ? (await findOrCreateProject(tx, userId, payload.project)).id
-          : await writableProjectId(tx, userId, payload.project.projectId)
-      if (projectId === null) throw PROJECT_FORBIDDEN
+      const claimed = payload.project.projectId
+      if (claimed !== undefined && !(await projectsRepo.canWrite(tx, userId, claimed))) {
+        throw PROJECT_FORBIDDEN
+      }
+      const projectId = claimed ?? (await findOrCreateProject(tx, userId, payload.project)).id
       log.info({ projectId, slug: payload.project.slug }, "Project resolved")
 
       if (payload.type === "main") {
