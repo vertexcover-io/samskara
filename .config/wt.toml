@@ -1,0 +1,17 @@
+# Every worktree gets its own database and its own port pair. Without this, all branches share
+# `samskara` on 5433 and a migration on one branch breaks the schema every other branch reads.
+
+[pre-start]
+# Order matters and pre-start runs sequentially: copy the gitignored files in, install so `tsx`
+# exists, then rewrite this worktree's own `.env` and build its database.
+copy = "wt step copy-ignored"
+deps = "bun install"
+env = "bun run wt:setup"
+
+[pre-remove]
+# Never blocks the removal -- a database that is already gone is not a reason to keep a worktree.
+db = "bun run wt:teardown || true"
+
+# What `copy-ignored` is allowed to bring across is an allowlist in `.worktreeinclude` at the repo
+# root, not an exclude list here -- worktrunk copies every gitignored file unless a file must be
+# both gitignored and listed there.
