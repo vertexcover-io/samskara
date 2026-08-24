@@ -29,28 +29,25 @@ const bytea = customType<{ data: Buffer; driverData: Buffer }>({
 
 const msgTypeValues = MSG_TYPES.map((t) => `'${t}'`).join(", ")
 
-const createdAt = timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
-const updatedAt = timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
-
-const createdAtCamel = timestamp("createdAt", { withTimezone: true }).notNull().defaultNow()
-const updatedAtCamel = timestamp("updatedAt", { withTimezone: true }).notNull().defaultNow()
+const createdAt = timestamp("createdAt", { withTimezone: true }).notNull().defaultNow()
+const updatedAt = timestamp("updatedAt", { withTimezone: true }).notNull().defaultNow()
 
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
-  githubId: bigint("github_id", { mode: "number" }).notNull().unique(),
-  githubLogin: text("github_login").notNull(),
+  githubId: bigint("githubId", { mode: "number" }).notNull().unique(),
+  githubLogin: text("githubLogin").notNull(),
   email: text("email"),
   name: text("name"),
-  avatarUrl: text("avatar_url"),
-  isSuperAdmin: boolean("is_super_admin").notNull().default(false),
+  avatarUrl: text("avatarUrl"),
+  isSuperAdmin: boolean("isSuperAdmin").notNull().default(false),
   createdAt,
   updatedAt,
 })
 
 export const orgs = pgTable("orgs", {
   id: uuid("id").primaryKey().defaultRandom(),
-  githubOrgId: bigint("github_org_id", { mode: "number" }).unique(),
-  githubSlug: text("github_slug").notNull().unique(),
+  githubOrgId: bigint("githubOrgId", { mode: "number" }).unique(),
+  githubSlug: text("githubSlug").notNull().unique(),
   name: text("name"),
   autoAddMembers: boolean("autoAddMembers").notNull().default(false),
   createdAt,
@@ -66,8 +63,8 @@ export const repos = pgTable(
     // Nullable and unconstrained: a remote URL cannot tell a user repo from an org repo, and a
     // PR-derived repo may never have been a cwd. Guessing 'org' asserted a fact we do not have.
     // Out of the identity key for the same reason -- an unknown must not split one repo in two.
-    ownerType: text("owner_type"),
-    repoName: text("repo_name").notNull(),
+    ownerType: text("ownerType"),
+    repoName: text("repoName").notNull(),
     userId: uuid("userId")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
@@ -82,17 +79,17 @@ export const repos = pgTable(
 )
 
 export const userOrgs = pgTable(
-  "user_orgs",
+  "userOrgs",
   {
-    userId: uuid("user_id")
+    userId: uuid("userId")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    orgId: uuid("org_id")
+    orgId: uuid("orgId")
       .notNull()
       .references(() => orgs.id, { onDelete: "cascade" }),
     createdAt,
   },
-  (t) => [primaryKey({ columns: [t.userId, t.orgId] }), index("user_orgs_org_id_idx").on(t.orgId)],
+  (t) => [primaryKey({ columns: [t.userId, t.orgId] }), index("userOrgs_orgId_idx").on(t.orgId)],
 )
 
 export const projects = pgTable(
@@ -103,8 +100,8 @@ export const projects = pgTable(
     slug: text("slug").notNull(),
     ownerUserId: uuid("ownerId").references(() => users.id, { onDelete: "cascade" }),
     ownerOrgId: uuid("ownerOrgId").references(() => orgs.id, { onDelete: "cascade" }),
-    createdAt: createdAtCamel,
-    updatedAt: updatedAtCamel,
+    createdAt,
+    updatedAt,
   },
   (t) => [
     check("projects_one_owner_check", sql`(${t.ownerUserId} is null) <> (${t.ownerOrgId} is null)`),
@@ -128,7 +125,7 @@ export const userProjectGrant = pgTable(
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
     scope: text("scope").notNull(),
-    createdAt: createdAtCamel,
+    createdAt,
   },
   (t) => [
     primaryKey({ columns: [t.userId, t.projectId] }),
@@ -155,8 +152,8 @@ export const sessions = pgTable(
     startCommit: text("startCommit"),
     cliVersion: text("cliVersion"),
     permissionMode: text("permissionMode"),
-    createdAt: createdAtCamel,
-    updatedAt: updatedAtCamel,
+    createdAt,
+    updatedAt,
   },
   (t) => [
     index("sessions_projectId_idx").on(t.projectId),
@@ -195,7 +192,7 @@ export const messages = pgTable(
     repoId: uuid("repoId").references(() => repos.id, { onDelete: "set null" }),
     gitBranch: text("gitBranch"),
     gitCommit: text("gitCommit"),
-    createdAt: createdAtCamel,
+    createdAt,
   },
   (t) => [
     unique("messages_line_identity").on(t.sessionId, t.lineUuid, t.subIndex),
@@ -230,7 +227,7 @@ export const commits = pgTable(
     deletions: integer("deletions"),
     sessionId: text("sessionId").references(() => sessions.id, { onDelete: "cascade" }),
     messageId: uuid("messageId").references(() => messages.id, { onDelete: "set null" }),
-    createdAt: createdAtCamel,
+    createdAt,
   },
   (t) => [
     unique("commits_repo_sha_unique").on(t.repoId, t.sha),
@@ -252,8 +249,8 @@ export const pullRequests = pgTable(
     title: text("title"),
     baseBranch: text("baseBranch"),
     headBranch: text("headBranch"),
-    createdAt: createdAtCamel,
-    updatedAt: updatedAtCamel,
+    createdAt,
+    updatedAt,
   },
   (t) => [unique("pullRequests_repo_number_unique").on(t.repoId, t.number)],
 )
@@ -269,7 +266,7 @@ export const sessionPullRequests = pgTable(
       .notNull()
       .references(() => pullRequests.id, { onDelete: "cascade" }),
     messageId: uuid("messageId").references(() => messages.id, { onDelete: "set null" }),
-    createdAt: createdAtCamel,
+    createdAt,
   },
   (t) => [
     primaryKey({ columns: [t.sessionId, t.prId] }),
@@ -338,8 +335,8 @@ export const subagents = pgTable(
     spawnToolUseId: text("spawnToolUseId"),
     parentAgentId: text("parentAgentId"),
     sourceRelativePath: text("sourceRelativePath").notNull(),
-    createdAt: createdAtCamel,
-    updatedAt: updatedAtCamel,
+    createdAt,
+    updatedAt,
   },
   (t) => [
     primaryKey({ columns: [t.sessionId, t.agentId] }),

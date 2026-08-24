@@ -31,7 +31,7 @@ export const memberOfProject = (db: Querier, userId: string | AnyColumn): SQL | 
   )
 
 /** Aliased so the EXISTS still resolves in queries that already have `users` in scope. */
-const superUsers = aliasedTable(users, "super_users")
+const superUsers = aliasedTable(users, "superUsers")
 
 /** Never fold into `memberOfProject` -- that asks about the row's user, not the viewer. */
 const isSuperAdmin = (db: Querier, userId: string | AnyColumn): SQL | undefined =>

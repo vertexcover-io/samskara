@@ -16,6 +16,7 @@
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
+    "lint:db": "bun run src/scripts/lint-db-names.ts",
     "seed:org": "tsx --env-file=../../.env src/scripts/seed-org.ts",
     "db:index-search": "tsx --env-file=../../.env src/scripts/create-search-indexes.ts",
     "db:verify-search-indexes": "tsx --env-file=../../.env src/scripts/create-search-indexes.ts --verify",

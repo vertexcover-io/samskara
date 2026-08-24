@@ -189,7 +189,7 @@ describe.skipIf(!dockerAvailable())("session search database foundation", () => 
     const db = createDb(url)
     try {
       const [user] = await db.client<{ readonly id: string }[]>`
-        insert into users (github_id, github_login) values (900001, 'planner-owner') returning id
+        insert into users ("githubId", "githubLogin") values (900001, 'planner-owner') returning id
       `
       if (user === undefined) throw new Error("planner user was not inserted")
       const [project] = await db.client<{ readonly id: string }[]>`
