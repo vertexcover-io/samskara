@@ -1,5 +1,5 @@
 import { expect, test } from "./fixtures/auth.js"
-import { E2E_USER_LOGIN, seedDatabase } from "./seed.js"
+import { E2E_USER_LOGIN, projectId, seedDatabase } from "./seed.js"
 
 // A project slug of its own, not the shared "samskara" fixture other specs reuse: the sync
 // status table accumulates rows across specs sharing this database, so a distinct name is what
@@ -39,7 +39,9 @@ test("SC26 (regression): every migrated page loads its data through the inferred
 
   // The sessions page lists sessions.
   await page.getByRole("link", { name: /Migrated Pages Regression/ }).click()
-  await expect(page).toHaveURL(/\/sessions\?project=migrated-pages-e2e$/)
+  await expect(page).toHaveURL(
+    new RegExp(`/sessions\\?project=${projectId("migrated-pages-e2e")}$`),
+  )
   await expect(page.getByRole("link", { name: /Verify the inferred API contract/ })).toBeVisible()
 
   // A session detail page opens and shows its transcript.

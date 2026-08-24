@@ -104,6 +104,7 @@ test("SC10: the projects page renders one card for each project the API returns"
     id: "p-2",
     name: "Andromeda",
     slug: "andromeda",
+    owner: { type: "user", slug: "e2e-user" },
     sessionCount: 0,
     lastActiveAt: null,
   }

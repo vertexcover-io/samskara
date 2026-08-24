@@ -9,6 +9,7 @@ const populated: SessionSummary = {
   title: "Port the session detail surface",
   projectId: "p-1",
   projectName: "Samskara",
+  projectSlug: "samskara",
   userLogin: "maya",
   repo: { host: "github.com", owner: "acme", repoName: "samskara" },
   durationMs: 3_723_000,
