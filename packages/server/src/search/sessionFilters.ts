@@ -1,5 +1,5 @@
 import { z } from "zod"
-import { type SessionQuery, parseSessionQuery } from "./sessionQuery.js"
+import { parseSessionQuery, type SessionQuery } from "./sessionQuery.js"
 
 export const SESSION_SORTS = ["recent", "oldest", "tokens", "project", "relevance"] as const
 export const SESSION_RANGES = ["all", "hour", "today", "week", "month", "custom"] as const

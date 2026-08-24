@@ -4,7 +4,7 @@ import { Hono } from "hono"
 import type { Db } from "../db/client.js"
 import type { Env } from "../lib/env.js"
 import { type AuthVariables, requireAuth } from "../lib/require-auth.js"
-import { type ProjectSummaryRow, listAccessibleSummaries } from "../repositories/projects.repo.js"
+import { listAccessibleSummaries, type ProjectSummaryRow } from "../repositories/projects.repo.js"
 import { findOrCreateProject } from "../services/projects.js"
 
 type Deps = {

@@ -170,6 +170,7 @@ describe("normalizeClaude", () => {
     // escape. Left in place, inserting it into a jsonb column fails with 22P05, and every later
     // flush for that session fails too, because the checkpoint never advances past the line.
     const redacted = redactJson({
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal text data being redacted, not a real template literal
       text: "const keyOf = `${id}\u0000${path}`",
       nested: [{ deep: "a\u0000b" }],
       "key\u0000name": "value",
@@ -178,6 +179,7 @@ describe("normalizeClaude", () => {
     })
 
     expect(redacted).toEqual({
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal text data, matches the redacted fixture above
       text: "const keyOf = `${id}${path}`",
       nested: [{ deep: "ab" }],
       keyname: "value",
@@ -1400,7 +1402,6 @@ describe("collect", () => {
     const dir = await mkTranscriptDir()
     const path = join(dir, "no-cwd.jsonl")
     const noCwd = { ...assistantLine }
-    // biome-ignore lint/performance/noDelete: test fixture
     delete (noCwd as { cwd?: string }).cwd
     await writeFile(path, `${JSON.stringify({ ...assistantLine, cwd: undefined })}\n`, "utf8")
 

@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url"
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import { buildApp } from "../app.js"
-import { type Db, createDb } from "../db/client.js"
+import { createDb, type Db } from "../db/client.js"
 import {
   artifact,
   commits,
@@ -455,7 +455,7 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
       if (!message) throw new Error("message not inserted")
       return message.id
     }
-    const messageId = await insertMessageFor("source-message", { value: "messageneedle" })
+    await insertMessageFor("source-message", { value: "messageneedle" })
     const callMessageId = await insertMessageFor("source-call", {})
     const resultMessageId = await insertMessageFor("source-result", {})
     await insertMessageFor("excluded", {}, { hidden: "rawneedle" })

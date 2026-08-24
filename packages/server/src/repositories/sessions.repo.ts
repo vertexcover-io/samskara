@@ -1,4 +1,4 @@
-import { type SQL, and, asc, desc, eq, gte, lte, sql } from "drizzle-orm"
+import { and, asc, eq, type SQL, sql } from "drizzle-orm"
 import type { PgColumn } from "drizzle-orm/pg-core"
 import type { Querier } from "../db/client.js"
 import {
@@ -16,7 +16,7 @@ import {
   users,
 } from "../db/schema.js"
 import { SEARCH_DOCUMENTS, type SearchSourceKind } from "../db/searchSql.js"
-import { type SessionQuery, compileSessionQuery } from "../search/sessionQuery.js"
+import { compileSessionQuery, type SessionQuery } from "../search/sessionQuery.js"
 import { visibleToUser } from "./projects.repo.js"
 
 export type SessionFields = {
@@ -186,8 +186,6 @@ const tokensFor = (sessionId: SQL): SQL<number> => sql`(
   where "messages"."sessionId" = ${sessionId}
 )`
 
-const tokensTotal = tokensFor(sql`"sessions"."id"`)
-
 const status = sql<string>`case when ${messageCount} = 0 then 'empty' else 'complete' end`
 
 const dominantRepoId = sql`(
@@ -302,7 +300,7 @@ const safeSnippet = (
 
 const authorizationCte = (db: Querier, userId: string) => sql`
   authorized_sessions AS MATERIALIZED (
-    select "sessions"."id", "sessions"."title", "sessions"."updatedAt", "projects"."id" as "projectId", "projects"."name" as "projectName", "projects"."slug" as "projectSlug", "users"."github_login" as "userLogin"
+    select "sessions"."id", "sessions"."title", "sessions"."updatedAt", "projects"."id" as "projectId", "projects"."name" as "projectName", "projects"."slug" as "projectSlug", "users"."githubLogin" as "userLogin"
     from "sessions"
     join "projects" on "projects"."id" = "sessions"."projectId"
     join "users" on "users"."id" = "sessions"."userId"
@@ -372,7 +370,7 @@ const filterOptionsFor = async (db: Querier, userId: string): Promise<SessionFil
       sql`with ${authorizationCte(db, userId)} select distinct "userLogin" as value, "userLogin" as label from authorized_sessions order by value`,
     ),
     db.execute(
-      sql`with ${authorizationCte(db, userId)} select distinct r.id as value, concat(r.owner, '/', r."repo_name") as label, r.host, r.owner, r."repo_name" as "repoName" from "repos" r where exists (select 1 from "messages" m where m."sessionId" in (select id from authorized_sessions) and m."repoId" = r.id) or exists (select 1 from "commits" c where c."sessionId" in (select id from authorized_sessions) and c."repoId" = r.id) or exists (select 1 from "pullRequests" pr join "sessionPullRequests" sp on sp."prId" = pr.id where sp."sessionId" in (select id from authorized_sessions) and pr."repoId" = r.id) order by label, value`,
+      sql`with ${authorizationCte(db, userId)} select distinct r.id as value, concat(r.owner, '/', r."repoName") as label, r.host, r.owner, r."repoName" as "repoName" from "repos" r where exists (select 1 from "messages" m where m."sessionId" in (select id from authorized_sessions) and m."repoId" = r.id) or exists (select 1 from "commits" c where c."sessionId" in (select id from authorized_sessions) and c."repoId" = r.id) or exists (select 1 from "pullRequests" pr join "sessionPullRequests" sp on sp."prId" = pr.id where sp."sessionId" in (select id from authorized_sessions) and pr."repoId" = r.id) order by label, value`,
     ),
     db.execute(
       sql`with ${authorizationCte(db, userId)}, values_ as (select m."gitBranch" as branch from "messages" m join authorized_sessions a on a.id = m."sessionId" union select c.branch from "commits" c join authorized_sessions a on a.id = c."sessionId" union select pr."baseBranch" from "pullRequests" pr join "sessionPullRequests" sp on sp."prId" = pr.id join authorized_sessions a on a.id = sp."sessionId" union select pr."headBranch" from "pullRequests" pr join "sessionPullRequests" sp on sp."prId" = pr.id join authorized_sessions a on a.id = sp."sessionId") select distinct branch collate "C" as branch from values_ where branch is not null and branch <> '' order by branch`,
@@ -448,7 +446,7 @@ export const listAccessible = async (
       from matched_sessions ms
     ), paged as (select * from ranked order by ${order} limit ${limit} offset ${offset})
     select p.id, ${derivedTitle} as title, p."projectId", p."projectName", p."projectSlug", p."userLogin",
-      r.host as "repoHost", r.owner as "repoOwner", r."repo_name" as "repoName", ${durationMs} as "durationMs",
+      r.host as "repoHost", r.owner as "repoOwner", r."repoName" as "repoName", ${durationMs} as "durationMs",
       ${isTokenSort ? sql`p."tokensTotal"` : tokensFor(sql`"sessions"."id"`)} as "tokensTotal", ${status} as status,
       p."updatedAt" as "lastActiveAt", p."sourceKind", p."sourceRowId", p.score, p.total,
       case when p."sourceText" is null then null else ts_headline('simple'::regconfig, p."sourceText", ${query ?? sql`null::tsquery`}, ${SNIPPET_OPTIONS}) end as headline

@@ -3,7 +3,7 @@ import { stat } from "node:fs/promises"
 import { createInterface } from "node:readline"
 import { prettyFactory } from "pino-pretty"
 import { currentLogPath, watchLogDir } from "../config/paths.js"
-import { type Writer, resolveIo } from "../io.js"
+import { resolveIo, type Writer } from "../io.js"
 
 export type LogsOptions = {
   readonly follow?: boolean

@@ -5,19 +5,17 @@ import { basename, dirname, join } from "node:path"
 import type { ArtifactUploadPayload } from "@samskara/core"
 import { beforeEach, describe, expect, test, vi } from "vitest"
 import { runGitOrNull } from "../git.js"
-import { type ArtifactQueueEntry, enqueue, readQueue, readQueueOrReset } from "./artifact-queue.js"
-import {
-  advanceArtifactState,
-  readArtifactState,
-  readArtifactStateOrReset,
-  stateKey,
-} from "./artifact-worker.js"
+import { type ArtifactQueueEntry, enqueue, readQueue } from "./artifact-queue.js"
 import {
   type ArtifactSink,
   type ArtifactSinkResult,
   type ArtifactWorkerDeps,
+  advanceArtifactState,
   MAX_ATTEMPTS,
+  readArtifactState,
+  readArtifactStateOrReset,
   runArtifactWorkers,
+  stateKey,
 } from "./artifact-worker.js"
 import { spyLogger } from "./test-logger.js"
 

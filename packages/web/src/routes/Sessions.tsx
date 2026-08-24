@@ -7,10 +7,9 @@ import { FilterBar } from "../components/FilterBar.js"
 import { SessionRow } from "../components/SessionRow.js"
 import {
   EMPTY_FILTERS,
-  type SessionFilters,
-  changedFilters,
   localTimeZone,
   parseFilters,
+  type SessionFilters,
   serializeFilters,
 } from "../sessions/filters.js"
 import { LoadingShell } from "../shell/LoadingShell.js"
@@ -27,7 +26,10 @@ const primaryButton =
 const NoResults = ({
   hasFilters,
   onClear,
-}: { readonly hasFilters: boolean; readonly onClear: () => void }) => (
+}: {
+  readonly hasFilters: boolean
+  readonly onClear: () => void
+}) => (
   <section className={panelClass}>
     <p className="text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-stamp">
       {hasFilters ? "Nothing filed under these terms" : "No sessions captured"}
@@ -101,7 +103,10 @@ const ErrorState = ({ error }: { readonly error: ApiError }) => {
 const ResultSummary = ({
   payload,
   filters,
-}: { readonly payload: SessionListPayload; readonly filters: SessionFilters }) => {
+}: {
+  readonly payload: SessionListPayload
+  readonly filters: SessionFilters
+}) => {
   const scope = [
     filters.project,
     filters.user,

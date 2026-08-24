@@ -6,18 +6,18 @@ import { type AuthVariables, requireAuth } from "../lib/require-auth.js"
 import { listForSession } from "../repositories/artifacts.repo.js"
 import {
   AmbiguousCommitError,
-  type SessionDetailRow,
-  type SessionSummaryRow,
   findVisibleProjectById,
   getDetail,
   listAccessible,
   remove,
+  type SessionDetailRow,
+  type SessionSummaryRow,
 } from "../repositories/sessions.repo.js"
 import {
-  type SessionListQuery,
   dateWindowFor,
   paginate,
   parseSessionListQuery,
+  type SessionListQuery,
 } from "../search/sessionFilters.js"
 import { SessionQueryError } from "../search/sessionQuery.js"
 import { serializeArtifact } from "./artifacts.js"

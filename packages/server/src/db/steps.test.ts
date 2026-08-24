@@ -1,6 +1,6 @@
 import type { Sql } from "postgres"
 import { describe, expect, test } from "vitest"
-import { MIGRATION_STEPS, type MigrationStep, type StepContext, runSteps } from "./steps.js"
+import { MIGRATION_STEPS, type MigrationStep, runSteps, type StepContext } from "./steps.js"
 
 const context = (...flags: ReadonlyArray<string>): StepContext => ({
   client: {} as Sql,

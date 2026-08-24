@@ -1,5 +1,5 @@
 import { expect, test } from "./fixtures/auth.js"
-import { type SeedSpec, projectId, seedDatabase } from "./seed.js"
+import { projectId, type SeedSpec, seedDatabase } from "./seed.js"
 
 const SEED: SeedSpec = {
   projects: [

@@ -3,23 +3,23 @@ import { mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } from 
 import { tmpdir } from "node:os"
 import { basename, dirname, join } from "node:path"
 import {
+  createClaudePlugin,
+  createLogger,
   type FileSystem,
   type NormalizedMessage,
   type ParsedRecord,
   type ProjectIdentity,
-  createClaudePlugin,
-  createLogger,
 } from "@samskara/core"
 import { beforeEach, describe, expect, test, vi } from "vitest"
 import { enqueue } from "./artifact-queue.js"
 import { runArtifactWorkers } from "./artifact-worker.js"
 import {
-  MESSAGE_CAP,
-  type WatcherConfig,
-  type WatcherDeps,
   flushCause,
+  MESSAGE_CAP,
   runCycle,
   sliceByMessages,
+  type WatcherConfig,
+  type WatcherDeps,
 } from "./driver.js"
 import type { ResolvedRepo } from "./resolveRepo.js"
 import { createInMemorySink } from "./sink.js"

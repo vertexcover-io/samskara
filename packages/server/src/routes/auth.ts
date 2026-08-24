@@ -15,13 +15,13 @@ import type { Env } from "../lib/env.js"
 import { signToken } from "../lib/jwt.js"
 import { type AuthVariables, requireAuth } from "../lib/require-auth.js"
 import {
-  NotMemberError,
-  type RegisteredOrg,
-  type User,
   gateOrgs,
   isSuperAdminLogin,
+  NotMemberError,
+  type RegisteredOrg,
   revokeAccess,
   syncUserOrgs,
+  type User,
   upsertUserFromGithub,
 } from "../services/auth.js"
 import type { GithubClient } from "../services/github.js"

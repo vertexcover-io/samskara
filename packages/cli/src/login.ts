@@ -1,9 +1,9 @@
 import { createInterface } from "node:readline/promises"
 import { type PublicUser, publicUserSchema } from "@samskara/core"
 import { z } from "zod"
-import { apiBase, webBase } from "./config.js"
 import { storeToken } from "./config/credentials.js"
-import { type Writer, errorMessage, resolveIo } from "./io.js"
+import { apiBase, webBase } from "./config.js"
+import { errorMessage, resolveIo, type Writer } from "./io.js"
 
 export type LoginOptions = {
   readonly code?: string

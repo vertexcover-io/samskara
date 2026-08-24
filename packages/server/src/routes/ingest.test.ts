@@ -9,7 +9,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
 import { buildApp } from "../app.js"
-import { type Db, createDb } from "../db/client.js"
+import { createDb, type Db } from "../db/client.js"
 import {
   messages,
   orgs,

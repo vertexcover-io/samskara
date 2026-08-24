@@ -1,6 +1,6 @@
 import { deleteToken } from "../config/credentials.js"
 import { stopWatcherDaemon } from "../config/daemon.js"
-import { type Writer, resolveIo } from "../io.js"
+import { resolveIo, type Writer } from "../io.js"
 
 export type LogoutOptions = {
   readonly stdout?: Writer

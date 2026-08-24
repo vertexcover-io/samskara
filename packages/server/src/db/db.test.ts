@@ -2,9 +2,10 @@ import { execFileSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { fileURLToPath } from "node:url"
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql"
-import { and, eq, sql } from "drizzle-orm"
+import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
-import { type Db, createDb } from "./client.js"
+import * as sessionsRepo from "../repositories/sessions.repo.js"
+import { createDb, type Db } from "./client.js"
 import {
   commits,
   messages,
@@ -13,12 +14,6 @@ import {
   pullRequests,
   repos,
   sessions,
-  subagents,
-  tokenUsage,
-  toolCall,
-  toolResult,
-  userOrgs,
-  userProjectGrant,
   users,
 } from "./schema.js"
 
@@ -77,30 +72,49 @@ describe.skipIf(!dockerAvailable())("identity mesh schema", () => {
     ).rejects.toThrow()
   })
 
-  test("updated_at trigger advances the timestamp on UPDATE", async () => {
+  test("S12: the updatedAt trigger advances the timestamp on UPDATE for users, orgs and repos", async () => {
     const [owner] = await db
       .insert(users)
       .values({ githubId: 13, githubLogin: "repo-owner" })
       .returning()
-    if (!owner) throw new Error("insert returned no row")
+    const [org] = await db.insert(orgs).values({ githubSlug: "trigger-probe-org" }).returning()
+    if (!owner || !org) throw new Error("insert returned no row")
 
     const [repo] = await db
       .insert(repos)
       .values({ host: "github", owner: "acme", repoName: "trigger-probe", userId: owner.id })
       .returning()
-
     if (!repo) throw new Error("insert returned no row")
-    expect(repo.updatedAt.getTime()).toBe(repo.createdAt.getTime())
 
-    const [updated] = await db
+    const [updatedOwner] = await db
+      .update(users)
+      .set({ name: "renamed" })
+      .where(eq(users.id, owner.id))
+      .returning()
+    const [updatedOrg] = await db
+      .update(orgs)
+      .set({ name: "renamed" })
+      .where(eq(orgs.id, org.id))
+      .returning()
+    const [updatedRepo] = await db
       .update(repos)
       .set({ owner: "acme-renamed" })
-      .where(and(eq(repos.id, repo.id)))
+      .where(eq(repos.id, repo.id))
       .returning()
 
-    if (!updated) throw new Error("update returned no row")
-    expect(updated.updatedAt.getTime()).toBeGreaterThan(repo.updatedAt.getTime())
-    expect(updated.createdAt.getTime()).toBe(repo.createdAt.getTime())
+    type Timestamps = { readonly createdAt: Date; readonly updatedAt: Date }
+    const pairs: ReadonlyArray<readonly [Timestamps, Timestamps | undefined]> = [
+      [owner, updatedOwner],
+      [org, updatedOrg],
+      [repo, updatedRepo],
+    ]
+
+    for (const [before, after] of pairs) {
+      if (!after) throw new Error("update returned no row")
+      expect(before.updatedAt.getTime()).toBe(before.createdAt.getTime())
+      expect(after.updatedAt.getTime()).toBeGreaterThan(before.updatedAt.getTime())
+      expect(after.createdAt.getTime()).toBe(before.createdAt.getTime())
+    }
   })
 })
 
@@ -198,6 +212,22 @@ describe.skipIf(!dockerAvailable())("session data model", () => {
     if (!message) throw new Error("message insert returned no row")
     return message
   }
+
+  // The three raw `sql` templates behind this call spell the renamed columns as strings, where
+  // neither the type checker nor a Drizzle query builder can see them.
+  test("S14: the session list and its repo filter options still carry repoName and userLogin", async () => {
+    const session = await seedSession("sess-raw-sql-names")
+    const repo = await seedRepo(session.userId, "raw-sql-probe")
+    await seedMessage(session.id, repo.id)
+
+    const { rows, filterOptions } = await sessionsRepo.listAccessible(db, session.userId)
+
+    const row = rows.find((candidate) => candidate.id === session.id)
+    expect(row?.repo?.repoName).toBe("raw-sql-probe")
+    expect(row?.userLogin).toMatch(/^user-/)
+    expect(filterOptions.repositories.map((option) => option.repoName)).toContain("raw-sql-probe")
+    expect(filterOptions.authors.map((option) => option.value)).toContain(row?.userLogin)
+  })
 
   test("deleting a repo keeps its messages and clears their repo pointer", async () => {
     const session = await seedSession("sess-repo-delete")

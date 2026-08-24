@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { basename, posix } from "node:path"
+import { basename } from "node:path"
 import { z } from "zod"
 import type {
   AgentInfo,
@@ -1074,7 +1074,7 @@ const collectTrack = async (
   location: ClaudePathContext,
   fromLine: number,
   project: ProjectIdentity,
-  deps: CollectDeps,
+  _deps: CollectDeps,
 ): Promise<SessionTrack | null> => {
   const stat = await fs.stat(path)
   const allLines = parseJsonLines(completeLines(await fs.readFile(path)))

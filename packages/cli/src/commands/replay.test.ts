@@ -2,7 +2,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { beforeEach, describe, expect, test } from "vitest"
-import { type ReplayDeps, belongsToSession, replayCommand } from "./replay.js"
+import { belongsToSession, type ReplayDeps, replayCommand } from "./replay.js"
 
 const SESSION = "0b9d4c1e-7f3a-4c22-9a6e-1d5f8b2c3e40"
 const OTHER = "9f8e7d6c-5b4a-4c22-9a6e-1d5f8b2c3e41"

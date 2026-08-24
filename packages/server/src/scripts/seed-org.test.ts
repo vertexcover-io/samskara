@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url"
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql"
 import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
-import { type Db, createDb } from "../db/client.js"
+import { createDb, type Db } from "../db/client.js"
 import { orgs } from "../db/schema.js"
 import { parseArgs, seedOrg } from "./seed-org.js"
 

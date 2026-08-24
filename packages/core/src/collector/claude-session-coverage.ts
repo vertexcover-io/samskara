@@ -1,4 +1,4 @@
-import { readFile, readdir } from "node:fs/promises"
+import { readdir, readFile } from "node:fs/promises"
 import { dirname, join, relative } from "node:path"
 import { classifyClaudePath, normalizeClaude } from "./plugins/claude.js"
 
@@ -142,7 +142,7 @@ export const buildClaudeSessionCoverage = async ({
   const discoveryRootForBucket = dirname(bucket)
   const sessionDirectory = join(bucket, sessionId)
   const mainContext = classifyClaudePath(mainTranscript, discoveryRootForBucket)
-  if (!mainContext || mainContext.trackId !== "main") {
+  if (mainContext?.trackId !== "main") {
     throw new Error(`Could not classify main transcript for ${sessionId}`)
   }
   const agentTranscripts = files

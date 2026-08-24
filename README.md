@@ -306,7 +306,7 @@ Tokens are audience-scoped (`aud: web` or `aud: cli`) and checked per route.
 bun run dev          # API + web, watch mode
 bun run build        # build every package
 bun run typecheck    # every package, plus the e2e project
-bun run lint         # biome check .
+bun run lint         # biome check ., including the DB naming rule
 bun run format       # biome format --write .
 bun run test         # every package's unit tests
 bun run e2e          # Playwright, on a throwaway database it creates and drops
@@ -333,6 +333,14 @@ step.
 
 To add one: write the module next to `steps.ts`, export a `MigrationStep` with an idempotent `run`
 and a read-only `verify`, and list it in `MIGRATION_STEPS`.
+
+Every table and column name in the database uses camelCase. A Biome plugin
+(`packages/server/src/db/naming.grit`) enforces it against `packages/server/src/db/schema.ts`, so
+`bun run lint` fails the build when a new column or table name uses snake_case.
+
+The plugin reads TypeScript, not SQL, so it sees a name only once `schema.ts` declares it. A
+hand-written migration that adds a column without touching `schema.ts` is not checked — keep the
+schema the source of truth and generate migrations from it wherever you can.
 
 The server's test suite starts a real `pgvector/pgvector:pg16` container via testcontainers and runs
 the migrations against it, so schema and auth are covered end to end. Those tests skip themselves

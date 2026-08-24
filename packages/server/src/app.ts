@@ -10,8 +10,8 @@ import { ingestRoutes } from "./routes/ingest.js"
 import { projectsRoutes } from "./routes/projects.js"
 import { sessionsRoutes } from "./routes/sessions.js"
 import { syncStatusRoutes } from "./routes/sync-status.js"
-import { type GithubClient, createGithubClient } from "./services/github.js"
-import { type PairingStore, createPairingStore } from "./services/pairing.js"
+import { createGithubClient, type GithubClient } from "./services/github.js"
+import { createPairingStore, type PairingStore } from "./services/pairing.js"
 
 type Deps = {
   readonly githubClient?: GithubClient

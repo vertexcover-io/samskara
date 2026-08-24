@@ -14,21 +14,21 @@ import { SessionExpired } from "../auth/SessionExpired.js"
 import { AgentRail, agentEntries } from "../session/AgentRail.js"
 import { ArtifactsView } from "../session/ArtifactsView.js"
 import { CommitsView, PullRequestsView } from "../session/ChangesView.js"
-import { RecordStream } from "../session/RecordStream.js"
-import { type Tab, type TabId, Tabs } from "../session/Tabs.js"
-import { ToolCallsView } from "../session/ToolCallsView.js"
 import { useFocusMode } from "../session/focus.js"
 import { AGENT_PARAM, MESSAGE_PARAM, messageLink } from "../session/permalink.js"
+import { RecordStream } from "../session/RecordStream.js"
 import {
-  type SessionDetail as Detail,
-  type MessageSite,
-  type TimelineRecord,
   ancestryOf,
   artifactsOf,
   conversationView,
+  type SessionDetail as Detail,
   locate,
+  type MessageSite,
+  type TimelineRecord,
   toDetail,
 } from "../session/records.js"
+import { type Tab, type TabId, Tabs } from "../session/Tabs.js"
+import { ToolCallsView } from "../session/ToolCallsView.js"
 import { LoadingShell } from "../shell/LoadingShell.js"
 import { absoluteTime } from "../time.js"
 
@@ -77,7 +77,10 @@ const RepoName = ({ repo }: { repo: SessionRepo }) => {
 const SessionHead = ({
   session,
   measure,
-}: { session: SessionFacts; measure: Ref<HTMLElement> }) => (
+}: {
+  session: SessionFacts
+  measure: Ref<HTMLElement>
+}) => (
   <header ref={measure} className="sticky top-0 z-30 bg-paper pb-2 pt-2">
     <nav aria-label="Breadcrumb" className="mb-1 font-mono text-[0.72rem] text-ink-soft">
       <Link to="/projects" className="text-custody hover:underline">
@@ -126,8 +129,9 @@ const Masthead = ({ session, tokens }: { session: SessionFacts; tokens: TokenTot
       )}
     </p>
 
+    {/* biome-ignore lint/a11y/noInteractiveElementToNoninteractiveRole: a dl is not interactive; role="group" only labels the grouping semantics */}
+    {/* biome-ignore lint/a11y/useSemanticElements: a dl is the correct element; the role only names it */}
     <dl
-      // biome-ignore lint/a11y/useSemanticElements: a dl is the correct element; the role only names it
       role="group"
       aria-label="Session facts"
       className="mt-4 grid w-fit max-w-full grid-cols-2 gap-x-6 gap-y-3 border-t border-rule pt-3 min-[560px]:grid-cols-3 min-[900px]:grid-cols-4 min-[1200px]:grid-cols-7"
@@ -225,7 +229,10 @@ const tabsFor = (
 const InlineToolsToggle = ({
   checked,
   onChange,
-}: { checked: boolean; onChange: (next: boolean) => void }) => (
+}: {
+  checked: boolean
+  onChange: (next: boolean) => void
+}) => (
   <label className="flex w-fit shrink-0 cursor-pointer items-center gap-2 pb-2 text-[0.78rem] text-ink-soft">
     <input
       type="checkbox"

@@ -3,7 +3,6 @@ import postgres from "postgres"
 import {
   adminUrl,
   createRunDatabase,
-  databaseUrlFor,
   dispositionFor,
   dropRunDatabase,
   isRunDatabaseName,
@@ -132,7 +131,7 @@ test.describe("SC36 a spec sees only its own rows, whatever the last run left be
     const sql = postgres(requireDatabaseUrl(), { max: 1 })
     try {
       const [repo] = await sql<{ id: string }[]>`
-        insert into repos (host, owner, repo_name, "userId")
+        insert into repos (host, owner, "repoName", "userId")
         values ('github.com', 'leftover', 'wreck', ${E2E_USER_ID})
         returning id
       `
@@ -164,8 +163,8 @@ test.describe("SC36 a spec sees only its own rows, whatever the last run left be
       const slugs = await sql<{ slug: string }[]>`select slug from projects order by slug`
       expect(slugs.map((row) => row.slug)).toEqual(["isolation-first", "isolation-second"])
 
-      const repos = await sql<{ repo_name: string }[]>`select repo_name from repos`
-      expect(repos.map((row) => row.repo_name)).toEqual(["own-repo"])
+      const repos = await sql<{ repoName: string }[]>`select "repoName" from repos`
+      expect(repos.map((row) => row.repoName)).toEqual(["own-repo"])
 
       expect(await scalar(sql, LEDGER_COUNT)).toBe(ledgerBefore)
     } finally {

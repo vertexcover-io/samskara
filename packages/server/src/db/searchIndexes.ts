@@ -1,9 +1,9 @@
 import type { Sql } from "postgres"
 import {
-  SEARCH_DOCUMENTS,
-  SEARCH_FILTER_INDEXES,
   filterIndexDefinition,
   normalizeIndexDefinition,
+  SEARCH_DOCUMENTS,
+  SEARCH_FILTER_INDEXES,
   searchIndexDefinition,
 } from "./searchSql.js"
 import type { MigrationStep } from "./steps.js"

@@ -173,7 +173,7 @@ const seedRepositories = async (
   for (const repository of repositories) {
     const userId = repository.ownerUser === "other" ? E2E_OTHER_USER_ID : E2E_USER_ID
     const [row] = await sql`
-      insert into repos (host, owner, repo_name, "userId")
+      insert into repos (host, owner, "repoName", "userId")
       values (${repository.host}, ${repository.owner}, ${repository.repoName}, ${userId})
       returning id
     `
@@ -237,24 +237,24 @@ export const seedDatabase = async (spec: SeedSpec): Promise<void> => {
     await truncateAll(sql)
 
     await sql`
-      insert into users (id, github_id, github_login, email, name)
+      insert into users (id, "githubId", "githubLogin", email, name)
       values (${E2E_USER_ID}, 999001, ${E2E_USER_LOGIN}, 'e2e@example.com', 'E2E User')
     `
 
     await sql`
-      insert into users (id, github_id, github_login, email, name)
+      insert into users (id, "githubId", "githubLogin", email, name)
       values (${E2E_OTHER_USER_ID}, 999002, ${E2E_OTHER_USER_LOGIN}, 'maya@example.com', 'Maya')
     `
 
     for (const slug of orgSlugs) {
       await sql`
-        insert into orgs (id, github_slug, "autoAddMembers")
+        insert into orgs (id, "githubSlug", "autoAddMembers")
         values (${orgId(slug)}, ${slug}, true)
-        on conflict (github_slug) do update set "autoAddMembers" = excluded."autoAddMembers"
+        on conflict ("githubSlug") do update set "autoAddMembers" = excluded."autoAddMembers"
       `
       for (const member of spec.orgMembers?.[slug] ?? ["primary"]) {
         const userId = member === "other" ? E2E_OTHER_USER_ID : E2E_USER_ID
-        await sql`insert into user_orgs (user_id, org_id) values (${userId}, ${orgId(slug)}) on conflict do nothing`
+        await sql`insert into "userOrgs" ("userId", "orgId") values (${userId}, ${orgId(slug)}) on conflict do nothing`
       }
     }
 

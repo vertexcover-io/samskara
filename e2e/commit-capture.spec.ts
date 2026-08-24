@@ -232,7 +232,7 @@ test.describe("commit capture", () => {
 
     const rows = await pollUntil(
       () => sql<{ sha: string; branch: string | null; repoName: string }[]>`
-        select c.sha, c.branch, r.repo_name as "repoName"
+        select c.sha, c.branch, r."repoName" as "repoName"
         from commits c join repos r on r.id = c."repoId"
         where c."sessionId" = ${SESSION_ID}
       `,
@@ -275,7 +275,7 @@ test.describe("commit capture", () => {
     const attributed = await sql<{ count: string }[]>`
       select count(*)::text as count from commits c
       join repos r on r.id = c."repoId"
-      where c."sessionId" = ${SESSION_ID} and r.repo_name = 'widgets'
+      where c."sessionId" = ${SESSION_ID} and r."repoName" = 'widgets'
     `
     expect(Number(attributed[0]?.count)).toBe(0)
 
@@ -332,7 +332,7 @@ test.describe("commit capture", () => {
 
     const commitRows = await pollUntil(
       () => sql<{ sha: string; repoName: string }[]>`
-        select c.sha, r.repo_name as "repoName"
+        select c.sha, r."repoName" as "repoName"
         from commits c join repos r on r.id = c."repoId"
         where c."sessionId" = ${SESSION_ID} order by c.sha
       `,
@@ -347,7 +347,7 @@ test.describe("commit capture", () => {
 
     const prRows = await pollUntil(
       () => sql<{ number: number; repoName: string }[]>`
-        select p.number, r.repo_name as "repoName"
+        select p.number, r."repoName" as "repoName"
         from "sessionPullRequests" spr
         join "pullRequests" p on p.id = spr."prId"
         join repos r on r.id = p."repoId"

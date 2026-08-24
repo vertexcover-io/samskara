@@ -1,0 +1,17 @@
+// Every Drizzle column/table SQL name in schema.ts must be camelCase. Matches pgTable's own name
+// and every column-builder's first (name) argument; index/constraint names are deliberately out of
+// scope (they follow a different house style -- see plan decision D3/D6).
+or {
+  `pgTable($name, $...)`,
+  `text($name, $...)`,
+  `uuid($name, $...)`,
+  `bigint($name, $...)`,
+  `boolean($name, $...)`,
+  `timestamp($name, $...)`,
+  `integer($name, $...)`,
+  `jsonb($name, $...)`,
+  `bytea($name, $...)`
+} where {
+  not $name <: r"^\"[a-z][a-zA-Z0-9]*\"$",
+  register_diagnostic(span=$name, message="SQL identifier is not camelCase. Rename it to camelCase (e.g. githubId, not github_id).")
+}

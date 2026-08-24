@@ -1,7 +1,7 @@
 import { resolve } from "node:path"
 import type { ProjectIdentity } from "@samskara/core"
 import { setProjectEnabled } from "../config/projects.js"
-import { type Writer, resolveIo } from "../io.js"
+import { resolveIo, type Writer } from "../io.js"
 import { resolveProject } from "../watcher/resolveProject.js"
 
 export type DisableOptions = {

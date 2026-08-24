@@ -96,7 +96,10 @@ const DiffStat = ({ commit }: { commit: SessionCommit }) => {
 const CommitRow = ({
   commit,
   onJump,
-}: { commit: SessionCommit; onJump: (messageId: string) => void }) => {
+}: {
+  commit: SessionCommit
+  onJump: (messageId: string) => void
+}) => {
   const url = webUrl(commit.repo, `commit/${commit.sha}`)
   const messageId = commit.messageId
   return (
@@ -151,7 +154,10 @@ export const CommitsView = ({
 const PullRequestRow = ({
   pr,
   onJump,
-}: { pr: SessionPullRequest; onJump: (messageId: string) => void }) => {
+}: {
+  pr: SessionPullRequest
+  onJump: (messageId: string) => void
+}) => {
   const url = webUrl(pr.repo, `pull/${pr.number}`)
   const messageId = pr.messageId
   return (

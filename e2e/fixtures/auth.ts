@@ -1,4 +1,4 @@
-import { type Page, test as base } from "@playwright/test"
+import { test as base, type Page } from "@playwright/test"
 import { SignJWT } from "jose"
 import { E2E_USER_ID } from "../seed.js"
 

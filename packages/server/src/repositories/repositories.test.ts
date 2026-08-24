@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url"
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql"
 import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
-import { type Db, createDb } from "../db/client.js"
+import { createDb, type Db } from "../db/client.js"
 import {
   commits,
   orgs,
@@ -565,7 +565,7 @@ describe.skipIf(!dockerAvailable())("ingest repositories", () => {
       expect(new Set(rows.map((row) => row.repoId))).toEqual(new Set([serana, andromeda]))
     })
 
-    const linkOf = async (sessionId: string, repoId: string) => {
+    const linkOf = async (_sessionId: string, repoId: string) => {
       const [row] = await db
         .select({ number: pullRequests.number, sessionId: sessionPullRequests.sessionId })
         .from(sessionPullRequests)

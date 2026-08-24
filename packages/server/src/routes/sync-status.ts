@@ -2,7 +2,7 @@ import { Hono } from "hono"
 import type { Db } from "../db/client.js"
 import type { Env } from "../lib/env.js"
 import { type AuthVariables, requireAuth } from "../lib/require-auth.js"
-import { type SyncStatusRow, listSyncStatus } from "../repositories/syncStatus.repo.js"
+import { listSyncStatus, type SyncStatusRow } from "../repositories/syncStatus.repo.js"
 
 type Deps = {
   readonly db: Db

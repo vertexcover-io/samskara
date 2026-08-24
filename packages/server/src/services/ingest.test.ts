@@ -5,7 +5,7 @@ import { createLogger } from "@samskara/core"
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql"
 import { and, eq, inArray } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
-import { type Db, createDb } from "../db/client.js"
+import { createDb, type Db } from "../db/client.js"
 import {
   commits,
   messages,
