@@ -104,7 +104,7 @@ describe.skipIf(!dockerAvailable())("session search database foundation", () => 
       await stale.client.end()
     }
 
-    execFileSync("bun", ["run", "db:index-search"], {
+    execFileSync("bun", ["run", "db:migrate"], {
       cwd: packageDir,
       env: { ...process.env, DATABASE_URL: url },
       stdio: "inherit",
@@ -216,7 +216,7 @@ describe.skipIf(!dockerAvailable())("session search database foundation", () => 
   }, 120_000)
 
   test("drops stale V1 indexes only after verified V2 creation when requested", async () => {
-    execFileSync("bun", ["run", "db:index-search", "--drop-stale"], {
+    execFileSync("bun", ["run", "db:migrate", "--drop-stale"], {
       cwd: packageDir,
       env: { ...process.env, DATABASE_URL: url },
       stdio: "inherit",

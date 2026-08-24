@@ -31,7 +31,16 @@
     },
     "dev": {
       "cache": false,
-      "persistent": true
+      "persistent": true,
+      "dependsOn": ["^build"]
+    },
+    "db:migrate": {
+      "dependsOn": ["^build"],
+      "cache": false
+    },
+    "db:verify": {
+      "dependsOn": ["^build"],
+      "cache": false
     }
   }
 }
