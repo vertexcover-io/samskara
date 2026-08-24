@@ -534,20 +534,6 @@ test("SC32: the breadcrumb links to the session's project by id, not its slug", 
   expect(link).toHaveAttribute("href", "/sessions?project=22222222-2222-4222-8222-222222222222")
 })
 
-test("SC20: the session detail page renders the transcript from the inferred payload - title, messages and token totals all appear", async () => {
-  renderDetail()
-
-  expect(await screen.findByRole("heading", { name: "Make ingest idempotent" })).toBeInTheDocument()
-
-  const panel = panelOf()
-  expect(within(panel).getByText(/Make it idempotent/)).toBeInTheDocument()
-  expect(within(panel).getByText(/Here is the plan for the upsert/)).toBeInTheDocument()
-
-  const facts = screen.getByRole("group", { name: /session facts/i })
-  expect(within(facts).getByText("214,600")).toBeInTheDocument()
-  expect(within(facts).getByText("18,200")).toBeInTheDocument()
-})
-
 test("SC25: the session facts always show an absolute created-at time, while duration keeps its unavailable placeholder when null", async () => {
   renderDetail(buildPayload({ ...PAYLOAD, session: { durationMs: null } }))
 

@@ -33,7 +33,7 @@ const jsonResponse = (status: number, body: unknown): Response =>
 type SessionsHandler = (url: URL) => Promise<Response>
 
 // Only the list endpoint (`/api/sessions` or `/api/sessions?...`) matches: a sub-resource path
-// like `/api/sessions/s-1` is a different response shape, and no test here asserts on it.
+// like `/api/sessions/s-1` is a different response shape, and S26 navigates to one.
 const isSessionsList = (path: string): boolean =>
   path === "/api/sessions" || path.startsWith("/api/sessions?")
 
@@ -197,7 +197,8 @@ test("every stable validation code presents the targeted recovery state", async 
 test("ambiguous commit has its own recovery state", async () => {
   stubFetch(() => Promise.resolve(jsonResponse(400, { error: "ambiguousCommit" })))
   renderAt("/sessions?commit=abcdef1")
-  expect(await screen.findByText(/commit prefix is ambiguous/i)).toBeInTheDocument()
+  expect(await screen.findByRole("alert")).toHaveTextContent(/commit prefix is ambiguous/i)
+  expect(screen.queryByRole("list")).not.toBeInTheDocument()
 })
 
 test("today initializes the URL before its only sessions request so the request includes timezone", async () => {
@@ -391,24 +392,6 @@ test("SC16: a search match decorates its row, and a row without one still render
 
   const unmatchedRow = screen.getByRole("link", { name: /trim the ingest pipeline/i })
   expect(unmatchedRow.querySelector("mark")).toBeNull()
-})
-
-test("SC17: an ambiguous commit filter shows the failure state, not the session-expired state", async () => {
-  stubFetch(() => Promise.resolve(jsonResponse(400, { error: "ambiguousCommit" })))
-
-  renderAt("/sessions?commit=abcdef1")
-
-  expect(await screen.findByRole("alert")).toHaveTextContent(/commit prefix is ambiguous/i)
-  expect(screen.queryByRole("list")).not.toBeInTheDocument()
-})
-
-test("SC18: an unknown project filter shows the not-found state", async () => {
-  stubFetch(() => Promise.resolve(jsonResponse(404, { error: "projectNotFound" })))
-
-  renderAt("/sessions?project=locked")
-
-  expect(await screen.findByText(/cannot be opened/i)).toBeInTheDocument()
-  expect(screen.queryByRole("list")).not.toBeInTheDocument()
 })
 
 test("SC19 (regression): changing a filter refetches and keeps the previous rows visible until the new ones arrive", async () => {

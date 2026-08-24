@@ -122,7 +122,7 @@ test("SC10: the projects page renders one card for each project the API returns"
   expect(within(main).getByText(/unavailable/i)).toBeInTheDocument()
 })
 
-test("SC11: a 401 on the projects page paints SessionExpired - no project card renders and the page navigates to /login", async () => {
+test("SC11: a 401 on the projects page redirects to /login rather than painting an empty shelf", async () => {
   stubFetch({
     me: () => Promise.resolve(jsonResponse(200, user)),
     projects: () => Promise.resolve(jsonResponse(401, { error: "unauthorized" })),
@@ -131,7 +131,7 @@ test("SC11: a 401 on the projects page paints SessionExpired - no project card r
   renderAt("/projects")
 
   await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("/login"))
-  expect(screen.queryByText("Samskara", { exact: true })).not.toBeInTheDocument()
+  expect(screen.queryByText(/no projects yet/i)).not.toBeInTheDocument()
 })
 
 test("S10: a session that expires after /api/auth/me resolved lands on /login and stops requesting - it does not ping-pong between /login and /projects forever", async () => {

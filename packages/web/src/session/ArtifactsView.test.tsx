@@ -205,27 +205,15 @@ test("SC24: an edited artifact shows the excerpt its edit replaced, and one whos
   expect(within(withFragment).getByText(/The original line\./)).toBeInTheDocument()
   expect(within(withFragment).getByText(/replaced excerpt/i)).toBeInTheDocument()
 
-  render(
+  const { container } = render(
     <TestRouter initialEntries={["/s/2?tab=artifacts"]}>
       <ArtifactsView
-        artifacts={[
-          captured({
-            id: "c-2",
-            changeKind: "edited",
-            diff: null,
-            oldFragment: null,
-          }),
-        ]}
+        artifacts={[captured({ id: "c-2", changeKind: "edited", diff: null, oldFragment: null })]}
       />
     </TestRouter>,
   )
 
-  const viewers = screen.getAllByRole("region", { name: /artifact viewer/i })
-  const withoutFragment = viewers[viewers.length - 1]
-  expect(withoutFragment).toBeDefined()
-  expect(
-    within(withoutFragment as HTMLElement).queryByText(/replaced excerpt/i),
-  ).not.toBeInTheDocument()
+  expect(within(container).queryByText(/replaced excerpt/i)).not.toBeInTheDocument()
 })
 
 test("S52: a created artifact shows its content, without offering a diff pane", async () => {
