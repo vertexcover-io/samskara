@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url"
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql"
 import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
-import { type Db, createDb } from "../db/client.js"
+import { createDb, type Db } from "../db/client.js"
 import {
   messages,
   orgs,
@@ -14,12 +14,12 @@ import {
   users,
 } from "../db/schema.js"
 import {
+  captureIdentity,
   DEV_ORG_SLUG,
   DEV_PROJECT_SLUG,
   DEV_USER_LOGIN,
-  MESSAGES_PER_SESSION,
-  captureIdentity,
   hasProjects,
+  MESSAGES_PER_SESSION,
   parseSnapshot,
   restoreIdentity,
   seedDev,
