@@ -30,8 +30,8 @@ test("S14: a signed-in visit to / lands on /projects showing both seeded project
 
   await expect(page).toHaveURL(/\/projects$/)
 
-  const samskara = page.getByRole("button", { name: /Samskara/ })
-  const andromeda = page.getByRole("button", { name: /Andromeda/ })
+  const samskara = page.getByRole("link", { name: /Samskara/ })
+  const andromeda = page.getByRole("link", { name: /Andromeda/ })
   await expect(samskara).toBeVisible()
   await expect(andromeda).toBeVisible()
   await expect(samskara).toContainText("2")
