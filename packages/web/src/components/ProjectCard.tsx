@@ -18,7 +18,7 @@ type Props = {
 }
 
 export const ProjectCard = ({ project, to }: Props) => {
-  const { name, slug, sessionCount, lastActiveAt } = project
+  const { name, slug, owner, sessionCount, lastActiveAt } = project
   const dormant = sessionCount === 0
 
   return (
@@ -29,6 +29,11 @@ export const ProjectCard = ({ project, to }: Props) => {
       <div className="min-w-0">
         <h2 className="truncate text-[0.9375rem] font-semibold">{name}</h2>
         <p className="truncate font-mono text-[0.78rem] text-custody">/{slug}</p>
+        {owner.type === "org" ? (
+          <p className="truncate text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-ink-soft">
+            org · {owner.slug}
+          </p>
+        ) : null}
       </div>
 
       <div className="grid grid-cols-2 gap-3">

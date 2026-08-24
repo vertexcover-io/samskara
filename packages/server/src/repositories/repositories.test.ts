@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest"
 import { type Db, createDb } from "../db/client.js"
 import {
   commits,
+  orgs,
   projects,
   pullRequests,
   sessionPullRequests,
@@ -13,10 +14,12 @@ import {
   subagents,
   tokenUsage,
   toolCall,
+  userOrgs,
   users,
 } from "../db/schema.js"
 import * as commitsRepo from "./commits.repo.js"
 import * as messagesRepo from "./messages.repo.js"
+import * as orgsRepo from "./orgs.repo.js"
 import * as projectsRepo from "./projects.repo.js"
 import * as pullRequestsRepo from "./pullRequests.repo.js"
 import * as reposRepo from "./repos.repo.js"
@@ -24,6 +27,7 @@ import * as sessionsRepo from "./sessions.repo.js"
 import * as subagentsRepo from "./subagents.repo.js"
 import * as tokenUsageRepo from "./tokenUsage.repo.js"
 import * as toolRowsRepo from "./toolRows.repo.js"
+import * as userOrgsRepo from "./userOrgs.repo.js"
 
 const dockerAvailable = () => {
   try {
@@ -50,6 +54,17 @@ describe.skipIf(!dockerAvailable())("ingest repositories", () => {
       .returning()
     if (!user) throw new Error("seed user failed")
     return user
+  }
+
+  let orgCounter = 0
+  const seedOrg = async (autoAddMembers = true) => {
+    orgCounter += 1
+    const [org] = await db
+      .insert(orgs)
+      .values({ githubSlug: `repo-org-${orgCounter}`, autoAddMembers })
+      .returning()
+    if (!org) throw new Error("seed org failed")
+    return org
   }
 
   const seedSession = async (id: string) => {
@@ -147,6 +162,114 @@ describe.skipIf(!dockerAvailable())("ingest repositories", () => {
     const rows = await db.select().from(projects).where(eq(projects.id, first))
     expect(rows).toHaveLength(1)
     expect(rows[0]?.name).toBe("widget-renamed")
+  })
+
+  test("SC4: the database enforces exactly one owner - both null or both set is rejected, either alone is accepted", async () => {
+    const owner = await seedUser()
+
+    await expect(
+      db.insert(projects).values({ name: "neither", slug: "sc4-neither" }),
+    ).rejects.toThrow()
+
+    const org = await seedOrg()
+    await expect(
+      db
+        .insert(projects)
+        .values({ name: "both", slug: "sc4-both", ownerUserId: owner.id, ownerOrgId: org.id }),
+    ).rejects.toThrow()
+
+    const [userOwned] = await db
+      .insert(projects)
+      .values({ name: "user-owned", slug: "sc4-user", ownerUserId: owner.id })
+      .returning()
+    expect(userOwned).toBeDefined()
+
+    const [orgOwned] = await db
+      .insert(projects)
+      .values({ name: "org-owned", slug: "sc4-org", ownerOrgId: org.id })
+      .returning()
+    expect(orgOwned).toBeDefined()
+  })
+
+  test("SC5: the same slug is one row per owner, and a repeat upsertOwned returns the same row", async () => {
+    const userA = await seedUser()
+    const userB = await seedUser()
+    const org = await seedOrg()
+
+    const a = await projectsRepo.upsertOwned(db, {
+      identity: { name: "widget", slug: "sc5-widget" },
+      owner: { kind: "user", userId: userA.id },
+    })
+    const b = await projectsRepo.upsertOwned(db, {
+      identity: { name: "widget", slug: "sc5-widget" },
+      owner: { kind: "user", userId: userB.id },
+    })
+    const orgFirst = await projectsRepo.upsertOwned(db, {
+      identity: { name: "widget", slug: "sc5-widget" },
+      owner: { kind: "org", orgId: org.id },
+    })
+    const orgAgain = await projectsRepo.upsertOwned(db, {
+      identity: { name: "widget renamed", slug: "sc5-widget" },
+      owner: { kind: "org", orgId: org.id },
+    })
+    const aAgain = await projectsRepo.upsertOwned(db, {
+      identity: { name: "widget", slug: "sc5-widget" },
+      owner: { kind: "user", userId: userA.id },
+    })
+
+    const rows = await db.select().from(projects).where(eq(projects.slug, "sc5-widget"))
+    expect(rows).toHaveLength(3)
+    expect(orgFirst.created).toBe(true)
+    expect(orgAgain.id).toBe(orgFirst.id)
+    expect(orgAgain.created).toBe(false)
+    expect(aAgain.id).toBe(a.id)
+    expect(aAgain.id).not.toBe(b.id)
+  })
+
+  test("SC6: authority ranks owner, org member, and grant - the highest wins", async () => {
+    const org = await seedOrg()
+    const memberA = await seedUser()
+    const outsiderB = await seedUser()
+    const viewerC = await seedUser()
+    const personalOwner = await seedUser()
+
+    const orgProjectId = (
+      await projectsRepo.upsertOwned(db, {
+        identity: { name: "org-project", slug: "sc6-org-project" },
+        owner: { kind: "org", orgId: org.id },
+      })
+    ).id
+    await db.insert(userOrgs).values({ userId: memberA.id, orgId: org.id })
+    await projectsRepo.grant(db, viewerC.id, orgProjectId, "viewer")
+
+    expect(await projectsRepo.authorityFor(db, memberA.id, orgProjectId)).toBe("editor")
+    expect(await projectsRepo.authorityFor(db, outsiderB.id, orgProjectId)).toBeNull()
+    expect(await projectsRepo.authorityFor(db, viewerC.id, orgProjectId)).toBe("viewer")
+
+    await projectsRepo.grant(db, memberA.id, orgProjectId, "viewer")
+    expect(await projectsRepo.authorityFor(db, memberA.id, orgProjectId)).toBe("editor")
+
+    const personalProjectId = await projectsRepo.upsert(db, {
+      identity: { name: "personal", slug: "sc6-personal" },
+      ownerId: personalOwner.id,
+    })
+    expect(await projectsRepo.authorityFor(db, personalOwner.id, personalProjectId)).toBe("admin")
+  })
+
+  test("SC9: a new org row defaults to autoAddMembers off, and orgsRepo.findBySlug reads it back", async () => {
+    const [org] = await db.insert(orgs).values({ githubSlug: "sc9-no-flag" }).returning()
+    expect(org?.autoAddMembers).toBe(false)
+    expect(await orgsRepo.findBySlug(db, "sc9-no-flag")).toMatchObject({ autoAddMembers: false })
+    expect(await orgsRepo.findBySlug(db, "sc9-does-not-exist")).toBeNull()
+  })
+
+  test("userOrgs.isMember reports membership before and after a link is inserted", async () => {
+    const org = await seedOrg()
+    const user = await seedUser()
+
+    expect(await userOrgsRepo.isMember(db, user.id, org.id)).toBe(false)
+    await db.insert(userOrgs).values({ userId: user.id, orgId: org.id })
+    expect(await userOrgsRepo.isMember(db, user.id, org.id)).toBe(true)
   })
 
   test("repos.upsertByIdentity keys on (host, owner, repoName, userId): same path on two hosts is two repos, two users is two repos, ssh and https are one", async () => {

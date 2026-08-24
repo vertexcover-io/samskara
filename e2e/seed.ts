@@ -75,26 +75,35 @@ export type SeedProject = {
   readonly name: string
   /** Other-owned projects are intentionally not granted to the E2E user. */
   readonly owner?: "primary" | "other"
+  /** An org-owned project instead of a user-owned one. Mutually exclusive with `owner`. */
+  readonly org?: string
   readonly sessions: ReadonlyArray<SeedSession>
 }
 
 export type SeedSpec = {
   readonly repositories?: ReadonlyArray<SeedRepository>
   readonly projects: ReadonlyArray<SeedProject>
+  /** Org membership for a project's org, keyed by org slug. Defaults to `["primary"]`. */
+  readonly orgMembers?: Record<string, ReadonlyArray<"primary" | "other">>
 }
 
+// Forces the version (4) and variant (8-b) nibbles so the result satisfies zod's `.uuid()`
+// format check -- a raw hash slice lands outside that range often enough to break any schema
+// that validates a seeded id (e.g. `projectId` on the ingest payload).
 const deterministicUuid = (value: string): string => {
   const hex = createHash("sha1").update(value).digest("hex")
+  const variant = "89ab"[Number.parseInt(hex[16] ?? "0", 16) % 4]
   return [
     hex.slice(0, 8),
     hex.slice(8, 12),
-    hex.slice(12, 16),
-    hex.slice(16, 20),
+    `4${hex.slice(13, 16)}`,
+    `${variant}${hex.slice(17, 20)}`,
     hex.slice(20, 32),
   ].join("-")
 }
 
-const projectId = (slug: string): string => deterministicUuid(`e2e:${slug}`)
+export const projectId = (slug: string): string => deterministicUuid(`e2e:${slug}`)
+export const orgId = (slug: string): string => deterministicUuid(`org:${slug}`)
 const seededMessageId = (sessionId: string, line: number): string =>
   deterministicUuid(`e2e:${sessionId}:${line}`)
 
@@ -217,6 +226,12 @@ const truncateAll = async (sql: Sql): Promise<void> => {
 
 export const seedDatabase = async (spec: SeedSpec): Promise<void> => {
   const sql = postgres(DATABASE_URL)
+  const orgSlugs = [
+    ...new Set([
+      ...spec.projects.flatMap((project) => (project.org === undefined ? [] : [project.org])),
+      ...Object.keys(spec.orgMembers ?? {}),
+    ]),
+  ]
 
   try {
     await truncateAll(sql)
@@ -231,13 +246,31 @@ export const seedDatabase = async (spec: SeedSpec): Promise<void> => {
       values (${E2E_OTHER_USER_ID}, 999002, ${E2E_OTHER_USER_LOGIN}, 'maya@example.com', 'Maya')
     `
 
+    for (const slug of orgSlugs) {
+      await sql`
+        insert into orgs (id, github_slug, "autoAddMembers")
+        values (${orgId(slug)}, ${slug}, true)
+        on conflict (github_slug) do update set "autoAddMembers" = excluded."autoAddMembers"
+      `
+      for (const member of spec.orgMembers?.[slug] ?? ["primary"]) {
+        const userId = member === "other" ? E2E_OTHER_USER_ID : E2E_USER_ID
+        await sql`insert into user_orgs (user_id, org_id) values (${userId}, ${orgId(slug)}) on conflict do nothing`
+      }
+    }
+
     const repositories = await seedRepositories(sql, spec.repositories ?? [])
     for (const [index, project] of spec.projects.entries()) {
       const id = projectId(project.slug)
-      const ownerId = project.owner === "other" ? E2E_OTHER_USER_ID : E2E_USER_ID
+      const ownerUserId =
+        project.org === undefined
+          ? project.owner === "other"
+            ? E2E_OTHER_USER_ID
+            : E2E_USER_ID
+          : null
+      const ownerOrgId = project.org === undefined ? null : orgId(project.org)
       await sql`
-        insert into projects (id, name, slug, "ownerId")
-        values (${id}, ${project.name}, ${project.slug}, ${ownerId})
+        insert into projects (id, name, slug, "ownerId", "ownerOrgId")
+        values (${id}, ${project.name}, ${project.slug}, ${ownerUserId}, ${ownerOrgId})
       `
 
       for (const [order, session] of project.sessions.entries()) {

@@ -1,6 +1,7 @@
 import { and, asc, eq, exists, or, sql } from "drizzle-orm"
 import type { Db } from "../db/client.js"
 import { projects, userProjectGrant, users } from "../db/schema.js"
+import { orgMemberOfProject } from "./projects.repo.js"
 
 export type SyncStatusRow = {
   readonly userId: string
@@ -22,7 +23,7 @@ const lastSyncedAt = sql<string | null>`(select max("sessions"."updatedAt") from
 
 const memberOf = (db: Db) =>
   or(
-    eq(projects.ownerId, users.id),
+    eq(projects.ownerUserId, users.id),
     exists(
       db
         .select({ one: sql`1` })
@@ -31,6 +32,7 @@ const memberOf = (db: Db) =>
           and(eq(userProjectGrant.projectId, projects.id), eq(userProjectGrant.userId, users.id)),
         ),
     ),
+    orgMemberOfProject(db, users.id),
   )
 
 export const listSyncStatus = (db: Db): Promise<ReadonlyArray<SyncStatusRow>> =>

@@ -16,7 +16,9 @@ import { signToken } from "../lib/jwt.js"
 import { type AuthVariables, requireAuth } from "../lib/require-auth.js"
 import {
   NotMemberError,
+  type RegisteredOrg,
   type User,
+  dropUserOrgs,
   gateOrgs,
   syncUserOrgs,
   upsertUserFromGithub,
@@ -88,18 +90,19 @@ export const authRoutes = ({
     const profile = await githubClient.getProfile(accessToken)
     const orgSlugs = await githubClient.getOrgs(accessToken)
 
-    let orgIds: ReadonlyArray<string>
+    let registered: ReadonlyArray<RegisteredOrg>
     try {
-      orgIds = (await gateOrgs(db, orgSlugs)).orgIds
+      registered = (await gateOrgs(db, orgSlugs)).registered
     } catch (error) {
       if (error instanceof NotMemberError) {
+        await dropUserOrgs(db, profile.githubId)
         return c.redirect(webUrl(env, "/?error=not_member"))
       }
       throw error
     }
 
     const user = await upsertUserFromGithub(db, profile)
-    await syncUserOrgs(db, user.id, orgIds)
+    await syncUserOrgs(db, user.id, registered)
 
     const token = await signToken(env, { sub: user.id, aud: "web" })
     setSessionCookie(c, token, env)

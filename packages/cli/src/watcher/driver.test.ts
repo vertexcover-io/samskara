@@ -17,6 +17,7 @@ import {
   MESSAGE_CAP,
   type WatcherConfig,
   type WatcherDeps,
+  flushCause,
   runCycle,
   sliceByMessages,
 } from "./driver.js"
@@ -114,6 +115,13 @@ describe("sliceByMessages", () => {
     expect(oversizeChunks).toHaveLength(1)
     expect(oversizeChunks[0]?.records[0]?.messages).toHaveLength(2500)
     expect(oversizeChunks[0]?.lastCompleteLine).toBe(3)
+  })
+})
+
+describe("flushCause", () => {
+  test("SC44: a 403 tells the user to re-enable and a 401 to log in", () => {
+    expect(flushCause(403)).toContain("samskara enable")
+    expect(flushCause(401)).toContain("samskara login")
   })
 })
 

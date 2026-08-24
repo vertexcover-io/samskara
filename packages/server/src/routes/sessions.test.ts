@@ -8,6 +8,7 @@ import {
   artifact,
   commits,
   messages,
+  orgs,
   projects,
   pullRequests,
   sessionPullRequests,
@@ -16,6 +17,7 @@ import {
   tokenUsage,
   toolCall,
   toolResult,
+  userOrgs,
   userProjectGrant,
   users,
 } from "../db/schema.js"
@@ -54,6 +56,7 @@ type SessionRepo = {
 type SessionSummary = {
   readonly id: string
   readonly title: string | null
+  readonly projectId: string
   readonly projectName: string
   readonly projectSlug: string
   readonly userLogin: string
@@ -181,6 +184,8 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     await db.delete(sessions)
     await db.delete(userProjectGrant)
     await db.delete(projects)
+    await db.delete(userOrgs)
+    await db.delete(orgs)
     await db.delete(users)
   })
 
@@ -235,7 +240,7 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
       "beta-owner-now",
     ])
 
-    expect(sortedIdsOf(await listAs(db, owner, "?project=alpha"))).toEqual([
+    expect(sortedIdsOf(await listAs(db, owner, `?project=${alpha}`))).toEqual([
       "alpha-maya-now",
       "alpha-owner-old",
     ])
@@ -250,7 +255,9 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
       "beta-owner-now",
     ])
 
-    expect(idsOf(await listAs(db, owner, "?project=alpha&user=maya"))).toEqual(["alpha-maya-now"])
+    expect(idsOf(await listAs(db, owner, `?project=${alpha}&user=maya`))).toEqual([
+      "alpha-maya-now",
+    ])
   })
 
   test("S20: sessions in projects the user cannot see are excluded even with no filters set", async () => {
@@ -353,7 +360,7 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     expect(body.sessions[0]?.id).toBe("keyword-one")
     expect(body.sessions[0]?.match?.sourceKind).toBe("session")
     expect(body.pagination).toEqual({ page: 2, limit: 1, total: 2, totalPages: 2 })
-    expect(body.filterOptions.projects.map((option) => option.value)).toEqual(["search"])
+    expect(body.filterOptions.projects.map((option) => option.value)).toEqual([projectId])
 
     for (const query of [
       "?pr=01",
@@ -475,7 +482,7 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     expect(await listAs(db, owner, "?q=commitneedle")).toEqual([])
   })
 
-  test("S20: a summary carries the project name, login, summed tokens, and a duration spanning the message timestamps", async () => {
+  test("S20, SC29: a summary carries the project id, name, login, summed tokens, and a duration spanning the message timestamps", async () => {
     const owner = await seedUser(db, 1301, "shape-owner")
     const projectId = await projectsRepo.upsert(db, {
       identity: { name: "Shape", slug: "shape" },
@@ -506,6 +513,7 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     expect(summary).toEqual({
       id: "shaped",
       title: "Shaped session",
+      projectId,
       projectName: "Shape",
       projectSlug: "shape",
       userLogin: "shape-owner",
@@ -581,7 +589,7 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     expect(summary?.status).toBe("empty")
   })
 
-  test("S22: filtering by a project owned by someone else with no grant is 404 projectNotFound - not a 200 with an empty list", async () => {
+  test("S22, SC28: filtering by a project owned by someone else with no grant is 404 projectNotFound - not a 200 with an empty list", async () => {
     const ownerA = await seedUser(db, 1501, "denied-owner")
     const userB = await seedUser(db, 1502, "denied-b")
     const projectId = await projectsRepo.upsert(db, {
@@ -596,13 +604,13 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
       updatedAt: new Date(),
     })
 
-    const res = await request(db, userB, "?project=locked")
+    const res = await request(db, userB, `?project=${projectId}`)
 
     expect(res.status).toBe(404)
     expect(await res.json()).toEqual({ error: "projectNotFound" })
   })
 
-  test("S22: a project slug that exists for nobody is also 404, and a viewer grant turns the same slug into a 200", async () => {
+  test("S22, SC28: a nonexistent project id is also 404, a non-UUID value is 400, and a viewer grant turns the id into a 200", async () => {
     const ownerA = await seedUser(db, 1601, "grant-owner")
     const granteeB = await seedUser(db, 1602, "grant-b")
     const projectId = await projectsRepo.upsert(db, {
@@ -617,15 +625,19 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
       updatedAt: new Date(),
     })
 
-    const missing = await request(db, granteeB, "?project=does-not-exist")
+    const notUuid = await request(db, granteeB, "?project=does-not-exist")
+    expect(notUuid.status).toBe(400)
+    expect(await notUuid.json()).toEqual({ error: "invalidProject" })
+
+    const missing = await request(db, granteeB, "?project=00000000-0000-4000-8000-000000000000")
     expect(missing.status).toBe(404)
 
-    const beforeGrant = await request(db, granteeB, "?project=granted")
+    const beforeGrant = await request(db, granteeB, `?project=${projectId}`)
     expect(beforeGrant.status).toBe(404)
 
     await projectsRepo.grant(db, granteeB, projectId, "viewer")
 
-    expect(idsOf(await listAs(db, granteeB, "?project=granted"))).toEqual(["granted-session"])
+    expect(idsOf(await listAs(db, granteeB, `?project=${projectId}`))).toEqual(["granted-session"])
   })
 
   test("S22: no cookie and a cli-audience token are both 401 unauthorized on the sessions read endpoint", async () => {
@@ -648,6 +660,86 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     const res = await request(db, owner, "?range=banana")
 
     expect(res.status).toBe(400)
+  })
+
+  test("SC27: the session list filters by project id and offers ids as filter values", async () => {
+    const owner = await seedUser(db, 1901, "sc27-owner")
+    const projectA = await projectsRepo.upsert(db, {
+      identity: { name: "Alpha", slug: "sc27-alpha" },
+      ownerId: owner,
+    })
+    const projectB = await projectsRepo.upsert(db, {
+      identity: { name: "Beta", slug: "sc27-beta" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "sc27-a",
+      userId: owner,
+      projectId: projectA,
+      title: "A",
+      updatedAt: new Date(),
+    })
+    await seedSession(db, {
+      id: "sc27-b",
+      userId: owner,
+      projectId: projectB,
+      title: "B",
+      updatedAt: new Date(),
+    })
+
+    expect(idsOf(await listAs(db, owner, `?project=${projectA}`))).toEqual(["sc27-a"])
+
+    const res = await request(db, owner, "")
+    const body = (await res.json()) as {
+      filterOptions: { projects: ReadonlyArray<{ value: string; label: string }> }
+    }
+    expect(body.filterOptions.projects).toEqual([
+      { value: projectA, label: "Alpha" },
+      { value: projectB, label: "Beta" },
+    ])
+  })
+
+  test("SC30: two visible projects with the same slug are two distinct filter options", async () => {
+    const owner = await seedUser(db, 1911, "sc30-owner")
+    const [org] = await db
+      .insert(orgs)
+      .values({ githubSlug: "sc30-acme", name: "Acme" })
+      .returning({ id: orgs.id })
+    if (!org) throw new Error("seed org failed")
+    await db.insert(userOrgs).values({ userId: owner, orgId: org.id })
+
+    const { id: personal } = await projectsRepo.upsertOwned(db, {
+      identity: { name: "widget", slug: "sc30-widget" },
+      owner: { kind: "user", userId: owner },
+    })
+    const { id: orgOwned } = await projectsRepo.upsertOwned(db, {
+      identity: { name: "widget", slug: "sc30-widget" },
+      owner: { kind: "org", orgId: org.id },
+    })
+    await seedSession(db, {
+      id: "sc30-personal",
+      userId: owner,
+      projectId: personal,
+      title: "Personal",
+      updatedAt: new Date(),
+    })
+    await seedSession(db, {
+      id: "sc30-org",
+      userId: owner,
+      projectId: orgOwned,
+      title: "Org",
+      updatedAt: new Date(),
+    })
+
+    const res = await request(db, owner, "")
+    const body = (await res.json()) as {
+      filterOptions: { projects: ReadonlyArray<{ value: string; label: string }> }
+    }
+    const widgetOptions = body.filterOptions.projects.filter((option) => option.label === "widget")
+    expect(widgetOptions.map((option) => option.value).sort()).toEqual([personal, orgOwned].sort())
+
+    expect(idsOf(await listAs(db, owner, `?project=${personal}`))).toEqual(["sc30-personal"])
+    expect(idsOf(await listAs(db, owner, `?project=${orgOwned}`))).toEqual(["sc30-org"])
   })
 })
 
@@ -786,10 +878,12 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions/:id", () => {
     await db.delete(sessions)
     await db.delete(userProjectGrant)
     await db.delete(projects)
+    await db.delete(userOrgs)
+    await db.delete(orgs)
     await db.delete(users)
   })
 
-  test("S39: a session with messages, a tool call pair, a subagent and token usage returns all five sections - messages ordered by lineNumber, not insertion order", async () => {
+  test("S39, SC29: a session with messages, a tool call pair, a subagent and token usage returns all five sections - messages ordered by lineNumber, not insertion order", async () => {
     const owner = await seedUser(db, 2001, "detail-owner")
     const projectId = await projectsRepo.upsert(db, {
       identity: { name: "Detail", slug: "detail" },
@@ -854,6 +948,7 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions/:id", () => {
     expect(body.session).toMatchObject({
       id: "detailed",
       title: "Detailed session",
+      projectId,
       projectName: "Detail",
       projectSlug: "detail",
       userLogin: "detail-owner",
@@ -1099,5 +1194,34 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions/:id", () => {
 
     expect(res.status).toBe(401)
     expect(await db.select().from(sessions)).toHaveLength(1)
+  })
+
+  test("SC2: a member of the owning org reads the org project's session list and detail; a non-member cannot", async () => {
+    const member = await seedUser(db, 2501, "sc2-member")
+    const outsider = await seedUser(db, 2502, "sc2-outsider")
+    const [org] = await db
+      .insert(orgs)
+      .values({ githubSlug: "sc2-acme", name: "Acme" })
+      .returning({ id: orgs.id })
+    if (!org) throw new Error("seed org failed")
+    await db.insert(userOrgs).values({ userId: member, orgId: org.id })
+
+    const { id: projectId } = await projectsRepo.upsertOwned(db, {
+      identity: { name: "acme-widget", slug: "sc2-acme-widget" },
+      owner: { kind: "org", orgId: org.id },
+    })
+    await seedSession(db, {
+      id: "sc2-org-session",
+      userId: member,
+      projectId,
+      title: "Org session",
+      updatedAt: new Date(),
+    })
+
+    expect((await listAs(db, member)).map((s) => s.id)).toContain("sc2-org-session")
+    expect((await detailRequest(db, member, "sc2-org-session")).status).toBe(200)
+
+    expect((await listAs(db, outsider)).map((s) => s.id)).not.toContain("sc2-org-session")
+    expect((await detailRequest(db, outsider, "sc2-org-session")).status).toBe(404)
   })
 })

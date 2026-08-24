@@ -1,6 +1,7 @@
 import type {
   CapturedArtifact,
   CurrentUser,
+  ProjectOwner,
   ProjectSummary,
   RawMessage,
   RawSubagent,
@@ -50,6 +51,18 @@ export const parseCurrentUser = (body: unknown): CurrentUser | null => {
   return { id, githubLogin, email, name, avatarUrl }
 }
 
+const parseProjectOwner = (value: unknown): ProjectOwner | null => {
+  const fields = asFields(value)
+  if (!fields) return null
+
+  const type = str(fields.type)
+  const slug = str(fields.slug)
+  if (type !== "user" && type !== "org") return null
+  if (slug === null) return null
+
+  return { type, slug }
+}
+
 const parseProjectSummary = (value: unknown): ProjectSummary | null => {
   const fields = asFields(value)
   if (!fields) return null
@@ -58,12 +71,14 @@ const parseProjectSummary = (value: unknown): ProjectSummary | null => {
   const name = str(fields.name)
   const slug = str(fields.slug)
   const sessionCount = num(fields.sessionCount)
-  if (id === null || name === null || slug === null || sessionCount === null) return null
+  const owner = parseProjectOwner(fields.owner)
+  if (id === null || name === null || slug === null || sessionCount === null || owner === null)
+    return null
 
   const lastActiveAt = nullableStr(fields.lastActiveAt)
   if (lastActiveAt === undefined) return null
 
-  return { id, name, slug, sessionCount, lastActiveAt }
+  return { id, name, slug, owner, sessionCount, lastActiveAt }
 }
 
 export const parseProjectList = (body: unknown): ReadonlyArray<ProjectSummary> | null => {
@@ -144,13 +159,13 @@ const parseSessionSummary = (value: unknown): SessionSummary | null => {
   if (!fields) return null
 
   const id = str(fields.id)
+  const projectId = str(fields.projectId)
   const projectName = str(fields.projectName)
-  const projectSlug = str(fields.projectSlug)
   const userLogin = str(fields.userLogin)
   const status = str(fields.status)
   const lastActiveAt = str(fields.lastActiveAt)
   const tokensTotal = num(fields.tokensTotal)
-  if (id === null || projectName === null || projectSlug === null) return null
+  if (id === null || projectId === null || projectName === null) return null
   if (userLogin === null || status === null || lastActiveAt === null) return null
   if (tokensTotal === null) return null
 
@@ -161,8 +176,8 @@ const parseSessionSummary = (value: unknown): SessionSummary | null => {
   return {
     id,
     title,
+    projectId,
     projectName,
-    projectSlug,
     userLogin,
     repo: parseRepo(fields.repo),
     durationMs,
@@ -313,11 +328,11 @@ const parseFacts = (value: unknown): SessionFacts | null => {
   if (!fields) return null
 
   const id = str(fields.id)
+  const projectId = str(fields.projectId)
   const projectName = str(fields.projectName)
-  const projectSlug = str(fields.projectSlug)
   const userLogin = str(fields.userLogin)
   const lastActiveAt = str(fields.lastActiveAt)
-  if (id === null || projectName === null || projectSlug === null) return null
+  if (id === null || projectId === null || projectName === null) return null
   if (userLogin === null || lastActiveAt === null) return null
 
   const title = nullableStr(fields.title)
@@ -327,8 +342,8 @@ const parseFacts = (value: unknown): SessionFacts | null => {
   return {
     id,
     title,
+    projectId,
     projectName,
-    projectSlug,
     userLogin,
     repo: parseRepo(fields.repo),
     durationMs,

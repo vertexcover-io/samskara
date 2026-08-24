@@ -7,8 +7,9 @@ local, per-machine, and hard to read. Samskara watches them, ships the sessions 
 server you run, and gives you a web UI to browse and search them — across projects, across
 machines, across everyone on the team.
 
-Capture is opt-in per folder. Nothing leaves your machine until you run `samskara enable` in a
-project.
+Capture is opt-in per folder. No session content leaves your machine until you run
+`samskara enable` in a project — but `enable` itself talks to the server: it needs you already
+logged in and the server reachable, and it exits 1 without changing anything if either is missing.
 
 ## What gets captured
 
@@ -90,6 +91,16 @@ bun run seed:org YOUR_GITHUB_ORG_SLUG
 Only members of a seeded org can log in. If your GitHub account is not in that org, the callback
 will reject you.
 
+By default, seeding an org auto-adds its GitHub members the first time each of them logs in. Pass
+`--no-auto-add` to seed an org whose membership is granted by hand instead:
+
+```sh
+bun run seed:org YOUR_GITHUB_ORG_SLUG --no-auto-add
+```
+
+Every login re-checks the user's current GitHub orgs and removes any samskara org link GitHub no
+longer lists, so leaving an org on GitHub revokes access to that org's projects on the next login.
+
 ### 5. Start it
 
 ```sh
@@ -148,14 +159,18 @@ from the account menu. A code never expires but works only once. The token it re
 
 | Command | What it does |
 |---|---|
-| `samskara enable [path]` | Capture this folder (defaults to the current directory). |
+| `samskara enable [path]` | Register this folder with the server and start capturing it (defaults to the current directory). |
 | `samskara enable --all` | Also send sessions recorded *before* you enabled it. |
 | `samskara enable --sync-from 2026-07-01` | Only send sessions started after that date. |
 | `samskara disable [path]` | Stop capturing locally. Sessions already uploaded stay on the server. |
 
-By default `enable` starts the clock now, so turning capture on for an old project does not
-retroactively upload years of history. Re-running plain `enable` on an already-enabled folder
-changes nothing — pass `--all` or `--sync-from` to move the cutoff.
+`enable` calls `POST /api/projects` to register the folder, so it needs a stored login and a
+reachable server — with either missing, it exits 1 and writes nothing. By default it also starts
+the clock now, so turning capture on for an old project does not retroactively upload years of
+history. Re-running plain `enable` on an already-enabled folder does not move the cutoff — pass
+`--all` or `--sync-from` for that — but it can still rewrite the stored `projectId` in
+`projects.json` if the server now resolves this folder to a different project (for example, once
+its GitHub org gets seeded).
 
 ### Day to day
 
@@ -241,6 +256,7 @@ Filters you can combine with it: `project`, `user`, `repo`, `branch`, `pr`, `com
 | POST | `/api/auth/cli-code` | web | mint a pairing code |
 | POST | `/api/auth/cli-exchange` | none | redeem a code for a CLI token |
 | GET | `/api/projects` | web | projects with session counts |
+| POST | `/api/projects` | cli | find or create the project for a folder; org-owned when its GitHub org is registered and the caller is a member |
 | GET | `/api/sync-status` | web | every user, every project they belong to, and their own last-synced time |
 | GET | `/api/sessions` | web | session list, search and filters |
 | GET | `/api/sessions/:id` | web | one session with messages, tools, subagents, tokens |

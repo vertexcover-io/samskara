@@ -71,7 +71,7 @@ export const Projects = () => {
           <li key={project.id}>
             <ProjectCard
               project={project}
-              to={`/sessions?project=${encodeURIComponent(project.slug)}`}
+              to={`/sessions?project=${encodeURIComponent(project.id)}`}
             />
           </li>
         ))}

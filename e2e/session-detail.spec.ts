@@ -1,5 +1,5 @@
 import { expect, test } from "./fixtures/auth.js"
-import { type SeedSpec, seedDatabase } from "./seed.js"
+import { type SeedSpec, projectId, seedDatabase } from "./seed.js"
 
 const SEED: SeedSpec = {
   projects: [
@@ -75,7 +75,7 @@ test.beforeEach(async () => {
 test("S44: opening a session from the filtered list shows three tabs with Conversation selected, the inline-tools toggle reveals tool calls, the annex reveals its branch, Escape restores focus to the trigger, and Artifacts renders its viewer", async ({
   authedPage: page,
 }) => {
-  await page.goto("/sessions?project=samskara")
+  await page.goto(`/sessions?project=${projectId("samskara")}`)
   await page.getByRole("button", { name: /Make ingest idempotent/ }).click()
 
   await expect(page).toHaveURL(/\/sessions\/e2e-detail-1$/)

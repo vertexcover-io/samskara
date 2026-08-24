@@ -4,14 +4,20 @@ import { E2E_USER_ID } from "../seed.js"
 
 const JWT_SECRET = process.env.JWT_SECRET ?? "e2e-secret"
 
-export const mintSessionToken = (subject: string = E2E_USER_ID): Promise<string> =>
+const signToken = (subject: string, audience: "web" | "cli"): Promise<string> =>
   new SignJWT({})
     .setProtectedHeader({ alg: "HS256" })
     .setIssuer("samskara")
-    .setAudience("web")
+    .setAudience(audience)
     .setSubject(subject)
     .setExpirationTime("7d")
     .sign(new TextEncoder().encode(JWT_SECRET))
+
+export const mintSessionToken = (subject: string = E2E_USER_ID): Promise<string> =>
+  signToken(subject, "web")
+
+export const mintCliToken = (subject: string = E2E_USER_ID): Promise<string> =>
+  signToken(subject, "cli")
 
 export const test = base.extend<{ authedPage: Page }>({
   authedPage: async ({ page, context }, use) => {

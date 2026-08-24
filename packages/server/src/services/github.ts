@@ -59,11 +59,18 @@ export const createGithubClient = (env: Env): GithubClient => ({
   },
 
   async getOrgs(accessToken) {
-    const res = await fetch("https://api.github.com/user/orgs", {
-      headers: jsonHeaders(accessToken),
-    })
-    const body = (await readJson(res, "orgs")) as ReadonlyArray<{ login: string }>
-    return body.map((org) => org.login.toLowerCase())
+    const perPage = 100
+    const maxPages = 10
+    const logins: string[] = []
+    for (let page = 1; page <= maxPages; page++) {
+      const res = await fetch(`https://api.github.com/user/orgs?per_page=${perPage}&page=${page}`, {
+        headers: jsonHeaders(accessToken),
+      })
+      const body = (await readJson(res, "orgs")) as ReadonlyArray<{ login: string }>
+      logins.push(...body.map((org) => org.login.toLowerCase()))
+      if (body.length < perPage) break
+    }
+    return logins
   },
 
   async getVerifiedEmails(accessToken) {

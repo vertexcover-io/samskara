@@ -16,8 +16,8 @@ const user: CurrentUser = {
 const session: SessionSummary = {
   id: "s-1",
   title: "Port the session detail surface",
+  projectId: "p-1",
   projectName: "Samskara",
-  projectSlug: "samskara",
   userLogin: "maya",
   repo: null,
   durationMs: 900_000,

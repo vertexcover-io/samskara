@@ -32,8 +32,8 @@ export const message = (overrides: Partial<RawMessage> = {}): RawMessage => {
 export const facts = (overrides: Partial<SessionFacts> = {}): SessionFacts => ({
   id: "s-1",
   title: "Make ingest idempotent",
+  projectId: "p-1",
   projectName: "Samskara",
-  projectSlug: "samskara",
   userLogin: "ritesh",
   repo: null,
   durationMs: 1_451_000,

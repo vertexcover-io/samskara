@@ -284,7 +284,7 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
     if (!victim) throw new Error("seed victim failed")
     const [victimProject] = await db
       .insert(projects)
-      .values({ name: "victim", slug: "victim-proj", ownerId: victim.id })
+      .values({ name: "victim", slug: "victim-proj", ownerUserId: victim.id })
       .returning()
     if (!victimProject) throw new Error("seed victim project failed")
 

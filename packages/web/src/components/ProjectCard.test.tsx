@@ -8,6 +8,7 @@ const fullProject: ProjectSummary = {
   id: "p-1",
   name: "Samskara",
   slug: "samskara",
+  owner: { type: "user", slug: "ritesh" },
   sessionCount: 12,
   lastActiveAt: "2026-02-01T09:30:00.000Z",
 }
@@ -49,4 +50,32 @@ test("S3: an unavailable last-active field renders the word 'unavailable' rather
   const status = screen.getByRole("status")
   expect(status).toHaveTextContent(/no sessions captured/i)
   expect(status.textContent?.trim()).not.toBe("")
+})
+
+test("SC31: an org-owned project's card shows the owning org's slug", () => {
+  render(
+    <TestRouter initialEntries={["/projects"]}>
+      <ProjectCard
+        project={{ ...fullProject, owner: { type: "org", slug: "acme" } }}
+        to="/sessions?project=p-1"
+      />
+    </TestRouter>,
+  )
+
+  const card = within(screen.getByRole("link"))
+  expect(card.getByText(/acme/)).toBeInTheDocument()
+})
+
+test("SC31: a personal project's card shows no owner line and not the owner's own slug", () => {
+  render(
+    <TestRouter initialEntries={["/projects"]}>
+      <ProjectCard
+        project={{ ...fullProject, owner: { type: "user", slug: "ritesh" } }}
+        to="/sessions?project=p-1"
+      />
+    </TestRouter>,
+  )
+
+  const card = within(screen.getByRole("link"))
+  expect(card.queryByText(/ritesh/)).not.toBeInTheDocument()
 })

@@ -7,9 +7,18 @@ import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import { buildApp } from "../app.js"
 import { type Db, createDb } from "../db/client.js"
-import { artifact, projects, sessions, userProjectGrant, users } from "../db/schema.js"
+import {
+  artifact,
+  orgs,
+  projects,
+  sessions,
+  userOrgs,
+  userProjectGrant,
+  users,
+} from "../db/schema.js"
 import type { Env } from "../lib/env.js"
 import { signToken } from "../lib/jwt.js"
+import * as projectsRepo from "../repositories/projects.repo.js"
 import { rangeResponse } from "./artifacts.js"
 
 // Pure-function boundary cases for `rangeResponse` -- no Postgres/HTTP needed, so these run
@@ -172,7 +181,7 @@ describe.skipIf(!dockerAvailable())("artifact read routes", () => {
 
     const [project] = await db
       .insert(projects)
-      .values({ name: "read-widget", slug: "artifact-read-widget", ownerId })
+      .values({ name: "read-widget", slug: "artifact-read-widget", ownerUserId: ownerId })
       .returning()
     if (!project) throw new Error("seed project failed")
 
@@ -180,7 +189,7 @@ describe.skipIf(!dockerAvailable())("artifact read routes", () => {
     // route that simply refuses every caller.
     const [foreignProject] = await db
       .insert(projects)
-      .values({ name: "foreign", slug: "artifact-foreign", ownerId: strangerId })
+      .values({ name: "foreign", slug: "artifact-foreign", ownerUserId: strangerId })
       .returning()
     if (!foreignProject) throw new Error("seed foreign project failed")
 
@@ -554,5 +563,48 @@ describe.skipIf(!dockerAvailable())("artifact read routes", () => {
     expect((await get(`/api/artifacts/${id}`, cliToken)).status).toBe(401)
     expect((await get(`/api/artifacts/${id}/raw`, cliToken)).status).toBe(401)
     expect((await app.request(`/api/artifacts/${id}`)).status).toBe(401)
+  })
+
+  test("SC2: a member of the owning org reads an org project's artifact; a non-member is refused", async () => {
+    const seedUser = async (githubId: number, login: string): Promise<string> => {
+      const [row] = await db.insert(users).values({ githubId, githubLogin: login }).returning()
+      if (!row) throw new Error(`seed user ${login} failed`)
+      return row.id
+    }
+    const member = await seedUser(7201, "artifact-org-member")
+    const outsider = await seedUser(7202, "artifact-org-outsider")
+    const [org] = await db
+      .insert(orgs)
+      .values({ githubSlug: "artifact-acme", name: "Acme" })
+      .returning({ id: orgs.id })
+    if (!org) throw new Error("seed org failed")
+    await db.insert(userOrgs).values({ userId: member, orgId: org.id })
+
+    const { id: orgProjectId } = await projectsRepo.upsertOwned(db, {
+      identity: { name: "acme-widget", slug: "artifact-acme-widget" },
+      owner: { kind: "org", orgId: org.id },
+    })
+    const orgSessionId = "artifact-org-session"
+    await db
+      .insert(sessions)
+      .values({ id: orgSessionId, source: "claude_code", userId: member, projectId: orgProjectId })
+
+    const id = await seedArtifact({
+      sessionId: orgSessionId,
+      path: "/work/docs/org.md",
+      relativePath: "docs/org.md",
+      mimeType: "text/markdown",
+      isBinary: false,
+      current: Buffer.from("org content\n", "utf8"),
+    })
+
+    const memberToken = await signToken(env, { sub: member, aud: "web" })
+    const outsiderToken = await signToken(env, { sub: outsider, aud: "web" })
+
+    expect((await get(`/api/sessions/${orgSessionId}/artifacts`, memberToken)).status).toBe(200)
+    expect((await get(`/api/artifacts/${id}`, memberToken)).status).toBe(200)
+
+    expect((await get(`/api/sessions/${orgSessionId}/artifacts`, outsiderToken)).status).toBe(404)
+    expect((await get(`/api/artifacts/${id}`, outsiderToken)).status).toBe(404)
   })
 })

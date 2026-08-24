@@ -21,6 +21,7 @@ import * as sessionsRepo from "../repositories/sessions.repo.js"
 import * as subagentsRepo from "../repositories/subagents.repo.js"
 import * as tokenUsageRepo from "../repositories/tokenUsage.repo.js"
 import * as toolRowsRepo from "../repositories/toolRows.repo.js"
+import { findOrCreateProject } from "./projects.js"
 
 type FlatMessage = {
   readonly message: NormalizedMessage
@@ -255,6 +256,7 @@ const storeTokens = async (
 }
 
 const SESSION_NOT_FOUND = Symbol("sessionNotFound")
+const PROJECT_FORBIDDEN = Symbol("projectForbidden")
 
 export type Ctx = { readonly db: Db; readonly log: pino.Logger; readonly userId: string }
 
@@ -264,11 +266,12 @@ export const ingest = async (ctx: Ctx, payload: IngestPayload): Promise<IngestRe
 
   try {
     return await db.transaction(async (tx) => {
-      const projectId = await projectsRepo.upsert(tx, {
-        identity: payload.project,
-        ownerId: userId,
-      })
-      log.info({ projectId, slug: payload.project.slug }, "Project upserted")
+      const claimed = payload.project.projectId
+      if (claimed !== undefined && !(await projectsRepo.canWrite(tx, userId, claimed))) {
+        throw PROJECT_FORBIDDEN
+      }
+      const projectId = claimed ?? (await findOrCreateProject(tx, userId, payload.project)).id
+      log.info({ projectId, slug: payload.project.slug }, "Project resolved")
 
       if (payload.type === "main") {
         await sessionsRepo.upsert(tx, {
@@ -324,6 +327,7 @@ export const ingest = async (ctx: Ctx, payload: IngestPayload): Promise<IngestRe
     })
   } catch (error) {
     if (error === SESSION_NOT_FOUND) return { error: "sessionNotFound" }
+    if (error === PROJECT_FORBIDDEN) return { error: "projectForbidden" }
     throw error
   }
 }

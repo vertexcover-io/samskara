@@ -89,7 +89,7 @@ const SessionHead = ({
         /
       </span>
       <Link
-        to={`/sessions?project=${encodeURIComponent(session.projectSlug)}`}
+        to={`/sessions?project=${encodeURIComponent(session.projectId)}`}
         className="text-custody hover:underline"
       >
         {session.projectName}

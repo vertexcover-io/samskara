@@ -51,7 +51,8 @@ export const resolveProject = async (startDir: string): Promise<ProjectIdentity>
   const remote = await runGitOrNull(["config", "--get", "remote.origin.url"], root)
   const parsed = remote ? parseRemote(remote) : null
   if (parsed) {
-    return { name: parsed.repoName, slug: `${parsed.owner}-${parsed.repoName}`, root }
+    const { host, owner, repoName } = parsed
+    return { name: repoName, slug: `${owner}-${repoName}`, root, remote: { host, owner, repoName } }
   }
 
   return { name: basename(root), slug: slugFromDir(root), root }

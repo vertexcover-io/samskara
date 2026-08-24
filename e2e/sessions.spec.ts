@@ -1,6 +1,12 @@
 import type { Page } from "@playwright/test"
-import { expect, test } from "./fixtures/auth.js"
-import { E2E_OTHER_USER_LOGIN, E2E_USER_LOGIN, seedDatabase } from "./seed.js"
+import { expect, mintSessionToken, test } from "./fixtures/auth.js"
+import {
+  E2E_OTHER_USER_ID,
+  E2E_OTHER_USER_LOGIN,
+  E2E_USER_LOGIN,
+  projectId,
+  seedDatabase,
+} from "./seed.js"
 
 const VISIBLE_REPOSITORY = "samskara"
 const HIDDEN_REPOSITORY = "sealed"
@@ -164,6 +170,12 @@ const SEED = {
       sessions: [{ id: "andromeda-session", title: "Trim the ingest pipeline" }],
     },
     {
+      slug: "acme-widget",
+      name: "acme-widget",
+      org: "acme",
+      sessions: [{ id: "acme-widget-session", title: "Acme widget session" }],
+    },
+    {
       slug: "sealed-project",
       name: "Sealed project",
       owner: "other" as const,
@@ -311,7 +323,7 @@ test("keyword and structured filters combine with AND while authorized vocabular
     ).toBeAttached()
   }
 
-  await page.getByRole("combobox", { name: "Project" }).selectOption("samskara")
+  await page.getByRole("combobox", { name: "Project" }).selectOption(projectId("samskara"))
   await page.getByRole("combobox", { name: "User" }).selectOption(E2E_USER_LOGIN)
   await page.getByRole("combobox", { name: "Repository" }).selectOption({ label: "acme/samskara" })
   await page.getByRole("combobox", { name: "Branch" }).selectOption("feature/search")
@@ -395,13 +407,13 @@ test("invalid filters and ambiguous authorized commit prefixes explain the state
   await expectOnlySession(page, "Structured commit association")
 })
 
-test("project links use accessible link semantics, filters restore through history, and narrow layout has no horizontal overflow", async ({
+test("SC35: project links use accessible link semantics, filters restore through history, and narrow layout has no horizontal overflow", async ({
   authedPage: page,
 }) => {
   await page.goto("/projects")
   await page.getByRole("link", { name: /Samskara/ }).click()
 
-  await expect(page).toHaveURL(/\/sessions\?project=samskara$/)
+  await expect(page).toHaveURL(new RegExp(`/sessions\\?project=${projectId("samskara")}$`))
   await expect(page.getByRole("link", { name: /Pagination ledger 51/ })).toBeVisible()
   await page.getByRole("combobox", { name: "User" }).selectOption(E2E_OTHER_USER_LOGIN)
   await expect(page.getByRole("link", { name: /Wire the auth guard/ })).toBeVisible()
@@ -415,4 +427,43 @@ test("project links use accessible link semantics, filters restore through histo
     () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
   )
   expect(overflow).toBeLessThanOrEqual(0)
+})
+
+test("SC34: clicking an org project card opens its sessions by id and the card shows the org", async ({
+  authedPage: page,
+}) => {
+  await page.goto("/projects")
+
+  const acmeWidgetCard = page.locator(`a[href="/sessions?project=${projectId("acme-widget")}"]`)
+  await expect(acmeWidgetCard).toContainText("acme")
+
+  await acmeWidgetCard.click()
+  await expect(page).toHaveURL(new RegExp(`/sessions\\?project=${projectId("acme-widget")}$`))
+  await expect(page.getByRole("link", { name: /Acme widget session/i })).toBeVisible()
+})
+
+test("SC8: a member sees the org's project card; a non-member does not", async ({
+  authedPage: page,
+  context,
+}) => {
+  // Matched by href rather than accessible name: a dev database can carry an unrelated
+  // "acme-widgets" project whose name would also satisfy a substring/regex name match.
+  const acmeWidgetCard = page.locator(`a[href="/sessions?project=${projectId("acme-widget")}"]`)
+
+  await page.goto("/projects")
+  await expect(acmeWidgetCard).toBeVisible()
+
+  const otherToken = await mintSessionToken(E2E_OTHER_USER_ID)
+  await context.addCookies([
+    {
+      name: "session",
+      value: otherToken,
+      domain: "localhost",
+      path: "/",
+      httpOnly: true,
+      sameSite: "Lax",
+    },
+  ])
+  await page.goto("/projects")
+  await expect(acmeWidgetCard).toHaveCount(0)
 })

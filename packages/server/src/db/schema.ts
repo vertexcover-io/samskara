@@ -13,6 +13,7 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core"
 
@@ -50,6 +51,7 @@ export const orgs = pgTable("orgs", {
   githubOrgId: bigint("github_org_id", { mode: "number" }).unique(),
   githubSlug: text("github_slug").notNull().unique(),
   name: text("name"),
+  autoAddMembers: boolean("autoAddMembers").notNull().default(false),
   createdAt,
   updatedAt,
 })
@@ -98,13 +100,21 @@ export const projects = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     name: text("name").notNull(),
     slug: text("slug").notNull(),
-    ownerId: uuid("ownerId")
-      .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
+    ownerUserId: uuid("ownerId").references(() => users.id, { onDelete: "cascade" }),
+    ownerOrgId: uuid("ownerOrgId").references(() => orgs.id, { onDelete: "cascade" }),
     createdAt: createdAtCamel,
     updatedAt: updatedAtCamel,
   },
-  (t) => [unique("projects_slug_owner_unique").on(t.slug, t.ownerId)],
+  (t) => [
+    check("projects_one_owner_check", sql`(${t.ownerUserId} is null) <> (${t.ownerOrgId} is null)`),
+    uniqueIndex("projects_slug_owner_user_unique")
+      .on(t.slug, t.ownerUserId)
+      .where(sql`${t.ownerOrgId} is null`),
+    uniqueIndex("projects_slug_owner_org_unique")
+      .on(t.slug, t.ownerOrgId)
+      .where(sql`${t.ownerUserId} is null`),
+    index("projects_owner_org_idx").on(t.ownerOrgId),
+  ],
 )
 
 export const userProjectGrant = pgTable(

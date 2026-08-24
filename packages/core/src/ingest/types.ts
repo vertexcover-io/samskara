@@ -356,8 +356,34 @@ export const parsedRecordSchema = z
   })
   .strict()
 
+export const projectRemoteSchema = z
+  .object({ host: nonemptyString, owner: nonemptyString, repoName: nonemptyString })
+  .strict()
+
 export const projectIdentitySchema = z
-  .object({ name: nonemptyString, slug: nonemptyString, root: nonemptyString.optional() })
+  .object({
+    name: nonemptyString,
+    slug: nonemptyString,
+    root: nonemptyString.optional(),
+    projectId: z.string().uuid().optional(),
+    remote: projectRemoteSchema.optional(),
+  })
+  .strict()
+
+export const createProjectRequestSchema = z
+  .object({ name: nonemptyString, slug: nonemptyString, remote: projectRemoteSchema.optional() })
+  .strict()
+
+export const projectOwnerSchema = z
+  .object({ type: z.enum(["user", "org"]), slug: nonemptyString })
+  .strict()
+
+export const createProjectResponseSchema = z
+  .object({
+    id: z.string().uuid(),
+    owner: projectOwnerSchema,
+    reason: z.literal("notMember").optional(),
+  })
   .strict()
 export const agentInfoSchema = z
   .object({
@@ -514,6 +540,10 @@ export type NormalizedContent = z.infer<typeof normalizedContentSchema>
 export type NormalizedMessage = z.infer<typeof normalizedMessageSchema>
 export type ParsedRecord = z.infer<typeof parsedRecordSchema>
 export type ProjectIdentity = z.infer<typeof projectIdentitySchema>
+export type ProjectRemote = z.infer<typeof projectRemoteSchema>
+export type CreateProjectRequest = z.infer<typeof createProjectRequestSchema>
+export type ProjectOwner = z.infer<typeof projectOwnerSchema>
+export type CreateProjectResponse = z.infer<typeof createProjectResponseSchema>
 export type AgentInfo = z.infer<typeof agentInfoSchema>
 export type IngestPayload = z.infer<typeof ingestPayloadSchema>
 
@@ -525,4 +555,5 @@ export type PullRequestEvent = z.infer<typeof pullRequestEventSchema>
 export type IngestResponse =
   | { readonly ingested: number; readonly deduped: number }
   | { readonly error: "sessionNotFound" }
+  | { readonly error: "projectForbidden" }
   | { readonly error: "unauthorized" }

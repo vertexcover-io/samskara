@@ -25,6 +25,19 @@ vi.mock("../watcher/resolveProject.js", () => ({ resolveProject: vi.fn() }))
 
 const identity: ProjectIdentity = { name: "widget", slug: "acme-widget" }
 
+const FAKE_PROJECT_ID = "00000000-0000-4000-8000-000000000001"
+
+const fakeFetchOk = async (): Promise<Response> =>
+  new Response(JSON.stringify({ id: FAKE_PROJECT_ID, owner: { type: "user", slug: "e2e-user" } }), {
+    status: 201,
+  })
+
+const defaultDeps = {
+  apiBase: "http://test",
+  readToken: async () => "test-token",
+  fetch: fakeFetchOk,
+}
+
 beforeEach(() => {
   vi.mocked(resolveProject).mockResolvedValue(identity)
   vi.mocked(watcherPid).mockReturnValue(999)
@@ -47,6 +60,7 @@ describe("enable command", () => {
       const stdout = { write: (text: string) => output.push(text) }
       if (priorState) {
         await enableCommand({
+          ...defaultDeps,
           cwd: "/work/widget",
           now: () => new Date("2026-07-25T10:00:00.000Z"),
           stdout,
@@ -55,6 +69,7 @@ describe("enable command", () => {
       }
 
       const code = await enableCommand({
+        ...defaultDeps,
         cwd: "/work/widget",
         now: () => new Date("2026-07-26T18:30:00.000Z"),
         stdout,
@@ -67,6 +82,7 @@ describe("enable command", () => {
         enabled: true,
         enabledAt: expectedEnabledAt,
         syncFrom: expectedEnabledAt,
+        projectId: FAKE_PROJECT_ID,
       })
     },
   )
@@ -75,6 +91,7 @@ describe("enable command", () => {
     const { output } = await setup()
 
     const code = await enableCommand({
+      ...defaultDeps,
       cwd: "/work/widget",
       now: () => new Date("2026-07-26T18:30:00.000Z"),
       stdout: { write: (text) => output.push(text) },
@@ -88,6 +105,7 @@ describe("enable command", () => {
     const { output } = await setup()
 
     const code = await enableCommand({
+      ...defaultDeps,
       cwd: "/work/widget",
       all: true,
       now: () => new Date("2026-07-26T18:30:00.000Z"),
@@ -103,6 +121,7 @@ describe("enable command", () => {
     const { output } = await setup()
 
     const code = await enableCommand({
+      ...defaultDeps,
       cwd: "/work/widget",
       syncFrom: "2026-07-01T00:00:00.000Z",
       now: () => new Date("2026-07-26T18:30:00.000Z"),
@@ -117,12 +136,14 @@ describe("enable command", () => {
     const { output } = await setup()
     const stdout = { write: (text: string) => output.push(text) }
     await enableCommand({
+      ...defaultDeps,
       cwd: "/work/widget",
       now: () => new Date("2026-07-25T10:00:00.000Z"),
       stdout,
     })
 
     const code = await enableCommand({
+      ...defaultDeps,
       cwd: "/work/widget",
       now: () => new Date("2026-07-26T18:30:00.000Z"),
       stdout,
@@ -140,12 +161,14 @@ describe("enable command", () => {
     const { output } = await setup()
     const stdout = { write: (text: string) => output.push(text) }
     await enableCommand({
+      ...defaultDeps,
       cwd: "/work/widget",
       now: () => new Date("2026-07-25T10:00:00.000Z"),
       stdout,
     })
 
     const code = await enableCommand({
+      ...defaultDeps,
       cwd: "/work/widget",
       syncFrom: "2026-07-01T00:00:00.000Z",
       now: () => new Date("2026-07-26T18:30:00.000Z"),
@@ -166,12 +189,14 @@ describe("enable command", () => {
     const { output } = await setup()
     const stdout = { write: (text: string) => output.push(text) }
     await enableCommand({
+      ...defaultDeps,
       cwd: "/work/widget",
       now: () => new Date("2026-07-25T10:00:00.000Z"),
       stdout,
     })
 
     const code = await enableCommand({
+      ...defaultDeps,
       cwd: "/work/widget",
       all: true,
       now: () => new Date("2026-07-26T18:30:00.000Z"),
@@ -190,6 +215,7 @@ describe("enable command", () => {
     const errors: string[] = []
 
     const code = await enableCommand({
+      ...defaultDeps,
       cwd: "/work/widget",
       syncFrom: "not-a-date",
       now: () => new Date("2026-07-26T18:30:00.000Z"),
@@ -207,6 +233,7 @@ describe("enable command", () => {
     const errors: string[] = []
     const stdout = { write: (text: string) => output.push(text) }
     await enableCommand({
+      ...defaultDeps,
       cwd: "/work/widget",
       now: () => new Date("2026-07-25T10:00:00.000Z"),
       stdout,
@@ -215,6 +242,7 @@ describe("enable command", () => {
     // The already-enabled path reports "nothing to change" -- but the user asked for a
     // cutoff. Accepting a date we cannot read would silently ignore that request.
     const code = await enableCommand({
+      ...defaultDeps,
       cwd: "/work/widget",
       syncFrom: "not-a-date",
       now: () => new Date("2026-07-26T18:30:00.000Z"),
@@ -233,6 +261,7 @@ describe("enable command", () => {
     vi.mocked(resolveProject).mockResolvedValue({ name: "nested", slug: "-work-nested" })
 
     await enableCommand({
+      ...defaultDeps,
       path: "nested",
       cwd: "/work",
       stdout: { write: (text) => output.push(text) },
@@ -259,6 +288,7 @@ describe("enable command", () => {
     })
 
     const code = await enableCommand({
+      ...defaultDeps,
       cwd: "/work/widget",
       stdout: { write: (text) => output.push(text) },
       stderr: { write: () => undefined },
@@ -267,6 +297,214 @@ describe("enable command", () => {
     expect(code).toBe(0)
     expect(daemon.runningPid).toBe(expectedPid)
     expect(await getProject("acme-widget")).toMatchObject({ enabled: true })
+  })
+
+  test("SC36: enable registers the project, stores the id, and names the org", async () => {
+    const { output } = await setup()
+    vi.mocked(resolveProject).mockResolvedValue({
+      name: "widget",
+      slug: "acme-widget",
+      remote: { host: "github.com", owner: "acme", repoName: "widget" },
+    })
+    const requests: Array<{ body: unknown; authorization: string | undefined }> = []
+    const fetch: typeof globalThis.fetch = async (_url, init) => {
+      requests.push({
+        body: init?.body ? JSON.parse(init.body as string) : undefined,
+        authorization: (init?.headers as Record<string, string> | undefined)?.authorization,
+      })
+      return new Response(
+        JSON.stringify({ id: FAKE_PROJECT_ID, owner: { type: "org", slug: "acme" } }),
+        {
+          status: 201,
+        },
+      )
+    }
+
+    const code = await enableCommand({
+      apiBase: "http://test",
+      readToken: async () => "test-token",
+      fetch,
+      cwd: "/work/widget",
+      now: () => new Date("2026-07-26T18:30:00.000Z"),
+      stdout: { write: (text) => output.push(text) },
+    })
+
+    expect(code).toBe(0)
+    expect(requests[0]).toEqual({
+      body: {
+        name: "widget",
+        slug: "acme-widget",
+        remote: { host: "github.com", owner: "acme", repoName: "widget" },
+      },
+      authorization: "Bearer test-token",
+    })
+    expect((await getProject("acme-widget"))?.projectId).toBe(FAKE_PROJECT_ID)
+    expect(output.join("")).toContain("org project")
+    expect(output.join("")).toContain("acme")
+  })
+
+  test("SC37: enable prints the not-member hint", async () => {
+    const { output } = await setup()
+    vi.mocked(resolveProject).mockResolvedValue({
+      name: "widget",
+      slug: "acme-widget",
+      remote: { host: "github.com", owner: "acme", repoName: "widget" },
+    })
+    const fetch: typeof globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          id: FAKE_PROJECT_ID,
+          owner: { type: "user", slug: "e2e-user" },
+          reason: "notMember",
+        }),
+        { status: 201 },
+      )
+
+    const code = await enableCommand({
+      apiBase: "http://test",
+      readToken: async () => "test-token",
+      fetch,
+      cwd: "/work/widget",
+      stdout: { write: (text) => output.push(text) },
+    })
+
+    expect(code).toBe(0)
+    expect(output.join("")).toContain("acme")
+    expect(output.join("")).toContain("personal project")
+    expect((await getProject("acme-widget"))?.projectId).toBe(FAKE_PROJECT_ID)
+  })
+
+  test("SC37b: enable prints the plain personal-project line when notMember arrives without a remote", async () => {
+    const { output } = await setup()
+    vi.mocked(resolveProject).mockResolvedValue({ name: "widget", slug: "widget" })
+    const fetch: typeof globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          id: FAKE_PROJECT_ID,
+          owner: { type: "user", slug: "e2e-user" },
+          reason: "notMember",
+        }),
+        { status: 201 },
+      )
+
+    const code = await enableCommand({
+      apiBase: "http://test",
+      readToken: async () => "test-token",
+      fetch,
+      cwd: "/work/widget",
+      stdout: { write: (text) => output.push(text) },
+    })
+
+    expect(code).toBe(0)
+    expect(output.join("")).not.toContain("undefined")
+    expect(output.join("")).toContain("personal project")
+  })
+
+  test("SC38: enable without a token exits 1 and writes nothing", async () => {
+    const { output } = await setup()
+    const errors: string[] = []
+
+    const code = await enableCommand({
+      apiBase: "http://test",
+      readToken: async () => null,
+      fetch: fakeFetchOk,
+      cwd: "/work/widget",
+      stdout: { write: (text) => output.push(text) },
+      stderr: { write: (text) => errors.push(text) },
+    })
+
+    expect(code).toBe(1)
+    expect(errors.join("")).toContain("samskara login")
+    expect(await getProject("acme-widget")).toBeNull()
+  })
+
+  test("SC39: enable with an unreachable server exits 1 and writes nothing", async () => {
+    const { output } = await setup()
+    const errors: string[] = []
+    const fetch: typeof globalThis.fetch = async () => {
+      throw new Error("ECONNREFUSED")
+    }
+
+    const code = await enableCommand({
+      apiBase: "http://test-server",
+      readToken: async () => "test-token",
+      fetch,
+      cwd: "/work/widget",
+      stdout: { write: (text) => output.push(text) },
+      stderr: { write: (text) => errors.push(text) },
+    })
+
+    expect(code).toBe(1)
+    expect(errors.join("")).toContain("http://test-server")
+    expect(errors.join("")).toContain("SAMSKARA_API_URL")
+    expect(await getProject("acme-widget")).toBeNull()
+  })
+
+  test("SC40: enable with a rejected token exits 1 with a login hint", async () => {
+    const { output } = await setup()
+    const errors: string[] = []
+    const fetch: typeof globalThis.fetch = async () => new Response("unauthorized", { status: 401 })
+
+    const code = await enableCommand({
+      apiBase: "http://test",
+      readToken: async () => "stale-token",
+      fetch,
+      cwd: "/work/widget",
+      stdout: { write: (text) => output.push(text) },
+      stderr: { write: (text) => errors.push(text) },
+    })
+
+    expect(code).toBe(1)
+    expect(errors.join("")).toContain("samskara login")
+    expect(await getProject("acme-widget")).toBeNull()
+  })
+
+  test("SC41 (regression): re-running enable refreshes a missing projectId and otherwise changes nothing", async () => {
+    const { output } = await setup()
+    const stdout = { write: (text: string) => output.push(text) }
+    await upsertProject("acme-widget", {
+      name: "widget",
+      path: "/work/widget",
+      enabled: true,
+      enabledAt: "2026-07-25T10:00:00.000Z",
+      syncFrom: "2026-07-25T10:00:00.000Z",
+    })
+
+    const first = await enableCommand({
+      ...defaultDeps,
+      cwd: "/work/widget",
+      now: () => new Date("2026-07-26T18:30:00.000Z"),
+      stdout,
+    })
+
+    expect(first).toBe(0)
+    expect(await getProject("acme-widget")).toEqual({
+      name: "widget",
+      path: "/work/widget",
+      enabled: true,
+      enabledAt: "2026-07-25T10:00:00.000Z",
+      syncFrom: "2026-07-25T10:00:00.000Z",
+      projectId: FAKE_PROJECT_ID,
+    })
+    expect(output.join("")).not.toContain("Nothing to change")
+
+    const second = await enableCommand({
+      ...defaultDeps,
+      cwd: "/work/widget",
+      now: () => new Date("2026-07-27T18:30:00.000Z"),
+      stdout,
+    })
+
+    expect(second).toBe(0)
+    expect(await getProject("acme-widget")).toEqual({
+      name: "widget",
+      path: "/work/widget",
+      enabled: true,
+      enabledAt: "2026-07-25T10:00:00.000Z",
+      syncFrom: "2026-07-25T10:00:00.000Z",
+      projectId: FAKE_PROJECT_ID,
+    })
+    expect(output.join("")).toContain("Nothing to change")
   })
 })
 

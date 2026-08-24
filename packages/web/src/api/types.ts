@@ -1,7 +1,13 @@
+export type ProjectOwner = {
+  readonly type: "user" | "org"
+  readonly slug: string
+}
+
 export type ProjectSummary = {
   readonly id: string
   readonly name: string
   readonly slug: string
+  readonly owner: ProjectOwner
   readonly sessionCount: number
   readonly lastActiveAt: string | null
 }
@@ -41,8 +47,8 @@ export type SessionSearchMatch = {
 export type SessionSummary = {
   readonly id: string
   readonly title: string | null
+  readonly projectId: string
   readonly projectName: string
-  readonly projectSlug: string
   readonly userLogin: string
   readonly repo: SessionRepo | null
   readonly durationMs: number | null
@@ -89,8 +95,8 @@ export type SessionListPayload = {
 export type SessionFacts = {
   readonly id: string
   readonly title: string | null
+  readonly projectId: string
   readonly projectName: string
-  readonly projectSlug: string
   readonly userLogin: string
   readonly repo: SessionRepo | null
   readonly durationMs: number | null

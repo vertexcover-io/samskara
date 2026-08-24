@@ -65,15 +65,15 @@ describe.skipIf(!dockerAvailable())("identity mesh schema", () => {
     const [b] = await db.insert(users).values({ githubId: 12, githubLogin: "owner-b" }).returning()
     if (!a || !b) throw new Error("insert returned no row")
 
-    await db.insert(projects).values({ name: "widget", slug: "acme-widget", ownerId: a.id })
+    await db.insert(projects).values({ name: "widget", slug: "acme-widget", ownerUserId: a.id })
     const [mine] = await db
       .insert(projects)
-      .values({ name: "widget", slug: "acme-widget", ownerId: b.id })
+      .values({ name: "widget", slug: "acme-widget", ownerUserId: b.id })
       .returning()
     expect(mine).toBeDefined()
 
     await expect(
-      db.insert(projects).values({ name: "widget", slug: "acme-widget", ownerId: a.id }),
+      db.insert(projects).values({ name: "widget", slug: "acme-widget", ownerUserId: a.id }),
     ).rejects.toThrow()
   })
 
@@ -119,7 +119,7 @@ describe.skipIf(!dockerAvailable())("session data model", () => {
     if (!user) throw new Error("seed user returned no row")
     const [project] = await db
       .insert(projects)
-      .values({ name: `app-${seedCounter}`, slug: `slug-${seedCounter}`, ownerId: user.id })
+      .values({ name: `app-${seedCounter}`, slug: `slug-${seedCounter}`, ownerUserId: user.id })
       .returning()
     if (!project) throw new Error("seed project returned no row")
     return { user, project }

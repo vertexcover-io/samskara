@@ -53,7 +53,7 @@ const validTimeZone = (value: string): boolean => {
 
 export const sessionListQuerySchema = z.object({
   q: nonEmptyUnicode(200).optional(),
-  project: nonEmptyUnicode(255).optional(),
+  project: z.string().uuid().optional(),
   user: nonEmptyUnicode(255).optional(),
   repo: z
     .string()

@@ -112,7 +112,7 @@ describe.skipIf(!dockerAvailable())("artifacts route", () => {
     if (!user) throw new Error("seed user failed")
     const [project] = await db
       .insert(projects)
-      .values({ name: "widget", slug: "artifact-widget", ownerId: user.id })
+      .values({ name: "widget", slug: "artifact-widget", ownerUserId: user.id })
       .returning()
     if (!project) throw new Error("seed project failed")
 
@@ -262,7 +262,7 @@ describe.skipIf(!dockerAvailable())("artifacts route", () => {
     if (!otherUser) throw new Error("seed other user failed")
     const [otherProject] = await db
       .insert(projects)
-      .values({ name: "gadget", slug: "artifact-gadget", ownerId: otherUser.id })
+      .values({ name: "gadget", slug: "artifact-gadget", ownerUserId: otherUser.id })
       .returning()
     if (!otherProject) throw new Error("seed other project failed")
     const otherSessionId = "artifact-session-belongs-to-someone-else"
