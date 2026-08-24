@@ -1,5 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs"
-import { eq, inArray, sql } from "drizzle-orm"
+import { eq, inArray } from "drizzle-orm"
 import type { Db } from "../db/client.js"
 import { createDb } from "../db/client.js"
 import { orgs, projects, userOrgs, users } from "../db/schema.js"
@@ -9,8 +8,6 @@ import * as orgsRepo from "../repositories/orgs.repo.js"
 import * as projectsRepo from "../repositories/projects.repo.js"
 import * as sessionsRepo from "../repositories/sessions.repo.js"
 import * as usersRepo from "../repositories/users.repo.js"
-import { applyEnv, readEnvValue } from "./env-file.js"
-import { mainEnvPath, readMainDatabaseUrl } from "./worktree-env.js"
 
 export const DEV_USER_LOGIN = "samskara-dev"
 export const DEV_USER_GITHUB_ID = 900_001
@@ -125,38 +122,9 @@ export const seedDev = async (db: Db): Promise<SeedDevSummary> => {
   return { userId: user.id, orgSlug: DEV_ORG_SLUG, projectId: project.id, sessionIds, messages }
 }
 
-export type UserSelection =
-  | { readonly kind: "all" }
-  | { readonly kind: "logins"; readonly logins: ReadonlyArray<string> }
-
-/**
- * Unset means every user, not none. The main checkout's database only ever holds accounts that
- * signed in to this machine's own localhost -- in practice just you -- so copying all of them is
- * what makes a new worktree usable with no extra command after setup. `SEED_USERS` exists to
- * narrow that when a shared database makes sweeping everyone the wrong default.
- */
 /** Lets `bun run setup` stay safe to re-run: a database with real projects keeps its own data. */
 export const hasProjects = async (db: Db): Promise<boolean> =>
   (await db.select({ id: projects.id }).from(projects).limit(1)).length > 0
-
-export const parseUserSelection = (raw: string | undefined): UserSelection => {
-  const logins = (raw ?? "")
-    .split(",")
-    .map((login) => login.trim().toLowerCase())
-    .filter((login) => login.length > 0)
-  return logins.length === 0 ? { kind: "all" } : { kind: "logins", logins }
-}
-
-const parseSeedUsers = (raw: string | undefined): ReadonlyArray<string> => {
-  const selection = parseUserSelection(raw)
-  return selection.kind === "all" ? [] : selection.logins
-}
-
-export const withSeedUser = (raw: string | undefined, login: string): string => {
-  const existing = parseSeedUsers(raw)
-  const normalized = login.trim().toLowerCase()
-  return existing.includes(normalized) ? existing.join(",") : [...existing, normalized].join(",")
-}
 
 export type CopiedUser = {
   readonly githubLogin: string
@@ -167,37 +135,16 @@ export type CopiedUser = {
   readonly idPreserved: boolean
 }
 
-export type CopyUsersResult = {
-  readonly copied: ReadonlyArray<CopiedUser>
-  readonly missing: ReadonlyArray<string>
-}
+export type CopyUsersResult = { readonly copied: ReadonlyArray<CopiedUser> }
 
 /**
  * Copies whole rows, uuid included, rather than re-creating users from a github login. The session
  * JWT carries the user's uuid as `sub` and `requireAuth` looks it up in whichever database the
  * worktree points at, so a freshly generated uuid would authenticate as nobody.
  */
-export const copyGithubUsers = async (
-  source: Db,
-  target: Db,
-  selection: UserSelection,
-): Promise<CopyUsersResult> => {
-  const wanted =
-    selection.kind === "all"
-      ? []
-      : selection.logins.map((login) => login.trim().toLowerCase()).filter((l) => l.length > 0)
-  if (selection.kind === "logins" && wanted.length === 0) return { copied: [], missing: [] }
-
-  const sourceUsers =
-    selection.kind === "all"
-      ? await source.select().from(users)
-      : await source
-          .select()
-          .from(users)
-          .where(inArray(sql`lower(${users.githubLogin})`, [...wanted]))
-  const found = new Set(sourceUsers.map((user) => user.githubLogin.toLowerCase()))
-  const missing = wanted.filter((login) => !found.has(login))
-  if (sourceUsers.length === 0) return { copied: [], missing }
+export const copyGithubUsers = async (source: Db, target: Db): Promise<CopyUsersResult> => {
+  const sourceUsers = await source.select().from(users)
+  if (sourceUsers.length === 0) return { copied: [] }
 
   await target.insert(users).values(sourceUsers).onConflictDoNothing({ target: users.githubId })
   const landedUsers = await target
@@ -266,7 +213,7 @@ export const copyGithubUsers = async (
       },
     ]
   })
-  return { copied, missing }
+  return { copied }
 }
 
 const openTarget = () => {
@@ -275,76 +222,35 @@ const openTarget = () => {
     console.error("DATABASE_URL is required")
     process.exit(1)
   }
-  return { url, ...createDb(url) }
+  return createDb(url)
 }
 
-const copyFromMainCheckout = async (target: Db, targetUrl: string, selection: UserSelection) => {
-  // Locating the main checkout means asking git. Outside a repo -- a CI image, a container build --
-  // there is nothing to copy from, and that is not a reason to fail the seed.
-  const sourceUrl = ((): string | null => {
-    try {
-      return readMainDatabaseUrl()
-    } catch {
-      return null
-    }
-  })()
-  if (!sourceUrl) {
-    console.log("no main checkout in reach -- skipping the github user copy")
-    return
-  }
-  if (sourceUrl === targetUrl) {
-    console.log("this is the main checkout -- github users are already here")
-    return
-  }
+/**
+ * `wt:setup` hands the main checkout's database over in SOURCE_DATABASE_URL. Working it out here
+ * instead would mean shelling out to git to find the main worktree, which then has to cope with
+ * not being in a repo at all -- and every caller that wants the copy already knows the URL.
+ */
+const copyFromMainCheckout = async (target: Db): Promise<void> => {
+  const sourceUrl = process.env.SOURCE_DATABASE_URL
+  if (!sourceUrl) return
   const source = createDb(sourceUrl)
   try {
-    const result = await copyGithubUsers(source.db, target, selection)
-    for (const user of result.copied) {
-      const note = user.idPreserved
-        ? "same id, your existing session cookie works here"
-        : `WARNING: landed as ${user.targetId}, not ${user.sourceId} -- an existing cookie will not`
-      console.log(`copied ${user.githubLogin} (${note})`)
+    const { copied } = await copyGithubUsers(source.db, target)
+    for (const user of copied) {
+      if (user.idPreserved) console.log(`copied ${user.githubLogin}`)
+      else
+        console.log(
+          `copied ${user.githubLogin} -- WARNING: new id, an existing cookie will not work`,
+        )
     }
-    if (result.copied.length === 0) console.log("no github users in the main database yet")
-    if (result.missing.length > 0) {
-      console.log(`not in the main database, skipped: ${result.missing.join(", ")}`)
-    }
+    if (copied.length === 0) console.log("no github users to copy yet")
   } finally {
     await source.client.end()
   }
 }
 
-const addSeedUser = async (login: string): Promise<void> => {
-  const target = openTarget()
-  try {
-    await copyFromMainCheckout(target.db, target.url, { kind: "logins", logins: [login] })
-  } finally {
-    await target.client.end()
-  }
-  // Remembered in the main checkout's .env, not this worktree's: that is the file every future
-  // worktree is copied from, so recording it once covers every worktree made after this one.
-  const envPath = mainEnvPath()
-  const text = readFileSync(envPath, "utf8")
-  const next = withSeedUser(readEnvValue(text, "SEED_USERS"), login)
-  writeFileSync(envPath, applyEnv(text, { SEED_USERS: next }))
-  console.log(`SEED_USERS=${next} recorded in ${envPath}`)
-}
-
-const USAGE = "usage: bun run seed:dev [--if-empty] | bun run seed:user GITHUB_LOGIN"
-
 const main = async (): Promise<void> => {
   const args = process.argv.slice(2)
-  const addUserAt = args.indexOf("--add-user")
-  if (addUserAt !== -1) {
-    const login = args[addUserAt + 1]
-    if (!login) {
-      console.error(USAGE)
-      process.exit(1)
-    }
-    await addSeedUser(login)
-    return
-  }
-
   const target = openTarget()
   if (args.includes("--if-empty") && (await hasProjects(target.db))) {
     await target.client.end()
@@ -352,7 +258,7 @@ const main = async (): Promise<void> => {
     return
   }
   const summary = await seedDev(target.db)
-  await copyFromMainCheckout(target.db, target.url, parseUserSelection(process.env.SEED_USERS))
+  await copyFromMainCheckout(target.db)
   await target.client.end()
   console.log(
     `seeded dev data: org ${summary.orgSlug}, ${summary.sessionIds.length} sessions, ${summary.messages} messages`,

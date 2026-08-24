@@ -29,7 +29,6 @@
     "seed:dev": "bun run --cwd packages/server seed:dev",
     "wt:setup": "bun run --cwd packages/server wt:setup",
     "wt:teardown": "bun run --cwd packages/server wt:teardown",
-    "seed:user": "bun run --cwd packages/server seed:user",
     "db:verify": "bun run --cwd packages/server db:verify"
   },
   "devDependencies": {

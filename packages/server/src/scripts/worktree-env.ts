@@ -142,12 +142,8 @@ const dropDatabase = async (adminUrl: string, database: string): Promise<boolean
   }
 }
 
-const run = (script: string, cwd: string, databaseUrl: string): void => {
-  execFileSync("bun", ["run", script], {
-    cwd,
-    env: { ...process.env, DATABASE_URL: databaseUrl },
-    stdio: "inherit",
-  })
+const run = (script: string, cwd: string, env: Readonly<Record<string, string>>): void => {
+  execFileSync("bun", ["run", script], { cwd, env: { ...process.env, ...env }, stdio: "inherit" })
 }
 
 type Layout = {
@@ -180,17 +176,6 @@ const takenOffsets = (siblings: ReadonlyArray<Worktree>): ReadonlySet<number> =>
   return new Set(offsets)
 }
 
-/** The main checkout's env is the source of truth for identities worth copying into a worktree. */
-export const readMainDatabaseUrl = (): string => {
-  const layout = readLayout()
-  const envPath = join(layout.mainRoot, ".env")
-  const url = readEnvValue(readFileSync(envPath, "utf8"), "DATABASE_URL")
-  if (!url) throw new Error(`DATABASE_URL missing from ${envPath}`)
-  return url
-}
-
-export const mainEnvPath = (): string => join(readLayout().mainRoot, ".env")
-
 const setup = async (layout: Layout): Promise<void> => {
   const envPath = join(layout.root, ".env")
   const sourceEnvPath = join(layout.mainRoot, ".env")
@@ -214,9 +199,15 @@ const setup = async (layout: Layout): Promise<void> => {
   const created = await ensureDatabase(replaceDatabase(baseDatabaseUrl, "postgres"), database)
   console.log(`${created ? "created" : "reusing"} database ${database}`)
 
-  run("db:migrate", layout.root, env.DATABASE_URL)
+  run("db:migrate", layout.root, { DATABASE_URL: env.DATABASE_URL })
   const packageJson = readFileSync(join(layout.root, "package.json"), "utf8")
-  if (definesScript(packageJson, "seed:dev")) run("seed:dev", layout.root, env.DATABASE_URL)
+  // SOURCE_DATABASE_URL is what lets the seed copy this machine's github users into the new
+  // database with their uuids intact, so the session cookie you already hold works here.
+  if (definesScript(packageJson, "seed:dev"))
+    run("seed:dev", layout.root, {
+      DATABASE_URL: env.DATABASE_URL,
+      SOURCE_DATABASE_URL: baseDatabaseUrl,
+    })
   else console.log("this branch has no seed:dev script -- database left empty")
 
   console.log(

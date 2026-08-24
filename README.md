@@ -90,7 +90,6 @@ The variables it writes:
 | `COOKIE_SECURE` | `false` for local http, `true` behind https |
 | `JWT_EXPIRES_IN` | session lifetime, default `7d` |
 | `VITE_API_BASE_URL` | API base the SPA calls, `http://localhost:3000` |
-| `SEED_USERS` | optional — narrows which local users a worktree database copies; unset copies all |
 
 ### 3. Start it
 

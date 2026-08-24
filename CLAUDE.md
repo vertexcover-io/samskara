@@ -59,10 +59,10 @@ worktree's fresh database had no such row.
 
 `seed:dev` fixes that: during `wt:setup` it copies every user out of the main checkout's database
 **keeping the same uuid**, along with their org memberships and an admin grant on the demo project.
-A generated uuid would not do — it would authenticate as nobody. Set `SEED_USERS` to a
-comma-separated list to narrow which users get copied; unset means all of them. If a copy warns
-that the id was not preserved, the target database already held that GitHub id under a different
-uuid.
+A generated uuid would not do — it would authenticate as nobody. `wt:setup` passes the main
+database's URL to the seed as `SOURCE_DATABASE_URL`; without it the seed just lays down demo data.
+If a copy warns that the id was not preserved, the target database already held that GitHub id
+under a different uuid.
 
 What still does not work in a worktree is the GitHub round trip itself: clicking "Sign in" sends
 `redirect_uri=http://localhost:PORT/...` and a GitHub OAuth app matches host *and port* exactly
@@ -77,8 +77,7 @@ Main checkout uses `samskara`; a worktree uses `samskara_BRANCH_SLUG`.
 - `bun run db:generate` — generate a migration from `packages/server/src/db/schema.ts`
 - `bun run db:migrate` — the only way to bring a database up to date: drizzle-kit's migrations, then every step in `packages/server/src/db/steps.ts`, against whatever `DATABASE_URL` the local `.env` names
 - `bun run db:verify` — read-only check that every step is already converged
-- `bun run seed:dev` — idempotent dev fixture: dev user, org, project, 3 sessions, plus the real users copied out of the main checkout's database. `--if-empty` makes it a no-op when the database already has projects, which is how `setup` stays safe to re-run
-- `bun run seed:user GITHUB_LOGIN` — escape hatch: copy one named user and pin `SEED_USERS` to them. Not needed normally, since `seed:dev` copies every local user by default
+- `bun run seed:dev` — idempotent dev fixture: dev user, org, project, 3 sessions. With `SOURCE_DATABASE_URL` set it also copies that database's real users across, uuids intact. `--if-empty` makes it a no-op when the database already has projects, which is how `setup` stays safe to re-run
 - `bun run seed:org ORG_SLUG` — register a real GitHub org
 
 **Post-migrate steps.** Some database work cannot live in a migration: `create index

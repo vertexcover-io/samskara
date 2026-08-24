@@ -20,9 +20,7 @@ import {
   MESSAGES_PER_SESSION,
   copyGithubUsers,
   hasProjects,
-  parseUserSelection,
   seedDev,
-  withSeedUser,
 } from "./seed-dev.js"
 
 const dockerAvailable = () => {
@@ -116,36 +114,7 @@ describe.skipIf(!dockerAvailable())("seed:dev fills a fresh worktree database", 
   })
 })
 
-describe("parseUserSelection", () => {
-  test("an unset SEED_USERS means every local user, so setup needs no extra step", () => {
-    expect(parseUserSelection(undefined)).toEqual({ kind: "all" })
-    expect(parseUserSelection("")).toEqual({ kind: "all" })
-    expect(parseUserSelection(" , ")).toEqual({ kind: "all" })
-  })
-
-  test("a set SEED_USERS narrows to exactly those logins", () => {
-    expect(parseUserSelection(" KgRitesh , someone-else ")).toEqual({
-      kind: "logins",
-      logins: ["kgritesh", "someone-else"],
-    })
-  })
-})
-
-describe("withSeedUser", () => {
-  test("adds a login to an empty list", () => {
-    expect(withSeedUser(undefined, "kgritesh")).toBe("kgritesh")
-  })
-
-  test("appends without disturbing the logins already there", () => {
-    expect(withSeedUser("alice", "kgritesh")).toBe("alice,kgritesh")
-  })
-
-  test("does not add the same login twice", () => {
-    expect(withSeedUser("kgritesh", "KgRitesh")).toBe("kgritesh")
-  })
-})
-
-describe.skipIf(!dockerAvailable())("seed:user copies a real github identity", () => {
+describe.skipIf(!dockerAvailable())("copyGithubUsers carries local identities across", () => {
   let container: StartedPostgreSqlContainer
   let teardown: () => Promise<void>
   let source: Db
@@ -198,9 +167,8 @@ describe.skipIf(!dockerAvailable())("seed:user copies a real github identity", (
     await source.insert(userOrgs).values({ userId: real.id, orgId: org.id })
 
     await seedDev(target)
-    const result = await copyGithubUsers(source, target, { kind: "logins", logins: ["kgritesh"] })
+    const result = await copyGithubUsers(source, target)
 
-    expect(result.missing).toEqual([])
     expect(result.copied[0]?.targetId).toBe(real.id)
     expect(result.copied[0]?.idPreserved).toBe(true)
 
@@ -209,7 +177,7 @@ describe.skipIf(!dockerAvailable())("seed:user copies a real github identity", (
   })
 
   test("carries org membership across so org-owned projects stay visible", async () => {
-    await copyGithubUsers(source, target, { kind: "all" })
+    await copyGithubUsers(source, target)
     const [org] = await target.select().from(orgs).where(eq(orgs.githubSlug, "vertexcover-io"))
     expect(org).toBeDefined()
     const memberships = await target
@@ -220,7 +188,7 @@ describe.skipIf(!dockerAvailable())("seed:user copies a real github identity", (
   })
 
   test("grants admin on the demo project so the seeded data is actually browsable", async () => {
-    await copyGithubUsers(source, target, { kind: "all" })
+    await copyGithubUsers(source, target)
     const [demo] = await target.select().from(projects).where(eq(projects.slug, DEV_PROJECT_SLUG))
     const [user] = await target.select().from(users).where(eq(users.githubLogin, "kgritesh"))
     const grants = await target
@@ -231,20 +199,11 @@ describe.skipIf(!dockerAvailable())("seed:user copies a real github identity", (
   })
 
   test("running it twice changes nothing", async () => {
-    await copyGithubUsers(source, target, { kind: "all" })
+    await copyGithubUsers(source, target)
     const before = await target.select().from(users)
-    await copyGithubUsers(source, target, { kind: "all" })
+    await copyGithubUsers(source, target)
     const after = await target.select().from(users)
     expect(after).toHaveLength(before.length)
-  })
-
-  test("reports a login the source database does not have", async () => {
-    const result = await copyGithubUsers(source, target, {
-      kind: "logins",
-      logins: ["nobody-here"],
-    })
-    expect(result.missing).toEqual(["nobody-here"])
-    expect(result.copied).toEqual([])
   })
 
   test("kind:all sweeps up every user the local database has", async () => {
@@ -252,8 +211,7 @@ describe.skipIf(!dockerAvailable())("seed:user copies a real github identity", (
       .insert(users)
       .values({ githubId: 4_444_444, githubLogin: "teammate" })
       .onConflictDoNothing()
-    const result = await copyGithubUsers(source, target, { kind: "all" })
+    const result = await copyGithubUsers(source, target)
     expect(result.copied.map((u) => u.githubLogin).sort()).toContain("teammate")
-    expect(result.missing).toEqual([])
   })
 })

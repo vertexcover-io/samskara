@@ -26,7 +26,6 @@
     "seed:dev": "tsx --env-file=../../.env src/scripts/seed-dev.ts",
     "wt:setup": "tsx src/scripts/worktree-env.ts",
     "wt:teardown": "tsx src/scripts/worktree-env.ts --drop",
-    "seed:user": "tsx --env-file=../../.env src/scripts/seed-dev.ts --add-user",
     "db:migrate:schema": "drizzle-kit migrate",
     "db:verify": "tsx src/scripts/migrate.ts --verify"
   },
