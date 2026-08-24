@@ -80,8 +80,10 @@ export const authRoutes = ({ db, env, githubClient, pairingStore }: Deps) =>
       if (!code) return c.redirect(webUrl(env, "/?error=bad_state"))
 
       const { accessToken } = await githubClient.exchangeCode(code, callbackUrl(env))
-      const profile = await githubClient.getProfile(accessToken)
-      const orgSlugs = await githubClient.getOrgs(accessToken)
+      const [profile, orgSlugs] = await Promise.all([
+        githubClient.getProfile(accessToken),
+        githubClient.getOrgs(accessToken),
+      ])
 
       let registered: ReadonlyArray<RegisteredOrg>
       try {
