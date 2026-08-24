@@ -79,10 +79,8 @@ export const buildPayload = (parts: PayloadParts = {}): SessionDetailPayload => 
     toolCalls,
     subagents,
     tokenUsage: tokens(parts.tokenUsage),
-    // Spread into a fresh array: the server's inferred `commits`/`pullRequests` fields are
-    // built with `.map(...)` and come back mutable, where `parts.commits` is `readonly`.
-    commits: [...(parts.commits ?? [])],
-    pullRequests: [...(parts.pullRequests ?? [])],
+    commits: parts.commits ?? [],
+    pullRequests: parts.pullRequests ?? [],
   }
 }
 
