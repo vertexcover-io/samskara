@@ -1,6 +1,6 @@
 {
-  "id": "f672b7cd-9324-4f6c-9258-688facbfd743",
-  "prevId": "8a2b6e6e-1406-48f7-aad4-d38ab98d8b7f",
+  "id": "fc4c14a6-b0ec-40c4-a923-8f84d1235c71",
+  "prevId": "3af9082d-6528-43d1-ac6f-e1f50acb2122",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -582,7 +582,7 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
@@ -639,6 +639,13 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "autoAddMembers": {
+          "name": "autoAddMembers",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "created_at": {
           "name": "created_at",
@@ -705,7 +712,13 @@
           "name": "ownerId",
           "type": "uuid",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
+        },
+        "ownerOrgId": {
+          "name": "ownerOrgId",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
         },
         "createdAt": {
           "name": "createdAt",
@@ -722,7 +735,67 @@
           "default": "now()"
         }
       },
-      "indexes": {},
+      "indexes": {
+        "projects_slug_owner_user_unique": {
+          "name": "projects_slug_owner_user_unique",
+          "columns": [
+            {
+              "expression": "slug",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "ownerId",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"projects\".\"ownerOrgId\" is null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "projects_slug_owner_org_unique": {
+          "name": "projects_slug_owner_org_unique",
+          "columns": [
+            {
+              "expression": "slug",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "ownerOrgId",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"projects\".\"ownerId\" is null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "projects_owner_org_idx": {
+          "name": "projects_owner_org_idx",
+          "columns": [
+            {
+              "expression": "ownerOrgId",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "projects_ownerId_users_id_fk": {
           "name": "projects_ownerId_users_id_fk",
@@ -736,21 +809,30 @@
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
+        },
+        "projects_ownerOrgId_orgs_id_fk": {
+          "name": "projects_ownerOrgId_orgs_id_fk",
+          "tableFrom": "projects",
+          "tableTo": "orgs",
+          "columnsFrom": [
+            "ownerOrgId"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "projects_slug_owner_unique": {
-          "name": "projects_slug_owner_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "slug",
-            "ownerId"
-          ]
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "projects_one_owner_check": {
+          "name": "projects_one_owner_check",
+          "value": "(\"projects\".\"ownerId\" is null) <> (\"projects\".\"ownerOrgId\" is null)"
         }
       },
-      "policies": {},
-      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.pullRequests": {

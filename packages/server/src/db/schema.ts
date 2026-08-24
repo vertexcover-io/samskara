@@ -157,7 +157,10 @@ export const sessions = pgTable(
     createdAt: createdAtCamel,
     updatedAt: updatedAtCamel,
   },
-  (t) => [index("sessions_projectId_idx").on(t.projectId)],
+  (t) => [
+    index("sessions_projectId_idx").on(t.projectId),
+    index("sessions_user_project_updated_idx").on(t.userId, t.projectId, t.updatedAt),
+  ],
 )
 
 export const messages = pgTable(
@@ -186,7 +189,9 @@ export const messages = pgTable(
     sourceSchemaVersion: integer("sourceSchemaVersion").notNull(),
     isSubagent: boolean("isSubagent").notNull().default(false),
     agentId: text("agentId"),
-    repoId: uuid("repoId").references(() => repos.id),
+    // SET NULL rather than CASCADE: a message belongs to its session, not to a repo. The repo
+    // pointer is a decoration, and removing a repo must not remove conversation history.
+    repoId: uuid("repoId").references(() => repos.id, { onDelete: "set null" }),
     gitBranch: text("gitBranch"),
     gitCommit: text("gitCommit"),
     createdAt: createdAtCamel,

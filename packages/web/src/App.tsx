@@ -6,6 +6,7 @@ import { Login } from "./routes/Login.js"
 import { Projects } from "./routes/Projects.js"
 import { SessionDetail } from "./routes/SessionDetail.js"
 import { Sessions } from "./routes/Sessions.js"
+import { SyncStatus } from "./routes/SyncStatus.js"
 import { AppShell } from "./shell/AppShell.js"
 import { LoadingShell } from "./shell/LoadingShell.js"
 
@@ -31,6 +32,14 @@ export const AppRoutes = () => (
       element={
         <Protected>
           <Projects />
+        </Protected>
+      }
+    />
+    <Route
+      path="/sync-status"
+      element={
+        <Protected>
+          <SyncStatus />
         </Protected>
       }
     />

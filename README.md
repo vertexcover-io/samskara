@@ -214,6 +214,7 @@ Everything the CLI stores lives in `~/.samskara` (override the whole directory w
 | `/projects` | Every project you can read — session count, last activity, last session title |
 | `/sessions` | Session index with search and filters |
 | `/sessions/:id` | One session: Conversation, Timeline, Tool Calls, and Artifacts tabs, with subagent branches you can expand |
+| `/sync-status` | Every user paired with every project they belong to, and when they last synced it — sortable by any column, filterable by user and project |
 
 Filters live in the query string, so any view you are looking at is a link you can paste to a
 teammate, and Back/Forward work the way you expect.
@@ -256,6 +257,7 @@ Filters you can combine with it: `project`, `user`, `repo`, `branch`, `pr`, `com
 | POST | `/api/auth/cli-exchange` | none | redeem a code for a CLI token |
 | GET | `/api/projects` | web | projects with session counts |
 | POST | `/api/projects` | cli | find or create the project for a folder; org-owned when its GitHub org is registered and the caller is a member |
+| GET | `/api/sync-status` | web | every user, every project they belong to, and their own last-synced time |
 | GET | `/api/sessions` | web | session list, search and filters |
 | GET | `/api/sessions/:id` | web | one session with messages, tools, subagents, tokens |
 | GET | `/api/sessions/:id/artifacts` | web | artifacts for a session |
@@ -278,7 +280,7 @@ bun run typecheck    # every package, plus the e2e project
 bun run lint         # biome check .
 bun run format       # biome format --write .
 bun run test         # every package's unit tests
-bun run e2e          # Playwright, boots server + web and seeds the DB
+bun run e2e          # Playwright, on a throwaway database it creates and drops
 bun run e2e:ui       # the same suite in Playwright's UI mode
 bun run cli -- status   # run the CLI from source, without linking
 ```

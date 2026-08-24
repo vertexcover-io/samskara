@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto"
 import postgres from "postgres"
+import { requireDatabaseUrl } from "./db.js"
 
 export const E2E_USER_ID = "00000000-0000-0000-0000-000000000001"
 export const E2E_USER_LOGIN = "e2e-user"
@@ -7,8 +8,7 @@ export const E2E_USER_LOGIN = "e2e-user"
 export const E2E_OTHER_USER_ID = "00000000-0000-0000-0000-000000000002"
 export const E2E_OTHER_USER_LOGIN = "e2e-maya"
 
-const DATABASE_URL =
-  process.env.DATABASE_URL ?? "postgres://samskara:samskara@localhost:5433/samskara"
+const DATABASE_URL = requireDatabaseUrl()
 
 export type SeedRepository = {
   readonly key: string
@@ -209,9 +209,23 @@ const seedStructuredFacts = async (
   }
 }
 
+// Reads the table list from the catalog so a table added later is cleared without an edit here.
+// `schemaname = 'public'` is load-bearing: drizzle's ledger lives in its own schema, and clearing
+// it would make the next `db:migrate` replay all migrations against a database that already has
+// the tables.
+const truncateAll = async (sql: Sql): Promise<void> => {
+  const [row] = await sql<{ statement: string | null }[]>`
+    select 'truncate table '
+           || string_agg(format('%I.%I', schemaname, tablename), ', ')
+           || ' restart identity cascade' as statement
+    from pg_tables
+    where schemaname = 'public'
+  `
+  if (row?.statement) await sql.unsafe(row.statement)
+}
+
 export const seedDatabase = async (spec: SeedSpec): Promise<void> => {
   const sql = postgres(DATABASE_URL)
-  const projectIds = spec.projects.map((project) => projectId(project.slug))
   const orgSlugs = [
     ...new Set([
       ...spec.projects.flatMap((project) => (project.org === undefined ? [] : [project.org])),
@@ -220,38 +234,16 @@ export const seedDatabase = async (spec: SeedSpec): Promise<void> => {
   ]
 
   try {
-    // Every project ID is derived from its E2E-only slug, so this clears hidden-project fixtures
-    // as well as visible ones without touching a non-E2E project owned by the second test user.
-    if (projectIds.length > 0) {
-      await sql`delete from "userProjectGrant" where "projectId" in ${sql(projectIds)}`
-      await sql`delete from projects where id in ${sql(projectIds)}`
-    }
-    await sql`delete from user_orgs where user_id in (${E2E_USER_ID}, ${E2E_OTHER_USER_ID})`
-    // Deleted by slug, not by the deterministic id: the insert below is `on conflict
-    // (github_slug) do update`, so a row a developer created by hand (e.g. `bun run seed:org
-    // acme`, which gets a random id) survives a delete keyed on the deterministic id and every
-    // later insert that assumes that id -- user_orgs, projects."ownerOrgId" -- hits a foreign
-    // key violation. Cascading deletes on those FKs make this safe to run before re-inserting.
-    if (orgSlugs.length > 0) {
-      await sql`delete from orgs where github_slug in ${sql(orgSlugs)}`
-    }
-    // A spec outside this file (e.g. capture-pipeline.spec.ts's real watcher) can create a
-    // project/session/repo trio this seed's projectIds list never names. Clearing every e2e
-    // user's sessions -- cascading their messages/commits -- before the repos delete keeps that
-    // leftover from blocking it on a foreign key.
-    await sql`delete from sessions where "userId" in (${E2E_USER_ID}, ${E2E_OTHER_USER_ID})`
-    await sql`delete from repos where "userId" in (${E2E_USER_ID}, ${E2E_OTHER_USER_ID})`
+    await truncateAll(sql)
 
     await sql`
       insert into users (id, github_id, github_login, email, name)
       values (${E2E_USER_ID}, 999001, ${E2E_USER_LOGIN}, 'e2e@example.com', 'E2E User')
-      on conflict (id) do update set github_login = excluded.github_login
     `
 
     await sql`
       insert into users (id, github_id, github_login, email, name)
       values (${E2E_OTHER_USER_ID}, 999002, ${E2E_OTHER_USER_LOGIN}, 'maya@example.com', 'Maya')
-      on conflict (id) do update set github_login = excluded.github_login
     `
 
     for (const slug of orgSlugs) {

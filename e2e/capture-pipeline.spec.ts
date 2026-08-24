@@ -5,6 +5,7 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 import postgres from "postgres"
+import { requireDatabaseUrl } from "./db.js"
 import { expect, mintCliToken, mintSessionToken, test } from "./fixtures/auth.js"
 import { API_BASE } from "./playwright.config.js"
 import { E2E_OTHER_USER_ID, E2E_USER_ID, orgId, seedDatabase } from "./seed.js"
@@ -19,8 +20,7 @@ import {
   userLine,
 } from "./transcript.js"
 
-const DATABASE_URL =
-  process.env.DATABASE_URL ?? "postgres://samskara:samskara@localhost:5433/samskara"
+const DATABASE_URL = requireDatabaseUrl()
 const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url))
 const CLI_ENTRY = join(REPO_ROOT, "packages/cli/src/index.ts")
 
@@ -224,24 +224,6 @@ const startHarness = async (options: HarnessOptions = {}): Promise<Harness> => {
 
 let harness: Harness
 
-/**
- * `seedDatabase` only removes projects it seeded, but this spec's project and session are
- * created by the pipeline itself. Without this the next test polls against the previous
- * test's rows, is satisfied instantly, and passes without observing any new output.
- */
-const clearPipelineRows = async (): Promise<void> => {
-  const sql = postgres(DATABASE_URL)
-  try {
-    // Artifacts cascade from sessions, but the delete is explicit so a leftover row from a
-    // failed run cannot satisfy the next test's poll instantly.
-    await sql`delete from artifact where "sessionId" = ${SESSION_ID}`
-    await sql`delete from sessions where id = ${SESSION_ID}`
-    await sql`delete from projects where slug = ${PROJECT_SLUG}`
-  } finally {
-    await sql.end()
-  }
-}
-
 /** Starts the daemon for one test; the afterEach hook tears it down. */
 const useHarness = async (options: HarnessOptions = {}): Promise<Harness> => {
   harness = await startHarness(options)
@@ -270,10 +252,10 @@ const awaitCycle = (samskaraHome: string): Promise<CheckpointStore | null> =>
   )
 
 test.beforeEach(async () => {
-  // Clears prior e2e rows and (re)creates the E2E user the CLI token is subject to.
-  await seedDatabase({ projects: [] })
+  // Stop the daemon first: it holds a connection and writes rows while the seed truncates.
   await harnessTeardown()
-  await clearPipelineRows()
+  // Clears every row and (re)creates the E2E user the CLI token is subject to.
+  await seedDatabase({ projects: [] })
 })
 
 const harnessTeardown = async (): Promise<void> => {
@@ -685,9 +667,6 @@ test.describe("capture pipeline", () => {
 
     const state = await readState(samskaraHome)
     expect(state?.checkpoints[writer.mainPath]).toBeUndefined()
-
-    // Clean up the sibling, which uses a different id than clearPipelineRows removes.
-    await sql`delete from sessions where id = ${siblingId}`
   })
 
   test("P10: a syncFrom cutoff in projects.json keeps a session started after it and skips one started before, so enabling a project never retroactively uploads its history", async () => {
@@ -739,8 +718,6 @@ test.describe("capture pipeline", () => {
     const state = await readState(samskaraHome)
     expect(state?.checkpoints[older.mainPath]).toBeUndefined()
     expect(state?.checkpoints[newer.mainPath]).toBeDefined()
-
-    await sql`delete from sessions where id in (${oldId}, ${newId})`
   })
 
   test("P12: a file written inside the project root is captured, and one outside it never is", async () => {
@@ -790,8 +767,6 @@ test.describe("capture pipeline", () => {
     expect(rows.map((row) => row.path)).toEqual([await realpath(inScope)])
     expect(rows[0]?.relativePath).toBe(join("docs", "adr-001.md"))
     expect(rows[0]?.changeKind).toBe("created")
-
-    await sql`delete from artifact where "sessionId" = ${SESSION_ID}`
   })
 
   test("P13: an edited file's backup pointer resolves into a stored base and diff, while an edit whose delta names no backup lands as editedUnknownBase", async () => {
@@ -867,8 +842,6 @@ test.describe("capture pipeline", () => {
     expect(withoutBackup?.changeKind).toBe("editedUnknownBase")
     expect(withoutBackup?.baseContent).toBeNull()
     expect(withoutBackup?.oldFragment).toBe("Was here.")
-
-    await sql`delete from artifact where "sessionId" = ${SESSION_ID}`
   })
 
   test("P14: a captured report's referenced media is captured too, under the same session, while a source file it links is not", async () => {
@@ -958,8 +931,6 @@ test.describe("capture pipeline", () => {
     // The tracked source file and the remote URL are both absent, and neither is a near miss:
     // the assertion above pins the row set exactly.
     expect(rows.some((row) => row.path === source)).toBe(false)
-
-    await sql`delete from artifact where "sessionId" = ${SESSION_ID}`
   })
 
   test("A1: a file the agent edits during a captured session arrives in Postgres with its pre-session content and a diff, without delaying message capture", async () => {
@@ -1066,8 +1037,6 @@ test.describe("capture pipeline", () => {
     // The base is frozen: a re-derived base would be post-edit content and every later diff wrong.
     expect(updated[0]?.baseContent?.toString("utf8")).toBe(ORIGINAL)
     expect(updated[0]?.editCount).toBe(2)
-
-    await sql`delete from artifact where "sessionId" = ${SESSION_ID}`
   })
 
   test("A2: artifacts captured by the real daemon read back through the API, and hostile content is served defused -- a claimed type is never echoed, and HTML and SVG land in an opaque origin", async () => {
@@ -1163,8 +1132,6 @@ test.describe("capture pipeline", () => {
     expect((await asStranger(`/api/artifacts/${html.id}`)).status).toBe(404)
     expect((await asStranger(`/api/artifacts/${html.id}/raw`)).status).toBe(404)
     expect((await asStranger(`/api/sessions/${SESSION_ID}/artifacts`)).status).toBe(404)
-
-    await sql`delete from artifact where "sessionId" = ${SESSION_ID}`
   })
 
   test("A2: a viewer opens a captured session in the browser and reads the real artifact and its diff, with no demo fixture present and no access for a stranger", async ({
@@ -1247,8 +1214,6 @@ test.describe("capture pipeline", () => {
     `
     if (!row) throw new Error("no artifact row to probe the raw route with")
     expect((await asStranger(`/api/artifacts/${row.id}/raw?which=current`)).status).toBe(404)
-
-    await sql`delete from artifact where "sessionId" = ${SESSION_ID}`
   })
 
   test("P11: credentials in a transcript are redacted before upload, so no secret reaches the raw column that stores the whole line", async () => {

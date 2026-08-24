@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 import { SignJWT } from "jose"
 import postgres from "postgres"
+import { requireDatabaseUrl } from "./db.js"
 import { expect, test } from "./fixtures/auth.js"
 import { API_BASE } from "./playwright.config.js"
 import { E2E_USER_ID, seedDatabase } from "./seed.js"
@@ -18,8 +19,7 @@ import {
 } from "./transcript.js"
 
 const JWT_SECRET = process.env.JWT_SECRET ?? "e2e-secret"
-const DATABASE_URL =
-  process.env.DATABASE_URL ?? "postgres://samskara:samskara@localhost:5433/samskara"
+const DATABASE_URL = requireDatabaseUrl()
 const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url))
 const CLI_ENTRY = join(REPO_ROOT, "packages/cli/src/index.ts")
 
@@ -189,25 +189,14 @@ const startHarness = async (): Promise<Harness> => {
 
 let harness: Harness
 
-const clearRows = async (): Promise<void> => {
-  const sql = postgres(DATABASE_URL)
-  try {
-    await sql`delete from sessions where id = ${SESSION_ID}`
-    await sql`delete from projects where slug = ${PROJECT_SLUG}`
-    await sql`delete from repos where "repo_name" in (${SUB_REPO_NAME}, 'widgets', 'birds')`
-  } finally {
-    await sql.end()
-  }
-}
-
 const harnessTeardown = async (): Promise<void> => {
   if (harness) await harness.stop()
 }
 
 test.beforeEach(async () => {
-  await seedDatabase({ projects: [] })
+  // Stop the daemon first: it holds a connection and writes rows while the seed truncates.
   await harnessTeardown()
-  await clearRows()
+  await seedDatabase({ projects: [] })
 })
 
 test.afterEach(harnessTeardown)

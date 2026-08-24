@@ -1,9 +1,9 @@
 import type { ProjectIdentity } from "@samskara/core"
-import { type SQL, and, desc, eq, exists, or, sql } from "drizzle-orm"
+import { type AnyColumn, type SQL, and, desc, eq, exists, or, sql } from "drizzle-orm"
 import type { Querier } from "../db/client.js"
 import { orgs, projects, userOrgs, userProjectGrant, users } from "../db/schema.js"
 
-const orgMemberOfProject = (db: Querier, userId: string) =>
+export const orgMemberOfProject = (db: Querier, userId: string | AnyColumn) =>
   exists(
     db
       .select({ one: sql`1` })

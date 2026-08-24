@@ -10,14 +10,12 @@ import {
   type Sort,
   changedFilters,
 } from "../sessions/filters.js"
+import { TextField, controlClass, labelClass } from "./TextField.js"
 
 const asRange = (value: string): Range => RANGES.find((range) => range === value) ?? "all"
 const asSort = (value: string): Sort => SORTS.find((sort) => sort === value) ?? "recent"
 
-const controlClass =
-  "mt-1 h-9 w-full min-w-0 rounded-xs border border-rule bg-panel-2 px-2 font-mono text-[0.78rem] leading-none text-ink transition-colors hover:border-ink-soft focus-visible:border-custody"
 const selectClass = `${controlClass} mt-0 cursor-pointer appearance-none pr-7`
-const labelClass = "block text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-ink-soft"
 const buttonClass =
   "h-9 rounded-xs border border-ink bg-ink px-4 text-[0.78rem] font-semibold text-panel-2 transition-colors hover:bg-ink-2"
 
@@ -84,7 +82,6 @@ const TextFilter = ({
   readonly hint?: string
   readonly onSubmit: (value: string | null) => void
 }) => {
-  const id = useId()
   const [draft, setDraft] = useState(value ?? "")
   useEffect(() => setDraft(value ?? ""), [value])
 
@@ -96,30 +93,21 @@ const TextFilter = ({
         onSubmit(draft === "" ? null : draft)
       }}
     >
-      <label className={labelClass} htmlFor={id}>
-        {label}
-      </label>
-      <div className="mt-1 flex gap-1.5">
-        <input
-          id={id}
-          className={`${controlClass} mt-0`}
-          value={draft}
-          placeholder={placeholder}
-          onChange={(event) => setDraft(event.target.value)}
-          aria-describedby={hint === undefined ? undefined : `${id}-hint`}
-        />
-        <button
-          type="submit"
-          className="shrink-0 rounded-xs border border-rule bg-panel-2 px-2 font-mono text-[0.72rem] font-semibold hover:border-ink"
-        >
-          Apply
-        </button>
-      </div>
-      {hint === undefined ? null : (
-        <span id={`${id}-hint`} className="sr-only">
-          {hint}
-        </span>
-      )}
+      <TextField
+        label={label}
+        value={draft}
+        onChange={setDraft}
+        placeholder={placeholder}
+        hint={hint}
+        trailing={
+          <button
+            type="submit"
+            className="shrink-0 rounded-xs border border-rule bg-panel-2 px-2 font-mono text-[0.72rem] font-semibold hover:border-ink"
+          >
+            Apply
+          </button>
+        }
+      />
     </form>
   )
 }
