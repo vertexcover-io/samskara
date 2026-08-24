@@ -6,7 +6,7 @@ import {
   MAX_TEXT_BYTES,
   artifactUploadSchema,
 } from "@samskara/core"
-import { Hono } from "hono"
+import { type Context, Hono } from "hono"
 import { z } from "zod"
 import type { Db } from "../db/client.js"
 import { type ServeHeaders, serveHeadersFor } from "../lib/artifact-serving.js"
@@ -103,6 +103,17 @@ export const rangeResponse = (
   }
 }
 
+const serveBytes = (
+  context: Context<{ Variables: AuthVariables }>,
+  found: { readonly bytes: Buffer; readonly isBinary: boolean },
+) => {
+  const serve = serveHeadersFor(found.bytes, found.isBinary)
+  const response = rangeResponse(found.bytes, serve, context.req.header("range"))
+
+  if (response.kind === "unsatisfiable") return context.body(null, 416, response.headers)
+  return context.body(response.body, response.kind === "partial" ? 206 : 200, response.headers)
+}
+
 export const artifactRoutes = ({ db, env }: Deps) =>
   new Hono<{ Variables: AuthVariables }>()
     .post(
@@ -191,15 +202,7 @@ export const artifactRoutes = ({ db, env }: Deps) =>
         )
         if (found === null) return context.json({ error: "artifactNotFound" } as const, 404)
 
-        const serve = serveHeadersFor(found.bytes, found.isBinary)
-        const response = rangeResponse(found.bytes, serve, context.req.header("range"))
-
-        if (response.kind === "unsatisfiable") return context.body(null, 416, response.headers)
-        return context.body(
-          response.body,
-          response.kind === "partial" ? 206 : 200,
-          response.headers,
-        )
+        return serveBytes(context, found)
       },
     )
     .get(
@@ -218,14 +221,6 @@ export const artifactRoutes = ({ db, env }: Deps) =>
 
         // `found.mimeType` is what the client claimed on upload and is never consulted here:
         // echoing it is the stored-XSS vector this route exists to close.
-        const serve = serveHeadersFor(found.bytes, found.isBinary)
-        const response = rangeResponse(found.bytes, serve, context.req.header("range"))
-
-        if (response.kind === "unsatisfiable") return context.body(null, 416, response.headers)
-        return context.body(
-          response.body,
-          response.kind === "partial" ? 206 : 200,
-          response.headers,
-        )
+        return serveBytes(context, found)
       },
     )

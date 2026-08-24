@@ -1,7 +1,7 @@
 import { and, asc, eq, isNotNull, or, sql } from "drizzle-orm"
 import type { Db } from "../db/client.js"
 import { projects, users } from "../db/schema.js"
-import { visibleToUser } from "./projects.repo.js"
+import { memberOfProject, visibleToUser } from "./projects.repo.js"
 
 export type SyncStatusRow = {
   readonly userId: string
@@ -40,6 +40,6 @@ export const listSyncStatus = (db: Db, viewerId: string): Promise<ReadonlyArray<
       lastSyncedAt,
     })
     .from(users)
-    .leftJoin(projects, and(visibleToUser(db, users.id), visibleToUser(db, viewerId)))
+    .leftJoin(projects, and(memberOfProject(db, users.id), visibleToUser(db, viewerId)))
     .where(or(eq(users.id, viewerId), isNotNull(projects.id)))
     .orderBy(sql`${lastSyncedAt} desc nulls last`, asc(users.githubLogin), asc(projects.name))
