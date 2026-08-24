@@ -3,7 +3,7 @@ import { join } from "node:path"
 import { is } from "drizzle-orm"
 import { PgTable, getTableConfig } from "drizzle-orm/pg-core"
 
-type Violation = {
+export type Violation = {
   readonly kind: "table" | "column"
   readonly table: string
   readonly name: string
@@ -12,6 +12,21 @@ type Violation = {
 const CAMEL_CASE = /^[a-z][a-zA-Z0-9]*$/
 
 export const isCamelCase = (name: string): boolean => CAMEL_CASE.test(name)
+
+export const expectedName = (name: string): string | undefined => {
+  const camel = name.replace(/_([a-zA-Z0-9])/g, (_, char: string) => char.toUpperCase())
+  return isCamelCase(camel) ? camel : undefined
+}
+
+export const formatViolation = (source: string, violation: Violation): string => {
+  const identifier =
+    violation.kind === "table" ? violation.table : `${violation.table}.${violation.name}`
+  const label = violation.kind === "table" ? "table name" : "column name"
+  const expected = expectedName(violation.name)
+  const suffix = expected ? ` (expected ${expected})` : ""
+
+  return `${source}  ${identifier}  ${label} is not camelCase${suffix}`
+}
 
 const compare = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0)
 

@@ -5,7 +5,13 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { pgTable, text, uuid } from "drizzle-orm/pg-core"
 import { afterEach, describe, expect, test } from "vitest"
-import { findMigrationViolations, findSchemaViolations, isCamelCase } from "./naming.js"
+import {
+  expectedName,
+  findMigrationViolations,
+  findSchemaViolations,
+  formatViolation,
+  isCamelCase,
+} from "./naming.js"
 import * as schema from "./schema.js"
 
 describe("isCamelCase", () => {
@@ -101,6 +107,21 @@ describe("findMigrationViolations", () => {
 
     expect(findMigrationViolations(dir, 3)).toEqual([])
   })
+
+  test("S17: a rename whose target is snake_case is reported, for both a table and a column", () => {
+    const dir = writeMigrationDir({
+      "0005_rename_back.sql": [
+        'ALTER TABLE "goodTable" RENAME TO "bad_table";',
+        "--> statement-breakpoint",
+        'ALTER TABLE "users" RENAME COLUMN "githubId" TO "github_id";',
+      ].join("\n"),
+    })
+
+    expect(findMigrationViolations(dir, 3)).toEqual([
+      { kind: "table", table: "bad_table", name: "bad_table" },
+      { kind: "column", table: "users", name: "github_id" },
+    ])
+  })
 })
 
 const packageDir = fileURLToPath(new URL("../..", import.meta.url))
@@ -154,3 +175,37 @@ test("S16: `bun run lint` fails and names the column when a snake_case column is
     rmSync(probe, { force: true })
   }
 }, 120_000)
+
+describe("expectedName", () => {
+  test("S18: converts a snake_case name to the camelCase name it should have had", () => {
+    expect(expectedName("github_id")).toBe("githubId")
+    expect(expectedName("is_super_admin")).toBe("isSuperAdmin")
+    expect(expectedName("user_orgs")).toBe("userOrgs")
+  })
+
+  test("S18: offers no suggestion when the conversion still would not be camelCase", () => {
+    expect(expectedName("USER_ID")).toBeUndefined()
+    expect(expectedName("_leading")).toBeUndefined()
+    expect(expectedName("Capital_case")).toBeUndefined()
+  })
+})
+
+describe("formatViolation", () => {
+  test("S19: a column violation names table.column and suggests the camelCase name", () => {
+    expect(
+      formatViolation("schema.ts", { kind: "column", table: "users", name: "github_id" }),
+    ).toBe("schema.ts  users.github_id  column name is not camelCase (expected githubId)")
+  })
+
+  test("S19: a table violation names the table alone", () => {
+    expect(
+      formatViolation("schema.ts", { kind: "table", table: "user_orgs", name: "user_orgs" }),
+    ).toBe("schema.ts  user_orgs  table name is not camelCase (expected userOrgs)")
+  })
+
+  test("S19: the suggestion is omitted when no camelCase name can be derived", () => {
+    expect(formatViolation("schema.ts", { kind: "column", table: "users", name: "USER_ID" })).toBe(
+      "schema.ts  users.USER_ID  column name is not camelCase",
+    )
+  })
+})
