@@ -179,7 +179,9 @@ export const messages = pgTable(
     sourceSchemaVersion: integer("sourceSchemaVersion").notNull(),
     isSubagent: boolean("isSubagent").notNull().default(false),
     agentId: text("agentId"),
-    repoId: uuid("repoId").references(() => repos.id),
+    // SET NULL rather than CASCADE: a message belongs to its session, not to a repo. The repo
+    // pointer is a decoration, and removing a repo must not remove conversation history.
+    repoId: uuid("repoId").references(() => repos.id, { onDelete: "set null" }),
     gitBranch: text("gitBranch"),
     gitCommit: text("gitCommit"),
     createdAt: createdAtCamel,
