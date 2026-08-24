@@ -123,6 +123,8 @@ tints distinguish subagent lanes without turning saturated.
 ### Official inks
 - **Stamp red** (`#9e2a2b`) — status stamps, error flags, active-tab marker, exhibit numbers. Sparing.
 - **Custody indigo** (`#2b4a78`) — the provenance spine, the main agent, provenance links.
+- **Custody lift** (`#8fb0dd`) — the same signal on an ink-filled surface, where `custody` goes
+  dark. The pre-login cover's evidence panel is its only user today.
 
 ### Agent lanes (muted, ledger-appropriate)
 - **Auditor green** (`#3a6a4e`), **Test violet** (`#6f4586`), **Perf ochre** (`#8a5a1f`).
@@ -145,6 +147,8 @@ IDs, token counts, paths, code, and diffs. Monospace is used for *measurement an
 "technical" costume for prose.
 
 ### Ramp (rem, fixed — not fluid)
+- **Cover** — 1.9375rem / 600 (the pre-login cover statement, and the only step above case title;
+  it is the one surface with no filed evidence to stay out of the way of).
 - **Case title** — 1.375rem / 600 (masthead subject line).
 - **Lead** — 0.9375rem / 400 (overview prose).
 - **Body** — 0.875rem / 400 (record prose, base).
