@@ -18,3 +18,4 @@ playwright-report/
 blob-report/
 .playwright/
 .humanlayer
+e2e/fixtures/p12-outside-*/

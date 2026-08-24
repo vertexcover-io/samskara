@@ -1,6 +1,5 @@
 {
   "lockfileVersion": 1,
-  "configVersion": 0,
   "workspaces": {
     "": {
       "name": "samskara",
@@ -55,7 +54,7 @@
         "@hono/zod-validator": "0.7.6",
         "@samskara/core": "workspace:*",
         "drizzle-orm": "0.39.1",
-        "hono": "4.7.0",
+        "hono": "4.13.4",
         "jose": "^6.2.4",
         "pino": "^9",
         "postgres": "3.4.5",
@@ -75,6 +74,7 @@
       "version": "0.0.0",
       "dependencies": {
         "fflate": "^0.8.3",
+        "hono": "4.13.4",
         "mermaid": "^11.16.0",
         "react": "18.3.1",
         "react-dom": "18.3.1",
@@ -84,6 +84,7 @@
         "shiki": "^4.3.1",
       },
       "devDependencies": {
+        "@samskara/server": "workspace:*",
         "@tailwindcss/vite": "4.3.3",
         "@testing-library/jest-dom": "^7.0.0",
         "@testing-library/react": "^16.3.2",
@@ -824,7 +825,7 @@
 
     "help-me": ["help-me@5.0.0", "", {}, "sha512-7xgomUX6ADmcYzFik0HzAxh/73YlKR9bmFzf51CZwR+b6YtzU2m0u49hQCqV6SvlqIqsaxovfwdvbnsw3b/zpg=="],
 
-    "hono": ["hono@4.7.0", "", {}, "sha512-hV97aIR4WYbG30k234sD9B3VNr1ZWdQRmrVF76LKFlmI7O9Yo70mG9+mFwyQ6Sjrz4wH71GfnBxv6CPjcx3QNw=="],
+    "hono": ["hono@4.13.4", "", {}, "sha512-AGEwKIyRMHRv1t8Wjwa3LHxQ61X5CqrdFT+4BRNTpqS5aJNnpl5WLjADb7vFlJzI/8uK7T5QLVApCMQKNa3LgQ=="],
 
     "html-encoding-sniffer": ["html-encoding-sniffer@6.0.0", "", { "dependencies": { "@exodus/bytes": "^1.6.0" } }, "sha512-CV9TW3Y3f8/wT0BRFc1/KAVQ3TUHiXmaAb6VW9vtiMFf7SLoMd1PdAc4W3KFOFETBJUb90KatHqlsZMWV+R9Gg=="],
 

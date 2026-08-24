@@ -9,6 +9,7 @@ const populated: SessionSummary = {
   title: "Port the session detail surface",
   projectId: "p-1",
   projectName: "Samskara",
+  projectSlug: "samskara",
   userLogin: "maya",
   repo: { host: "github.com", owner: "acme", repoName: "samskara" },
   durationMs: 3_723_000,
@@ -110,6 +111,7 @@ test("search evidence renders a supported source label and escaped highlighted t
     match: {
       sourceKind: "toolResult",
       sourceRowId: "tool-1",
+      score: 1.5,
       snippet: [
         { text: "The <script> value ", highlighted: false },
         { text: "timed out", highlighted: true },

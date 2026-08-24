@@ -90,6 +90,7 @@ export type ArtifactSummaryRow = {
   readonly editCount: number
   readonly byteSize: number
   readonly diff: string | null
+  readonly oldFragment: string | null
   readonly hasBase: boolean
   readonly firstSeenAt: string
   readonly lastSeenAt: string
@@ -97,7 +98,6 @@ export type ArtifactSummaryRow = {
 
 export type ArtifactDetailRow = ArtifactSummaryRow & {
   readonly sessionId: string
-  readonly oldFragment: string | null
   readonly currentContent: string | null
   readonly baseContent: string | null
 }
@@ -157,7 +157,7 @@ export const listForSession = async (
   const rows = await visibleArtifact(db, userId, eq(artifact.sessionId, sessionId)).orderBy(
     asc(artifact.relativePath),
   )
-  return rows.map(({ sessionId: _sessionId, oldFragment: _oldFragment, ...summary }) => summary)
+  return rows.map(({ sessionId: _sessionId, ...summary }) => summary)
 }
 
 /**

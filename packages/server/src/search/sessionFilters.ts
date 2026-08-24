@@ -76,6 +76,20 @@ export type SessionListQuery = z.infer<typeof sessionListQuerySchema> & {
   readonly parsedQuery?: SessionQuery
 }
 
+export type SessionPagination = {
+  readonly page: number
+  readonly limit: number
+  readonly total: number
+  readonly totalPages: number
+}
+
+export const paginate = (total: number, page: number, limit: number): SessionPagination => ({
+  page,
+  limit,
+  total,
+  totalPages: Math.ceil(total / limit),
+})
+
 export const parseSessionListQuery = (value: unknown): SessionListQuery => {
   const parsed = sessionListQuerySchema.parse(value)
   return parsed.q === undefined ? parsed : { ...parsed, parsedQuery: parseSessionQuery(parsed.q) }

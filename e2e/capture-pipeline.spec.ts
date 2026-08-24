@@ -428,7 +428,7 @@ test.describe("capture pipeline", () => {
     // The collector never sets a title -- Claude transcripts carry none, so `sessions.title`
     // is NULL. The list is named by the server's `derivedTitle`, which coalesces that NULL
     // with the opening user prompt, so a captured session is never shown as "untitled".
-    const row = page.getByRole("button", { name: /Rescans duplicate rows/ })
+    const row = page.getByRole("link", { name: /Rescans duplicate rows/ })
     await expect(row).toBeVisible()
 
     await row.click()
@@ -730,7 +730,8 @@ test.describe("capture pipeline", () => {
 
     const inScope = join(cwd, "docs", "adr-001.md")
     const excluded = join(cwd, "node_modules", "pkg", "index.js")
-    const outside = join(cwd, "..", "elsewhere.md")
+    const outsideDir = await mkdtemp(join(REPO_ROOT, "e2e", "fixtures", "p12-outside-"))
+    const outside = join(outsideDir, "elsewhere.md")
     await mkdir(join(cwd, "docs"), { recursive: true })
     await mkdir(join(cwd, "node_modules", "pkg"), { recursive: true })
     await writeFile(inScope, "# Decision\n", "utf8")
@@ -767,6 +768,8 @@ test.describe("capture pipeline", () => {
     expect(rows.map((row) => row.path)).toEqual([await realpath(inScope)])
     expect(rows[0]?.relativePath).toBe(join("docs", "adr-001.md"))
     expect(rows[0]?.changeKind).toBe("created")
+
+    await rm(outsideDir, { recursive: true, force: true })
   })
 
   test("P13: an edited file's backup pointer resolves into a stored base and diff, while an edit whose delta names no backup lands as editedUnknownBase", async () => {
@@ -1039,7 +1042,7 @@ test.describe("capture pipeline", () => {
     expect(updated[0]?.editCount).toBe(2)
   })
 
-  test("A2: artifacts captured by the real daemon read back through the API, and hostile content is served defused -- a claimed type is never echoed, and HTML and SVG land in an opaque origin", async () => {
+  test("A2: artifacts captured by the real daemon read back through the API, and an uploaded type is never echoed -- a .js is served as inert text, while HTML and SVG render same-origin by design", async () => {
     const { writer, sql, cwd } = await useHarness({ projectOverride: false, enabled: true })
 
     // Everything an agent plausibly writes, including the two shapes that turn a captured file
@@ -1097,8 +1100,6 @@ test.describe("capture pipeline", () => {
     expect(rawJs.headers.get("x-content-type-options")).toBe("nosniff")
     expect(await rawJs.text()).toBe(SCRIPT_JS)
 
-    // HTML and SVG both render, both in an opaque origin. `allow-same-origin` alongside
-    // `allow-scripts` would cancel the sandbox entirely, so neither may ever carry it.
     for (const [row, body] of [
       [html, REPORT_HTML],
       [svg, DIAGRAM_SVG],
@@ -1106,14 +1107,10 @@ test.describe("capture pipeline", () => {
       const res = await read(`/api/artifacts/${row.id}/raw`)
       expect(res.status).toBe(200)
       expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8")
-
-      const csp = res.headers.get("content-security-policy") ?? ""
-      expect(csp).toContain("sandbox allow-scripts")
-      expect(csp).toContain("default-src 'none'")
-      expect(csp).not.toContain("allow-same-origin")
+      expect(res.headers.get("content-security-policy")).toBeNull()
       expect(res.headers.get("x-content-type-options")).toBe("nosniff")
 
-      // Served unmodified: the protection is the origin, not rewriting the body.
+      // Served unmodified: nothing rewrites the body on the way out.
       expect(await res.text()).toBe(body)
     }
 

@@ -4,10 +4,11 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import { buildApp } from "../app.js"
 import { type Db, createDb } from "../db/client.js"
-import { projects, sessions, userProjectGrant, users } from "../db/schema.js"
+import { orgs, projects, sessions, userOrgs, userProjectGrant, users } from "../db/schema.js"
 import type { Env } from "../lib/env.js"
 import { signToken } from "../lib/jwt.js"
 import * as projectsRepo from "../repositories/projects.repo.js"
+import type { SyncStatusRow } from "../repositories/syncStatus.repo.js"
 
 const dockerAvailable = () => {
   try {
@@ -30,32 +31,24 @@ const env: Env = {
   jwtExpiresIn: "7d",
 }
 
-type SyncStatusRow = {
-  readonly userId: string
-  readonly githubLogin: string
-  readonly name: string | null
-  readonly avatarUrl: string | null
-  readonly projectId: string | null
-  readonly projectName: string | null
-  readonly projectSlug: string | null
-  readonly sessionCount: number
-  readonly lastSyncedAt: string | null
+let githubIds = 0
+const nextGithubId = (): number => {
+  githubIds += 1
+  return githubIds
 }
 
-const seedUser = (
-  db: Db,
-  githubId: number,
-  login: string,
-  email: string | null = null,
-): Promise<string> =>
+const seedUser = (db: Db, login: string, email: string | null = null): Promise<string> =>
   db
     .insert(users)
-    .values({ githubId, githubLogin: login, email })
+    .values({ githubId: nextGithubId(), githubLogin: login, email })
     .returning({ id: users.id })
     .then(([row]) => {
       if (!row) throw new Error("no seeded user")
       return row.id
     })
+
+const seedProject = (db: Db, name: string, slug: string, ownerId: string): Promise<string> =>
+  projectsRepo.upsert(db, { identity: { name, slug }, ownerId })
 
 const seedSession = (
   db: Db,
@@ -111,47 +104,40 @@ describe.skipIf(!dockerAvailable())("GET /api/sync-status", () => {
   beforeEach(async () => {
     await db.delete(sessions)
     await db.delete(userProjectGrant)
+    await db.delete(userOrgs)
     await db.delete(projects)
+    await db.delete(orgs)
     await db.delete(users)
   })
 
-  test("S7: every membership returns a row, including a project with no sessions - not a dropped row", async () => {
-    const owner1 = await seedUser(db, 111, "owner-one")
-    const owner2 = await seedUser(db, 222, "owner-two")
-    const p1 = await projectsRepo.upsert(db, {
-      identity: { name: "Project One", slug: "project-one" },
-      ownerId: owner1,
-    })
-    const p2 = await projectsRepo.upsert(db, {
-      identity: { name: "Project Two", slug: "project-two" },
-      ownerId: owner1,
-    })
-    const p3 = await projectsRepo.upsert(db, {
-      identity: { name: "Empty Project", slug: "empty-project" },
-      ownerId: owner2,
-    })
+  test("S7: every membership the viewer can see returns a row, including a project with no sessions - not a dropped row", async () => {
+    const owner = await seedUser(db, "owner-one")
+    const p1 = await seedProject(db, "Project One", "project-one", owner)
+    const p2 = await seedProject(db, "Project Two", "project-two", owner)
+    const empty = await seedProject(db, "Empty Project", "empty-project", owner)
     await seedSession(db, {
       id: "s-1",
-      userId: owner1,
+      userId: owner,
       projectId: p1,
       updatedAt: new Date("2026-01-01T00:00:00Z"),
     })
     await seedSession(db, {
       id: "s-2",
-      userId: owner1,
+      userId: owner,
       projectId: p2,
       updatedAt: new Date("2026-01-02T00:00:00Z"),
     })
 
-    const rows = await rowsAs(db, owner1)
+    const rows = await rowsAs(db, owner)
     expect(rows).toHaveLength(3)
-
-    const empty = rows.find((row) => row.projectId === p3)
-    expect(empty).toMatchObject({ sessionCount: 0, lastSyncedAt: null })
+    expect(rows.find((row) => row.projectId === empty)).toMatchObject({
+      sessionCount: 0,
+      lastSyncedAt: null,
+    })
   })
 
   test("S8: a user who belongs to no project returns exactly one row with null project fields", async () => {
-    const lonely = await seedUser(db, 333, "lonely-user")
+    const lonely = await seedUser(db, "lonely-user")
 
     const rows = await rowsAs(db, lonely)
     const lonelyRows = rows.filter((row) => row.userId === lonely)
@@ -167,12 +153,9 @@ describe.skipIf(!dockerAvailable())("GET /api/sync-status", () => {
   })
 
   test("S9: the sync time belongs to that user, not the project - a granted user's own session time, not the owner's", async () => {
-    const owner = await seedUser(db, 444, "shared-owner")
-    const grantee = await seedUser(db, 555, "shared-grantee")
-    const projectId = await projectsRepo.upsert(db, {
-      identity: { name: "Shared", slug: "shared" },
-      ownerId: owner,
-    })
+    const owner = await seedUser(db, "shared-owner")
+    const grantee = await seedUser(db, "shared-grantee")
+    const projectId = await seedProject(db, "Shared", "shared", owner)
     await projectsRepo.grant(db, grantee, projectId, "viewer")
     await seedSession(db, {
       id: "s-owner",
@@ -197,7 +180,7 @@ describe.skipIf(!dockerAvailable())("GET /api/sync-status", () => {
   })
 
   test("S10: a request without a web session is refused, both with no cookie and a cli-audience token", async () => {
-    const owner = await seedUser(db, 666, "guarded-owner")
+    const owner = await seedUser(db, "guarded-owner")
     const app = buildApp(db, env)
 
     const anonymous = await app.request("/api/sync-status")
@@ -213,7 +196,7 @@ describe.skipIf(!dockerAvailable())("GET /api/sync-status", () => {
   })
 
   test("S11: the response never carries an email address, even though every seeded user has one", async () => {
-    const owner = await seedUser(db, 777, "emailed-owner", "owner@example.com")
+    const owner = await seedUser(db, "emailed-owner", "owner@example.com")
 
     const { body } = await readAs(db, owner)
     const rows = (body as { rows: ReadonlyArray<Record<string, unknown>> }).rows
@@ -225,23 +208,73 @@ describe.skipIf(!dockerAvailable())("GET /api/sync-status", () => {
     expect(rows[0]?.githubLogin).toBe("emailed-owner")
   })
 
-  test("S12: two projects sharing the same slug under different owners return as two distinct rows", async () => {
-    const ownerA = await seedUser(db, 888, "slug-owner-a")
-    const ownerB = await seedUser(db, 999, "slug-owner-b")
-    const projectA = await projectsRepo.upsert(db, {
-      identity: { name: "Samskara A", slug: "samskara" },
-      ownerId: ownerA,
-    })
-    const projectB = await projectsRepo.upsert(db, {
-      identity: { name: "Samskara B", slug: "samskara" },
-      ownerId: ownerB,
-    })
+  test("S12: two projects sharing a slug under different owners stay apart - the viewer sees only their own", async () => {
+    const ownerA = await seedUser(db, "slug-owner-a")
+    const ownerB = await seedUser(db, "slug-owner-b")
+    const projectA = await seedProject(db, "Samskara A", "samskara", ownerA)
+    await seedProject(db, "Samskara B", "samskara", ownerB)
 
     const rows = await rowsAs(db, ownerA)
     const matching = rows.filter((row) => row.projectSlug === "samskara")
 
-    expect(matching).toHaveLength(2)
-    expect(new Set(matching.map((row) => row.projectId))).toEqual(new Set([projectA, projectB]))
-    expect(new Set(matching.map((row) => row.userId))).toEqual(new Set([ownerA, ownerB]))
+    expect(matching).toHaveLength(1)
+    expect(matching[0]).toMatchObject({ projectId: projectA, userId: ownerA })
+    expect(rows.some((row) => row.userId === ownerB)).toBe(false)
+  })
+
+  test("S79: a project the viewer has no authority over is absent, and so is the stranger who owns it", async () => {
+    const viewer = await seedUser(db, "scoped-viewer")
+    const stranger = await seedUser(db, "stranger")
+    const mine = await seedProject(db, "Mine", "mine", viewer)
+    const theirs = await seedProject(db, "Theirs", "theirs", stranger)
+    await seedSession(db, {
+      id: "s-stranger",
+      userId: stranger,
+      projectId: theirs,
+      updatedAt: new Date("2026-03-01T00:00:00Z"),
+    })
+
+    const rows = await rowsAs(db, viewer)
+
+    expect(new Set(rows.map((row) => row.projectId))).toEqual(new Set([mine]))
+    expect(rows.every((row) => row.userId === viewer)).toBe(true)
+  })
+
+  test("S80: an org member sees the other members of an org-owned project, and nothing outside it", async () => {
+    const viewer = await seedUser(db, "org-viewer")
+    const colleague = await seedUser(db, "org-colleague")
+    const outsider = await seedUser(db, "org-outsider")
+    const [org] = await db
+      .insert(orgs)
+      .values({ githubOrgId: 42, githubSlug: "acme" })
+      .returning({ id: orgs.id })
+    if (!org) throw new Error("no seeded org")
+    await db.insert(userOrgs).values([
+      { userId: viewer, orgId: org.id },
+      { userId: colleague, orgId: org.id },
+    ])
+    const { id: projectId } = await projectsRepo.upsertOwned(db, {
+      identity: { name: "Acme App", slug: "acme-app" },
+      owner: { kind: "org", orgId: org.id },
+    })
+    await seedProject(db, "Outside", "outside", outsider)
+
+    const rows = await rowsAs(db, viewer)
+
+    expect(new Set(rows.map((row) => row.userId))).toEqual(new Set([viewer, colleague]))
+    expect(new Set(rows.map((row) => row.projectId))).toEqual(new Set([projectId]))
+  })
+
+  test("S81: a viewer holding only a project grant sees that project's members, and no other project", async () => {
+    const owner = await seedUser(db, "grant-owner")
+    const grantee = await seedUser(db, "grant-viewer")
+    const shared = await seedProject(db, "Shared", "shared", owner)
+    await seedProject(db, "Private", "private", owner)
+    await projectsRepo.grant(db, grantee, shared, "viewer")
+
+    const rows = await rowsAs(db, grantee)
+
+    expect(new Set(rows.map((row) => row.projectId))).toEqual(new Set([shared]))
+    expect(new Set(rows.map((row) => row.userId))).toEqual(new Set([owner, grantee]))
   })
 })

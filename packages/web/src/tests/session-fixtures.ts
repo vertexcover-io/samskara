@@ -1,3 +1,4 @@
+import type { JSONValue } from "hono/utils/types"
 import type {
   RawMessage,
   RawSubagent,
@@ -34,6 +35,7 @@ export const facts = (overrides: Partial<SessionFacts> = {}): SessionFacts => ({
   title: "Make ingest idempotent",
   projectId: "p-1",
   projectName: "Samskara",
+  projectSlug: "samskara",
   userLogin: "ritesh",
   repo: null,
   durationMs: 1_451_000,
@@ -109,9 +111,9 @@ export const pullRequest = (overrides: Partial<SessionPullRequest> = {}): Sessio
   ...overrides,
 })
 
-export const text = (value: string): unknown => ({ text: value })
+export const text = (value: string): JSONValue => ({ text: value })
 
-export const pastedImage = (value: string, mediaType = "image/png"): unknown => ({
+export const pastedImage = (value: string, mediaType = "image/png"): JSONValue => ({
   type: "image",
   value,
   mediaType,

@@ -1,11 +1,9 @@
 import { type Ref, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import { fetchSessionArtifacts } from "../api/artifacts.js"
-import { getJson } from "../api/client.js"
-import { parseSessionDetail } from "../api/parse.js"
+import { type ApiError, client, request } from "../api/client.js"
 import { repoLabel, repoUrl } from "../api/repo.js"
 import type {
-  ApiError,
   CapturedArtifact,
   SessionDetailPayload,
   SessionFacts,
@@ -134,10 +132,7 @@ const Masthead = ({ session, tokens }: { session: SessionFacts; tokens: TokenTot
       aria-label="Session facts"
       className="mt-4 grid w-fit max-w-full grid-cols-2 gap-x-6 gap-y-3 border-t border-rule pt-3 min-[560px]:grid-cols-3 min-[900px]:grid-cols-4 min-[1200px]:grid-cols-7"
     >
-      <Fact
-        label="Created"
-        value={session.createdAt === null ? <Unavailable /> : absoluteTime(session.createdAt)}
-      />
+      <Fact label="Created" value={absoluteTime(session.createdAt)} />
       <Fact
         label="Duration"
         value={session.durationMs === null ? <Unavailable /> : formatDuration(session.durationMs)}
@@ -533,7 +528,7 @@ export const SessionDetail = () => {
     let active = true
     setState({ phase: "loading" })
 
-    getJson(`/api/sessions/${encodeURIComponent(sessionId)}`, parseSessionDetail).then((result) => {
+    request(() => client.api.sessions[":id"].$get({ param: { id: sessionId } })).then((result) => {
       if (!active) return
       setState(
         result.ok

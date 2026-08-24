@@ -1,7 +1,7 @@
-import { and, asc, eq, exists, or, sql } from "drizzle-orm"
+import { and, asc, eq, isNotNull, or, sql } from "drizzle-orm"
 import type { Db } from "../db/client.js"
-import { projects, userProjectGrant, users } from "../db/schema.js"
-import { orgMemberOfProject } from "./projects.repo.js"
+import { projects, users } from "../db/schema.js"
+import { memberOfProject, visibleToUser } from "./projects.repo.js"
 
 export type SyncStatusRow = {
   readonly userId: string
@@ -21,21 +21,12 @@ const sessionCount = sql<number>`(select count(*)::int from ${pairSessions})`
 
 const lastSyncedAt = sql<string | null>`(select max("sessions"."updatedAt") from ${pairSessions})`
 
-const memberOf = (db: Db) =>
-  or(
-    eq(projects.ownerUserId, users.id),
-    exists(
-      db
-        .select({ one: sql`1` })
-        .from(userProjectGrant)
-        .where(
-          and(eq(userProjectGrant.projectId, projects.id), eq(userProjectGrant.userId, users.id)),
-        ),
-    ),
-    orgMemberOfProject(db, users.id),
-  )
-
-export const listSyncStatus = (db: Db): Promise<ReadonlyArray<SyncStatusRow>> =>
+/**
+ * Scoped to the viewer: a row exists only where the viewer may read the project and the listed
+ * user belongs to it. The viewer keeps their own row even with no project, so a first-time
+ * account sees itself rather than an empty page.
+ */
+export const listSyncStatus = (db: Db, viewerId: string): Promise<ReadonlyArray<SyncStatusRow>> =>
   db
     .select({
       userId: users.id,
@@ -49,5 +40,6 @@ export const listSyncStatus = (db: Db): Promise<ReadonlyArray<SyncStatusRow>> =>
       lastSyncedAt,
     })
     .from(users)
-    .leftJoin(projects, memberOf(db))
+    .leftJoin(projects, and(memberOfProject(db, users.id), visibleToUser(db, viewerId)))
+    .where(or(eq(users.id, viewerId), isNotNull(projects.id)))
     .orderBy(sql`${lastSyncedAt} desc nulls last`, asc(users.githubLogin), asc(projects.name))

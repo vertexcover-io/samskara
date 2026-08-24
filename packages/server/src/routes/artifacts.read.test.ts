@@ -121,6 +121,7 @@ type SeedArtifact = {
   readonly current: Buffer
   readonly base?: Buffer
   readonly diff?: string
+  readonly oldFragment?: string
   readonly sessionId?: string
 }
 
@@ -152,6 +153,7 @@ describe.skipIf(!dockerAvailable())("artifact read routes", () => {
         baseContent: input.base ?? null,
         baseHash: input.base === undefined ? null : sha256(input.base),
         diff: input.diff ?? null,
+        oldFragment: input.oldFragment ?? null,
       })
       .returning({ id: artifact.id })
     if (!row) throw new Error("seed artifact failed")
@@ -274,6 +276,29 @@ describe.skipIf(!dockerAvailable())("artifact read routes", () => {
       expect(row).not.toHaveProperty("currentContent")
       expect(row).not.toHaveProperty("baseContent")
     }
+  })
+
+  test("SC23: the artifacts list route sends the replaced excerpt for an edited artifact, still withholding its contents", async () => {
+    await seedArtifact({
+      path: "/work/docs/notes.md",
+      relativePath: "docs/notes.md",
+      mimeType: "text/markdown",
+      isBinary: false,
+      changeKind: "edited",
+      current: Buffer.from("# Notes\n\nChanged.\n", "utf8"),
+      oldFragment: "Original.",
+    })
+
+    const res = await get(`/api/sessions/${SESSION_ID}/artifacts`, ownerToken)
+    expect(res.status).toBe(200)
+
+    const { artifacts } = (await res.json()) as {
+      artifacts: ReadonlyArray<Record<string, unknown>>
+    }
+    expect(artifacts).toHaveLength(1)
+    expect(artifacts[0]).toMatchObject({ oldFragment: "Original." })
+    expect(artifacts[0]).not.toHaveProperty("currentContent")
+    expect(artifacts[0]).not.toHaveProperty("baseContent")
   })
 
   test("S40: a single text artifact reads back with its diff and both contents byte for byte", async () => {

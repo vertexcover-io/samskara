@@ -21,33 +21,28 @@ const serialize = (row: ProjectSummaryRow) => ({
   lastActiveAt: row.lastActiveAt === null ? null : new Date(row.lastActiveAt).toISOString(),
 })
 
-export const projectsRoutes = ({ db, env }: Deps): Hono<{ Variables: AuthVariables }> => {
-  const app = new Hono<{ Variables: AuthVariables }>()
-
-  app.get("/", requireAuth({ db, env }, ["web"]), async (c) => {
-    const rows = await listAccessibleSummaries(db, c.get("user").id)
-    return c.json({ projects: rows.map(serialize) })
-  })
-
-  app.post(
-    "/",
-    requireAuth({ db, env }, ["cli"]),
-    zValidator("json", createProjectRequestSchema),
-    async (c) => {
-      const user = c.get("user")
-      const result = await findOrCreateProject(db, user.id, c.req.valid("json"))
-      const owner =
-        result.owner.type === "org"
-          ? result.owner
-          : { type: "user" as const, slug: user.githubLogin }
-      const body = {
-        id: result.id,
-        owner,
-        ...(result.reason === undefined ? {} : { reason: result.reason }),
-      }
-      return c.json(body, result.created ? 201 : 200)
-    },
-  )
-
-  return app
-}
+export const projectsRoutes = ({ db, env }: Deps) =>
+  new Hono<{ Variables: AuthVariables }>()
+    .get("/", requireAuth({ db, env }, ["web"]), async (c) => {
+      const rows = await listAccessibleSummaries(db, c.get("user").id)
+      return c.json({ projects: rows.map(serialize) }, 200)
+    })
+    .post(
+      "/",
+      requireAuth({ db, env }, ["cli"]),
+      zValidator("json", createProjectRequestSchema),
+      async (c) => {
+        const user = c.get("user")
+        const result = await findOrCreateProject(db, user.id, c.req.valid("json"))
+        const owner =
+          result.owner.type === "org"
+            ? result.owner
+            : { type: "user" as const, slug: user.githubLogin }
+        const body = {
+          id: result.id,
+          owner,
+          ...(result.reason === undefined ? {} : { reason: result.reason }),
+        }
+        return c.json(body, result.created ? 201 : 200)
+      },
+    )

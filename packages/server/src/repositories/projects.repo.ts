@@ -12,11 +12,11 @@ export const orgMemberOfProject = (db: Querier, userId: string | AnyColumn) =>
   )
 
 /**
- * A predicate over a query that already has `projects` in scope. One definition rather than a
- * copy per repository: two divergent copies of an authorization predicate is how one of them
- * silently stops matching the other.
+ * A predicate over a query that already has `projects` in scope: the user owns it, holds a grant
+ * on it, or belongs to the org that owns it. `userId` may be a column so a join can correlate it
+ * per row.
  */
-export const visibleToUser = (db: Querier, userId: string): SQL | undefined =>
+export const memberOfProject = (db: Querier, userId: string | AnyColumn): SQL | undefined =>
   or(
     eq(projects.ownerUserId, userId),
     exists(
@@ -29,6 +29,15 @@ export const visibleToUser = (db: Querier, userId: string): SQL | undefined =>
     ),
     orgMemberOfProject(db, userId),
   )
+
+/**
+ * May this user read this project. One definition rather than a copy per repository: two
+ * divergent copies of an authorization predicate is how one of them silently stops matching the
+ * other. Distinct from `memberOfProject` because the two answer different questions -- a project
+ * readable without membership would pair every user in the table with it if these were merged.
+ */
+export const visibleToUser = (db: Querier, userId: string | AnyColumn): SQL | undefined =>
+  memberOfProject(db, userId)
 
 export type UpsertProjectInput = {
   readonly identity: ProjectIdentity

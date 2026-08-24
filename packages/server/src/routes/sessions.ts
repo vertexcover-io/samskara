@@ -16,6 +16,7 @@ import {
 import {
   type SessionListQuery,
   dateWindowFor,
+  paginate,
   parseSessionListQuery,
 } from "../search/sessionFilters.js"
 import { SessionQueryError } from "../search/sessionQuery.js"
@@ -67,101 +68,86 @@ const serializeDetail = (detail: SessionDetailRow) => ({
   })),
 })
 
-export const sessionsRoutes = ({ db, env }: Deps): Hono<{ Variables: AuthVariables }> => {
-  const app = new Hono<{ Variables: AuthVariables }>()
-
-  app.get("/", requireAuth({ db, env }, ["web"]), async (c) => {
-    let query: SessionListQuery
-    try {
-      query = parseSessionListQuery(c.req.query())
-    } catch (error) {
-      if (error instanceof SessionQueryError) return c.json({ error: "invalidSearchQuery" }, 400)
-      if (error instanceof ZodError) {
-        const field = error.issues[0]?.path[0]
-        const codes: Record<string, string> = {
-          pr: "invalidPrNumber",
-          commit: "invalidCommit",
-          q: "invalidSearchQuery",
-          repo: "invalidRepo",
-          branch: "invalidBranch",
-          tz: "invalidTimeZone",
-          page: "invalidPage",
-          limit: "invalidLimit",
-          sort: "invalidSort",
-          range: "invalidRange",
-          project: "invalidProject",
-          user: "invalidUser",
+export const sessionsRoutes = ({ db, env }: Deps) =>
+  new Hono<{ Variables: AuthVariables }>()
+    .get("/", requireAuth({ db, env }, ["web"]), async (c) => {
+      let query: SessionListQuery
+      try {
+        query = parseSessionListQuery(c.req.query())
+      } catch (error) {
+        if (error instanceof SessionQueryError) return c.json({ error: "invalidSearchQuery" }, 400)
+        if (error instanceof ZodError) {
+          const field = error.issues[0]?.path[0]
+          const codes: Record<string, string> = {
+            pr: "invalidPrNumber",
+            commit: "invalidCommit",
+            q: "invalidSearchQuery",
+            repo: "invalidRepo",
+            branch: "invalidBranch",
+            tz: "invalidTimeZone",
+            page: "invalidPage",
+            limit: "invalidLimit",
+            sort: "invalidSort",
+            range: "invalidRange",
+            project: "invalidProject",
+            user: "invalidUser",
+          }
+          return c.json({ error: codes[String(field)] ?? "invalidFilter" }, 400)
         }
-        return c.json({ error: codes[String(field)] ?? "invalidFilter" }, 400)
+        throw error
       }
-      throw error
-    }
-    const userId = c.get("user").id
-    if (
-      query.project !== undefined &&
-      (await findVisibleProjectById(db, userId, query.project)) === null
-    ) {
-      return c.json({ error: "projectNotFound" }, 404)
-    }
-    try {
-      const result = await listAccessible(db, userId, {
-        projectId: query.project,
-        userLogin: query.user,
-        repoId: query.repo,
-        branch: query.branch,
-        prNumber: query.pr,
-        commit: query.commit,
-        searchQuery: query.parsedQuery,
-        ...dateWindowFor(query, new Date()),
-        sort: query.sort,
-        page: query.page,
-        limit: query.limit,
-      })
-      const page = query.page ?? 1
-      const limit = query.limit ?? 50
-      return c.json({
-        sessions: result.rows.map(serialize),
-        pagination: {
-          page,
-          limit,
-          total: result.total,
-          totalPages: Math.ceil(result.total / limit),
-        },
-        filterOptions: result.filterOptions,
-      })
-    } catch (error) {
-      if (error instanceof AmbiguousCommitError) return c.json({ error: "ambiguousCommit" }, 400)
-      throw error
-    }
-  })
-
-  app.get("/:id", requireAuth({ db, env }, ["web"]), async (c) => {
-    const detail = await getDetail(db, c.get("user").id, c.req.param("id"))
-
-    if (detail === null) return c.json({ error: "sessionNotFound" }, 404)
-
-    return c.json(serializeDetail(detail))
-  })
-
-  app.get("/:id/artifacts", requireAuth({ db, env }, ["web"]), async (c) => {
-    const rows = await listForSession(db, c.get("user").id, c.req.param("id"))
-
-    if (rows === null) return c.json({ error: "sessionNotFound" }, 404)
-
-    return c.json({ artifacts: rows.map(serializeArtifact) })
-  })
-
-  /**
-   * Scoped to `cli` rather than `web`: this exists so a local replay can re-ingest a session from
-   * its transcript, and nothing in the web app should be able to destroy captured history.
-   */
-  app.delete("/:id", requireAuth({ db, env }, ["cli"]), async (c) => {
-    const removed = await remove(db, c.req.param("id"), c.get("user").id)
-
-    if (!removed) return c.json({ error: "sessionNotFound" }, 404)
-
-    return c.body(null, 204)
-  })
-
-  return app
-}
+      const userId = c.get("user").id
+      if (
+        query.project !== undefined &&
+        (await findVisibleProjectById(db, userId, query.project)) === null
+      ) {
+        return c.json({ error: "projectNotFound" }, 404)
+      }
+      try {
+        const result = await listAccessible(db, userId, {
+          projectId: query.project,
+          userLogin: query.user,
+          repoId: query.repo,
+          branch: query.branch,
+          prNumber: query.pr,
+          commit: query.commit,
+          searchQuery: query.parsedQuery,
+          ...dateWindowFor(query, new Date()),
+          sort: query.sort,
+          page: query.page,
+          limit: query.limit,
+        })
+        const page = query.page ?? 1
+        const limit = query.limit ?? 50
+        return c.json(
+          {
+            sessions: result.rows.map(serialize),
+            pagination: paginate(result.total, page, limit),
+            filterOptions: result.filterOptions,
+          },
+          200,
+        )
+      } catch (error) {
+        if (error instanceof AmbiguousCommitError) return c.json({ error: "ambiguousCommit" }, 400)
+        throw error
+      }
+    })
+    .get("/:id", requireAuth({ db, env }, ["web"]), async (c) => {
+      const detail = await getDetail(db, c.get("user").id, c.req.param("id"))
+      if (detail === null) return c.json({ error: "sessionNotFound" }, 404)
+      return c.json(serializeDetail(detail), 200)
+    })
+    .get("/:id/artifacts", requireAuth({ db, env }, ["web"]), async (c) => {
+      const rows = await listForSession(db, c.get("user").id, c.req.param("id"))
+      if (rows === null) return c.json({ error: "sessionNotFound" }, 404)
+      return c.json({ artifacts: rows.map(serializeArtifact) }, 200)
+    })
+    /**
+     * Scoped to `cli` rather than `web`: this exists so a local replay can re-ingest a session
+     * from its transcript, and nothing in the web app should be able to destroy captured history.
+     */
+    .delete("/:id", requireAuth({ db, env }, ["cli"]), async (c) => {
+      const removed = await remove(db, c.req.param("id"), c.get("user").id)
+      if (!removed) return c.json({ error: "sessionNotFound" }, 404)
+      return c.body(null, 204)
+    })

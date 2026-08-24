@@ -1,3 +1,4 @@
+import type { JSONValue } from "hono/utils/types"
 import { describe, expect, test } from "vitest"
 import type { SessionDetailPayload } from "../api/types.js"
 import { buildPayload, message, pastedImage } from "../tests/session-fixtures.js"
@@ -173,6 +174,59 @@ describe("toDetail", () => {
 
     expect(detail.records).toHaveLength(1)
     expect(detail.branches.get("a1")?.map((record) => record.kind)).toEqual(["prompt", "assistant"])
+  })
+
+  test("SC21: a message whose content is arbitrary JSON still becomes a timeline record - its text blocks read as prose, a tool call attaches to the record that produced it, and a subagent's spawn and return both appear", () => {
+    const payload = buildPayload({
+      subagents: [
+        {
+          agentId: "a1",
+          agentType: "auditor",
+          description: "Audit",
+          parentAgentId: null,
+          spawnToolUseId: null,
+        },
+      ],
+      messages: [
+        message({
+          id: "assistant-say",
+          lineNumber: 1,
+          msgType: "message",
+          role: "assistant",
+          content: [
+            { type: "reasoning", value: "weighing options" },
+            { type: "text", value: "Here is the plan" },
+            { shape: "the server never promised", nested: { arbitrary: true } },
+          ],
+          details: { anything: "goes", nested: { ok: true } },
+        }),
+        message({ id: "call-msg", lineNumber: 2, msgType: "toolCall" }),
+        message({ lineNumber: 3, msgType: "turnEvent", subType: "agentSpawn", agentId: "a1" }),
+        message({ lineNumber: 4, msgType: "turnEvent", subType: "agentReturn", agentId: "a1" }),
+      ],
+      toolCalls: [
+        {
+          toolId: "t-1",
+          messageId: "call-msg",
+          toolName: "Grep",
+          toolInput: { pattern: "x" },
+          result: null,
+          status: "success",
+        },
+      ],
+    })
+
+    const records = toDetail(payload).records
+
+    const assistant = records.find((record) => record.id === "assistant-say")
+    expect(assistant?.kind === "assistant" && assistant.body).toBe("Here is the plan")
+
+    const tool = records.find((record) => record.id === "call-msg")
+    expect(tool?.kind === "tool" && tool.calls.map((call) => call.toolId)).toEqual(["t-1"])
+
+    expect(records.map((record) => record.kind)).toEqual(
+      expect.arrayContaining(["agentSpawn", "agentReturn"]),
+    )
   })
 
   test("S38: a tool record carries its joined call and result so the renderer never re-joins by hand", () => {
@@ -563,7 +617,7 @@ describe("prompt turns", () => {
 // Capture stores an assistant turn's thinking as a `reasoning` block. Encrypted thinking arrives
 // as a signature with no text at all, which is every reasoning block this project has captured.
 describe("reasoning blocks", () => {
-  const assistantAt = (content: unknown, index = 0) => {
+  const assistantAt = (content: JSONValue, index = 0) => {
     const payload = buildPayload({
       messages: [message({ lineNumber: 1, msgType: "message", role: "assistant", content })],
     })
@@ -600,7 +654,7 @@ describe("reasoning blocks", () => {
 // A slash command is the one thing in the transcript the user definitely typed. It arrives as a
 // localCommand, which used to shape as an event and be dropped along with the hooks and snapshots.
 describe("slash commands", () => {
-  const commandView = (details: unknown) =>
+  const commandView = (details: JSONValue) =>
     conversationView(
       toDetail(
         buildPayload({ messages: [message({ lineNumber: 1, msgType: "localCommand", details })] }),

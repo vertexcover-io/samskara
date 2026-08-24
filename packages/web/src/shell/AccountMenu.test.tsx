@@ -42,6 +42,15 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
+test("SC9: a signed-in reader reaches the authed state from the identity route - the account menu shows that user's GitHub login", async () => {
+  stubFetch(() => Promise.resolve(jsonResponse(200, { ok: true })))
+
+  renderProjects()
+
+  const trigger = await screen.findByRole("button", { name: /account menu/i })
+  expect(trigger).toHaveTextContent("e2e-user")
+})
+
 test("S28: the opened account menu lists the signed-in identity plus 'Pair the CLI' and 'Log out' - not just a bare identity label", async () => {
   stubFetch(() => Promise.resolve(jsonResponse(200, { ok: true })))
 
@@ -75,6 +84,17 @@ test("S35: a failed /api/auth/logout keeps the user on /projects with the identi
   expect(await screen.findByRole("alert")).toHaveTextContent(/server responded with 500/i)
   expect(screen.getByTestId("location")).toHaveTextContent("/projects")
   expect(screen.getByRole("button", { name: /account menu/i })).toHaveTextContent("e2e-user")
+})
+
+test("SC13: logging out returns the shell to its signed-out state - the account menu is gone and the GitHub sign-in link is back", async () => {
+  stubFetch(() => Promise.resolve(jsonResponse(200, { ok: true })))
+
+  renderProjects()
+  await openMenu()
+  await userEvent.click(screen.getByRole("menuitem", { name: /log out/i }))
+
+  expect(await screen.findByRole("link", { name: /continue with github/i })).toBeInTheDocument()
+  expect(screen.queryByRole("button", { name: /account menu/i })).not.toBeInTheDocument()
 })
 
 test("S28b: Escape closes the open menu and returns focus to the trigger - not to the document body", async () => {

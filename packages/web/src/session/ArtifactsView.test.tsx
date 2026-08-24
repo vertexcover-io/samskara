@@ -20,6 +20,8 @@ const captured = (overrides: Partial<CapturedArtifact> = {}): CapturedArtifact =
   diff: null,
   oldFragment: null,
   editCount: 1,
+  byteSize: 42,
+  hasBase: true,
   firstSeenAt: "2026-07-01T10:00:00.000Z",
   lastSeenAt: "2026-07-01T10:05:00.000Z",
   ...overrides,
@@ -186,6 +188,32 @@ test("S51: an artifact with no resolvable base shows its replaced excerpt labell
   expect(within(viewer).getByText(/replaced excerpt/i)).toBeInTheDocument()
   expect(within(viewer).queryByText(/no contents captured/i)).not.toBeInTheDocument()
   expect(within(viewer).queryByText(/permission denied/i)).not.toBeInTheDocument()
+})
+
+test("SC24: an edited artifact shows the excerpt its edit replaced, and one whose oldFragment is null shows no such panel", () => {
+  render(
+    <TestRouter initialEntries={["/s/1?tab=artifacts"]}>
+      <ArtifactsView
+        artifacts={[
+          captured({ changeKind: "edited", diff: null, oldFragment: "The original line." }),
+        ]}
+      />
+    </TestRouter>,
+  )
+
+  const withFragment = screen.getByRole("region", { name: /artifact viewer/i })
+  expect(within(withFragment).getByText(/The original line\./)).toBeInTheDocument()
+  expect(within(withFragment).getByText(/replaced excerpt/i)).toBeInTheDocument()
+
+  const { container } = render(
+    <TestRouter initialEntries={["/s/2?tab=artifacts"]}>
+      <ArtifactsView
+        artifacts={[captured({ id: "c-2", changeKind: "edited", diff: null, oldFragment: null })]}
+      />
+    </TestRouter>,
+  )
+
+  expect(within(container).queryByText(/replaced excerpt/i)).not.toBeInTheDocument()
 })
 
 test("S52: a created artifact shows its content, without offering a diff pane", async () => {
