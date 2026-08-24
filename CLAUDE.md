@@ -106,3 +106,19 @@ reads, and backs `db:verify`.
 
 `drizzle.config.ts` has no default `DATABASE_URL`. If it is unset the migration fails loudly rather
 than quietly migrating the main checkout's database.
+
+**Column naming.** Every table and column name is camelCase. A Biome plugin
+(`packages/server/src/db/naming.grit`) enforces it against `packages/server/src/db/schema.ts`, so
+`bun run lint` fails on a snake_case name. The plugin reads TypeScript, not SQL, so a hand-written
+migration that adds a column without touching `schema.ts` is not checked — keep `schema.ts` the
+source of truth and generate migrations from it.
+
+The server's test suite starts a real `pgvector/pgvector:pg16` container via testcontainers and runs
+the migrations against it. Those tests skip themselves when Docker is not available.
+
+## Logging
+
+Every package logs NDJSON through `createLogger` from `@samskara/core` (pino underneath). Level
+comes from `LOG_LEVEL`, defaulting to `info` in production and `debug` elsewhere. `token`,
+`authorization`, `password` and `secret` are redacted from every line. Each API request gets a
+`reqId` that is echoed back on the response.

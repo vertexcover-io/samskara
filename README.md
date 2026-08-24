@@ -201,13 +201,5 @@ bun run db:verify                      # read-only: assert it already is
 migrations and then the post-migrate steps in `packages/server/src/db/steps.ts` (today, the
 full-text search indexes, which cannot be built inside a migration's transaction).
 
-Table and column names are camelCase, enforced against `packages/server/src/db/schema.ts` by a
-Biome plugin, so `bun run lint` fails on a snake_case name. The server's tests start a real
-`pgvector/pgvector:pg16` container via testcontainers and skip themselves when Docker is not
-available.
-
-Every package logs NDJSON through `createLogger` from `@samskara/core`; `LOG_LEVEL` sets the level
-and `token`, `authorization`, `password` and `secret` are redacted from every line.
-
-See [CLAUDE.md](CLAUDE.md) for working on several branches at once (worktrees get their own database
-and ports), the seed/identity snapshot, and the rest of the day-to-day contributor detail.
+See [CLAUDE.md](CLAUDE.md) for the contributor detail: working on several branches at once, the
+database naming rule, the seed/identity snapshot, and the logging conventions.
