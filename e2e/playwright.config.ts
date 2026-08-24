@@ -1,9 +1,9 @@
 import { defineConfig } from "@playwright/test"
+import { requireDatabaseUrl } from "./db.js"
 
 const JWT_SECRET = process.env.JWT_SECRET ?? "e2e-secret"
 
-const DATABASE_URL =
-  process.env.DATABASE_URL ?? "postgres://samskara:samskara@localhost:5433/samskara"
+const DATABASE_URL = requireDatabaseUrl()
 
 // The e2e stack runs on its own ports so it never adopts -- or fights with -- a `bun dev`
 // server on the 3000/8000 defaults. A stale dev server signing with a different

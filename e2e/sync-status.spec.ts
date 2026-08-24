@@ -31,8 +31,7 @@ test("SC13: a signed-in visit follows the Sync nav link to /sync-status and list
   await page.getByRole("link", { name: "Sync", exact: true }).click()
   await expect(page).toHaveURL(/\/sync-status$/)
 
-  // The shared e2e database accumulates other specs' projects for these two users, so each
-  // row is found by its own project name rather than asserting a single global text match.
+  // Each row is located by its own project name rather than by a single global text match.
   const primaryRow = page.locator("tr", { hasText: "Primary Sync Project" })
   await expect(primaryRow).toBeVisible()
   await expect(primaryRow.getByText(E2E_USER_LOGIN, { exact: true })).toBeVisible()

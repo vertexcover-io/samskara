@@ -1,13 +1,16 @@
 import { execFileSync } from "node:child_process"
+import { randomUUID } from "node:crypto"
 import { fileURLToPath } from "node:url"
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql"
 import { and, eq, sql } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
 import { type Db, createDb } from "./client.js"
 import {
+  commits,
   messages,
   orgs,
   projects,
+  pullRequests,
   repos,
   sessions,
   subagents,
@@ -167,5 +170,70 @@ describe.skipIf(!dockerAvailable())("session data model", () => {
 
     expect(updated.updatedAt.getTime()).toBeGreaterThan(session.updatedAt.getTime())
     expect(updated.createdAt.getTime()).toBe(session.createdAt.getTime())
+  })
+
+  const seedRepo = async (userId: string, repoName: string) => {
+    const [repo] = await db
+      .insert(repos)
+      .values({ host: "github.com", owner: "acme", repoName, userId })
+      .returning()
+    if (!repo) throw new Error("repo insert returned no row")
+    return repo
+  }
+
+  const seedMessage = async (sessionId: string, repoId: string) => {
+    const [message] = await db
+      .insert(messages)
+      .values({
+        sessionId,
+        lineUuid: randomUUID(),
+        subIndex: 0,
+        msgType: "message",
+        lineNumber: 1,
+        raw: {},
+        sourceSchemaVersion: 1,
+        repoId,
+      })
+      .returning()
+    if (!message) throw new Error("message insert returned no row")
+    return message
+  }
+
+  test("deleting a repo keeps its messages and clears their repo pointer", async () => {
+    const session = await seedSession("sess-repo-delete")
+    const repo = await seedRepo(session.userId, "widget")
+    const message = await seedMessage(session.id, repo.id)
+
+    await db.delete(repos).where(eq(repos.id, repo.id))
+
+    const [row] = await db.select().from(messages).where(eq(messages.id, message.id))
+    expect(row).toBeDefined()
+    expect(row?.repoId).toBeNull()
+  })
+
+  test("deleting a user keeps another user's message that pointed at that user's repo", async () => {
+    const session = await seedSession("sess-cross-user-repo")
+    const { user: repoOwner } = await seed()
+    const repo = await seedRepo(repoOwner.id, "shared")
+    const message = await seedMessage(session.id, repo.id)
+
+    // repos cascade from users, so this reaches messages.repoId through the repo row.
+    await db.delete(users).where(eq(users.id, repoOwner.id))
+
+    const [row] = await db.select().from(messages).where(eq(messages.id, message.id))
+    expect(row).toBeDefined()
+    expect(row?.repoId).toBeNull()
+  })
+
+  test("deleting a repo still removes its commits and pull requests", async () => {
+    const session = await seedSession("sess-repo-cascade")
+    const repo = await seedRepo(session.userId, "cascade")
+    await db.insert(commits).values({ repoId: repo.id, sha: "abc123", sessionId: session.id })
+    await db.insert(pullRequests).values({ repoId: repo.id, number: 1 })
+
+    await db.delete(repos).where(eq(repos.id, repo.id))
+
+    expect(await db.select().from(commits).where(eq(commits.repoId, repo.id))).toEqual([])
+    expect(await db.select().from(pullRequests).where(eq(pullRequests.repoId, repo.id))).toEqual([])
   })
 })
