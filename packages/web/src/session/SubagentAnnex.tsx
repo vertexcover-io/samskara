@@ -2,7 +2,7 @@ import type { ReactNode } from "react"
 import type { RawSubagent } from "../api/types.js"
 import { formatSpan, spanOf } from "./AgentRail.js"
 import { RecordItem } from "./RecordItem.js"
-import { type TimelineRecord, anchorOf } from "./records.js"
+import { anchorOf, type TimelineRecord } from "./records.js"
 
 /**
  * Everything an annex needs to draw the branches nested inside it. A subagent can spawn its own

@@ -3,7 +3,7 @@ import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { z } from "zod"
 import { resolveCliEntry } from "../config/daemon.js"
-import { type Writer, reportError, resolveIo } from "../io.js"
+import { reportError, resolveIo, type Writer } from "../io.js"
 
 const hookCommandSchema = z
   .object({ type: z.string().optional(), command: z.string().optional() })

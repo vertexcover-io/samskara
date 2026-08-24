@@ -2,7 +2,7 @@ import type { ProjectIdentity } from "@samskara/core"
 import { startWatcherDaemon, watcherPid } from "../config/daemon.js"
 import { createWatchLogger } from "../config/log.js"
 import { watchLogDir } from "../config/paths.js"
-import { type Writer, reportError, resolveIo } from "../io.js"
+import { reportError, resolveIo, type Writer } from "../io.js"
 import { watch } from "../watcher/index.js"
 
 export type WatchCommandOptions = {

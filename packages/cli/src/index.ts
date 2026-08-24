@@ -13,10 +13,10 @@ import { replayCommand } from "./commands/replay.js"
 import { restartCommand } from "./commands/restart.js"
 import { statusCommand } from "./commands/status.js"
 import { watchCommand } from "./commands/watch.js"
-import { apiBase } from "./config.js"
 import { readToken } from "./config/credentials.js"
 import { startWatcherDaemon, stopWatcherDaemon } from "./config/daemon.js"
 import { artifactQueuePath, artifactStatePath, statePath } from "./config/paths.js"
+import { apiBase } from "./config.js"
 import { login } from "./login.js"
 
 /** Compare real paths: a global install invokes the bin through a symlink, and Node keeps that

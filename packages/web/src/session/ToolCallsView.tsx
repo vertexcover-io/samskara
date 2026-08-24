@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react"
-import { ToolCallItem } from "./ToolCallItem.js"
 import type { ToolEvidence } from "./records.js"
+import { ToolCallItem } from "./ToolCallItem.js"
 
 const failures = (calls: ReadonlyArray<ToolEvidence>): number =>
   calls.filter((call) => call.status === "failure").length

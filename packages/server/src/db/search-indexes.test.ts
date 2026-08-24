@@ -4,10 +4,10 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
 import { createDb } from "./client.js"
 import {
-  SEARCH_DOCUMENTS,
-  SEARCH_FILTER_INDEXES,
   filterIndexDefinition,
   normalizeIndexDefinition,
+  SEARCH_DOCUMENTS,
+  SEARCH_FILTER_INDEXES,
   searchIndexDefinition,
 } from "./searchSql.js"
 

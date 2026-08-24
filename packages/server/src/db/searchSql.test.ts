@@ -1,9 +1,9 @@
 import { describe, expect, test } from "vitest"
 import {
-  SEARCH_DOCUMENTS,
-  SEARCH_FILTER_INDEXES,
   filterIndexDefinition,
   normalizeIndexDefinition,
+  SEARCH_DOCUMENTS,
+  SEARCH_FILTER_INDEXES,
   searchIndexDefinition,
 } from "./searchSql.js"
 

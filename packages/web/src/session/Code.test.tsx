@@ -27,6 +27,7 @@ test("languageForPath maps the extensions the capture actually produces", () => 
 })
 
 test("a source file is highlighted, and its text survives tokenisation intact", async () => {
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: literal source text being highlighted, not a real template literal
   const source = "const greet = (name: string): string => `hi ${name}`\n"
   render(<Code source={source} path="src/greet.ts" />)
 

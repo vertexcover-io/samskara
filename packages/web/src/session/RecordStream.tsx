@@ -1,6 +1,6 @@
 import { RecordItem, SPINE_DOT, toneOf } from "./RecordItem.js"
+import { anchorOf, type TimelineRecord } from "./records.js"
 import { type AnnexContext, annexFor } from "./SubagentAnnex.js"
-import { type TimelineRecord, anchorOf } from "./records.js"
 
 type Props = AnnexContext & {
   readonly records: ReadonlyArray<TimelineRecord>

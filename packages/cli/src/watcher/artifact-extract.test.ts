@@ -2,7 +2,7 @@ import { join } from "node:path"
 import type { NormalizedMessage, ParsedRecord } from "@samskara/core"
 import { createLogger } from "@samskara/core"
 import { describe, expect, test } from "vitest"
-import { type PotentialArtifact, collectArtifacts, referencedPaths } from "./artifact-extract.js"
+import { collectArtifacts, type PotentialArtifact, referencedPaths } from "./artifact-extract.js"
 
 const CWD = "/work/app"
 

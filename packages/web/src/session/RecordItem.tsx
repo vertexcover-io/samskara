@@ -2,14 +2,14 @@ import { type ReactNode, useEffect, useState } from "react"
 import { copyText } from "../account/copyText.js"
 import { absoluteTime, clockTime } from "../time.js"
 import { Markdown } from "./Markdown.js"
-import { ToolCallItem } from "./ToolCallItem.js"
 import {
   type Artifact,
+  anchorOf,
   type BlockStats,
   type PromptPart,
   type TimelineRecord,
-  anchorOf,
 } from "./records.js"
+import { ToolCallItem } from "./ToolCallItem.js"
 
 const Unavailable = () => (
   <span className="text-faded italic underline decoration-dotted">unavailable</span>

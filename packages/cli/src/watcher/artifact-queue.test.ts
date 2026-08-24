@@ -1,12 +1,12 @@
 import { mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { beforeEach, describe, expect, test, vi } from "vitest"
+import { beforeEach, describe, expect, test } from "vitest"
 import {
   type ArtifactQueueEntry,
-  QUEUE_DEPTH_WARN_THRESHOLD,
   enqueue,
   keyOf,
+  QUEUE_DEPTH_WARN_THRESHOLD,
   readQueue,
   readQueueOrReset,
 } from "./artifact-queue.js"

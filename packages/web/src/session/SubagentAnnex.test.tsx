@@ -2,8 +2,8 @@ import { render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { expect, test, vi } from "vitest"
 import { buildPayload, message, text } from "../tests/session-fixtures.js"
-import { SubagentAnnex } from "./SubagentAnnex.js"
 import { toDetail } from "./records.js"
+import { SubagentAnnex } from "./SubagentAnnex.js"
 
 const AGENT = {
   agentId: "a1",

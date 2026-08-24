@@ -1,4 +1,4 @@
-import { dirname, relative, resolve, sep } from "node:path"
+import { dirname, relative, resolve } from "node:path"
 import type { ArtifactUploadPayload } from "@samskara/core"
 import type pino from "pino"
 import { z } from "zod"

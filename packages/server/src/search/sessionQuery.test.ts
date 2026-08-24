@@ -3,7 +3,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { sql } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
 import { createDb } from "../db/client.js"
-import { SessionQueryError, compileSessionQuery, parseSessionQuery } from "./sessionQuery.js"
+import { compileSessionQuery, parseSessionQuery, SessionQueryError } from "./sessionQuery.js"
 
 const operands = (value: string) =>
   parseSessionQuery(value).branches.map((branch) => branch.operands)

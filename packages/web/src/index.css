@@ -136,8 +136,11 @@ body {
   *,
   *::before,
   *::after {
+    /* biome-ignore lint/complexity/noImportantStyles: must beat any component's own specificity to honor the user's motion preference */
     animation-duration: 0.01ms !important;
+    /* biome-ignore lint/complexity/noImportantStyles: must beat any component's own specificity to honor the user's motion preference */
     transition-duration: 0.01ms !important;
+    /* biome-ignore lint/complexity/noImportantStyles: must beat any component's own specificity to honor the user's motion preference */
     scroll-behavior: auto !important;
   }
 }

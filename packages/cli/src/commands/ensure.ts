@@ -2,7 +2,7 @@ import { readToken } from "../config/credentials.js"
 import { reviveWatcher, watcherPid } from "../config/daemon.js"
 import { watchLogDir } from "../config/paths.js"
 import { isProjectEnabled } from "../config/projects.js"
-import { type Writer, errorMessage, resolveIo } from "../io.js"
+import { errorMessage, resolveIo, type Writer } from "../io.js"
 import { checkToken } from "../login.js"
 import { resolveProject } from "../watcher/resolveProject.js"
 

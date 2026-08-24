@@ -5,7 +5,7 @@ import { readToken } from "../config/credentials.js"
 import { watcherPid } from "../config/daemon.js"
 import { statePath, watchLogDir } from "../config/paths.js"
 import { listProjects } from "../config/projects.js"
-import { type Writer, resolveIo } from "../io.js"
+import { resolveIo, type Writer } from "../io.js"
 import { verifyToken } from "../login.js"
 
 export type StatusOptions = {

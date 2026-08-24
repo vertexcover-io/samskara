@@ -84,7 +84,10 @@ const CODE_KEYS = new Set(["content", "new_string", "old_string", "code", "text"
 const Fields = ({
   entries,
   language,
-}: { entries: ReadonlyArray<readonly [string, unknown]>; language: string | null }) => (
+}: {
+  entries: ReadonlyArray<readonly [string, unknown]>
+  language: string | null
+}) => (
   <dl className="mt-1 grid min-w-0 gap-1.5">
     {entries.map(([key, value]) => (
       <div key={key} className="grid min-w-0 gap-0.5 min-[560px]:grid-cols-[10rem_minmax(0,1fr)]">
@@ -101,7 +104,11 @@ const Payload = ({
   label,
   value,
   language,
-}: { label: string; value: unknown; language: string | null }) => {
+}: {
+  label: string
+  value: unknown
+  language: string | null
+}) => {
   const entries = asFields(value)
 
   return (
@@ -150,7 +157,10 @@ const pathOf = (value: unknown): unknown => {
 export const ToolCallItem = ({
   call,
   agent = null,
-}: { call: ToolEvidence; agent?: string | null }) => {
+}: {
+  call: ToolEvidence
+  agent?: string | null
+}) => {
   const [open, setOpen] = useState(false)
   const status = call.status
   const label = status === null ? "Pending" : (OUTCOME_LABEL[status] ?? status)

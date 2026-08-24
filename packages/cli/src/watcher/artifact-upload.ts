@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { readFile, readdir } from "node:fs/promises"
+import { readdir, readFile } from "node:fs/promises"
 import { extname, join } from "node:path"
 import { MAX_BINARY_BYTES, MAX_DIFF_BYTES, MAX_TEXT_BYTES } from "@samskara/core"
 import { createTwoFilesPatch } from "diff"

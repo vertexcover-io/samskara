@@ -10,7 +10,10 @@
     "JWT_SECRET",
     "JWT_EXPIRES_IN",
     "SAMSKARA_API_URL",
-    "VITE_API_BASE_URL"
+    "VITE_API_BASE_URL",
+    "SAMSKARA_E2E_ADMIN_URL",
+    "E2E_API_PORT",
+    "E2E_WEB_PORT"
   ],
   "tasks": {
     "build": {

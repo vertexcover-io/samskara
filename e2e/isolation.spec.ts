@@ -3,7 +3,6 @@ import postgres from "postgres"
 import {
   adminUrl,
   createRunDatabase,
-  databaseUrlFor,
   dispositionFor,
   dropRunDatabase,
   isRunDatabaseName,

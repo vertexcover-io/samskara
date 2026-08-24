@@ -3,12 +3,9 @@ import { useSearchParams } from "react-router-dom"
 import { artifactPathUrl, rawArtifactUrl } from "../api/artifacts.js"
 import type { CapturedArtifact } from "../api/types.js"
 import { absoluteTime } from "../time.js"
-import { Code } from "./Code.js"
-import { Markdown } from "./Markdown.js"
 import { fileNameOf, saveBlob, zipArtifacts } from "./artifact-download.js"
 import {
   type ArtifactKind,
-  type TreeNode,
   buildTree,
   countByKind,
   displayType,
@@ -16,7 +13,10 @@ import {
   isArtifactKind,
   matchesKind,
   matchesQuery,
+  type TreeNode,
 } from "./artifact-filter.js"
+import { Code } from "./Code.js"
+import { Markdown } from "./Markdown.js"
 import type { Artifact } from "./records.js"
 
 const Unavailable = () => (
@@ -192,7 +192,11 @@ const Notice = ({
   tone,
   title,
   children,
-}: { tone: "err" | "faded"; title: string; children: React.ReactNode }) => (
+}: {
+  tone: "err" | "faded"
+  title: string
+  children: React.ReactNode
+}) => (
   <div
     className={`border border-dashed p-4 ${tone === "err" ? "border-err/50 bg-panel" : "border-faded bg-panel"}`}
   >
@@ -311,7 +315,12 @@ const SideBySide = ({
   current,
   path,
   wrap,
-}: { base: string; current: string; path: string | null; wrap: boolean }) => (
+}: {
+  base: string
+  current: string
+  path: string | null
+  wrap: boolean
+}) => (
   <div className="grid grid-cols-1 gap-3 min-[900px]:grid-cols-2">
     <section className="min-w-0">
       <h4 className="mb-1 text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-ink-soft">
@@ -334,7 +343,12 @@ const SideBySideLoader = ({
   currentUrl,
   path,
   wrap,
-}: { baseUrl: string; currentUrl: string; path: string | null; wrap: boolean }) => (
+}: {
+  baseUrl: string
+  currentUrl: string
+  path: string | null
+  wrap: boolean
+}) => (
   <FetchedText
     url={baseUrl}
     render={(base) => (
@@ -551,7 +565,11 @@ const Viewer = ({
   exhibit,
   wrap,
   onWrapChange,
-}: { exhibit: Exhibit; wrap: boolean; onWrapChange: (next: boolean) => void }) => (
+}: {
+  exhibit: Exhibit
+  wrap: boolean
+  onWrapChange: (next: boolean) => void
+}) => (
   <section aria-label="Artifact viewer" className="min-w-0 bg-panel-2">
     <header className="flex flex-wrap items-start justify-between gap-3 border-b border-rule bg-panel px-4 py-3">
       <div className="min-w-0">
@@ -747,11 +765,7 @@ export const ArtifactsView = ({
   )
   const selected = exhibits[selectedIndex]
 
-  const update = (next: {
-    artifact?: string | null
-    kind?: ArtifactKind
-    file?: string
-  }): void => {
+  const update = (next: { artifact?: string | null; kind?: ArtifactKind; file?: string }): void => {
     const merged = new URLSearchParams(params)
     if (next.kind !== undefined) {
       if (next.kind === "all") merged.delete("kind")

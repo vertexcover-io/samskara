@@ -1,7 +1,7 @@
 import { basename, sep } from "node:path"
 import { checkpointStoreSchema } from "@samskara/core"
 import { atomicWriteJson, readJson, withFileLock } from "../config/atomic.js"
-import { type Writer, resolveIo } from "../io.js"
+import { resolveIo, type Writer } from "../io.js"
 
 export type ReplayDeps = {
   readonly apiBase: string

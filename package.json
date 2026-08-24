@@ -3,7 +3,9 @@
   "private": true,
   "type": "module",
   "packageManager": "bun@1.2.19",
-  "workspaces": ["packages/*"],
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "dev": "turbo run dev",
     "build": "turbo run build",
@@ -17,8 +19,7 @@
     "e2e": "bun run e2e/run.ts",
     "e2e:ui": "bun run e2e/run.ts --ui",
     "typecheck": "turbo run typecheck && tsc -p e2e/tsconfig.json",
-    "lint": "biome check . && bun run lint:db",
-    "lint:db": "bun run --cwd packages/server lint:db",
+    "lint": "biome check .",
     "format": "biome format --write .",
     "db:generate": "bun run --cwd packages/server db:generate",
     "db:migrate": "bun run --cwd packages/server db:migrate",
@@ -31,7 +32,7 @@
     "db:drop-stale-search-indexes": "bun run --cwd packages/server db:drop-stale-search-indexes"
   },
   "devDependencies": {
-    "@biomejs/biome": "1.9.4",
+    "@biomejs/biome": "2.5.10",
     "@playwright/test": "^1.62.0",
     "@types/node": "22.13.1",
     "turbo": "2.5.5",

@@ -1,7 +1,7 @@
 import { readToken } from "../config/credentials.js"
 import { startWatcherDaemon, watcherPid } from "../config/daemon.js"
 import { watchLogDir } from "../config/paths.js"
-import { type Writer, reportError, resolveIo } from "../io.js"
+import { reportError, resolveIo, type Writer } from "../io.js"
 import { login } from "../login.js"
 import { installHooksCommand, isManagedHookInstalled } from "./install-hooks.js"
 

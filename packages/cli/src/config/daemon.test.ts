@@ -167,7 +167,7 @@ describe("watcher daemon", () => {
     await writeFile(join(home, "watch.pid"), "777", "utf8")
     let running = true
     const signals: Array<string | number> = []
-    vi.spyOn(process, "kill").mockImplementation(((pid: number, signal: string | number) => {
+    vi.spyOn(process, "kill").mockImplementation(((_pid: number, signal: string | number) => {
       if (signal === 0) {
         if (!running) throw new Error("ESRCH")
         return true

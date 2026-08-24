@@ -14,7 +14,7 @@ import type {
 } from "@samskara/core"
 import { readCheckpoints, writeCheckpoints } from "@samskara/core"
 import type pino from "pino"
-import { type PotentialArtifact, collectArtifacts } from "./artifact-extract.js"
+import { collectArtifacts, type PotentialArtifact } from "./artifact-extract.js"
 import { type ArtifactQueueEntry, enqueue } from "./artifact-queue.js"
 import { shouldCaptureArtifacts } from "./containment.js"
 import { collectGitEvents } from "./gitEvents.js"

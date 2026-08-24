@@ -154,7 +154,7 @@ const verifiedCall = (
   provesIntent: (command: string) => boolean,
 ): toolRowsRepo.StoredCall | null => {
   const call = input.calls.get(callId)
-  if (!call || call.toolName !== "Bash") return null
+  if (call?.toolName !== "Bash") return null
   if (!call.command || !provesIntent(call.command)) return null
   return call
 }

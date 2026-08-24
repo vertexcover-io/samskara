@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest"
-import { EMPTY_FILTERS, changedFilters, parseFilters, serializeFilters } from "./filters.js"
+import { changedFilters, EMPTY_FILTERS, parseFilters, serializeFilters } from "./filters.js"
 
 const roundTrip = (filters = EMPTY_FILTERS) => parseFilters(serializeFilters(filters))
 

@@ -1,15 +1,15 @@
 import { resolve } from "node:path"
 import {
   type CreateProjectResponse,
-  type ProjectIdentity,
   createProjectResponseSchema,
+  type ProjectIdentity,
 } from "@samskara/core"
-import { apiBase as defaultApiBase } from "../config.js"
 import { readToken as defaultReadToken } from "../config/credentials.js"
 import { reviveWatcher } from "../config/daemon.js"
 import { watchLogDir } from "../config/paths.js"
 import { getProject, upsertProject } from "../config/projects.js"
-import { type Writer, errorMessage, reportError, resolveIo } from "../io.js"
+import { apiBase as defaultApiBase } from "../config.js"
+import { errorMessage, reportError, resolveIo, type Writer } from "../io.js"
 import { resolveProject } from "../watcher/resolveProject.js"
 
 type RegisterDeps = {

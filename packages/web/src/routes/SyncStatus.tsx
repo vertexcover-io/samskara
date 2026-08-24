@@ -9,12 +9,12 @@ import {
   COLUMNS,
   type Column,
   type Direction,
-  type TableState,
   filterRows,
   nextDirection,
   parseState,
   projectOptions,
   sortRows,
+  type TableState,
   toParams,
   userOptions,
 } from "../sync/table.js"
@@ -41,7 +41,10 @@ const EmptyState = () => (
 const NoMatches = ({
   state,
   onClear,
-}: { readonly state: TableState; readonly onClear: () => void }) => (
+}: {
+  readonly state: TableState
+  readonly onClear: () => void
+}) => (
   <section className={emptyPanelClass}>
     <p className="text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-stamp">
       No rows match

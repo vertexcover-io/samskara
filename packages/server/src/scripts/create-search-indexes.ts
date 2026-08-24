@@ -1,9 +1,9 @@
 import postgres from "postgres"
 import {
-  SEARCH_DOCUMENTS,
-  SEARCH_FILTER_INDEXES,
   filterIndexDefinition,
   normalizeIndexDefinition,
+  SEARCH_DOCUMENTS,
+  SEARCH_FILTER_INDEXES,
   searchIndexDefinition,
 } from "../db/searchSql.js"
 

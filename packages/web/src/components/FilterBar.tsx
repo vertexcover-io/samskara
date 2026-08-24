@@ -1,16 +1,16 @@
 import { useEffect, useId, useState } from "react"
 import type { SessionFilterOptions } from "../api/types.js"
 import {
-  RANGES,
-  RANGE_LABEL,
-  type Range,
-  SORTS,
-  SORT_LABEL,
-  type SessionFilters,
-  type Sort,
   changedFilters,
+  RANGE_LABEL,
+  RANGES,
+  type Range,
+  type SessionFilters,
+  SORT_LABEL,
+  SORTS,
+  type Sort,
 } from "../sessions/filters.js"
-import { TextField, controlClass, labelClass } from "./TextField.js"
+import { controlClass, labelClass, TextField } from "./TextField.js"
 
 const asRange = (value: string): Range => RANGES.find((range) => range === value) ?? "all"
 const asSort = (value: string): Sort => SORTS.find((sort) => sort === value) ?? "recent"
@@ -115,7 +115,10 @@ const TextFilter = ({
 const RangeControl = ({
   filters,
   onChange,
-}: { readonly filters: SessionFilters; readonly onChange: (filters: SessionFilters) => void }) => {
+}: {
+  readonly filters: SessionFilters
+  readonly onChange: (filters: SessionFilters) => void
+}) => {
   const id = useId()
   if (filters.range !== "custom") {
     return (

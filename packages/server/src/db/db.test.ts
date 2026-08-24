@@ -2,10 +2,10 @@ import { execFileSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { fileURLToPath } from "node:url"
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql"
-import { eq, sql } from "drizzle-orm"
+import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
 import * as sessionsRepo from "../repositories/sessions.repo.js"
-import { type Db, createDb } from "./client.js"
+import { createDb, type Db } from "./client.js"
 import {
   commits,
   messages,
@@ -14,12 +14,6 @@ import {
   pullRequests,
   repos,
   sessions,
-  subagents,
-  tokenUsage,
-  toolCall,
-  toolResult,
-  userOrgs,
-  userProjectGrant,
   users,
 } from "./schema.js"
 

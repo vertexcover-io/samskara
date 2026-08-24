@@ -1,4 +1,4 @@
-import { type SQL, and, asc, desc, eq, gte, lte, sql } from "drizzle-orm"
+import { and, asc, eq, type SQL, sql } from "drizzle-orm"
 import type { PgColumn } from "drizzle-orm/pg-core"
 import type { Querier } from "../db/client.js"
 import {
@@ -16,7 +16,7 @@ import {
   users,
 } from "../db/schema.js"
 import { SEARCH_DOCUMENTS, type SearchSourceKind } from "../db/searchSql.js"
-import { type SessionQuery, compileSessionQuery } from "../search/sessionQuery.js"
+import { compileSessionQuery, type SessionQuery } from "../search/sessionQuery.js"
 import { visibleToUser } from "./projects.repo.js"
 
 export type SessionFields = {
@@ -185,8 +185,6 @@ const tokensFor = (sessionId: SQL): SQL<number> => sql`(
   join "messages" on "messages"."id" = "tokenUsage"."messageId"
   where "messages"."sessionId" = ${sessionId}
 )`
-
-const tokensTotal = tokensFor(sql`"sessions"."id"`)
 
 const status = sql<string>`case when ${messageCount} = 0 then 'empty' else 'complete' end`
 

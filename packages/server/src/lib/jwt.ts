@@ -1,4 +1,4 @@
-import { SignJWT, jwtVerify } from "jose"
+import { jwtVerify, SignJWT } from "jose"
 import type { Env } from "./env.js"
 
 export type Audience = "web" | "cli"

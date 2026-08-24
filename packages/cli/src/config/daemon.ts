@@ -13,7 +13,7 @@ import { dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import * as lockfile from "proper-lockfile"
 import { sleep } from "../io.js"
-import { configHome, watchPidPath, watcherCrashLogPath } from "./paths.js"
+import { configHome, watcherCrashLogPath, watchPidPath } from "./paths.js"
 
 const START_LOCK_TIMEOUT_MS = 5_000
 const START_LOCK_RETRY_MS = 20

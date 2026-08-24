@@ -1,9 +1,9 @@
 import { expect, test } from "vitest"
 import {
-  type ParsedRecord,
   createProjectRequestSchema,
   createProjectResponseSchema,
   ingestPayloadSchema,
+  type ParsedRecord,
   projectIdentitySchema,
 } from "./types.js"
 
