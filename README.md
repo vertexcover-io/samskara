@@ -7,9 +7,8 @@ local, per-machine, and hard to read. Samskara watches them, ships the sessions 
 server you run, and gives you a web UI to browse and search them — across projects, across
 machines, across everyone on the team.
 
-Capture is opt-in per folder. No session content leaves your machine until you run
-`samskara enable` in a project — but `enable` itself talks to the server: it needs you already
-logged in and the server reachable, and it exits 1 without changing anything if either is missing.
+Capture is opt-in per folder: no session content leaves your machine until you run
+`samskara enable` in a project.
 
 ## What gets captured
 
@@ -32,22 +31,14 @@ A `SessionStart` hook keeps the watcher alive: every time you start a Claude Cod
 makes sure the background watcher is running. The watcher polls transcripts, keeps a per-session
 checkpoint so it only sends what is new, and uploads artifacts in the background.
 
----
-
 ## Requirements
 
-| | |
-|---|---|
-| [Bun](https://bun.sh) 1.2.19+ | package manager and test runner |
-| Node 22+ | the CLI binary and the server both run on Node |
-| Docker | Postgres + pgvector, and the server's DB tests |
-| A GitHub OAuth app | web login |
-| A GitHub org | login is gated to members of an org you seed |
-| [worktrunk](https://worktrunk.dev) | only if you work on more than one branch at a time — see below |
+- [Bun](https://bun.sh) 1.2.19+ — package manager and test runner
+- Node 22+ — the CLI binary and the server both run on Node
+- Docker — Postgres + pgvector
+- A GitHub OAuth app, and a GitHub org whose members are allowed to log in
 
----
-
-## Run the server locally
+## Run the server
 
 ### 1. Create a GitHub OAuth app
 
@@ -67,18 +58,14 @@ bun run setup YOUR_GITHUB_ORG_SLUG
 That installs dependencies, writes `.env` from `.env.example` with a freshly generated
 `JWT_SECRET`, starts Postgres, migrates, seeds demo data, and registers your org. The first run
 stops and tells you to paste the client id and secret from step 1 into `.env`; run it again after
-you have.
-
-Only members of a registered org can log in, which is what the org slug is for. Leave it off and
-setup tells you how to add one later with `bun run seed:org YOUR_GITHUB_ORG_SLUG`; pass
-`--no-auto-add` to that if you would rather grant membership by hand than have GitHub members
-added on first login. Every login re-checks the user's current GitHub orgs and drops any samskara
-org link GitHub no longer lists, so leaving an org on GitHub revokes access on the next login.
-
-`bun run setup` is safe to re-run: it never rotates a secret that is already set, and it leaves a
+you have. It is safe to re-run: it never rotates a secret that is already set, and it leaves a
 database that already has projects alone.
 
-The variables it writes:
+Only members of a registered org can log in. Leave the slug off and setup tells you how to add one
+later with `bun run seed:org YOUR_GITHUB_ORG_SLUG`. Every login re-checks the user's current GitHub
+orgs, so leaving an org on GitHub revokes access on the next login.
+
+The variables setup writes:
 
 | Variable | What it is |
 |---|---|
@@ -99,47 +86,6 @@ bun run dev               # API on :3000, web on :8000
 
 Open http://localhost:8000 and sign in with GitHub.
 
-### 4. Working on more than one branch at a time
-
-Every branch talks to the same Postgres container. Sharing one database means a migration on one
-branch rewrites the schema every other branch is reading, and two branches cannot run the app at
-once. Worktrees created with [worktrunk](https://worktrunk.dev) get their own database and their
-own port pair instead.
-
-```sh
-brew install worktrunk && wt config shell install    # cargo install worktrunk also works
-wt switch --create feat/thing
-```
-
-Worktrunk puts new worktrees in a *sibling* directory by default (`../samskara.feat-thing`). If you
-would rather have them inside the repo, where `.gitignore` already covers them, add this to your
-own `~/.config/worktrunk/config.toml` — it is a personal setting, not a shared one:
-
-```toml
-worktree-path = "{{ repo_path }}/.worktrees/{{ branch | sanitize }}"
-```
-
-`.config/wt.toml` hooks do the rest, in about five seconds — copy your `.env` and `.seed/` in,
-`bun install`, create `samskara_feat_thing`, migrate it, and seed it, restoring your local users
-from `.seed/identity.json` with their uuids intact. `wt switch` asks to approve those commands the first time; add `--yes` in
-a non-interactive session. `wt remove` drops the branch's database again.
-
-Only `.env` and `.seed/` are carried over from your main checkout — `.worktreeinclude` at the repo
-root is an allowlist, and a file has to be both gitignored and listed there to be copied. Everything else
-(`node_modules`, `dist`, `.turbo`) is rebuilt, so no branch ever inherits another branch's stale
-build. Start the Postgres container before creating a worktree; the hooks create a database inside
-it but cannot start it.
-
-**Signing in inside a worktree does not work,** and does not need to. A GitHub OAuth app matches
-host *and* port exactly against its single registered callback on port 3000, so the redirect is
-rejected. But cookies are not scoped by port and every worktree copies your `.env`, so a session
-started at `http://localhost:8000` is already valid on `http://localhost:8252`. What makes it work is
-`.seed/identity.json`, a gitignored snapshot of your users written by `bun run seed:capture` and
-restored by `bun run seed`: it gives the worktree database a row with the same uuid your session
-token names.
-
----
-
 ## Install the CLI
 
 The CLI is not published to npm yet, so you install it from this repo:
@@ -153,12 +99,8 @@ cd packages/cli && npm link
 That puts a `samskara` command on your PATH pointing at `packages/cli/dist/index.js`. Rebuild after
 pulling changes; the link keeps working. To remove it later: `npm unlink -g @samskara/cli`.
 
-If your server is not on the default ports, point the CLI at it:
-
-```sh
-export SAMSKARA_API_URL=https://samskara.example.com     # default http://localhost:3000
-export SAMSKARA_WEB_URL=https://samskara.example.com     # default http://localhost:8000
-```
+If your server is not on the default ports, point the CLI at it with `SAMSKARA_API_URL` and
+`SAMSKARA_WEB_URL`.
 
 ### First run
 
@@ -172,79 +114,42 @@ samskara enable           # start capturing this folder
 from the account menu. A code never expires but works only once. The token it returns is stored at
 `~/.samskara/token` with mode `0600`.
 
----
-
 ## CLI reference
-
-### Setup and account
 
 | Command | What it does |
 |---|---|
 | `samskara init` | Log in, install the Claude Code `SessionStart` hook, start the watcher. Safe to re-run. |
 | `samskara login [--code CODE]` | Pair with the web UI and store a CLI token. |
 | `samskara logout` | Stop the watcher and delete the stored token. |
-
-### Choosing what to capture
-
-| Command | What it does |
-|---|---|
 | `samskara enable [path]` | Register this folder with the server and start capturing it (defaults to the current directory). |
 | `samskara enable --all` | Also send sessions recorded *before* you enabled it. |
 | `samskara enable --sync-from 2026-07-01` | Only send sessions started after that date. |
 | `samskara disable [path]` | Stop capturing locally. Sessions already uploaded stay on the server. |
-
-`enable` calls `POST /api/projects` to register the folder, so it needs a stored login and a
-reachable server — with either missing, it exits 1 and writes nothing. By default it also starts
-the clock now, so turning capture on for an old project does not retroactively upload years of
-history. Re-running plain `enable` on an already-enabled folder does not move the cutoff — pass
-`--all` or `--sync-from` for that — but it can still rewrite the stored `projectId` in
-`projects.json` if the server now resolves this folder to a different project (for example, once
-its GitHub org gets seeded).
-
-### Day to day
-
-| Command | What it does |
-|---|---|
-| `samskara search [QUERY]` | Search captured sessions from the terminal and print each hit's URL. |
 | `samskara status` | Projects, capture state, last sync time, watcher PID. Start here when something looks off. |
 | `samskara logs [-f]` | Pretty-print the watcher log. `-f` streams new lines. |
 | `samskara restart` | Stop the watcher and start a fresh one. |
 | `samskara replay SESSION_ID` | Delete a session server-side and locally, then re-capture it from scratch. |
-
-`search` takes the same filters as the web UI's `/sessions` page and the same query grammar (see
-[Using the web UI](#using-the-web-ui)): `--project`, `--user`, `--repo`, `--branch`, `--pr`,
-`--commit`, `--range` (`--from`/`--to` for `custom`), `--tz`, `--sort`, `--page`, `--limit`. `--project`
-and `--repo` take a name or an id — an ambiguous or unrecognized name fails rather than guessing, and
-lists the closest known names. `--here` fills project, repo and branch from the current checkout
-(explicit flags win over it). `--first` keeps only the top hit; `--url` and `--json` print
-machine-readable output instead of the default table; `--open` opens the top hit in a browser.
-
-### Hooks and the watcher
-
-| Command | What it does |
-|---|---|
-| `samskara install-hooks` | Install the `SessionStart` hook by hand. |
-| `samskara uninstall-hooks` | Remove it. |
-| `samskara watch` | Start the watcher daemon directly. |
-| `samskara watch --foreground` | Run the capture loop in this terminal — useful for debugging. |
+| `samskara search [QUERY]` | Search captured sessions from the terminal and print each hit's URL. |
+| `samskara install-hooks` / `uninstall-hooks` | Install or remove the `SessionStart` hook by hand. |
+| `samskara watch [--foreground]` | Start the watcher daemon directly; `--foreground` runs the loop in this terminal. |
 
 `--verbose` on any command turns on debug logging.
 
-### Local state
+`enable` registers the folder with the server, so it needs a stored login and a reachable server —
+with either missing it exits 1 and writes nothing. By default it starts the clock now, so turning
+capture on for an old project does not retroactively upload years of history.
 
-Everything the CLI stores lives in `~/.samskara` (override the whole directory with `SAMSKARA_HOME`):
+`samskara search` takes the same filters as the web UI's `/sessions` page and the same query grammar
+(see [Using the web UI](#using-the-web-ui)): `--project`, `--user`, `--repo`, `--branch`, `--pr`,
+`--commit`, `--range` (`--from`/`--to` for `custom`), `--tz`, `--sort`, `--page`, `--limit`.
+`--project` and `--repo` take a name or an id — an ambiguous or unrecognized name fails rather than
+guessing, and lists the closest known names. `--here` fills project, repo and branch from the current
+checkout (explicit flags win over it). `--first` keeps only the top hit; `--url` and `--json` print
+machine-readable output instead of the default table; `--open` opens the top hit in a browser.
 
-| Path | Contents |
-|---|---|
-| `token` | CLI access token, mode `0600` |
-| `projects.json` | which folders are enabled, and since when |
-| `filter-options.json` | cached `search` project/user/repo/branch names, so resolving one by name costs one request per 5 minutes |
-| `state.json` | per-session ingest checkpoints |
-| `artifacts.json`, `artifact-queue.json` | artifact checkpoints and pending uploads |
-| `watch.pid` | watcher process id |
-| `logs/current.log` | watcher log, rotated daily |
-
----
+Everything the CLI stores lives in `~/.samskara` — the token, which folders are enabled, per-session
+ingest checkpoints, cached `search` filter names, the watcher pid, and `logs/current.log`. Override
+the whole directory with `SAMSKARA_HOME`.
 
 ## Using the web UI
 
@@ -253,7 +158,7 @@ Everything the CLI stores lives in `~/.samskara` (override the whole directory w
 | `/projects` | Every project you can read — session count, last activity, last session title |
 | `/sessions` | Session index with search and filters |
 | `/sessions/:id` | One session: Conversation, Timeline, Tool Calls, and Artifacts tabs, with subagent branches you can expand |
-| `/sync-status` | Each project you can read, paired with every user who belongs to it and when they last synced it — sortable by any column, filterable by user and project |
+| `/sync-status` | Each project you can read, paired with every user who belongs to it and when they last synced it |
 
 Filters live in the query string, so any view you are looking at is a link you can paste to a
 teammate, and Back/Forward work the way you expect.
@@ -275,9 +180,7 @@ Filters you can combine with it: `project`, `user`, `repo`, `branch`, `pr`, `com
 The same query and filters are available from the terminal with `samskara search` (see
 [CLI reference](#cli-reference)).
 
----
-
-## Repo layout
+## Development
 
 | Package | What it holds |
 |---|---|
@@ -285,35 +188,6 @@ The same query and filters are available from the terminal with `samskara search
 | `@samskara/cli` | The `samskara` binary — pairing, capture opt-in, the watcher |
 | `@samskara/server` | Hono API on Node, Drizzle + postgres-js + pgvector |
 | `@samskara/web` | Vite + React + Tailwind UI |
-
-### API surface
-
-| Method | Path | Auth | Purpose |
-|---|---|---|---|
-| GET | `/health` | none | liveness |
-| GET | `/api/auth/github/start` | none | begin OAuth |
-| GET | `/api/auth/github/callback` | none | verify state, org-gate, set session cookie |
-| GET | `/api/auth/me` | web / cli | current user |
-| POST | `/api/auth/logout` | web | clear the session cookie |
-| POST | `/api/auth/cli-code` | web | mint a pairing code |
-| POST | `/api/auth/cli-exchange` | none | redeem a code for a CLI token |
-| GET | `/api/projects` | web | projects with session counts |
-| POST | `/api/projects` | cli | find or create the project for a folder; org-owned when its GitHub org is registered and the caller is a member |
-| GET | `/api/sync-status` | web | the projects the caller may read, each member of them, and that member's own last-synced time |
-| GET | `/api/sessions` | web / cli | session list, search and filters — `cli` reads it so `samskara search` can run |
-| GET | `/api/sessions/:id` | web | one session with messages, tools, subagents, tokens |
-| GET | `/api/sessions/:id/artifacts` | web | artifacts for a session |
-| DELETE | `/api/sessions/:id` | cli | delete a session (used by `replay`) |
-| POST | `/api/ingest` | cli | flush a captured session |
-| POST | `/api/artifacts` | cli | upload an artifact |
-| GET | `/api/artifacts/:id` | web | artifact metadata and diff |
-| GET | `/api/artifacts/:id/raw?which=base\|current` | web | the artifact bytes |
-
-Tokens are audience-scoped (`aud: web` or `aud: cli`) and checked per route.
-
----
-
-## Development
 
 ```sh
 bun run dev          # API + web, watch mode
@@ -323,7 +197,6 @@ bun run lint         # biome check ., including the DB naming rule
 bun run format       # biome format --write .
 bun run test         # every package's unit tests
 bun run e2e          # Playwright, on a throwaway database it creates and drops
-bun run e2e:ui       # the same suite in Playwright's UI mode
 bun run cli -- status   # run the CLI from source, without linking
 ```
 
@@ -336,32 +209,9 @@ bun run db:migrate                     # bring a database fully up to date
 bun run db:verify                      # read-only: assert it already is
 ```
 
-`db:migrate` is the only command that touches a database's shape. It runs drizzle-kit's migrations
-and then every post-migrate step in `packages/server/src/db/steps.ts` — work migrations cannot
-carry, because `create index concurrently` is rejected inside a migration's transaction. Today that
-is the full-text search indexes. Steps are idempotent and run on every migrate, so a database is
-never left half-set-up; skipping them leaves a schema-correct database whose every search
-sequentially re-tokenizes every message, which reads as the API hanging rather than as a missing
-step.
+`db:migrate` is the only supported way to change a database's shape — it runs drizzle-kit's
+migrations and then the post-migrate steps in `packages/server/src/db/steps.ts` (today, the
+full-text search indexes, which cannot be built inside a migration's transaction).
 
-To add one: write the module next to `steps.ts`, export a `MigrationStep` with an idempotent `run`
-and a read-only `verify`, and list it in `MIGRATION_STEPS`.
-
-Every table and column name in the database uses camelCase. A Biome plugin
-(`packages/server/src/db/naming.grit`) enforces it against `packages/server/src/db/schema.ts`, so
-`bun run lint` fails the build when a new column or table name uses snake_case.
-
-The plugin reads TypeScript, not SQL, so it sees a name only once `schema.ts` declares it. A
-hand-written migration that adds a column without touching `schema.ts` is not checked — keep the
-schema the source of truth and generate migrations from it wherever you can.
-
-The server's test suite starts a real `pgvector/pgvector:pg16` container via testcontainers and runs
-the migrations against it, so schema and auth are covered end to end. Those tests skip themselves
-when Docker is not available.
-
-### Logging
-
-Every package logs NDJSON through `createLogger` from `@samskara/core` (pino underneath). Level
-comes from `LOG_LEVEL`, defaulting to `info` in production and `debug` elsewhere. `token`,
-`authorization`, `password`, and `secret` are redacted from every line. Each API request gets a
-`reqId` that is echoed back on the response, so a log line and a request can always be tied together.
+See [CLAUDE.md](CLAUDE.md) for the contributor detail: working on several branches at once, the
+database naming rule, the seed/identity snapshot, and the logging conventions.
