@@ -15,7 +15,13 @@ import {
   toolResult,
   users,
 } from "../db/schema.js"
-import { SEARCH_DOCUMENTS, type SearchSourceKind } from "../db/searchSql.js"
+import {
+  SEARCH_DOCUMENTS,
+  SEARCH_VECTOR_COLUMN,
+  type SearchDocument,
+  type SearchSourceKind,
+  searchText,
+} from "../db/searchSql.js"
 import { compileSessionQuery, type SessionQuery } from "../search/sessionQuery.js"
 import { visibleToUser } from "./projects.repo.js"
 
@@ -224,29 +230,87 @@ const derivedTitle = sql<string | null>`coalesce(${sessions.title}, (
   order by m."lineNumber" asc limit 1
 ))`
 
-/**
- * Runtime match/rank/headline expressions derive from the index catalogue rather than maintaining
- * a second hand-written copy. Only these fixed aliases are accepted, so replacement cannot admit
- * user SQL identifiers.
- */
-const canonicalExpression = (sourceKind: SearchSourceKind, alias: string): string => {
+const documentFor = (sourceKind: SearchSourceKind): SearchDocument => {
   const document = SEARCH_DOCUMENTS.find((candidate) => candidate.sourceKind === sourceKind)
   if (document === undefined) throw new Error(`missing canonical search document: ${sourceKind}`)
-  return document.vector.replaceAll(`"${document.table}".`, `${alias}.`)
+  return document
 }
 
-const canonicalVector = (sourceKind: SearchSourceKind, alias: string): SQL =>
-  sql.raw(canonicalExpression(sourceKind, alias))
+/** Match and rank read the stored column; only the headline re-derives text, and only per page. */
+const canonicalVector = (alias: string): SQL => sql.raw(`${alias}."${SEARCH_VECTOR_COLUMN}"`)
 
-const canonicalText = (sourceKind: SearchSourceKind, alias: string): SQL => {
-  const vector = canonicalExpression(sourceKind, alias)
-  const prefix = "to_tsvector('simple'::regconfig, public.samskara_search_cap("
-  const suffix = "))"
-  if (!vector.startsWith(prefix) || !vector.endsWith(suffix)) {
-    throw new Error(`unreadable canonical search document: ${sourceKind}`)
-  }
-  return sql.raw(`public.samskara_search_cap(${vector.slice(prefix.length, -suffix.length)})`)
+/** Only these fixed aliases are accepted, so re-aliasing cannot admit user SQL identifiers. */
+const canonicalText = (sourceKind: SearchSourceKind, alias: string): SQL =>
+  sql.raw(searchText(documentFor(sourceKind), alias))
+
+type SourceMatch = {
+  readonly sourceKind: SearchSourceKind
+  readonly alias: string
+  readonly from: SQL
+  readonly rowId: SQL
+  readonly uuid: SQL
+  readonly toolId: SQL
 }
+
+// `uuid` and `toolId` are carried separately rather than split back out of `rowId`, so a colon in
+// a tool id can never break the headline lookup.
+const SOURCE_MATCHES: ReadonlyArray<SourceMatch> = [
+  {
+    sourceKind: "session",
+    alias: "s",
+    from: sql`join "sessions" s on s.id = f.id`,
+    rowId: sql`f.id`,
+    uuid: sql`null::uuid`,
+    toolId: sql`null::text`,
+  },
+  {
+    sourceKind: "message",
+    alias: "m",
+    from: sql`join "messages" m on m."sessionId" = f.id`,
+    rowId: sql`m.id::text`,
+    uuid: sql`m.id`,
+    toolId: sql`null::text`,
+  },
+  {
+    sourceKind: "pullRequest",
+    alias: "pr",
+    from: sql`join "sessionPullRequests" sp on sp."sessionId" = f.id join "pullRequests" pr on pr.id = sp."prId"`,
+    rowId: sql`pr.id::text`,
+    uuid: sql`pr.id`,
+    toolId: sql`null::text`,
+  },
+  {
+    sourceKind: "toolCall",
+    alias: "tc",
+    from: sql`join "messages" m on m."sessionId" = f.id join "toolCall" tc on tc."messageId" = m.id`,
+    rowId: sql`concat(tc."messageId"::text, ':', tc."toolId")`,
+    uuid: sql`tc."messageId"`,
+    toolId: sql`tc."toolId"`,
+  },
+  {
+    sourceKind: "toolResult",
+    alias: "tr",
+    from: sql`join "messages" m on m."sessionId" = f.id join "toolResult" tr on tr."messageId" = m.id`,
+    rowId: sql`concat(tr."messageId"::text, ':', tr."toolId")`,
+    uuid: sql`tr."messageId"`,
+    toolId: sql`tr."toolId"`,
+  },
+]
+
+const sourceMatchSql = (query: SQL, match: SourceMatch): SQL => {
+  const vector = canonicalVector(match.alias)
+  const multiplier = sql.raw(String(documentFor(match.sourceKind).multiplier))
+  return sql`select f.id, ${match.sourceKind}::text as "sourceKind", ${match.rowId} as "sourceRowId", ${match.uuid} as "sourceUuid", ${match.toolId} as "sourceToolId", ${multiplier} * ts_rank_cd(${vector}, ${query}, 32) as score from filtered_sessions f ${match.from} where ${vector} @@ ${query}`
+}
+
+/** Resolved after paging, so at most one page of documents is re-read for headlines. */
+const sourceTextSql = sql`case p."sourceKind"
+  when 'session' then ${canonicalText("session", '"sessions"')}
+  when 'message' then (select ${canonicalText("message", "m")} from "messages" m where m.id = p."sourceUuid")
+  when 'pullRequest' then (select ${canonicalText("pullRequest", "pr")} from "pullRequests" pr where pr.id = p."sourceUuid")
+  when 'toolCall' then (select ${canonicalText("toolCall", "tc")} from "toolCall" tc where tc."messageId" = p."sourceUuid" and tc."toolId" = p."sourceToolId")
+  when 'toolResult' then (select ${canonicalText("toolResult", "tr")} from "toolResult" tr where tr."messageId" = p."sourceUuid" and tr."toolId" = p."sourceToolId")
+end`
 
 const SNIPPET_START = "[[[samskara-match-4f481d8b]]]"
 const SNIPPET_STOP = "[[[/samskara-match-4f481d8b]]]"
@@ -403,19 +467,17 @@ export const listAccessible = async (
     query === undefined
       ? sql`
     matched_sessions as (
-      select f.*, null::text as "sourceKind", null::text as "sourceRowId", null::text as "sourceText", null::real as score, 0::int as "matchedRows"
+      select f.*, null::text as "sourceKind", null::text as "sourceRowId", null::uuid as "sourceUuid", null::text as "sourceToolId", null::real as score, 0::int as "matchedRows"
       from filtered_sessions f
     )`
       : sql`
     source_matches as (
-      -- Keep the canonical expression qualified by the base table name: PostgreSQL can then match the sessions GIN expression index.
-      select f.id, 'session'::text as "sourceKind", f.id as "sourceRowId", ${canonicalText("session", "s")} as "sourceText", 4.0 * ts_rank_cd(${canonicalVector("session", "s")}, ${query}, 32) as score from filtered_sessions f join "sessions" s on s.id = f.id where ${canonicalVector("session", "s")} @@ ${query}
-      union all select f.id, 'message', m.id::text, ${canonicalText("message", "m")}, 1.5 * ts_rank_cd(${canonicalVector("message", "m")}, ${query}, 32) from filtered_sessions f join "messages" m on m."sessionId" = f.id where ${canonicalVector("message", "m")} @@ ${query}
-      union all select f.id, 'pullRequest', pr.id::text, ${canonicalText("pullRequest", "pr")}, 3.0 * ts_rank_cd(${canonicalVector("pullRequest", "pr")}, ${query}, 32) from filtered_sessions f join "sessionPullRequests" sp on sp."sessionId" = f.id join "pullRequests" pr on pr.id = sp."prId" where ${canonicalVector("pullRequest", "pr")} @@ ${query}
-      union all select f.id, 'toolCall', concat(tc."messageId"::text, ':', tc."toolId"), ${canonicalText("toolCall", "tc")}, 1.0 * ts_rank_cd(${canonicalVector("toolCall", "tc")}, ${query}, 32) from filtered_sessions f join "messages" m on m."sessionId" = f.id join "toolCall" tc on tc."messageId" = m.id where ${canonicalVector("toolCall", "tc")} @@ ${query}
-      union all select f.id, 'toolResult', concat(tr."messageId"::text, ':', tr."toolId"), ${canonicalText("toolResult", "tr")}, 0.75 * ts_rank_cd(${canonicalVector("toolResult", "tr")}, ${query}, 32) from filtered_sessions f join "messages" m on m."sessionId" = f.id join "toolResult" tr on tr."messageId" = m.id where ${canonicalVector("toolResult", "tr")} @@ ${query}
+      ${sql.join(
+        SOURCE_MATCHES.map((match) => sourceMatchSql(query, match)),
+        sql` union all `,
+      )}
     ), matched_sessions as (
-      select distinct on (f.id) f.*, sm."sourceKind", sm."sourceRowId", sm."sourceText", sm.score, count(*) over (partition by f.id)::int as "matchedRows"
+      select distinct on (f.id) f.*, sm."sourceKind", sm."sourceRowId", sm."sourceUuid", sm."sourceToolId", sm.score, count(*) over (partition by f.id)::int as "matchedRows"
       from filtered_sessions f join source_matches sm on sm.id = f.id
       order by f.id, sm.score desc, case sm."sourceKind" when 'session' then 1 when 'pullRequest' then 2 when 'message' then 3 when 'toolCall' then 4 else 5 end, sm."sourceRowId"
     )`
@@ -448,9 +510,10 @@ export const listAccessible = async (
     select p.id, ${derivedTitle} as title, p."projectId", p."projectName", p."projectSlug", p."userLogin",
       r.host as "repoHost", r.owner as "repoOwner", r."repoName" as "repoName", ${durationMs} as "durationMs",
       ${isTokenSort ? sql`p."tokensTotal"` : tokensFor(sql`"sessions"."id"`)} as "tokensTotal", ${status} as status,
-      p."updatedAt" as "lastActiveAt", p."sourceKind", p."sourceRowId", p.score, p.total,
-      case when p."sourceText" is null then null else ts_headline('simple'::regconfig, p."sourceText", ${query ?? sql`null::tsquery`}, ${SNIPPET_OPTIONS}) end as headline
+      p."updatedAt" as "lastActiveAt", p."sourceKind", p."sourceRowId", p.score, p.total, t."sourceText",
+      case when t."sourceText" is null then null else ts_headline('simple'::regconfig, t."sourceText", ${query ?? sql`null::tsquery`}, ${SNIPPET_OPTIONS}) end as headline
     from paged p join "sessions" on "sessions".id = p.id left join "repos" r on r.id = ${dominantRepoId}
+    cross join lateral (select ${sourceTextSql} as "sourceText") t
     order by ${finalOrder}
   `)) as ReadonlyArray<Record<string, unknown>>
   const total =
