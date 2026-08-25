@@ -122,3 +122,14 @@ Every package logs NDJSON through `createLogger` from `@samskara/core` (pino und
 comes from `LOG_LEVEL`, defaulting to `info` in production and `debug` elsewhere. `token`,
 `authorization`, `password` and `secret` are redacted from every line. Each API request gets a
 `reqId` that is echoed back on the response.
+
+## Releases
+
+Every package carries the same version. Never hand-edit a `version` field:
+`bun run release:version patch|minor|major|1.4.0` writes all five and tags the commit, and pushing
+that tag is what releases. The README's "Releases" section has the rest, including why the CLI
+tarball bundles core the way it does.
+
+`scripts/` is tested by `bun test`, not vitest. Run it with `bun run test:scripts` — a bare
+`bun test scripts/` also matches `packages/server/src/scripts/*.test.ts` and starts real Postgres
+containers.

@@ -88,7 +88,24 @@ Open http://localhost:8000 and sign in with GitHub.
 
 ## Install the CLI
 
-The CLI is not published to npm yet, so you install it from this repo:
+The CLI is not on npm. Every release attaches an installable tarball to its
+[GitHub release](https://github.com/vertexcover-io/samskara/releases), so install the latest one
+directly:
+
+```sh
+npm i -g https://github.com/vertexcover-io/samskara/releases/download/vVERSION/samskara-cli-VERSION.tgz
+```
+
+Replace `VERSION` with the release you want, for example `v0.1.0` and `0.1.0`. The tarball carries
+`@samskara/core` inside it, so nothing else has to be fetched from a registry. It needs Node 22+.
+To remove it later: `npm uninstall -g @samskara/cli`.
+
+To upgrade, install the newer tarball over the old one, then run `samskara restart` so the running
+watcher picks up the new build.
+
+### From a checkout instead
+
+Working on the CLI itself, or want an unreleased build:
 
 ```sh
 bun install
@@ -226,3 +243,28 @@ full-text search indexes, which cannot be built inside a migration's transaction
 
 See [CLAUDE.md](CLAUDE.md) for the contributor detail: working on several branches at once, the
 database naming rule, the seed/identity snapshot, and the logging conventions.
+
+## Releases
+
+Every package carries the same version, so one tag names one state of the whole repo. Cutting a
+release is two commands:
+
+```sh
+bun run release:version patch    # or minor, major, or an explicit 1.4.0
+git push origin master --follow-tags
+```
+
+`release:version` refuses a dirty tree, writes the version into the root manifest and all four
+packages, commits and tags it, and stops there — `--no-git` bumps the files only. Pushing the tag
+runs `.github/workflows/release.yml`, which re-checks the tag against the manifests, runs lint,
+typecheck and the tests, builds the CLI tarball and creates the GitHub release with it attached.
+
+Only the CLI ships an artifact; the server and web UI are deployed from source. To build the
+tarball without releasing anything, `bun run release:pack` writes `dist/samskara-cli-VERSION.tgz`.
+
+The CLI depends on `@samskara/core` as `workspace:*`, which means nothing outside this repo, and
+core is never published, so the tarball carries core inside it as an npm
+[bundled dependency](https://docs.npmjs.com/cli/configuring-npm/package-json#bundledependencies).
+One wrinkle: npm leaves an *empty* directory for every dependency a bundled package declares, so
+the bundled copy of core declares none and core's dependencies are hoisted into the CLI's own list,
+where bundled core resolves them by walking up out of its directory.

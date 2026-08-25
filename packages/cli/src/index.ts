@@ -19,6 +19,7 @@ import { startWatcherDaemon, stopWatcherDaemon } from "./config/daemon.js"
 import { artifactQueuePath, artifactStatePath, statePath } from "./config/paths.js"
 import { apiBase } from "./config.js"
 import { login } from "./login.js"
+import { cliVersion } from "./version.js"
 
 /** Compare real paths: a global install invokes the bin through a symlink, and Node keeps that
  * symlink in `argv[1]` while `import.meta.url` already points at the resolved file. */
@@ -38,7 +39,7 @@ const program = new Command()
 program
   .name("samskara")
   .description("Capture and search AI coding-agent session logs")
-  .version("0.0.0")
+  .version(cliVersion)
   .option("--verbose", "enable debug logging")
 
 program
