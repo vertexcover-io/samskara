@@ -61,8 +61,10 @@ const main = (): void => {
   }
 
   const commit = !args.includes("--no-git")
-  if (commit && git("status", "--porcelain") !== "") {
-    throw new Error("working tree is dirty: commit or stash before cutting a release")
+  /** -uno: untracked files are none of a release's business, only MANIFESTS get committed. */
+  const dirty = commit ? git("status", "--porcelain", "-uno") : ""
+  if (dirty !== "") {
+    throw new Error(`working tree is dirty: commit or stash before cutting a release\n${dirty}`)
   }
 
   const version = nextVersion(currentVersion(), bump)
