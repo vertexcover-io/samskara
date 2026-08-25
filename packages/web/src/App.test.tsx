@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react"
+import { render, screen, waitFor, waitForElementToBeRemoved, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, test, vi } from "vitest"
 import { AppRoutes } from "./App.js"
@@ -116,11 +116,14 @@ test("SC10: the projects page renders one card for each project the API returns"
 
   renderAt("/projects")
 
-  const main = await screen.findByRole("main")
-  expect(within(main).getByText("Samskara")).toBeInTheDocument()
-  expect(within(main).getByText("Andromeda")).toBeInTheDocument()
-  expect(within(main).getByText("3")).toBeInTheDocument()
-  expect(within(main).getByText(/unavailable/i)).toBeInTheDocument()
+  // The shell paints `main` before the request settles, so waiting on that role lands on the
+  // loading state. Wait for loading to end instead.
+  await waitForElementToBeRemoved(() => screen.queryByTestId("loading"))
+  const main = within(screen.getByRole("main"))
+  expect(main.getByText("Samskara")).toBeInTheDocument()
+  expect(main.getByText("Andromeda")).toBeInTheDocument()
+  expect(main.getByText("3")).toBeInTheDocument()
+  expect(main.getByText(/unavailable/i)).toBeInTheDocument()
 })
 
 test("SC11: a 401 on the projects page redirects to /login rather than painting an empty shelf", async () => {

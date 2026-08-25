@@ -209,7 +209,9 @@ test("today initializes the URL before its only sessions request so the request 
   await screen.findByRole("link", { name: /port the session detail surface/i })
   expect(calls).toHaveLength(1)
   expect(new URL(calls.at(0) ?? "", "http://localhost").searchParams.get("tz")).toBe("UTC")
-  expect(screen.getByTestId("location")).toHaveTextContent("range=today&tz=UTC")
+  await waitFor(() =>
+    expect(screen.getByTestId("location")).toHaveTextContent("range=today&tz=UTC"),
+  )
 })
 
 test("stale sessions responses cannot replace newer filter results", async () => {

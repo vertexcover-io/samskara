@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react"
+import { render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, beforeEach, expect, test, vi } from "vitest"
 import type { SyncStatusRow } from "../api/types.js"
@@ -107,12 +107,9 @@ test("SC6: an expired session paints the session-expired panel, not the retrieva
 
   renderPage()
 
-  // The redirect crosses three async hops: the fetch settles, the guard reads `unauthorized`, then
-  // the router navigates. One second is not enough on a loaded machine, and the assertion below is
-  // exact either way -- only the patience changes.
-  expect(await screen.findByTestId("location", undefined, { timeout: 5000 })).toHaveTextContent(
-    "/login",
-  )
+  // The probe span is mounted from the first render, so waiting on the element resolves instantly
+  // and reads the pre-redirect location. Wait on the text it carries instead.
+  await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("/login"))
   expect(screen.queryByText(/retrieval failed/i)).not.toBeInTheDocument()
 })
 
