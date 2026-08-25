@@ -1,7 +1,12 @@
+import { randomUUID } from "node:crypto"
 import type { ArtifactUploadPayload, IngestPayload } from "@samskara/core"
 
 /** `detail` is what the server (or the network) said, so a failure log can name the cause. */
-export type SinkResult = { readonly status: number; readonly detail?: string }
+export type SinkResult = {
+  readonly status: number
+  readonly detail?: string
+  readonly reqId?: string
+}
 
 export interface Sink {
   send(payload: IngestPayload): Promise<SinkResult>
@@ -38,16 +43,25 @@ const post = async (
   const token = await readToken()
   if (!token) return { status: 401, detail: NO_TOKEN }
 
+  // Minted here rather than read off the response: a network failure has no response, and that
+  // is exactly the case that most needs an id to trace.
+  const reqId = randomUUID()
   try {
     const res = await fetch(`${apiBase}${path}`, {
       method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`,
+        "x-request-id": reqId,
+      },
       body: JSON.stringify(payload),
     })
     const detail = await failureDetail(res)
-    return detail === undefined ? { status: res.status } : { status: res.status, detail }
+    return detail === undefined
+      ? { status: res.status, reqId }
+      : { status: res.status, detail, reqId }
   } catch (error) {
-    return { status: 0, detail: error instanceof Error ? error.message : String(error) }
+    return { status: 0, detail: error instanceof Error ? error.message : String(error), reqId }
   }
 }
 
@@ -66,6 +80,7 @@ export const createArtifactSink = (deps: HttpSinkDeps) => ({
 
 export type InMemorySink = Sink & {
   readonly received: ReadonlyArray<IngestPayload>
+  readonly requestIds: ReadonlyArray<string>
 }
 
 export const createInMemorySink = (
@@ -73,13 +88,17 @@ export const createInMemorySink = (
   detailFor: (payload: IngestPayload) => string | undefined = () => undefined,
 ): InMemorySink => {
   const received: IngestPayload[] = []
+  const requestIds: string[] = []
   return {
     received,
+    requestIds,
     send: async (payload) => {
       received.push(payload)
+      const reqId = randomUUID()
+      requestIds.push(reqId)
       const detail = detailFor(payload)
       const status = statusFor(payload)
-      return detail === undefined ? { status } : { status, detail }
+      return detail === undefined ? { status, reqId } : { status, detail, reqId }
     },
   }
 }

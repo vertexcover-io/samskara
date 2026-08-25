@@ -33,27 +33,31 @@ const nodeFs: FileSystem = {
   stat: statOf,
 }
 
-const listJsonl = async (dir: string): Promise<ReadonlyArray<string>> => {
+const listJsonl = async (dir: string, log?: pino.Logger): Promise<ReadonlyArray<string>> => {
   try {
     const entries = await readdir(dir, { withFileTypes: true })
     const nested = await Promise.all(
       entries.map((entry): Promise<ReadonlyArray<string>> => {
         const path = join(dir, entry.name)
-        if (entry.isDirectory()) return listJsonl(path)
+        if (entry.isDirectory()) return listJsonl(path, log)
         return Promise.resolve(entry.isFile() && entry.name.endsWith(".jsonl") ? [path] : [])
       }),
     )
     return nested.flat()
-  } catch {
+  } catch (err) {
+    log?.error({ dir, err }, "transcript directory unreadable; no sessions will sync")
     return []
   }
 }
 
-export const globAll = async (pattern: string): Promise<ReadonlyArray<string>> => {
+export const globAll = async (
+  pattern: string,
+  log?: pino.Logger,
+): Promise<ReadonlyArray<string>> => {
   const expanded = expandHome(pattern)
   const recursiveJsonl = expanded.match(/^(.*)[\\/]\*\*[\\/]\*\.jsonl$/)
   const root = recursiveJsonl?.[1]
-  if (root) return listJsonl(root)
+  if (root) return listJsonl(root, log)
 
   const matches: string[] = []
   for await (const entry of nodeGlob(expanded)) matches.push(entry)
@@ -108,7 +112,7 @@ export const watch = async (options: WatchOptions): Promise<void> => {
     fs: nodeFs,
     clock: { now: () => Date.now() },
     sink: createHttpSink({ apiBase: apiBase(), readToken, fetch: globalThis.fetch }),
-    glob: globAll,
+    glob: (pattern) => globAll(pattern, log),
     plugin: createClaudePlugin(nodeFs),
     resolveProject: projectOverride
       ? async () => projectOverride

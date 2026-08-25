@@ -899,4 +899,43 @@ describe("watcher driver", () => {
       },
     ])
   })
+
+  test("a synced session logs one info summary, so a healthy sync is visible at LOG_LEVEL=info", async () => {
+    const main = join(projects, "sess-1.jsonl")
+    await writeFile(main, `${assistantLine("l1", "sess-1")}\n`, "utf8")
+
+    const spy = spyLogger()
+    await runCycle(config, deps({ glob: async () => [main], log: spy.log }))
+
+    const [entry] = spy.info.filter((call) => call.message === "session synced")
+    expect(entry?.details.sessionId).toBe("sess-1")
+    expect(entry?.details.repo).toBe("acme-widget")
+    expect(entry?.details.chunks).toBe(1)
+    expect(entry?.details.messages).toBeGreaterThan(0)
+  })
+
+  test("the summary carries the request ids the server saw, so both logs join on one string", async () => {
+    const main = join(projects, "sess-1.jsonl")
+    await writeFile(main, `${assistantLine("l1", "sess-1")}\n`, "utf8")
+
+    const spy = spyLogger()
+    const sink = createInMemorySink()
+    await runCycle(config, deps({ sink, glob: async () => [main], log: spy.log }))
+
+    const [entry] = spy.info.filter((call) => call.message === "session synced")
+    expect(entry?.details.reqIds).toEqual(sink.requestIds)
+    expect(sink.requestIds).toHaveLength(1)
+  })
+
+  test("a failed flush names the request id the server logged it under", async () => {
+    const main = join(projects, "sess-1.jsonl")
+    await writeFile(main, `${assistantLine("l1", "sess-1")}\n`, "utf8")
+
+    const spy = spyLogger()
+    const sink = createInMemorySink(() => 500)
+    await runCycle(config, deps({ sink, glob: async () => [main], log: spy.log }))
+
+    expect(spy.warn[0]?.details.reqId).toBe(sink.requestIds[0])
+    expect(spy.info.filter((call) => call.message === "session synced")).toHaveLength(0)
+  })
 })

@@ -5,6 +5,7 @@ import type { ProjectIdentity } from "@samskara/core"
 import { afterEach, expect, test, vi } from "vitest"
 import { upsertProject } from "../config/projects.js"
 import { drainWorkers, globAll, withStoredProjectId } from "./index.js"
+import { spyLogger } from "./test-logger.js"
 
 const originalHome = process.env.SAMSKARA_HOME
 
@@ -89,4 +90,24 @@ test("shutdown drain: onDrained fires exactly once even if both sides could sett
   await drainWorkers(Promise.resolve(), 1, sleep, onDrained)
 
   expect(onDrained).toHaveBeenCalledTimes(1)
+})
+
+test("an unreadable transcript directory is logged, not silently reported as zero sessions", async () => {
+  const root = await mkdtemp(join(tmpdir(), "samskara-discovery-fail-"))
+  const spy = spyLogger()
+
+  const files = await globAll(`${root}/missing/**/*.jsonl`, spy.log)
+
+  expect(files).toEqual([])
+  const [entry] = spy.error
+  expect(entry).toBeDefined()
+  expect(entry?.message).toContain("transcript directory unreadable")
+  expect(entry?.details.dir).toBe(join(root, "missing"))
+  expect((entry?.details.err as { stack?: string } | undefined)?.stack).toContain("ENOENT")
+})
+
+test("discovery without a logger still works, so the signature stays usable from a test", async () => {
+  const root = await mkdtemp(join(tmpdir(), "samskara-discovery-nolog-"))
+
+  expect(await globAll(`${root}/missing/**/*.jsonl`)).toEqual([])
 })
