@@ -103,3 +103,59 @@ describe("createArtifactSink", () => {
     expect(authOf(fetch)).toEqual(["Bearer stale", "Bearer fresh"])
   })
 })
+
+const requestIdsOf = (fetch: ReturnType<typeof respond>): ReadonlyArray<string | undefined> =>
+  vi.mocked(fetch).mock.calls.map(([, init]) => {
+    const headers = init?.headers as Record<string, string> | undefined
+    return headers?.["x-request-id"]
+  })
+
+describe("sink request ids", () => {
+  test("every send stamps an x-request-id header and hands the same id back to the caller", async () => {
+    const fetch = respond(200, "{}")
+    const sink = createHttpSink({ apiBase: "http://api", readToken: async () => "t", fetch })
+
+    const result = await sink.send(payload)
+
+    expect(result.reqId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+    expect(requestIdsOf(fetch)).toEqual([result.reqId])
+  })
+
+  test("two sends get two different ids", async () => {
+    const fetch = respond(200, "{}")
+    const sink = createHttpSink({ apiBase: "http://api", readToken: async () => "t", fetch })
+
+    const first = await sink.send(payload)
+    const second = await sink.send(payload)
+
+    expect(first.reqId).not.toBe(second.reqId)
+  })
+
+  test("an unreachable server still reports the id it tried, so a status 0 is traceable", async () => {
+    const fetch = vi.fn(async () => {
+      throw new Error("connect ECONNREFUSED")
+    }) as unknown as typeof globalThis.fetch
+    const sink = createHttpSink({ apiBase: "http://api", readToken: async () => "t", fetch })
+
+    const result = await sink.send(payload)
+
+    expect(result.status).toBe(0)
+    expect(result.reqId).toBeTruthy()
+  })
+
+  test("a send with no stored token reports no id, because no request was made", async () => {
+    const fetch = respond(200, "{}")
+    const sink = createHttpSink({ apiBase: "http://api", readToken: async () => null, fetch })
+
+    expect((await sink.send(payload)).reqId).toBeUndefined()
+  })
+
+  test("the artifact sink stamps an id too", async () => {
+    const fetch = respond(200, "{}")
+    const sink = createArtifactSink({ apiBase: "http://api", readToken: async () => "t", fetch })
+
+    await sink.send({ sessionId: "sess-1", artifacts: [] } as never)
+
+    expect(requestIdsOf(fetch)[0]).toBeTruthy()
+  })
+})

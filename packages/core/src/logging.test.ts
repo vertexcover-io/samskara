@@ -74,3 +74,43 @@ describe("createLogger redaction", () => {
     expect(line).not.toContain("Bearer x")
   })
 })
+
+describe("createLogger base", () => {
+  const lineFrom = (base: Parameters<typeof createLogger>[0]): Record<string, unknown> => {
+    const lines: string[] = []
+    const logger = createLogger(base, {
+      level: "info",
+      destination: {
+        write: (line: string) => {
+          lines.push(line)
+        },
+      },
+    })
+    logger.info("hello")
+    return JSON.parse(lines[0] ?? "{}") as Record<string, unknown>
+  }
+
+  test("S5: every line carries pid and hostname alongside service, so two processes are tellable apart", () => {
+    const parsed = lineFrom({ service: "x" })
+
+    expect(parsed.service).toBe("x")
+    expect(parsed.pid).toBe(process.pid)
+    expect(typeof parsed.hostname).toBe("string")
+  })
+
+  test("S5: a caller-supplied field wins over the defaults", () => {
+    expect(lineFrom({ service: "x", pid: 1 }).pid).toBe(1)
+  })
+})
+
+describe("resolveLevel with a blank value", () => {
+  test("S6: LOG_LEVEL='' is unset, not invalid -- it falls back without warning", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+
+    expect(resolveLevel({ LOG_LEVEL: "" })).toBe("debug")
+    expect(resolveLevel({ LOG_LEVEL: "   ", NODE_ENV: "production" })).toBe("info")
+    expect(warnSpy).not.toHaveBeenCalled()
+
+    warnSpy.mockRestore()
+  })
+})

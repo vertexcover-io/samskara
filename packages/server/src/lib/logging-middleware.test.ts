@@ -69,3 +69,12 @@ describe("loggingMiddleware", () => {
     expect(await res.json()).toEqual({ error: "internal" })
   })
 })
+
+describe("loggingMiddleware request id hardening", () => {
+  test("S12: an oversized x-request-id is capped, so a junk header cannot bloat every log line", async () => {
+    const app = buildTestApp()
+    const res = await app.request("/ok", { headers: { "x-request-id": "a".repeat(500) } })
+
+    expect(res.headers.get("x-request-id")).toBe("a".repeat(128))
+  })
+})

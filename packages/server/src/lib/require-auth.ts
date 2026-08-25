@@ -34,13 +34,22 @@ export const requireAuth =
   ): MiddlewareHandler<{ Variables: AuthVariables }> =>
   async (c, next) => {
     const token = resolveToken(c)
-    if (!token) return c.json({ error: "unauthorized" }, 401)
+    if (!token) {
+      c.get("log")?.debug("auth rejected: no token")
+      return c.json({ error: "unauthorized" }, 401)
+    }
 
     const verified = await verifyToken(env, token, accepted)
-    if (!verified) return c.json({ error: "unauthorized" }, 401)
+    if (!verified) {
+      c.get("log")?.warn({ accepted }, "auth rejected: token not valid for this endpoint")
+      return c.json({ error: "unauthorized" }, 401)
+    }
 
     const user = await getUserById(db, verified.sub)
-    if (!user) return c.json({ error: "unauthorized" }, 401)
+    if (!user) {
+      c.get("log")?.warn({ sub: verified.sub }, "auth rejected: no user row for this token")
+      return c.json({ error: "unauthorized" }, 401)
+    }
 
     c.set("user", user)
     c.get("log")?.setBindings({ userId: user.id })

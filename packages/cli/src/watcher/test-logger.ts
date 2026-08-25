@@ -9,12 +9,13 @@ export type LogCall = {
 export type SpyLogger = {
   readonly log: pino.Logger
   readonly debug: ReadonlyArray<LogCall>
+  readonly info: ReadonlyArray<LogCall>
   readonly warn: ReadonlyArray<LogCall>
   readonly error: ReadonlyArray<LogCall>
 }
 
 /**
- * A real silent pino logger with `debug`/`warn`/`error` recorded, for the tests that assert a level
+ * A real silent pino logger with `debug`/`info`/`warn`/`error` recorded, for the tests that assert a level
  * fired -- the queue's depth signal, the oversize-artifact skip, and a permanently rejected upload
  * are behavior, not noise. Wrapping the real logger rather than substituting a stub keeps the
  * production signature honest: these modules take a `pino.Logger` like every other module.
@@ -22,6 +23,7 @@ export type SpyLogger = {
 export const spyLogger = (): SpyLogger => {
   const log = createLogger({ service: "samskara-cli-test" }, { level: "silent" })
   const debug: LogCall[] = []
+  const info: LogCall[] = []
   const warn: LogCall[] = []
   const error: LogCall[] = []
 
@@ -34,10 +36,11 @@ export const spyLogger = (): SpyLogger => {
     }) as pino.LogFn
 
   log.debug = record(debug, log.debug.bind(log))
+  log.info = record(info, log.info.bind(log))
   log.warn = record(warn, log.warn.bind(log))
   log.error = record(error, log.error.bind(log))
 
-  return { log, debug, warn, error }
+  return { log, debug, info, warn, error }
 }
 
 /** A real silent logger for tests that do not inspect what was logged. */

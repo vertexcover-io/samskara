@@ -1,3 +1,4 @@
+import { hostname } from "node:os"
 import pino from "pino"
 
 export type LogBase = Record<string, unknown> & { service: string }
@@ -13,7 +14,7 @@ export const resolveLevel = (env: NodeJS.ProcessEnv): pino.Level => {
   const raw = env.LOG_LEVEL
   const fallback: pino.Level = env.NODE_ENV === "production" ? "info" : "debug"
 
-  if (raw === undefined) return fallback
+  if (raw === undefined || raw.trim() === "") return fallback
   if (isValidLevel(raw)) return raw
 
   console.warn(`Invalid LOG_LEVEL "${raw}", falling back to "${fallback}"`)
@@ -25,7 +26,9 @@ export const createLogger = (base: LogBase, opts?: CreateLoggerOptions): pino.Lo
 
   const options: pino.LoggerOptions = {
     level,
-    base,
+    // pino's `base` replaces its `{pid, hostname}` default rather than merging with it, so both
+    // are restated here: without them two processes writing one stream are indistinguishable.
+    base: { pid: process.pid, hostname: hostname(), ...base },
     redact: {
       paths: [
         "token",

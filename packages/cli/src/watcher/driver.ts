@@ -165,6 +165,10 @@ const syncTrack = async (
   // arrives, and the server resolves the callId from its stored rows.
   const events = collectGitEvents(records, deps.log)
   let sentThrough = 0
+  let okChunks = 0
+  let messagesSent = 0
+  let stoppedOnFailure = false
+  const reqIds: string[] = []
   for (const request of sliceByMessages(records, MESSAGE_CAP)) {
     const resultIds = new Set(
       request.records
@@ -172,25 +176,46 @@ const syncTrack = async (
         .flatMap((message) => (message.msgType === "toolResult" ? [message.details.callId] : [])),
     )
     const chunkEvents = events.filter((event) => resultIds.has(event.callId))
-    const { status, detail } = await deps.sink.send(
+    const { status, detail, reqId } = await deps.sink.send(
       payloadFor(track, request.records, origin, chunkEvents),
     )
     if (status < 200 || status >= 300) {
+      stoppedOnFailure = true
       deps.log.warn(
         {
           sessionId: track.sessionId,
           key: track.checkpointKey,
           status,
           ...(detail ? { detail } : {}),
+          ...(reqId ? { reqId } : {}),
         },
         `flush failed: ${flushCause(status)}`,
       )
       break
     }
     sentThrough = request.lastCompleteLine
-    deps.log.debug({ sessionId: track.sessionId, key: track.checkpointKey, status }, "flush ok")
+    okChunks += 1
+    messagesSent += request.records.reduce((total, record) => total + record.messages.length, 0)
+    if (reqId) reqIds.push(reqId)
+    deps.log.debug(
+      { sessionId: track.sessionId, key: track.checkpointKey, status, ...(reqId ? { reqId } : {}) },
+      "flush ok",
+    )
   }
   if (sentThrough === 0) return undefined
+  const summary = {
+    sessionId: track.sessionId,
+    key: track.checkpointKey,
+    repo: track.project.slug,
+    chunks: okChunks,
+    messages: messagesSent,
+    reqIds,
+  }
+  if (stoppedOnFailure) {
+    deps.log.warn(summary, "session partially synced; the remaining chunks retry next cycle")
+  } else {
+    deps.log.info(summary, "session synced")
+  }
   const line =
     sentThrough === track.records.at(-1)?.lineNumber ? track.lastLineProcessed : sentThrough
   return wrap(track, deps.clock, track.checkpointAt(line))
