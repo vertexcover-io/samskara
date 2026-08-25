@@ -1,3 +1,5 @@
+import { createInterface } from "node:readline/promises"
+
 export interface Writer {
   write(text: string): unknown
 }
@@ -28,6 +30,23 @@ export const reportError = (stderr: Writer, error: unknown, prefix?: string): nu
 
 export const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms))
+
+export type Prompt = (question: string, fallback: string) => Promise<string>
+
+/** An empty answer means "keep the default", so a whole setup can be walked through with Enter. */
+export const askWithDefault: Prompt = async (question, fallback) => {
+  const rl = createInterface({ input: process.stdin, output: process.stdout })
+  try {
+    const answer = (await rl.question(`${question} [${fallback}]: `)).trim()
+    return answer === "" ? fallback : answer
+  } finally {
+    rl.close()
+  }
+}
+
+/** Null when there is nobody to answer -- a hook, a CI run, a piped stdin -- so callers can skip asking. */
+export const interactivePrompt = (): Prompt | null =>
+  process.stdin.isTTY === true ? askWithDefault : null
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE

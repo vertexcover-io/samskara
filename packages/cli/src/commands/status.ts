@@ -5,6 +5,7 @@ import { readToken } from "../config/credentials.js"
 import { watcherPid } from "../config/daemon.js"
 import { statePath, watchLogDir } from "../config/paths.js"
 import { listProjects } from "../config/projects.js"
+import { apiBase, webBase } from "../config.js"
 import { relativeTime, resolveIo, type Writer } from "../io.js"
 import { verifyToken } from "../login.js"
 
@@ -59,6 +60,8 @@ export const statusCommand = async (options: StatusOptions = {}): Promise<number
       : `Watcher    running (pid ${pid})\n`,
   )
   stdout.write(`Account    ${await authLine()}\n`)
+  stdout.write(`Server     ${apiBase()}\n`)
+  stdout.write(`Web        ${webBase()}\n`)
   stdout.write(`Logs       ${shortenPath(watchLogDir())}\n\n`)
 
   if (projects.length === 0) {

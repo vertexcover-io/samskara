@@ -99,18 +99,28 @@ cd packages/cli && npm link
 That puts a `samskara` command on your PATH pointing at `packages/cli/dist/index.js`. Rebuild after
 pulling changes; the link keeps working. To remove it later: `npm unlink -g @samskara/cli`.
 
-If your server is not on the default ports, point the CLI at it with `SAMSKARA_API_URL` and
-`SAMSKARA_WEB_URL`.
-
 ### First run
 
 ```sh
-samskara init             # log in, install the hook, start the watcher
+samskara init             # choose a server, log in, install the hook, start the watcher
 cd ~/code/my-project
 samskara enable           # start capturing this folder
 ```
 
-`init` asks for a pairing code. Open the web UI, sign in, and pick **Pair the CLI → Generate code**
+`init` first asks which server to talk to, offering the local defaults:
+
+```
+Samskara server URL [http://localhost:3000]:
+Samskara web URL [http://localhost:8000]:
+```
+
+Press Enter to keep a default. The answers are saved to `~/.samskara/config.json` and every later
+command uses them, so this is asked once. Pass `--server URL` and `--web URL` to skip the questions,
+and re-run `samskara init` to point the CLI somewhere else. `SAMSKARA_API_URL` and
+`SAMSKARA_WEB_URL` still override the saved file for a single command; when either is set, `init`
+leaves that URL alone rather than asking. `samskara status` prints both URLs currently in use.
+
+Then `init` asks for a pairing code. Open the web UI, sign in, and pick **Pair the CLI → Generate code**
 from the account menu. A code never expires but works only once. The token it returns is stored at
 `~/.samskara/token` with mode `0600`.
 
@@ -118,14 +128,15 @@ from the account menu. A code never expires but works only once. The token it re
 
 | Command | What it does |
 |---|---|
-| `samskara init` | Log in, install the Claude Code `SessionStart` hook, start the watcher. Safe to re-run. |
+| `samskara init` | Choose the server, log in, install the Claude Code `SessionStart` hook, start the watcher. Safe to re-run. |
+| `samskara init --server URL --web URL` | Same, without the questions. |
 | `samskara login [--code CODE]` | Pair with the web UI and store a CLI token. |
 | `samskara logout` | Stop the watcher and delete the stored token. |
 | `samskara enable [path]` | Register this folder with the server and start capturing it (defaults to the current directory). |
 | `samskara enable --all` | Also send sessions recorded *before* you enabled it. |
 | `samskara enable --sync-from 2026-07-01` | Only send sessions started after that date. |
 | `samskara disable [path]` | Stop capturing locally. Sessions already uploaded stay on the server. |
-| `samskara status` | Projects, capture state, last sync time, watcher PID. Start here when something looks off. |
+| `samskara status` | Server and web URLs, projects, capture state, last sync time, watcher PID. Start here when something looks off. |
 | `samskara logs [-f]` | Pretty-print the watcher log. `-f` streams new lines. |
 | `samskara restart` | Stop the watcher and start a fresh one. |
 | `samskara replay SESSION_ID` | Delete a session server-side and locally, then re-capture it from scratch. |

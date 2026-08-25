@@ -102,7 +102,7 @@ export const enableCommand = async (options: EnableOptions = {}): Promise<number
   }
 
   const deps: RegisterDeps = {
-    apiBase: options.apiBase ?? defaultApiBase,
+    apiBase: options.apiBase ?? defaultApiBase(),
     readToken: options.readToken ?? defaultReadToken,
     fetch: options.fetch ?? globalThis.fetch,
   }

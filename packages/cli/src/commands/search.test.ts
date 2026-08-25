@@ -5,13 +5,16 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
 import { atomicWriteJson, readJson } from "../config/atomic.js"
 import { filterOptionsPath } from "../config/paths.js"
 import { getProject } from "../config/projects.js"
-import { apiBase, webBase } from "../config.js"
+import { apiBase as resolveApiBase, webBase as resolveWebBase } from "../config.js"
 import { runGitOrNull } from "../git.js"
 
 vi.mock("../git.js", () => ({ runGitOrNull: vi.fn(async () => null) }))
 vi.mock("../config/projects.js", () => ({ getProject: vi.fn(async () => null) }))
 
 import { hereFilters, renderResults, resolveOption, searchCommand, searchQuery } from "./search.js"
+
+const apiBase = resolveApiBase()
+const webBase = resolveWebBase()
 
 const ORIGINAL_HOME = process.env.SAMSKARA_HOME
 

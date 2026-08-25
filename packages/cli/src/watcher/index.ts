@@ -107,7 +107,7 @@ export const watch = async (options: WatchOptions): Promise<void> => {
   const deps: WatcherDeps = {
     fs: nodeFs,
     clock: { now: () => Date.now() },
-    sink: createHttpSink({ apiBase, readToken, fetch: globalThis.fetch }),
+    sink: createHttpSink({ apiBase: apiBase(), readToken, fetch: globalThis.fetch }),
     glob: globAll,
     plugin: createClaudePlugin(nodeFs),
     resolveProject: projectOverride
@@ -127,7 +127,7 @@ export const watch = async (options: WatchOptions): Promise<void> => {
     {
       fileHistoryDir: fileHistoryDir(),
       log,
-      sink: createArtifactSink({ apiBase, readToken, fetch: globalThis.fetch }),
+      sink: createArtifactSink({ apiBase: apiBase(), readToken, fetch: globalThis.fetch }),
       clock: { now: () => Date.now() },
       stopped: () => stopping,
     },

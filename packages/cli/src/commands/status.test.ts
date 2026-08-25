@@ -4,6 +4,7 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
 import { watcherPid } from "../config/daemon.js"
 import { upsertProject } from "../config/projects.js"
+import { writeSettings } from "../config/settings.js"
 import { statusCommand } from "./status.js"
 
 vi.mock("../config/daemon.js", () => ({ watcherPid: vi.fn(() => null) }))
@@ -151,5 +152,18 @@ describe("status command", () => {
     expect(code).toBe(0)
     expect(output.join("")).toContain("token rejected")
     expect(output.join("")).toContain("samskara login")
+  })
+
+  test("shows both the server and the web URL it is pointed at", async () => {
+    const home = await mkdtemp(join(tmpdir(), "samskara-status-urls-"))
+    process.env.SAMSKARA_HOME = home
+    await writeSettings({ apiUrl: "https://api.acme.dev", webUrl: "https://app.acme.dev" })
+    const output: string[] = []
+
+    await statusCommand({ stdout: { write: (text) => output.push(text) } })
+
+    const printed = output.join("")
+    expect(printed).toContain("Server     https://api.acme.dev\n")
+    expect(printed).toContain("Web        https://app.acme.dev\n")
   })
 })
