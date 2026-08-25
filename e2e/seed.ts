@@ -20,6 +20,8 @@ export type SeedRepository = {
 
 export type SeedMessage = {
   readonly id?: string
+  /** Defaults to the session's own time, which is what keeps the list in seed order. */
+  readonly timestamp?: Date
   readonly msgType: string
   readonly subType?: string
   readonly role?: string
@@ -121,13 +123,17 @@ const repositoryId = (repositories: RepositoryIds, key: string | undefined): str
   return id
 }
 
+// The messages trigger turns message times into the session's activity, and the list sorts by
+// activity. Stamping each message with its session's own time keeps that equal to updatedAt, so
+// the list stays in seed order. A spec that needs a different time says so on the message.
 const seedMessages = async (
   sql: Sql,
   session: SeedSession,
   repositories: RepositoryIds,
+  sessionAt: Date,
 ): Promise<void> => {
   for (const [line, entry] of (session.messages ?? []).entries()) {
-    const timestamp = new Date(Date.UTC(2026, 2, 1, 10, line))
+    const timestamp = entry.timestamp ?? sessionAt
     const [row] = await sql`
       insert into "messages" (
         id, "sessionId", "lineUuid", "subIndex", "msgType", "subType", role, timestamp,
@@ -288,7 +294,7 @@ export const seedDatabase = async (spec: SeedSpec): Promise<void> => {
           `
         }
 
-        await seedMessages(sql, session, repositories)
+        await seedMessages(sql, session, repositories, updatedAt)
         await seedStructuredFacts(sql, session, repositories)
       }
     }

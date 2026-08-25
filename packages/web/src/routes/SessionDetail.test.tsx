@@ -534,18 +534,25 @@ test("SC32: the breadcrumb links to the session's project by id, not its slug", 
   expect(link).toHaveAttribute("href", "/sessions?project=22222222-2222-4222-8222-222222222222")
 })
 
-test("SC25: the session facts always show an absolute created-at time, while duration keeps its unavailable placeholder when null", async () => {
-  renderDetail(buildPayload({ ...PAYLOAD, session: { durationMs: null } }))
+const sessionFacts = () => screen.getByRole("group", { name: /session facts/i })
+const factValue = (label: string) => within(sessionFacts()).getByText(label).nextElementSibling
+
+test("SC24: the facts show a Started entry holding the first message time, and no Created entry", async () => {
+  renderDetail()
 
   await waitFor(() => expect(tabs()).toHaveLength(5))
 
-  const facts = screen.getByRole("group", { name: /session facts/i })
-  const createdValue = within(facts).getByText("Created").nextElementSibling
-  expect(createdValue?.textContent).not.toMatch(/unavailable/i)
-  expect(createdValue?.textContent).toBe("Mar 1, 2026, 10:00")
+  expect(factValue("Started")?.textContent).toBe("Mar 1, 2026, 10:00")
+  expect(within(sessionFacts()).queryByText("Created")).not.toBeInTheDocument()
+})
 
-  const durationValue = within(facts).getByText("Duration").nextElementSibling
-  expect(durationValue?.textContent).toMatch(/unavailable/i)
+test("SC25: an unknown start time reads as unavailable, as does a null duration", async () => {
+  renderDetail(buildPayload({ ...PAYLOAD, session: { startedAt: null, durationMs: null } }))
+
+  await waitFor(() => expect(tabs()).toHaveLength(5))
+
+  expect(factValue("Started")?.textContent).toMatch(/unavailable/i)
+  expect(factValue("Duration")?.textContent).toMatch(/unavailable/i)
 })
 
 const metaLineOf = async (): Promise<string> => {

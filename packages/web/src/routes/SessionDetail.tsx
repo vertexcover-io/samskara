@@ -136,7 +136,10 @@ const Masthead = ({ session, tokens }: { session: SessionFacts; tokens: TokenTot
       aria-label="Session facts"
       className="mt-4 grid w-fit max-w-full grid-cols-2 gap-x-6 gap-y-3 border-t border-rule pt-3 min-[560px]:grid-cols-3 min-[900px]:grid-cols-4 min-[1200px]:grid-cols-7"
     >
-      <Fact label="Created" value={absoluteTime(session.createdAt)} />
+      <Fact
+        label="Started"
+        value={session.startedAt === null ? <Unavailable /> : absoluteTime(session.startedAt)}
+      />
       <Fact
         label="Duration"
         value={session.durationMs === null ? <Unavailable /> : formatDuration(session.durationMs)}
