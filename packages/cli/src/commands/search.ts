@@ -263,18 +263,18 @@ const load = async (params: {
   // A thrown fetch means the server could not be reached at all, which is different from a
   // server that answered with an error. Uncaught, it would surface as a stack trace.
   const res = await params.deps
-    .fetch(`${apiBase}/api/sessions?${params.query.toString()}`, {
+    .fetch(`${apiBase()}/api/sessions?${params.query.toString()}`, {
       headers: { authorization: `Bearer ${params.token}` },
     })
     .catch(() => null)
-  if (res === null) return { ok: false, message: `Could not reach ${apiBase}.` }
+  if (res === null) return { ok: false, message: `Could not reach ${apiBase()}.` }
   if (!res.ok) return { ok: false, message: await refusal(res) }
 
   const listing = listingSchema.parse(await res.json())
   // Safe to cache from any response: the server builds filterOptions from the account asking, not
   // from the filters asked for, so even a narrow search returns the whole list.
   await atomicWriteJson(filterOptionsPath(), {
-    apiBase,
+    apiBase: apiBase(),
     fetchedAt: params.now.getTime(),
     filterOptions: listing.filterOptions,
   }).catch(() => {})
@@ -335,7 +335,7 @@ const cacheSchema = z.object({
 const cachedOptions = async (now: Date): Promise<FilterOptions | null> => {
   const parsed = cacheSchema.safeParse(await readJson(filterOptionsPath()).catch(() => null))
   if (!parsed.success) return null
-  if (parsed.data.apiBase !== apiBase) return null
+  if (parsed.data.apiBase !== apiBase()) return null
   if (now.getTime() - parsed.data.fetchedAt > CACHE_TTL_MS) return null
   return parsed.data.filterOptions
 }
@@ -409,7 +409,7 @@ export const searchCommand = async (options: SearchOptions, deps: SearchDeps): P
       stderr.write("No sessions matched, so there is nothing to open.\n")
       return 1
     }
-    const url = sessionUrl(webBase, top.id)
+    const url = sessionUrl(webBase(), top.id)
     const failure = await openInBrowser(url).then(
       () => null,
       (error: unknown) => errorMessage(error),
@@ -427,8 +427,8 @@ export const searchCommand = async (options: SearchOptions, deps: SearchDeps): P
       `${JSON.stringify(
         {
           total: listing.pagination.total,
-          searchUrl: searchUrl(webBase, query),
-          sessions: rows.map((row) => ({ ...row, url: sessionUrl(webBase, row.id) })),
+          searchUrl: searchUrl(webBase(), query),
+          sessions: rows.map((row) => ({ ...row, url: sessionUrl(webBase(), row.id) })),
         },
         null,
         2,
@@ -438,11 +438,13 @@ export const searchCommand = async (options: SearchOptions, deps: SearchDeps): P
   }
 
   if (options.url === true) {
-    stdout.write(rows.map((row) => `${sessionUrl(webBase, row.id)}\n`).join(""))
+    stdout.write(rows.map((row) => `${sessionUrl(webBase(), row.id)}\n`).join(""))
     return 0
   }
 
-  stdout.write(renderResults({ rows, total: listing.pagination.total, webBase, query, now }))
+  stdout.write(
+    renderResults({ rows, total: listing.pagination.total, webBase: webBase(), query, now }),
+  )
   return 0
 }
 

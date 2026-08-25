@@ -3,6 +3,7 @@ import { join } from "node:path"
 
 export const configHome = (): string => process.env.SAMSKARA_HOME ?? join(homedir(), ".samskara")
 export const tokenPath = (): string => join(configHome(), "token")
+export const settingsPath = (): string => join(configHome(), "config.json")
 export const statePath = (): string => join(configHome(), "state.json")
 export const projectsPath = (): string => join(configHome(), "projects.json")
 // `search` lets you name a project or repo, but the API only takes ids. This file remembers the
