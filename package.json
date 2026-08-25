@@ -15,6 +15,7 @@
     "test:server": "turbo run test --filter=@samskara/server",
     "test:cli": "turbo run test --filter=@samskara/cli",
     "test:web": "turbo run test --filter=@samskara/web",
+    "test:scripts": "cd scripts && bun test",
     "test:claude-session": "bun run scripts/claude-session-coverage.ts",
     "cli": "bun packages/cli/src/index.ts",
     "e2e": "bun run e2e/run.ts",
@@ -32,7 +33,9 @@
     "wt:teardown": "bun run --cwd packages/server wt:teardown",
     "db:verify": "turbo run db:verify --filter=@samskara/server --",
     "seed": "bun run --cwd packages/server seed",
-    "seed:capture": "bun run --cwd packages/server seed:capture"
+    "seed:capture": "bun run --cwd packages/server seed:capture",
+    "release:version": "bun scripts/version.ts",
+    "release:pack": "bun run build --filter=@samskara/cli && bun scripts/pack-cli.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.10",
