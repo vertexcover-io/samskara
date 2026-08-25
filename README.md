@@ -1,5 +1,10 @@
 # Samskara
 
+[![CI](https://github.com/vertexcover-io/samskara/actions/workflows/ci.yml/badge.svg)](https://github.com/vertexcover-io/samskara/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/vertexcover-io/samskara?label=release)](https://github.com/vertexcover-io/samskara/releases/latest)
+[![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen)](https://nodejs.org)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 Samskara records what your AI coding agent actually did, and makes it searchable.
 
 Claude Code already writes a transcript of every session to `~/.claude/projects`. Those files are
@@ -268,3 +273,7 @@ core is never published, so the tarball carries core inside it as an npm
 One wrinkle: npm leaves an *empty* directory for every dependency a bundled package declares, so
 the bundled copy of core declares none and core's dependencies are hoisted into the CLI's own list,
 where bundled core resolves them by walking up out of its directory.
+
+## License
+
+[MIT](LICENSE) © Vertexcover

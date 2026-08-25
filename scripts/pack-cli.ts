@@ -31,6 +31,7 @@ type ReleaseManifest = {
   private: true
   type: "module"
   description: string
+  license: string
   bin: Record<string, string>
   engines: { node: string }
   dependencies: Dependencies
@@ -67,6 +68,7 @@ export const releaseManifest = (
     private: true,
     type: "module",
     description: "Capture and search AI coding-agent session logs",
+    license: "MIT",
     bin: cli.bin,
     engines: { node: ">=22" },
     dependencies,
@@ -120,6 +122,7 @@ const main = (): void => {
   cpSync(join(cliDir, "dist"), join(stageDir, "dist"), { recursive: true, filter: notSourceMap })
   cpSync(join(coreDir, "dist"), join(bundledDir, "dist"), { recursive: true, filter: notSourceMap })
   cpSync(join(repoRoot, "README.md"), join(stageDir, "README.md"))
+  cpSync(join(repoRoot, "LICENSE"), join(stageDir, "LICENSE"))
   writeManifest(join(stageDir, "package.json"), releaseManifest(cli, core, version))
   writeManifest(join(bundledDir, "package.json"), bundledCoreManifest(core, version))
 

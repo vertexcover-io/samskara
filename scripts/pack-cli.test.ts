@@ -33,6 +33,10 @@ const corePackage = {
 describe("releaseManifest", () => {
   const manifest = releaseManifest(cliPackage, corePackage, "1.4.0")
 
+  test("declares the licence, so the published tarball is not all-rights-reserved", () => {
+    expect(manifest.license).toBe("MIT")
+  })
+
   test("pins the workspace dependency to the release version", () => {
     expect(manifest.dependencies["@samskara/core"]).toBe("1.4.0")
     expect(JSON.stringify(manifest)).not.toContain("workspace:")
