@@ -5,7 +5,15 @@ import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import { buildApp } from "../app.js"
 import { createDb, type Db } from "../db/client.js"
-import { orgs, projects, sessions, userOrgs, userProjectGrant, users } from "../db/schema.js"
+import {
+  messages,
+  orgs,
+  projects,
+  sessions,
+  userOrgs,
+  userProjectGrant,
+  users,
+} from "../db/schema.js"
 import type { Env } from "../lib/env.js"
 import { signToken } from "../lib/jwt.js"
 import * as projectsRepo from "../repositories/projects.repo.js"
@@ -179,6 +187,32 @@ describe.skipIf(!dockerAvailable())("GET /api/sync-status", () => {
     expect(ownerRow?.lastSyncedAt).toBe(new Date("2026-01-01T00:00:00Z").toISOString())
     expect(granteeRow?.lastSyncedAt).toBe(new Date("2026-02-01T00:00:00Z").toISOString())
     expect(ownerRow?.lastSyncedAt).not.toBe(granteeRow?.lastSyncedAt)
+  })
+
+  test("SC22 (regression): a message stamped later than the row's updatedAt does not move lastSyncedAt - sync status reports server receive time, not transcript time", async () => {
+    const owner = await seedUser(db, "receive-owner")
+    const projectId = await seedProject(db, "Receive", "receive", owner)
+    await seedSession(db, {
+      id: "s-receive",
+      userId: owner,
+      projectId,
+      updatedAt: new Date("2026-01-01T00:00:00Z"),
+    })
+    await db.insert(messages).values({
+      sessionId: "s-receive",
+      lineUuid: crypto.randomUUID(),
+      subIndex: 0,
+      msgType: "message",
+      lineNumber: 1,
+      timestamp: new Date("2026-06-01T00:00:00Z"),
+      raw: {},
+      sourceSchemaVersion: 1,
+    })
+
+    const rows = await rowsAs(db, owner)
+    const row = rows.find((candidate) => candidate.projectId === projectId)
+
+    expect(row?.lastSyncedAt).toBe(new Date("2026-01-01T00:00:00Z").toISOString())
   })
 
   test("a super admin sees every user's pairings, while their own row still lists only their own projects", async () => {

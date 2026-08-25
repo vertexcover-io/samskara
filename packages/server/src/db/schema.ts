@@ -1,6 +1,7 @@
 import { MSG_TYPES } from "@samskara/core"
 import { sql } from "drizzle-orm"
 import {
+  type AnyPgColumn,
   bigint,
   boolean,
   check,
@@ -168,6 +169,11 @@ export const userProjectGrant = pgTable(
   ],
 )
 
+// Rendered into `sessions_activity_idx` and into every query that sorts or filters on activity, so
+// the planner always sees the one parse tree the index was built from.
+const activityAt = (t: { readonly lastMessageAt: AnyPgColumn; readonly updatedAt: AnyPgColumn }) =>
+  sql`coalesce(${t.lastMessageAt}, ${t.updatedAt})`
+
 export const sessions = pgTable(
   "sessions",
   {
@@ -186,6 +192,8 @@ export const sessions = pgTable(
     startCommit: text("startCommit"),
     cliVersion: text("cliVersion"),
     permissionMode: text("permissionMode"),
+    startedAt: timestamp("startedAt", { withTimezone: true }),
+    lastMessageAt: timestamp("lastMessageAt", { withTimezone: true }),
     createdAt,
     updatedAt,
     searchVector: searchVector("sessions"),
@@ -193,8 +201,11 @@ export const sessions = pgTable(
   (t) => [
     index("sessions_projectId_idx").on(t.projectId),
     index("sessions_user_project_updated_idx").on(t.userId, t.projectId, t.updatedAt),
+    index("sessions_activity_idx").on(sql`(${activityAt(t)}) desc`, t.id),
   ],
 )
+
+export const sessionActivityAt = activityAt(sessions)
 
 export const messages = pgTable(
   "messages",

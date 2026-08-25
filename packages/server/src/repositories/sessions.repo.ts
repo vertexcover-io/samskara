@@ -7,6 +7,7 @@ import {
   projects,
   pullRequests,
   repos,
+  sessionActivityAt,
   sessionPullRequests,
   sessions,
   subagents,
@@ -176,11 +177,10 @@ export class AmbiguousCommitError extends Error {
 const ownMessages = sql`"messages" where "messages"."sessionId" = "sessions"."id"`
 const messageCount = sql<number>`(select count(*)::int from ${ownMessages})`
 
-const durationMs = sql<number | null>`(
-  select (extract(epoch from max("messages"."timestamp") - min("messages"."timestamp")) * 1000)::bigint
-  from ${ownMessages}
-  having count("messages"."timestamp") > 1
-)`
+/** A single message reports 0, not null: the two columns cannot tell it from two sharing an instant. */
+const durationMs = sql<
+  number | null
+>`(extract(epoch from ${sessions.lastMessageAt} - ${sessions.startedAt}) * 1000)::bigint`
 
 const tokensFor = (sessionId: SQL): SQL<number> => sql`(
   select coalesce(sum(
@@ -316,6 +316,16 @@ const SNIPPET_START = "[[[samskara-match-4f481d8b]]]"
 const SNIPPET_STOP = "[[[/samskara-match-4f481d8b]]]"
 const SNIPPET_OPTIONS = `StartSel=${SNIPPET_START}, StopSel=${SNIPPET_STOP}, MaxWords=35, MinWords=10, MaxFragments=2, FragmentDelimiter= … `
 
+// Over the page alias `p`, so one spelling serves the page CTE and the outer select. "oldest" is
+// "recent" exactly reversed, tiebreak included, so one index serves both directions.
+const ORDER_BY = {
+  recent: sql`p."lastActiveAt" desc, p.id asc`,
+  oldest: sql`p."lastActiveAt" asc, p.id desc`,
+  tokens: sql`p."tokensTotal" desc, p.id asc`,
+  project: sql`p."projectName" asc, p.id asc`,
+  relevance: sql`p.score desc, p."matchedRows" desc, p."lastActiveAt" desc, p.id asc`,
+} as const
+
 /** A malformed headline is decorative data: retain text, never trust marker-shaped source content. */
 const safeSnippet = (
   source: string,
@@ -362,9 +372,13 @@ const safeSnippet = (
   return segments
 }
 
+// No MATERIALIZED keyword on purpose: Postgres inlines a CTE referenced once and materializes one
+// referenced more, which is the split every reader wants. A search reads filtered_sessions from
+// six places and gets one materialized set; a plain list reads each CTE once, so the sort and
+// limit reach sessions_activity_idx and the page stops after `limit` rows.
 const authorizationCte = (db: Querier, userId: string) => sql`
-  authorized_sessions AS MATERIALIZED (
-    select "sessions"."id", "sessions"."title", "sessions"."updatedAt", "projects"."id" as "projectId", "projects"."name" as "projectName", "projects"."slug" as "projectSlug", "users"."githubLogin" as "userLogin"
+  authorized_sessions as (
+    select "sessions"."id", "sessions"."title", ${sessionActivityAt} as "lastActiveAt", "projects"."id" as "projectId", "projects"."name" as "projectName", "projects"."slug" as "projectSlug", "users"."githubLogin" as "userLogin"
     from "sessions"
     join "projects" on "projects"."id" = "sessions"."projectId"
     join "users" on "users"."id" = "sessions"."userId"
@@ -397,8 +411,10 @@ const filterPredicates = (
   const clauses: SQL[] = []
   if (filter.projectId !== undefined) clauses.push(sql`a."projectId" = ${filter.projectId}`)
   if (filter.userLogin !== undefined) clauses.push(sql`a."userLogin" = ${filter.userLogin}`)
-  if (filter.since !== undefined) clauses.push(sql`a."updatedAt" >= ${filter.since.toISOString()}`)
-  if (filter.until !== undefined) clauses.push(sql`a."updatedAt" < ${filter.until.toISOString()}`)
+  if (filter.since !== undefined)
+    clauses.push(sql`a."lastActiveAt" >= ${filter.since.toISOString()}`)
+  if (filter.until !== undefined)
+    clauses.push(sql`a."lastActiveAt" < ${filter.until.toISOString()}`)
   if (filter.repoId !== undefined)
     clauses.push(sql`(
     exists (select 1 from "messages" m where m."sessionId" = a.id and m."repoId" = ${filter.repoId})
@@ -460,9 +476,9 @@ export const listAccessible = async (
     filter.commit === undefined ? undefined : await resolveCommit(db, userId, filter.commit)
   const predicates = filterPredicates(filter, resolvedCommit)
   const where = predicates.length === 0 ? sql`true` : sql.join(predicates, sql` and `)
-  const filtered = sql`filtered_sessions as materialized (select a.* from authorized_sessions a where ${where})`
   const query =
     filter.searchQuery === undefined ? undefined : compileSessionQuery(filter.searchQuery)
+  const filtered = sql`filtered_sessions as (select a.* from authorized_sessions a where ${where})`
   const matches =
     query === undefined
       ? sql`
@@ -481,51 +497,39 @@ export const listAccessible = async (
       from filtered_sessions f join source_matches sm on sm.id = f.id
       order by f.id, sm.score desc, case sm."sourceKind" when 'session' then 1 when 'pullRequest' then 2 when 'message' then 3 when 'toolCall' then 4 else 5 end, sm."sourceRowId"
     )`
-  const isTokenSort = filter.sort === "tokens"
-  const order =
-    filter.sort === "oldest"
-      ? sql`"updatedAt" asc, id asc`
-      : isTokenSort
-        ? sql`"tokensTotal" desc, id asc`
-        : filter.sort === "project"
-          ? sql`"projectName" asc, id asc`
-          : query !== undefined && (filter.sort === undefined || filter.sort === "relevance")
-            ? sql`score desc, "matchedRows" desc, "updatedAt" desc, id asc`
-            : sql`"updatedAt" desc, id asc`
-  const finalOrder =
-    filter.sort === "oldest"
-      ? sql`p."updatedAt" asc, p.id asc`
-      : isTokenSort
-        ? sql`p."tokensTotal" desc, p.id asc`
-        : filter.sort === "project"
-          ? sql`p."projectName" asc, p.id asc`
-          : query !== undefined && (filter.sort === undefined || filter.sort === "relevance")
-            ? sql`p.score desc, p."matchedRows" desc, p."updatedAt" desc, p.id asc`
-            : sql`p."updatedAt" desc, p.id asc`
-  const rows = (await db.execute(sql`
+  const requested = filter.sort ?? (query === undefined ? "recent" : "relevance")
+  const sort = requested === "relevance" && query === undefined ? "recent" : requested
+  const order = ORDER_BY[sort]
+  const isTokenSort = sort === "tokens"
+  const countMatched = async (): Promise<number> => {
+    const [row] = (await db.execute(
+      sql`with ${authorizationCte(db, userId)}, ${filtered}, ${matches} select count(*)::int as total from matched_sessions`,
+    )) as ReadonlyArray<{ total: number }>
+    return Number(row?.total ?? 0)
+  }
+  // A search already materialized matched_sessions for its union branches, so count(*) over()
+  // reads the total off that set for free. Without one it would force the whole set to be built
+  // before the limit, so the page carries null and the count runs beside it instead.
+  const [rows, filterOptions, countedAlongside] = await Promise.all([
+    db.execute(sql`
     with ${authorizationCte(db, userId)}, ${filtered}, ${matches}, ranked as (
-      select ms.*, ${isTokenSort ? tokensFor(sql`ms.id`) : sql`null::bigint`} as "tokensTotal", count(*) over()::int as total
+      select ms.*, ${isTokenSort ? tokensFor(sql`ms.id`) : sql`null::bigint`} as "tokensTotal", ${query === undefined ? sql`null::int` : sql`count(*) over()::int`} as total
       from matched_sessions ms
-    ), paged as (select * from ranked order by ${order} limit ${limit} offset ${offset})
+    ), paged as (select * from ranked p order by ${order} limit ${limit} offset ${offset})
     select p.id, ${derivedTitle} as title, p."projectId", p."projectName", p."projectSlug", p."userLogin",
       r.host as "repoHost", r.owner as "repoOwner", r."repoName" as "repoName", ${durationMs} as "durationMs",
       ${isTokenSort ? sql`p."tokensTotal"` : tokensFor(sql`"sessions"."id"`)} as "tokensTotal", ${status} as status,
-      p."updatedAt" as "lastActiveAt", p."sourceKind", p."sourceRowId", p.score, p.total, t."sourceText",
+      p."lastActiveAt", p."sourceKind", p."sourceRowId", p.score, p.total, t."sourceText",
       case when t."sourceText" is null then null else ts_headline('simple'::regconfig, t."sourceText", ${query ?? sql`null::tsquery`}, ${SNIPPET_OPTIONS}) end as headline
     from paged p join "sessions" on "sessions".id = p.id left join "repos" r on r.id = ${dominantRepoId}
     cross join lateral (select ${sourceTextSql} as "sourceText") t
-    order by ${finalOrder}
-  `)) as ReadonlyArray<Record<string, unknown>>
+    order by ${order}
+  `) as Promise<ReadonlyArray<Record<string, unknown>>>,
+    filterOptionsFor(db, userId),
+    query === undefined ? countMatched() : undefined,
+  ])
   const total =
-    rows.length === 0
-      ? Number(
-          (
-            (await db.execute(
-              sql`with ${authorizationCte(db, userId)}, ${filtered}, ${matches} select count(*)::int as total from matched_sessions`,
-            )) as ReadonlyArray<{ total: number }>
-          )[0]?.total ?? 0,
-        )
-      : Number(rows[0]?.total)
+    countedAlongside ?? (rows.length > 0 ? Number(rows[0]?.total) : await countMatched())
   const mapped = rows.map((row) =>
     withRepo({
       id: row.id as string,
@@ -552,7 +556,7 @@ export const listAccessible = async (
             },
     }),
   )
-  return { rows: mapped, total, filterOptions: await filterOptionsFor(db, userId) }
+  return { rows: mapped, total, filterOptions }
 }
 
 export const findVisibleProjectById = async (
@@ -580,7 +584,7 @@ export type SessionFactsRow = {
   readonly toolCallCount: number
   readonly subagentCount: number
   readonly lastActiveAt: string
-  readonly createdAt: string
+  readonly startedAt: string | null
 }
 
 export type MessageRow = {
@@ -688,8 +692,8 @@ const findVisibleSession = async (
       messageCount,
       toolCallCount,
       subagentCount,
-      lastActiveAt: sql<string>`${sessions.updatedAt}`,
-      createdAt: sql<string>`${sessions.createdAt}`,
+      lastActiveAt: sql<string>`${sessionActivityAt}`,
+      startedAt: sql<string | null>`${sessions.startedAt}`,
     })
     .from(sessions)
     .innerJoin(projects, eq(projects.id, sessions.projectId))
