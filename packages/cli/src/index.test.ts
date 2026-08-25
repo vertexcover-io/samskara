@@ -32,6 +32,7 @@ test("capture lifecycle commands are exposed while ensure remains hidden", () =>
       "status",
       "watch",
       "restart",
+      "upgrade",
       "logs",
       "install-hooks",
       "uninstall-hooks",

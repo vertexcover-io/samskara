@@ -13,6 +13,7 @@ import { replayCommand } from "./commands/replay.js"
 import { restartCommand } from "./commands/restart.js"
 import { type SearchOptions, searchCommand } from "./commands/search.js"
 import { statusCommand } from "./commands/status.js"
+import { upgradeCommand } from "./commands/upgrade.js"
 import { watchCommand } from "./commands/watch.js"
 import { readToken } from "./config/credentials.js"
 import { startWatcherDaemon, stopWatcherDaemon } from "./config/daemon.js"
@@ -166,6 +167,14 @@ program
   .description("Stop the capture watcher and start a fresh one (requires being logged in)")
   .action(async () => {
     process.exitCode = await restartCommand()
+  })
+
+program
+  .command("upgrade")
+  .description("Install the newest release from GitHub over this one")
+  .option("--check", "only report whether a newer release exists")
+  .action(async (options: { check?: boolean }) => {
+    process.exitCode = await upgradeCommand({ check: Boolean(options.check) })
   })
 
 program

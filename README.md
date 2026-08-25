@@ -105,8 +105,11 @@ Replace `VERSION` with the release you want, for example `v0.1.0` and `0.1.0`. T
 `@samskara/core` inside it, so nothing else has to be fetched from a registry. It needs Node 22+.
 To remove it later: `npm uninstall -g @samskara/cli`.
 
-To upgrade, install the newer tarball over the old one, then run `samskara restart` so the running
-watcher picks up the new build.
+To upgrade, run `samskara upgrade`. It asks GitHub for the newest release, and if that is newer
+than the CLI you are running it installs that release's tarball over this one — the same
+`npm i -g TARBALL` as above, so it needs write access to the global npm prefix.
+`samskara upgrade --check` only reports whether a newer release exists. Either way, run
+`samskara restart` afterwards so the running watcher picks up the new build.
 
 ### From a checkout instead
 
@@ -161,6 +164,7 @@ from the account menu. A code never expires but works only once. The token it re
 | `samskara status` | Server and web URLs, projects, capture state, last sync time, watcher PID. Start here when something looks off. |
 | `samskara logs [-f]` | Pretty-print the watcher log. `-f` streams new lines. |
 | `samskara restart` | Stop the watcher and start a fresh one. |
+| `samskara upgrade [--check]` | Install the newest GitHub release over this one; `--check` only reports whether one exists. |
 | `samskara replay SESSION_ID` | Delete a session server-side and locally, then re-capture it from scratch. |
 | `samskara search [QUERY]` | Search captured sessions from the terminal and print each hit's URL. |
 | `samskara install-hooks` / `uninstall-hooks` | Install or remove the `SessionStart` hook by hand. |
