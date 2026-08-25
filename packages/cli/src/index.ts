@@ -11,6 +11,7 @@ import { logoutCommand } from "./commands/logout.js"
 import { logsCommand } from "./commands/logs.js"
 import { replayCommand } from "./commands/replay.js"
 import { restartCommand } from "./commands/restart.js"
+import { type SearchOptions, searchCommand } from "./commands/search.js"
 import { statusCommand } from "./commands/status.js"
 import { watchCommand } from "./commands/watch.js"
 import { readToken } from "./config/credentials.js"
@@ -124,6 +125,34 @@ program
       verbose: Boolean(program.opts<{ verbose?: boolean }>().verbose),
       ...(projectOverride ? { projectOverride } : {}),
     })
+  })
+
+program
+  .command("search [query]")
+  .description("Search captured sessions and print the web URL for each one")
+  .option("--project <name>", "project name or id")
+  .option("--user <login>", "GitHub login of the person who ran the session")
+  .option("--repo <name>", "repository as owner/name, its bare name, or its id")
+  .option("--branch <name>", "git branch")
+  .option("--pr <number>", "pull request number")
+  .option("--commit <sha>", "commit sha, or at least 7 characters of one")
+  .option("--range <range>", "all, hour, today, week, month or custom")
+  .option("--from <date>", "start of a custom range, as YYYY-MM-DD")
+  .option("--to <date>", "end of a custom range, as YYYY-MM-DD")
+  .option("--tz <zone>", "IANA time zone for today and custom ranges")
+  .option("--sort <sort>", "relevance, recent, oldest, tokens or project")
+  .option("--page <number>", "which page of results to show")
+  .option("--limit <number>", "results per page, up to 100")
+  .option("--here", "take project, repo and branch from the current folder")
+  .option("--first", "keep only the top result")
+  .option("--url", "print only session URLs, one per line")
+  .option("--json", "print the results as JSON")
+  .option("--open", "open the top result in the browser")
+  .action(async (query: string | undefined, flags: SearchOptions) => {
+    process.exitCode = await searchCommand(
+      { ...flags, ...(query === undefined ? {} : { query }) },
+      { fetch: globalThis.fetch },
+    )
   })
 
 program

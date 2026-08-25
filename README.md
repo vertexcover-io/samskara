@@ -129,6 +129,7 @@ from the account menu. A code never expires but works only once. The token it re
 | `samskara logs [-f]` | Pretty-print the watcher log. `-f` streams new lines. |
 | `samskara restart` | Stop the watcher and start a fresh one. |
 | `samskara replay SESSION_ID` | Delete a session server-side and locally, then re-capture it from scratch. |
+| `samskara search [QUERY]` | Search captured sessions from the terminal and print each hit's URL. |
 | `samskara install-hooks` / `uninstall-hooks` | Install or remove the `SessionStart` hook by hand. |
 | `samskara watch [--foreground]` | Start the watcher daemon directly; `--foreground` runs the loop in this terminal. |
 
@@ -138,9 +139,17 @@ from the account menu. A code never expires but works only once. The token it re
 with either missing it exits 1 and writes nothing. By default it starts the clock now, so turning
 capture on for an old project does not retroactively upload years of history.
 
+`samskara search` takes the same filters as the web UI's `/sessions` page and the same query grammar
+(see [Using the web UI](#using-the-web-ui)): `--project`, `--user`, `--repo`, `--branch`, `--pr`,
+`--commit`, `--range` (`--from`/`--to` for `custom`), `--tz`, `--sort`, `--page`, `--limit`.
+`--project` and `--repo` take a name or an id — an ambiguous or unrecognized name fails rather than
+guessing, and lists the closest known names. `--here` fills project, repo and branch from the current
+checkout (explicit flags win over it). `--first` keeps only the top hit; `--url` and `--json` print
+machine-readable output instead of the default table; `--open` opens the top hit in a browser.
+
 Everything the CLI stores lives in `~/.samskara` — the token, which folders are enabled, per-session
-ingest checkpoints, the watcher pid, and `logs/current.log`. Override the whole directory with
-`SAMSKARA_HOME`.
+ingest checkpoints, cached `search` filter names, the watcher pid, and `logs/current.log`. Override
+the whole directory with `SAMSKARA_HOME`.
 
 ## Using the web UI
 
@@ -167,6 +176,9 @@ migrat*                  prefix match
 Filters you can combine with it: `project`, `user`, `repo`, `branch`, `pr`, `commit`,
 `range` (`hour` / `today` / `week` / `month` / `custom` with `from` and `to`), and
 `sort` (`recent`, `oldest`, `tokens`, `project`, `relevance`).
+
+The same query and filters are available from the terminal with `samskara search` (see
+[CLI reference](#cli-reference)).
 
 ## Development
 

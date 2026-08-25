@@ -27,6 +27,40 @@ const bytea = customType<{ data: Buffer; driverData: Buffer }>({
   dataType: () => "bytea",
 })
 
+const tsvector = customType<{ data: string; driverData: string }>({
+  dataType: () => "tsvector",
+})
+
+const jsonText = (column: string): string =>
+  `public.samskara_search_json_text(coalesce(${column}, '{}'::jsonb))`
+
+/**
+ * The searchable text of each table, table-qualified so the runtime headline can re-alias it.
+ * Left-associative `||` is spelled with its parse-tree nesting so the deparsed column expression
+ * still compares equal. `searchSql.ts` derives the index catalogue from these; they live here
+ * because drizzle-kit's loader cannot follow an import out of this file.
+ */
+export const SEARCH_DOCUMENT_TEXT = {
+  sessions: `((coalesce("sessions"."title", '') || ' ') || "sessions"."id")`,
+  messages: `(((("messages"."id"::text || ' ') || ${jsonText('"messages"."content"')}) || ' ') || ${jsonText('"messages"."details"')})`,
+  pullRequests: `coalesce("pullRequests"."title", '')`,
+  toolCall: `(("toolCall"."toolId" || ' ') || ${jsonText('"toolCall"."toolInput"')})`,
+  toolResult: `(("toolResult"."toolId" || ' ') || ${jsonText('"toolResult"."result"')})`,
+} as const
+
+export type SearchTable = keyof typeof SEARCH_DOCUMENT_TEXT
+
+export const searchCap = (text: string): string => `public.samskara_search_cap(${text})`
+
+export const searchVectorExpression = (text: string): string =>
+  `to_tsvector('simple'::regconfig, ${searchCap(text)})`
+
+/** Computed once per write and indexed as a plain column, so no query restates the expression. */
+const searchVector = (table: SearchTable) =>
+  tsvector("searchVector").generatedAlwaysAs(
+    sql.raw(searchVectorExpression(SEARCH_DOCUMENT_TEXT[table])),
+  )
+
 const msgTypeValues = MSG_TYPES.map((t) => `'${t}'`).join(", ")
 
 const createdAt = timestamp("createdAt", { withTimezone: true }).notNull().defaultNow()
@@ -154,6 +188,7 @@ export const sessions = pgTable(
     permissionMode: text("permissionMode"),
     createdAt,
     updatedAt,
+    searchVector: searchVector("sessions"),
   },
   (t) => [
     index("sessions_projectId_idx").on(t.projectId),
@@ -193,6 +228,7 @@ export const messages = pgTable(
     gitBranch: text("gitBranch"),
     gitCommit: text("gitCommit"),
     createdAt,
+    searchVector: searchVector("messages"),
   },
   (t) => [
     unique("messages_line_identity").on(t.sessionId, t.lineUuid, t.subIndex),
@@ -251,6 +287,7 @@ export const pullRequests = pgTable(
     headBranch: text("headBranch"),
     createdAt,
     updatedAt,
+    searchVector: searchVector("pullRequests"),
   },
   (t) => [unique("pullRequests_repo_number_unique").on(t.repoId, t.number)],
 )
@@ -283,6 +320,7 @@ export const toolCall = pgTable(
       .references(() => messages.id, { onDelete: "cascade" }),
     toolName: text("toolName").notNull(),
     toolInput: jsonb("toolInput"),
+    searchVector: searchVector("toolCall"),
   },
   (t) => [
     primaryKey({ columns: [t.toolId, t.messageId] }),
@@ -300,6 +338,7 @@ export const toolResult = pgTable(
       .references(() => messages.id, { onDelete: "cascade" }),
     result: jsonb("result"),
     status: text("status").notNull(),
+    searchVector: searchVector("toolResult"),
   },
   (t) => [
     primaryKey({ columns: [t.toolId, t.messageId] }),

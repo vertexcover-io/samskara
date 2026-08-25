@@ -2,7 +2,9 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, test, vi } from "vitest"
+import { atomicWriteJson } from "../config/atomic.js"
 import { storeToken } from "../config/credentials.js"
+import { filterOptionsPath } from "../config/paths.js"
 import { upsertProject } from "../config/projects.js"
 import { logoutCommand } from "./logout.js"
 
@@ -52,5 +54,19 @@ describe("logout command", () => {
 
     expect(code).toBe(0)
     expect(await readFile(join(home, "projects.json"), "utf8")).toBe('{"version":1,"projects":{}}')
+  })
+  test("REQ-015: logging out drops the cached filter options, so the next login resolves names against its own account", async () => {
+    const home = await mkdtemp(join(tmpdir(), "samskara-logout-cache-"))
+    process.env.SAMSKARA_HOME = home
+    await storeToken("secret-token")
+    await atomicWriteJson(filterOptionsPath(), {
+      apiBase: "http://api.test",
+      fetchedAt: 0,
+      filterOptions: { projects: [], authors: [], repositories: [], branches: [] },
+    })
+
+    await logoutCommand({ stdout: { write: () => true } })
+
+    await expect(readFile(filterOptionsPath(), "utf8")).rejects.toThrow()
   })
 })

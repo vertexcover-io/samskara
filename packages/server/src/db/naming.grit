@@ -10,7 +10,8 @@ or {
   `timestamp($name, $...)`,
   `integer($name, $...)`,
   `jsonb($name, $...)`,
-  `bytea($name, $...)`
+  `bytea($name, $...)`,
+  `tsvector($name, $...)`
 } where {
   not $name <: r"^\"[a-z][a-zA-Z0-9]*\"$",
   register_diagnostic(span=$name, message="SQL identifier is not camelCase. Rename it to camelCase (e.g. githubId, not github_id).")

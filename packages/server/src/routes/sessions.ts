@@ -70,7 +70,9 @@ const serializeDetail = (detail: SessionDetailRow) => ({
 
 export const sessionsRoutes = ({ db, env }: Deps) =>
   new Hono<{ Variables: AuthVariables }>()
-    .get("/", requireAuth({ db, env }, ["web"]), async (c) => {
+    // `cli` reads the list so `samskara search` can run. The audience stays off every other
+    // session route: search needs the list and nothing else.
+    .get("/", requireAuth({ db, env }, ["web", "cli"]), async (c) => {
       let query: SessionListQuery
       try {
         query = parseSessionListQuery(c.req.query())

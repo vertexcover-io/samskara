@@ -25,17 +25,33 @@ describe("searchSql", () => {
   })
 
   test("uses capped scalar-only source documents and immutable index-safe concatenation", () => {
-    const definitions = SEARCH_DOCUMENTS.map(searchIndexDefinition).join("\n")
-    expect(definitions).toContain("public.samskara_search_cap")
-    expect(definitions).toContain("public.samskara_search_json_text")
-    expect(definitions).not.toContain("samskara_search_document")
-    expect(definitions).not.toContain("concat_ws")
-    expect(definitions).not.toContain('"messages"."raw"')
-    expect(definitions).not.toContain('"pullRequests"."number"')
+    const vectors = SEARCH_DOCUMENTS.map((document) => document.vector).join("\n")
+    expect(vectors).toContain("public.samskara_search_cap")
+    expect(vectors).toContain("public.samskara_search_json_text")
+    expect(vectors).not.toContain("samskara_search_document")
+    expect(vectors).not.toContain("concat_ws")
+    expect(vectors).not.toContain('"messages"."raw"')
+    expect(vectors).not.toContain('"pullRequests"."number"')
   })
 
-  test("versions canonical replacements as V2 indexes", () => {
-    expect(SEARCH_DOCUMENTS.every((document) => document.indexName.endsWith("_v2_idx"))).toBe(true)
+  test("derives every vector from its text, so the stored column, the rank and the headline agree", () => {
+    for (const document of SEARCH_DOCUMENTS) {
+      expect(document.vector).toBe(
+        `to_tsvector('simple'::regconfig, public.samskara_search_cap(${document.text}))`,
+      )
+    }
+  })
+
+  test("versions canonical replacements as V3 indexes", () => {
+    expect(SEARCH_DOCUMENTS.every((document) => document.indexName.endsWith("_v3_idx"))).toBe(true)
+  })
+
+  test("indexes the stored searchVector column with fastupdate off, never an expression", () => {
+    for (const document of SEARCH_DOCUMENTS) {
+      expect(searchIndexDefinition(document)).toBe(
+        `create index "${document.indexName}" on "${document.table}" using gin ("searchVector") with (fastupdate=off)`,
+      )
+    }
   })
 
   test("builds one canonical definition per expected concurrent index", () => {
