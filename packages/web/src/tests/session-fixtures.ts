@@ -43,7 +43,7 @@ export const facts = (overrides: Partial<SessionFacts> = {}): SessionFacts => ({
   toolCallCount: 0,
   subagentCount: 0,
   lastActiveAt: "2026-03-01T12:00:00.000Z",
-  createdAt: "2026-03-01T10:00:00.000Z",
+  startedAt: "2026-03-01T10:00:00.000Z",
   ...overrides,
 })
 

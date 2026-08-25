@@ -50,6 +50,7 @@ const serializeDetail = (detail: SessionDetailRow) => ({
     ...detail.session,
     durationMs: detail.session.durationMs === null ? null : Number(detail.session.durationMs),
     lastActiveAt: new Date(detail.session.lastActiveAt).toISOString(),
+    startedAt: isoOrNull(detail.session.startedAt),
   },
   messages: detail.messages.map((message) => ({
     ...message,

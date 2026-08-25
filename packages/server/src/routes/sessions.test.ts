@@ -153,6 +153,20 @@ const listAs = async (
 
 const idsOf = (rows: ReadonlyArray<SessionSummary>): ReadonlyArray<string> => rows.map((r) => r.id)
 
+/** Sessions whose row-touch time and message time disagree, so activity and updatedAt can be told apart. */
+const seedSpoken = async (
+  db: Db,
+  owner: string,
+  projectId: string,
+  rows: ReadonlyArray<readonly [id: string, touched: string, spoke: string | null]>,
+): Promise<void> => {
+  for (const [id, touched, spoke] of rows) {
+    await seedSession(db, { id, userId: owner, projectId, title: id, updatedAt: new Date(touched) })
+    if (spoke === null) continue
+    await seedMessage(db, { sessionId: id, lineNumber: 1, timestamp: new Date(spoke) })
+  }
+}
+
 const sortedIdsOf = (rows: ReadonlyArray<SessionSummary>): ReadonlyArray<string> =>
   [...idsOf(rows)].sort()
 
@@ -345,6 +359,71 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     })
 
     expect(idsOf(await listAs(db, owner))).toEqual(["newest", "middle", "oldest"])
+  })
+
+  test("SA1: the list orders by message activity, not by when the session row was last touched", async () => {
+    const owner = await seedUser(db, 1290, "activity-order-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Activity Order", slug: "activity-order" },
+      ownerId: owner,
+    })
+    await seedSpoken(db, owner, projectId, [
+      ["chatty", "2026-02-01T00:00:00Z", "2026-03-03T00:00:00Z"],
+      ["middle", "2026-02-02T00:00:00Z", "2026-03-02T00:00:00Z"],
+      ["quiet", "2026-02-03T00:00:00Z", "2026-03-01T00:00:00Z"],
+    ])
+
+    expect(idsOf(await listAs(db, owner))).toEqual(["chatty", "middle", "quiet"])
+  })
+
+  test("SA4: the date filter reads activity, so a stale row that spoke inside the window is kept and a freshly touched one that did not is dropped", async () => {
+    const owner = await seedUser(db, 1293, "activity-window-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Activity Window", slug: "activity-window" },
+      ownerId: owner,
+    })
+    await seedSpoken(db, owner, projectId, [
+      ["spoke-inside", "2026-01-01T00:00:00Z", "2026-04-10T12:00:00Z"],
+      ["spoke-outside", "2026-04-10T12:00:00Z", "2026-01-01T00:00:00Z"],
+    ])
+
+    const rows = await listAs(db, owner, "?range=custom&from=2026-04-09&to=2026-04-11")
+    expect(idsOf(rows)).toEqual(["spoke-inside"])
+  })
+
+  test("SA3, SA6: one timestamped message reports a zero duration; no messages reports a null duration and lists by updatedAt", async () => {
+    const owner = await seedUser(db, 1294, "duration-edge-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Duration Edge", slug: "duration-edge" },
+      ownerId: owner,
+    })
+    await seedSpoken(db, owner, projectId, [
+      ["one-message", "2026-02-07T00:00:00Z", "2026-02-07T09:00:00Z"],
+      ["no-messages", "2026-02-07T10:00:00Z", null],
+    ])
+
+    const byId = new Map((await listAs(db, owner)).map((row) => [row.id, row]))
+
+    expect(byId.get("one-message")?.durationMs).toBe(0)
+    expect(byId.get("no-messages")?.durationMs).toBeNull()
+    expect(byId.get("no-messages")?.lastActiveAt).toBe(
+      new Date("2026-02-07T10:00:00Z").toISOString(),
+    )
+  })
+
+  test("SA7: two sessions sharing one activity instant list as a-then-b under recent and b-then-a under oldest - oldest is recent exactly reversed, so one index serves both", async () => {
+    const owner = await seedUser(db, 1295, "tie-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Tie", slug: "tie" },
+      ownerId: owner,
+    })
+    await seedSpoken(db, owner, projectId, [
+      ["tie-a", "2026-02-08T00:00:00Z", null],
+      ["tie-b", "2026-02-08T00:00:00Z", null],
+    ])
+
+    expect(idsOf(await listAs(db, owner, "?sort=recent"))).toEqual(["tie-a", "tie-b"])
+    expect(idsOf(await listAs(db, owner, "?sort=oldest"))).toEqual(["tie-b", "tie-a"])
   })
 
   test("keyword search, pagination, and structured validation use the paginated list envelope", async () => {
@@ -547,7 +626,7 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
       durationMs: 5_400_000,
       tokensTotal: 350,
       status: "complete",
-      lastActiveAt: new Date("2026-02-05T12:00:00Z").toISOString(),
+      lastActiveAt: new Date("2026-02-05T11:30:00Z").toISOString(),
     })
   })
 
@@ -810,6 +889,7 @@ type SessionDetailBody = {
     readonly toolCallCount: number
     readonly subagentCount: number
     readonly lastActiveAt: string
+    readonly startedAt: string | null
   }
   readonly messages: ReadonlyArray<DetailMessage>
   readonly toolCalls: ReadonlyArray<DetailToolCall>
@@ -1086,6 +1166,62 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions/:id", () => {
       repoName: "samskara",
     })
     expect(await repoOf("without-repo")).toBeNull()
+  })
+
+  test("SC18, SC20: the detail reports startedAt as the earliest message time and lastActiveAt as the latest - the same lastActiveAt its list row shows", async () => {
+    const owner = await seedUser(db, 2160, "started-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Started", slug: "started" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "started",
+      userId: owner,
+      projectId,
+      title: "Started",
+      updatedAt: new Date("2026-03-02T12:00:00Z"),
+    })
+    await insertMessage(db, {
+      sessionId: "started",
+      lineNumber: 2,
+      msgType: "message",
+      timestamp: new Date("2026-03-01T10:30:00Z"),
+    })
+    await insertMessage(db, {
+      sessionId: "started",
+      lineNumber: 1,
+      msgType: "message",
+      timestamp: new Date("2026-03-01T10:00:00Z"),
+    })
+
+    const [summary] = await listAs(db, owner)
+    const body = (await (await detailRequest(db, owner, "started")).json()) as SessionDetailBody
+
+    expect(body.session.startedAt).toBe(new Date("2026-03-01T10:00:00Z").toISOString())
+    expect(body.session.lastActiveAt).toBe(new Date("2026-03-01T10:30:00Z").toISOString())
+    expect(summary?.lastActiveAt).toBe(body.session.lastActiveAt)
+  })
+
+  test("SC19: a session whose only message carries no timestamp still lists by its updatedAt, and its detail reports startedAt as null", async () => {
+    const owner = await seedUser(db, 2161, "untimed-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Untimed", slug: "untimed" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "untimed",
+      userId: owner,
+      projectId,
+      title: "Untimed",
+      updatedAt: new Date("2026-03-03T08:00:00Z"),
+    })
+    await insertMessage(db, { sessionId: "untimed", lineNumber: 1, msgType: "message" })
+
+    const [summary] = await listAs(db, owner)
+    const body = (await (await detailRequest(db, owner, "untimed")).json()) as SessionDetailBody
+
+    expect(summary?.lastActiveAt).toBe(new Date("2026-03-03T08:00:00Z").toISOString())
+    expect(body.session.startedAt).toBeNull()
   })
 
   test("EDGE-008 S40: an id that exists for nobody is 404 sessionNotFound - not 200 with an empty payload", async () => {

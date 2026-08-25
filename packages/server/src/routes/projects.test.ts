@@ -6,7 +6,15 @@ import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import { buildApp } from "../app.js"
 import { createDb, type Db } from "../db/client.js"
-import { orgs, projects, sessions, userOrgs, userProjectGrant, users } from "../db/schema.js"
+import {
+  messages,
+  orgs,
+  projects,
+  sessions,
+  userOrgs,
+  userProjectGrant,
+  users,
+} from "../db/schema.js"
 import type { Env } from "../lib/env.js"
 import { signToken } from "../lib/jwt.js"
 import * as projectsRepo from "../repositories/projects.repo.js"
@@ -63,6 +71,19 @@ const seedSession = (
     projectId: input.projectId,
     title: input.title,
     updatedAt: input.updatedAt,
+  })
+
+const seedMessage = (db: Db, sessionId: string, lineNumber: number, timestamp: Date) =>
+  db.insert(messages).values({
+    sessionId,
+    lineUuid: crypto.randomUUID(),
+    subIndex: 0,
+    msgType: "message",
+    role: "assistant",
+    timestamp,
+    lineNumber,
+    raw: {},
+    sourceSchemaVersion: 1,
   })
 
 const listAs = async (db: Db, userId: string): Promise<ReadonlyArray<ProjectSummary>> => {
@@ -181,6 +202,26 @@ describe.skipIf(!dockerAvailable())("GET /api/projects", () => {
       sessionCount: 0,
       lastActiveAt: null,
     })
+  })
+
+  test("SA5: a project's activity follows its sessions' messages, not when their rows were last touched", async () => {
+    const owner = await seedUser(db, 4444, "project-activity-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Active", slug: "active" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "touched-late",
+      userId: owner,
+      projectId,
+      title: "Touched late",
+      updatedAt: new Date("2026-05-01T00:00:00Z"),
+    })
+    await seedMessage(db, "touched-late", 1, new Date("2026-03-01T00:00:00Z"))
+
+    const [summary] = await listAs(db, owner)
+
+    expect(summary?.lastActiveAt).toBe(new Date("2026-03-01T00:00:00Z").toISOString())
   })
 
   test("SC3: a personal project reports its owner as the user", async () => {

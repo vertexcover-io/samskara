@@ -1,7 +1,14 @@
 import type { ProjectIdentity } from "@samskara/core"
 import { type AnyColumn, aliasedTable, and, desc, eq, exists, or, type SQL, sql } from "drizzle-orm"
 import type { Querier } from "../db/client.js"
-import { orgs, projects, userOrgs, userProjectGrant, users } from "../db/schema.js"
+import {
+  orgs,
+  projects,
+  sessionActivityAt,
+  userOrgs,
+  userProjectGrant,
+  users,
+} from "../db/schema.js"
 
 export const orgMemberOfProject = (db: Querier, userId: string | AnyColumn) =>
   exists(
@@ -179,7 +186,7 @@ const ownSessions = sql`"sessions" where "sessions"."projectId" = "projects"."id
 
 const sessionCount = sql<number>`(select count(*)::int from ${ownSessions})`
 
-const lastActiveAt = sql<string | null>`(select max("sessions"."updatedAt") from ${ownSessions})`
+const lastActiveAt = sql<string | null>`(select max(${sessionActivityAt}) from ${ownSessions})`
 
 export const listAccessibleSummaries = (
   db: Querier,
