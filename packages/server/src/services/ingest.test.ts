@@ -273,7 +273,7 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
     expect(rows.map((row) => row.subType)).toEqual(["toolInjection", null])
   })
 
-  test("a subagent payload naming another user's session is refused, not attached to", async () => {
+  test("a subagent payload naming another user's session is refused, not attached to, and leaves its activity window untouched (SC8)", async () => {
     // An aud:cli token is valid for ANY user's CLI installation, so proving a session exists
     // proves nothing about who may write to it. Without a userId-scoped check, one user's daemon
     // can inject fabricated subagent and message rows into another user's session by naming its id.
@@ -302,18 +302,30 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
       lineUuid: "0191d942-3ba5-7dba-9a7d-22d65b3025ff",
     })
     const attack = subagentPayload(victimSession, "evil", [
-      { ...item, message: { ...item.message, agentId: "evil", trackId: "agent:evil" } },
+      {
+        ...item,
+        message: {
+          ...item.message,
+          agentId: "evil",
+          trackId: "agent:evil",
+          timestamp: "2026-02-09T12:00:00Z",
+        },
+      },
     ])
 
     expect(await ingest(ctx, attack)).toEqual({ error: "sessionNotFound" })
 
-    // Refused, not merely reported: nothing may reach the victim's session.
+    // Refused, not merely reported: nothing may reach the victim's session. The message carried a
+    // timestamp, so a widened window would prove the flush reached the messages table.
     expect(
       await db.select().from(subagents).where(eq(subagents.sessionId, victimSession)),
     ).toHaveLength(0)
     expect(
       await db.select().from(messages).where(eq(messages.sessionId, victimSession)),
     ).toHaveLength(0)
+    const [victimRow] = await db.select().from(sessions).where(eq(sessions.id, victimSession))
+    expect(victimRow?.startedAt).toBeNull()
+    expect(victimRow?.lastMessageAt).toBeNull()
   })
 
   test("S6: a session whose messages span two repos records two distinct repoIds, and a message with no repo records none", async () => {

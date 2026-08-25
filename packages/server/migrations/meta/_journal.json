@@ -141,6 +141,13 @@
       "when": 1787598084414,
       "tag": "0019_search_vector_columns",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1787638038809,
+      "tag": "0020_session_activity_times",
+      "breakpoints": true
     }
   ]
 }
