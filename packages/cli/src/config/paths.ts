@@ -1,19 +1,21 @@
-// AI-generated. See PROMPT.md for the prompts and model used.
+import { homedir } from "node:os"
+import { join } from "node:path"
 
-import { homedir } from "node:os";
-import { join } from "node:path";
-
-/**
- * Directory and file paths for the CLI's per-user state.
- *
- * Defaults to `~/.claude-sessions/` but every test (and the integration
- * helpers) override it via `CLAUDE_SESSIONS_HOME` so we never touch the
- * developer's real config during runs.
- */
-export const configHome = (): string =>
-  process.env.CLAUDE_SESSIONS_HOME ?? join(homedir(), ".claude-sessions");
-
-export const credentialsPath = (): string => join(configHome(), "credentials.json");
-export const statePath = (): string => join(configHome(), "state.json");
-export const reposPath = (): string => join(configHome(), "repos.json");
-export const settingsPath = (): string => join(configHome(), "settings.json");
+export const configHome = (): string => process.env.SAMSKARA_HOME ?? join(homedir(), ".samskara")
+export const tokenPath = (): string => join(configHome(), "token")
+export const settingsPath = (): string => join(configHome(), "config.json")
+export const statePath = (): string => join(configHome(), "state.json")
+export const projectsPath = (): string => join(configHome(), "projects.json")
+// `search` lets you name a project or repo, but the API only takes ids. This file remembers the
+// name-to-id list for a few minutes, so searching by name does not have to fetch it every time.
+export const filterOptionsPath = (): string => join(configHome(), "filter-options.json")
+export const watchPidPath = (): string => join(configHome(), "watch.pid")
+// Separate files from state.json: readCheckpoints returns empty on any validation failure,
+// so one corrupt artifact entry would wipe every transcript checkpoint.
+export const artifactStatePath = (): string => join(configHome(), "artifacts.json")
+export const artifactQueuePath = (): string => join(configHome(), "artifact-queue.json")
+/** Claude Code's own backup store, outside SAMSKARA_HOME: it is written by Claude, not by us. */
+export const fileHistoryDir = (): string => join(homedir(), ".claude", "file-history")
+export const watchLogDir = (): string => join(configHome(), "logs")
+export const currentLogPath = (): string => join(watchLogDir(), "current.log")
+export const watcherCrashLogPath = (): string => join(watchLogDir(), "watch.crash.log")

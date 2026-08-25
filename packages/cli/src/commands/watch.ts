@@ -1,38 +1,49 @@
-// AI-generated. See PROMPT.md for the prompts and model used.
+import type { ProjectIdentity } from "@samskara/core"
+import { startWatcherDaemon, watcherPid } from "../config/daemon.js"
+import { createWatchLogger } from "../config/log.js"
+import { watchLogDir } from "../config/paths.js"
+import { reportError, resolveIo, type Writer } from "../io.js"
+import { watch } from "../watcher/index.js"
 
-import type { UploadClient } from "../upload/client.js";
-import { JsonlWatcher } from "../watcher/chokidar.js";
-
-/**
- * The watcher only tails JSONL files and uploads new events. It never
- * generates summaries: the in-loop coding agent authors them directly
- * (`summarize --from-agent`, forced by the Stop hook), and `claude -p` is a
- * manual last resort (`summarize <id>` / `--all`). There is no timer-based
- * end-of-session trigger.
- */
-export interface WatchOptions {
-  client: UploadClient;
+export type WatchCommandOptions = {
+  readonly foreground?: boolean
+  readonly verbose?: boolean
+  readonly projectOverride?: ProjectIdentity
+  readonly stdout?: Writer
+  readonly stderr?: Writer
 }
 
-/**
- * `claude-sessions watch` — long-lived foreground tail. Stays alive
- * until SIGINT / SIGTERM, then closes the watcher cleanly.
- */
-export const watchCommand = async (opts: WatchOptions): Promise<number> => {
-  const watcher = new JsonlWatcher({ client: opts.client });
-  await watcher.start();
-  process.stdout.write("watching for new events (ctrl-c to exit)...\n");
+export const watchCommand = async (options: WatchCommandOptions = {}): Promise<number> => {
+  const { stdout, stderr } = resolveIo(options)
 
-  let stopping = false;
-  const stop = async (): Promise<void> => {
-    if (stopping) return;
-    stopping = true;
-    await watcher.stop();
-    process.exit(0);
-  };
-  process.on("SIGINT", () => void stop());
-  process.on("SIGTERM", () => void stop());
+  if (options.foreground) {
+    try {
+      await watch({
+        ...(options.projectOverride ? { projectOverride: options.projectOverride } : {}),
+        log: createWatchLogger({
+          verbose: Boolean(options.verbose),
+          pretty: process.env.SAMSKARA_DAEMON !== "1",
+        }).log,
+      })
+      return 0
+    } catch (error) {
+      return reportError(stderr, error)
+    }
+  }
 
-  await new Promise<void>(() => undefined);
-  return 0;
-};
+  const existing = watcherPid()
+  if (existing !== null) {
+    stdout.write(`watcher already running (pid ${existing}). logs: ${watchLogDir()}\n`)
+    return 0
+  }
+
+  try {
+    const pid = await startWatcherDaemon()
+    stdout.write(
+      `Started the capture watcher (process ${pid}). Its logs are in ${watchLogDir()}.\n`,
+    )
+    return 0
+  } catch (error) {
+    return reportError(stderr, error)
+  }
+}

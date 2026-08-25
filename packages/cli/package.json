@@ -1,29 +1,30 @@
 {
-  "name": "@claude-sessions/cli",
+  "name": "@samskara/cli",
   "version": "0.0.0",
   "private": true,
   "type": "module",
   "bin": {
-    "claude-sessions": "./dist/main.js"
+    "samskara": "./dist/index.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/make-executable.mjs",
-    "test": "vitest run --passWithNoTests",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
   },
   "dependencies": {
-    "@claude-sessions/adapter-claude": "*",
-    "@claude-sessions/core": "*",
-    "chokidar": "^4.0.3",
-    "commander": "^12.1.0",
+    "@samskara/core": "workspace:*",
+    "commander": "13.1.0",
+    "diff": "^9.0.0",
+    "pino": "^9",
+    "pino-pretty": "^13.1.3",
+    "pino-roll": "^4.0.0",
     "proper-lockfile": "^4.1.2",
-    "tinyglobby": "^0.2.17"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@types/node": "^22.10.2",
+    "@types/diff": "^8.0.0",
     "@types/proper-lockfile": "^4.1.4",
-    "typescript": "^5.7.2",
-    "undici": "^6.21.0",
-    "vitest": "^2.1.8"
+    "typescript": "5.7.3",
+    "vitest": "3.0.5"
   }
 }

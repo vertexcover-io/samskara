@@ -1,19 +1,22 @@
-// AI-generated. See PROMPT.md for the prompts and model used.
+import { rm } from "node:fs/promises"
+import { deleteToken } from "../config/credentials.js"
+import { stopWatcherDaemon } from "../config/daemon.js"
+import { filterOptionsPath } from "../config/paths.js"
+import { resolveIo, type Writer } from "../io.js"
 
-import { clearCredentials, readCredentials } from "../config/credentials.js";
-import { isWatcherAlive, stopWatcherDaemon } from "../config/daemon.js";
+export type LogoutOptions = {
+  readonly stdout?: Writer
+}
 
-export const logoutCommand = async (): Promise<number> => {
-  const creds = readCredentials();
-  if (isWatcherAlive()) {
-    stopWatcherDaemon();
-    process.stdout.write("stopped watcher.\n");
-  }
-  if (!creds) {
-    process.stdout.write("not logged in.\n");
-    return 0;
-  }
-  clearCredentials();
-  process.stdout.write(`logged out ${creds.user_email}.\n`);
-  return 0;
-};
+export const logoutCommand = async (options: LogoutOptions = {}): Promise<number> => {
+  await stopWatcherDaemon()
+  await deleteToken()
+  // `search` caches the project and repo names this account was allowed to see. Delete it, or
+  // the next person to log in resolves names against the last person's list.
+  await rm(filterOptionsPath(), { force: true })
+  const { stdout } = resolveIo(options)
+  stdout.write(
+    "Logged out. The stored access token was removed and the capture watcher was stopped.\n",
+  )
+  return 0
+}

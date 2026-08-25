@@ -1,59 +1,140 @@
-// AI-generated. See PROMPT.md for the prompts and model used.
+import { readToken } from "../config/credentials.js"
+import { startWatcherDaemon, watcherPid } from "../config/daemon.js"
+import { watchLogDir } from "../config/paths.js"
+import { normalizeUrl, readSettings, writeSettings } from "../config/settings.js"
+import {
+  API_URL_ENV,
+  apiBase,
+  DEFAULT_API_URL,
+  DEFAULT_WEB_URL,
+  WEB_URL_ENV,
+  webBase,
+} from "../config.js"
+import {
+  errorMessage,
+  interactivePrompt,
+  type Prompt,
+  reportError,
+  resolveIo,
+  type Writer,
+} from "../io.js"
+import { login } from "../login.js"
+import { installHooksCommand, isManagedHookInstalled } from "./install-hooks.js"
 
-import { fileURLToPath } from "node:url";
-import { isWatcherAlive, startWatcherDaemon, watchLogPath } from "../config/daemon.js";
-import { ensureAuthenticated, runPairFlow } from "./_pair.js";
-
-export interface InitOptions {
-  serverUrl?: string;
-  /** Override the entry point for the spawned daemon (tests). */
-  cliEntry?: string;
-  open?: import("./_open.js").Opener;
-  stdin?: NodeJS.ReadableStream;
-  stdout?: NodeJS.WritableStream;
-  fetchImpl?: typeof fetch;
-  /** Skip starting the daemon (tests). */
-  skipDaemon?: boolean;
+export type InitOptions = {
+  readonly stdout?: Writer
+  readonly stderr?: Writer
+  readonly server?: string
+  readonly web?: string
+  readonly prompt?: Prompt
 }
 
-const DEFAULT_SERVER_URL = "http://localhost:3000";
+const MAX_ATTEMPTS = 3
 
-const resolveCliEntry = (): string => {
-  // The CLI bin is the same file currently executing; resolve via import.meta.url.
-  return fileURLToPath(new URL("../main.js", import.meta.url));
-};
+type UrlAsk = {
+  readonly question: string
+  readonly envName: string
+  readonly envValue: string | undefined
+  readonly flag: string | undefined
+  readonly saved: string | undefined
+  readonly fallback: string
+}
 
-export const initCommand = async (opts: InitOptions = {}): Promise<number> => {
-  const serverUrl = (opts.serverUrl ?? DEFAULT_SERVER_URL).replace(/\/+$/, "");
+type Io = { readonly stdout: Writer; readonly stderr: Writer }
 
-  let auth = await ensureAuthenticated({
-    serverUrl,
-    ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
-  });
+/**
+ * The environment is checked first and never written back: `SAMSKARA_API_URL` already overrides the
+ * settings file at read time, so saving a different answer would store a url that nothing uses.
+ */
+const askForUrl = async (ask: UrlAsk, prompt: Prompt | null, io: Io): Promise<string> => {
+  if (ask.envValue !== undefined) {
+    io.stdout.write(`${ask.envName} is set in the environment, so ${ask.envValue} is used.\n`)
+    return ask.saved ?? ask.fallback
+  }
+  if (ask.flag !== undefined) return normalizeUrl(ask.flag)
 
-  if (!auth) {
-    auth = await runPairFlow({
-      serverUrl,
-      ...(opts.open ? { open: opts.open } : {}),
-      ...(opts.stdin ? { stdin: opts.stdin } : {}),
-      ...(opts.stdout ? { stdout: opts.stdout } : {}),
-      ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
-    });
-    if (!auth) return 1;
+  const current = ask.saved ?? ask.fallback
+  if (prompt === null) return current
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const answer = await prompt(ask.question, current)
+    if (answer.trim() === "") return current
+    try {
+      return normalizeUrl(answer)
+    } catch (error) {
+      io.stderr.write(`${errorMessage(error)}\n`)
+    }
+  }
+  throw new Error(`Gave up after ${MAX_ATTEMPTS} tries at ${ask.question.toLowerCase()}.`)
+}
+
+const configureUrls = async (
+  options: InitOptions,
+  io: Io,
+  prompt: Prompt | null,
+): Promise<void> => {
+  const saved = readSettings()
+  const apiUrl = await askForUrl(
+    {
+      question: "Samskara server URL",
+      envName: API_URL_ENV,
+      envValue: process.env[API_URL_ENV],
+      flag: options.server,
+      saved: saved?.apiUrl,
+      fallback: DEFAULT_API_URL,
+    },
+    prompt,
+    io,
+  )
+  const webUrl = await askForUrl(
+    {
+      question: "Samskara web URL",
+      envName: WEB_URL_ENV,
+      envValue: process.env[WEB_URL_ENV],
+      flag: options.web,
+      saved: saved?.webUrl,
+      fallback: DEFAULT_WEB_URL,
+    },
+    prompt,
+    io,
+  )
+  const path = await writeSettings({ apiUrl, webUrl })
+  io.stdout.write(`Server ${apiBase()} and web ${webBase()} saved to ${path}.\n`)
+}
+
+export const initCommand = async (options: InitOptions = {}): Promise<number> => {
+  const { stdout, stderr } = resolveIo(options)
+  const io = { stdout, stderr }
+  const prompt = options.prompt ?? interactivePrompt()
+
+  try {
+    await configureUrls(options, io, prompt)
+  } catch (error) {
+    return reportError(stderr, error)
+  }
+
+  const hadToken = (await readToken()) !== null
+  if (!hadToken) {
+    if ((await login({ stdout, stderr })) !== 0 || (await readToken()) === null) return 1
   } else {
-    process.stdout.write(`logged in as ${auth.email}\n`);
+    stdout.write("already logged in\n")
   }
 
-  const watcherWasAlive = isWatcherAlive();
-  if (watcherWasAlive) {
-    process.stdout.write("watcher already running.\n");
-  } else if (!opts.skipDaemon) {
-    const pid = startWatcherDaemon({ cliEntry: opts.cliEntry ?? resolveCliEntry() });
-    process.stdout.write(`started watcher (pid ${pid}). logs: ${watchLogPath()}\n`);
+  const hadHook = isManagedHookInstalled()
+  if (installHooksCommand({ stdout, stderr }) !== 0) return 1
+
+  const existingPid = watcherPid()
+  if (existingPid === null) {
+    try {
+      const pid = await startWatcherDaemon()
+      stdout.write(
+        `Started the capture watcher (process ${pid}). Its logs are in ${watchLogDir()}.\n`,
+      )
+    } catch (error) {
+      return reportError(stderr, error)
+    }
   }
 
-  if (auth && watcherWasAlive) {
-    process.stdout.write("nothing to do.\n");
-  }
-  return 0;
-};
+  if (hadToken && hadHook && existingPid !== null) stdout.write("nothing to do.\n")
+  return 0
+}

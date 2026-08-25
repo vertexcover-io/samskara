@@ -1,26 +1,16 @@
-// AI-generated. See PROMPT.md for the prompts and model used.
+import { drizzle } from "drizzle-orm/postgres-js"
+import postgres from "postgres"
+import * as schema from "./schema.js"
 
-import { drizzle } from "drizzle-orm/postgres-js";
-import postgres from "postgres";
-import * as schema from "./schema.js";
+export type Db = ReturnType<typeof drizzle<typeof schema>>
 
-export type DbClient = ReturnType<typeof drizzle<typeof schema>>;
-export type Sql = postgres.Sql;
+export type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0]
 
-export interface Db {
-  db: DbClient;
-  sql: Sql;
-  close: () => Promise<void>;
+export type Querier = Db | Tx
+
+export const createDb = (url: string) => {
+  // Server-side, so the parser's "word is too long to be indexed" notices are never sent.
+  const client = postgres(url, { connection: { client_min_messages: "warning" } })
+  const db = drizzle(client, { schema })
+  return { db, client }
 }
-
-export const createDb = (databaseUrl: string): Db => {
-  const sql = postgres(databaseUrl, { max: 10, prepare: false });
-  const db = drizzle(sql, { schema });
-  return {
-    db,
-    sql,
-    close: async () => {
-      await sql.end({ timeout: 5 });
-    },
-  };
-};

@@ -1,24 +1,10 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "target": "ES2022",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "jsx": "react-jsx",
-    "module": "ESNext",
-    "moduleResolution": "Bundler",
-    "rootDir": ".",
-    "outDir": "dist-types",
-    "noEmit": true,
-    "composite": false,
-    "declaration": false,
-    "declarationMap": false,
-    "sourceMap": false,
-    "verbatimModuleSyntax": false,
-    "types": ["vite/client", "vitest/globals"],
-    "paths": {
-      "@/*": ["./src/*"]
-    }
+    "types": ["vite/client"],
+    "noEmit": true
   },
-  "include": ["src/**/*", "vite.config.ts", "vitest.config.ts"],
-  "exclude": ["dist", "node_modules"]
+  "include": ["src", "vite.config.ts"]
 }

@@ -1,13 +1,7 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "rootDir": "src",
-    "outDir": "dist",
-    "tsBuildInfoFile": "./dist/.tsbuildinfo",
-    "composite": true,
-    "types": ["node"]
+    "noEmit": true
   },
-  "references": [{ "path": "../core" }, { "path": "../adapter-claude" }],
-  "include": ["src/**/*.ts"],
-  "exclude": ["dist", "node_modules", "**/*.test.ts", "tests/**"]
+  "include": ["src"]
 }

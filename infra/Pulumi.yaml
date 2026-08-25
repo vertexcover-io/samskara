@@ -1,6 +1,0 @@
-name: claude-sessions
-runtime:
-  name: nodejs
-  options:
-    typescript: true
-description: Azure deployment for claude-sessions (Container Apps + managed Postgres + ACR).

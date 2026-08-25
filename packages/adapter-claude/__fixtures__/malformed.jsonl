@@ -1,6 +1,0 @@
-{"type":"user","sessionId":"sess-mf","cwd":"/tmp","gitBranch":"main","version":"1.0.0","uuid":"u-1","parentUuid":null,"timestamp":"2026-05-09T10:00:00.000Z","message":{"role":"user","content":"first"}}
-{"type":"user","sessionId":"sess-mf","cwd":"/tmp","gitBranch":"main","version":"1.0.0","uuid":"u-2","parentUuid":"u-1","timestamp":"2026-05-09T10:00:01.000Z","message":{"role":"user","content":"second"}}
-{"type":"user","sessionId":"sess-mf","cwd":"/tmp","gitBranch":"main","version":"1.0.0","uuid":"u-3","parentUuid":"u-2","timestamp":"2026-05-09T10:00:02.000Z","message":{"role":"user","content":"third"}}
-this is not json at all
-{"type":"user","sessionId":"sess-mf","cwd":"/tmp","gitBranch":"main","version":"1.0.0","uuid":"u-4","parentUuid":"u-3","timestamp":"2026-05-09T10:00:03.000Z","message":{"role":"user","content":"fourth"}}
-{"type":"user","sessionId":"sess-mf","cwd":"/tmp","gitBranch":"main","version":"1.0.0","uuid":"u-5","parentUuid":"u-4","timestamp":"2026-05-09T10:00:04.000Z","message":{"role":"user","content":"fifth"}}

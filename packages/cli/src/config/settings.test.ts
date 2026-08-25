@@ -1,68 +1,74 @@
-// AI-generated. See PROMPT.md for the prompts and model used.
+import { mkdtemp, readFile, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { afterEach, beforeEach, describe, expect, test } from "vitest"
+import { normalizeUrl, readSettings, writeSettings } from "./settings.js"
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { settingsPath } from "./paths.js";
-import { readSettings, setSetting } from "./settings.js";
+const originalHome = process.env.SAMSKARA_HOME
 
-let dir: string;
-let prevHome: string | undefined;
+let home: string
 
-beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), "cs-settings-"));
-  prevHome = process.env.CLAUDE_SESSIONS_HOME;
-  process.env.CLAUDE_SESSIONS_HOME = dir;
-});
+beforeEach(async () => {
+  home = await mkdtemp(join(tmpdir(), "samskara-settings-"))
+  process.env.SAMSKARA_HOME = home
+})
 
 afterEach(() => {
-  process.env.CLAUDE_SESSIONS_HOME = prevHome;
-  rmSync(dir, { recursive: true, force: true });
-});
+  process.env.SAMSKARA_HOME = originalHome
+})
 
-describe("settings", () => {
-  it("returns defaults when the file is missing", () => {
+describe("normalizeUrl", () => {
+  test("keeps a plain origin untouched", () => {
+    expect(normalizeUrl("http://localhost:3000")).toBe("http://localhost:3000")
+  })
+
+  test("drops trailing slashes, so a joined path never doubles up", () => {
+    expect(normalizeUrl("https://samskara.example.com/")).toBe("https://samskara.example.com")
+    expect(normalizeUrl("  http://localhost:3000//  ")).toBe("http://localhost:3000")
+  })
+
+  test("assumes https when no scheme is given", () => {
+    expect(normalizeUrl("samskara.example.com")).toBe("https://samskara.example.com")
+  })
+
+  test("rejects anything that is not a usable http url", () => {
+    expect(() => normalizeUrl("")).toThrow()
+    expect(() => normalizeUrl("ftp://example.com")).toThrow()
+    expect(() => normalizeUrl("not a url")).toThrow()
+  })
+})
+
+describe("settings file", () => {
+  test("reads back what it wrote", async () => {
+    await writeSettings({ apiUrl: "http://box:3000", webUrl: "http://box:8000" })
+
     expect(readSettings()).toEqual({
       version: 1,
-      summary_enabled: false,
-      learnings_enabled: false,
-    });
-  });
+      apiUrl: "http://box:3000",
+      webUrl: "http://box:8000",
+    })
+  })
 
-  it("round-trips a set value", async () => {
-    await setSetting("summary_enabled", false);
-    expect(readSettings().summary_enabled).toBe(false);
-    await setSetting("learnings_enabled", true);
-    expect(readSettings().learnings_enabled).toBe(true);
-  });
+  test("answers null when nothing has been saved yet", () => {
+    expect(readSettings()).toBeNull()
+  })
 
-  it("preserves the other key when setting one", async () => {
-    await setSetting("learnings_enabled", true);
-    await setSetting("summary_enabled", false);
-    const s = readSettings();
-    expect(s.summary_enabled).toBe(false);
-    expect(s.learnings_enabled).toBe(true);
-  });
+  test("answers null for an unreadable file rather than throwing", async () => {
+    await writeFile(join(home, "config.json"), "{ not json", "utf8")
 
-  it("falls back to defaults on a malformed file", () => {
-    writeFileSync(settingsPath(), "not json {{{");
-    expect(readSettings()).toEqual({
+    expect(readSettings()).toBeNull()
+  })
+
+  test("normalizes on write, so a trailing slash never reaches the file", async () => {
+    const path = await writeSettings({
+      apiUrl: "http://box:3000/",
+      webUrl: "http://box:8000/",
+    })
+
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({
       version: 1,
-      summary_enabled: false,
-      learnings_enabled: false,
-    });
-  });
-
-  it("falls back to defaults on a wrong-version file", () => {
-    writeFileSync(settingsPath(), JSON.stringify({ version: 2, summary_enabled: true }));
-    expect(readSettings().summary_enabled).toBe(false);
-  });
-
-  it("fills missing keys from defaults", () => {
-    writeFileSync(settingsPath(), JSON.stringify({ version: 1, summary_enabled: false }));
-    const s = readSettings();
-    expect(s.summary_enabled).toBe(false);
-    expect(s.learnings_enabled).toBe(false);
-  });
-});
+      apiUrl: "http://box:3000",
+      webUrl: "http://box:8000",
+    })
+  })
+})

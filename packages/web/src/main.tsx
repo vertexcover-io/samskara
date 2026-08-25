@@ -1,31 +1,13 @@
-// AI-generated. See PROMPT.md for the prompts and model used.
+import { StrictMode } from "react"
+import { createRoot } from "react-dom/client"
+import { App } from "./App.js"
+import "./index.css"
 
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { StrictMode } from "react";
-import { createRoot } from "react-dom/client";
-import { BrowserRouter } from "react-router-dom";
-import { App } from "./App";
-import "./styles.css";
+const root = document.getElementById("root")
+if (!root) throw new Error("root element not found")
 
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 30_000,
-      retry: false,
-      refetchOnWindowFocus: false,
-    },
-  },
-});
-
-const rootEl = document.getElementById("root");
-if (!rootEl) throw new Error("missing #root element");
-
-createRoot(rootEl).render(
+createRoot(root).render(
   <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <App />
-      </BrowserRouter>
-    </QueryClientProvider>
+    <App />
   </StrictMode>,
-);
+)

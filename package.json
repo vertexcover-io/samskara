@@ -1,30 +1,44 @@
 {
-  "name": "claude-sessions",
-  "version": "0.0.0",
+  "name": "samskara",
   "private": true,
   "type": "module",
-  "workspaces": ["packages/*"],
+  "packageManager": "bun@1.2.19",
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
+    "setup": "bun packages/server/src/scripts/setup.ts",
     "dev": "turbo run dev",
     "build": "turbo run build",
     "test": "turbo run test",
+    "test:core": "turbo run test --filter=@samskara/core",
+    "test:server": "turbo run test --filter=@samskara/server",
+    "test:cli": "turbo run test --filter=@samskara/cli",
+    "test:web": "turbo run test --filter=@samskara/web",
+    "test:claude-session": "bun run scripts/claude-session-coverage.ts",
+    "cli": "bun packages/cli/src/index.ts",
+    "e2e": "bun run e2e/run.ts",
+    "e2e:ui": "bun run e2e/run.ts --ui",
+    "typecheck": "turbo run typecheck && tsc -p e2e/tsconfig.json",
     "lint": "biome check .",
     "format": "biome format --write .",
-    "typecheck": "turbo run typecheck",
-    "prepare": "git config core.hooksPath .githooks 2>/dev/null || true",
-    "db:migrate": "turbo run db:migrate",
-    "stack:up": "podman compose up -d --build",
-    "stack:down": "podman compose down",
-    "stack:logs": "podman compose logs -f api",
-    "stack:rebuild": "podman compose build api && podman compose up -d",
-    "stack:dev": "CLAUDE_SESSIONS_DEV=1 podman compose up -d --build",
-    "watch": "turbo run watch --parallel",
-    "cs": "node packages/cli/dist/main.js"
+    "db:generate": "bun run --cwd packages/server db:generate",
+    "db:migrate": "turbo run db:migrate --filter=@samskara/server --",
+    "seed:org": "bun run --cwd packages/server seed:org",
+    "stack:up": "docker compose up -d",
+    "stack:down": "docker compose down",
+    "prepare": "git config core.hooksPath .githooks 2>/dev/null || true; bun run --cwd packages/core build",
+    "wt:setup": "bun run --cwd packages/server wt:setup",
+    "wt:teardown": "bun run --cwd packages/server wt:teardown",
+    "db:verify": "turbo run db:verify --filter=@samskara/server --",
+    "seed": "bun run --cwd packages/server seed",
+    "seed:capture": "bun run --cwd packages/server seed:capture"
   },
   "devDependencies": {
-    "@biomejs/biome": "^1.9.4",
-    "turbo": "^2.3.3",
-    "typescript": "^5.7.2"
-  },
-  "packageManager": "bun@1.2.19"
+    "@biomejs/biome": "2.5.10",
+    "@playwright/test": "^1.62.0",
+    "@types/node": "22.13.1",
+    "turbo": "2.5.5",
+    "typescript": "5.7.3"
+  }
 }

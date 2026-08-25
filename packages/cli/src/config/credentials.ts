@@ -1,40 +1,24 @@
-// AI-generated. See PROMPT.md for the prompts and model used.
+import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { dirname } from "node:path"
+import { tokenPath } from "./paths.js"
 
-import { unlinkSync } from "node:fs";
-import { atomicWriteJson, readJsonOr, withFileLock } from "./atomic.js";
-import { credentialsPath } from "./paths.js";
-
-export interface Credentials {
-  server_url: string;
-  token: string;
-  user_email: string;
+export const readToken = async (): Promise<string | null> => {
+  try {
+    const token = (await readFile(tokenPath(), "utf8")).trim()
+    return token.length > 0 ? token : null
+  } catch {
+    return null
+  }
 }
 
-export const readCredentials = (): Credentials | null => {
-  const data = readJsonOr<Partial<Credentials> | null>(credentialsPath(), null);
-  if (!data) return null;
-  if (!data.server_url || !data.token || !data.user_email) return null;
-  return data as Credentials;
-};
+export const storeToken = async (token: string): Promise<string> => {
+  const path = tokenPath()
+  await mkdir(dirname(path), { recursive: true })
+  await writeFile(path, token, { mode: 0o600 })
+  await chmod(path, 0o600)
+  return path
+}
 
-export const writeCredentials = async (creds: Credentials): Promise<void> => {
-  await withFileLock(credentialsPath(), () => {
-    atomicWriteJson(credentialsPath(), creds, 0o600);
-  });
-};
-
-export const requireCredentials = (): Credentials => {
-  const c = readCredentials();
-  if (!c) {
-    throw new Error("not logged in — run `claude-sessions login` first");
-  }
-  return c;
-};
-
-export const clearCredentials = (): void => {
-  try {
-    unlinkSync(credentialsPath());
-  } catch {
-    // ignore
-  }
-};
+export const deleteToken = async (): Promise<void> => {
+  await rm(tokenPath(), { force: true })
+}

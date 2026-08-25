@@ -1,31 +1,28 @@
-// AI-generated. See PROMPT.md for the prompts and model used.
+import { resolve } from "node:path"
+import type { ProjectIdentity } from "@samskara/core"
+import { setProjectEnabled } from "../config/projects.js"
+import { resolveIo, type Writer } from "../io.js"
+import { resolveProject } from "../watcher/resolveProject.js"
 
-import { detectRepo } from "@claude-sessions/core";
-import { setEnabled } from "../config/repos.js";
-import type { UploadClient } from "../upload/client.js";
-
-export interface DisableOptions {
-  path?: string;
-  purge?: boolean;
-  client: UploadClient;
+export type DisableOptions = {
+  readonly path?: string
+  readonly cwd?: string
+  readonly resolveProject?: (path: string) => Promise<ProjectIdentity>
+  readonly stdout?: Writer
 }
 
-/**
- * `claude-sessions disable [path]` — flip `enabled: false` locally and
- * notify the server. With `--purge` the server deletes all events for
- * the repo (REQ-037).
- */
-export const disableCommand = async (opts: DisableOptions): Promise<number> => {
-  const path = opts.path ?? process.cwd();
-  const id = detectRepo(path);
-  if (!id) {
-    process.stderr.write("not a git repository\n");
-    return 1;
+export const disableCommand = async (options: DisableOptions = {}): Promise<number> => {
+  const cwd = options.cwd ?? process.cwd()
+  const path = resolve(cwd, options.path ?? cwd)
+  const project = await (options.resolveProject ?? resolveProject)(path)
+  const updated = await setProjectEnabled(project.slug, false)
+  const { stdout } = resolveIo(options)
+  if (updated === null) {
+    stdout.write(
+      `Capture was never enabled for "${project.slug}", so there is nothing to disable.\n`,
+    )
+    return 0
   }
-
-  await setEnabled(id.canonical_url, false);
-  await opts.client.disableRepo(id.canonical_url, opts.purge ?? false);
-
-  process.stdout.write(`disabled: ${id.canonical_url}\n`);
-  return 0;
-};
+  stdout.write(`Capture disabled for "${project.slug}". Existing captured sessions are kept.\n`)
+  return 0
+}

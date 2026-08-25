@@ -1,108 +1,72 @@
-// AI-generated. See PROMPT.md for the prompts and model used.
+import type { ReactNode } from "react"
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom"
+import { AuthProvider, useAuth } from "./auth/AuthProvider.js"
+import { RequireAuth } from "./auth/RequireAuth.js"
+import { Login } from "./routes/Login.js"
+import { Projects } from "./routes/Projects.js"
+import { SessionDetail } from "./routes/SessionDetail.js"
+import { Sessions } from "./routes/Sessions.js"
+import { SyncStatus } from "./routes/SyncStatus.js"
+import { AppShell } from "./shell/AppShell.js"
+import { LoadingShell } from "./shell/LoadingShell.js"
 
-import { LogOut, Search } from "lucide-react";
-import { Link, Route, Routes, useNavigate } from "react-router-dom";
-import { useLogout } from "./lib/api";
-import { AuthProvider, RequireAuth, useAuth } from "./lib/auth";
-import { HomePage } from "./pages/Home";
-import { LoginPage } from "./pages/Login";
-import { RepoView } from "./pages/RepoView";
-import { SearchPage } from "./pages/Search";
-import { SessionView } from "./pages/SessionView";
+const LoginRoute = () => {
+  const { status } = useAuth()
 
-const TopBar = () => {
-  const { user } = useAuth();
-  const logout = useLogout();
-  const navigate = useNavigate();
-  if (!user) return null;
-  return (
-    <nav className="border-b border-border px-4 py-2 flex items-center justify-between bg-background">
-      <Link to="/" className="font-semibold text-sm tracking-tight">
-        Claude Sessions
-      </Link>
-      <div className="flex items-center gap-3">
-        <Link
-          to="/search"
-          className="text-sm text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
-        >
-          <Search size={14} /> Search
-        </Link>
-        <span className="text-xs text-muted-foreground inline-flex items-center gap-1.5">
-          {user.avatar_url && (
-            <img
-              src={user.avatar_url}
-              alt=""
-              className="w-5 h-5 rounded-full"
-              width={20}
-              height={20}
-            />
-          )}
-          {user.github_login ?? user.email}
-        </span>
-        <button
-          type="button"
-          onClick={async () => {
-            await logout.mutateAsync();
-            navigate("/login", { replace: true });
-          }}
-          className="text-sm text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
-        >
-          <LogOut size={14} /> Logout
-        </button>
-      </div>
-    </nav>
-  );
-};
+  if (status === "loading") return <LoadingShell label="Verifying your session" />
+  if (status === "authed") return <Navigate to="/projects" replace />
+  return <Login />
+}
 
-export const App = () => {
-  return (
-    <AuthProvider>
-      <div className="flex flex-col h-full">
-        <TopBar />
-        <main className="flex-1 min-h-0">
-          <Routes>
-            <Route path="/login" element={<LoginPage />} />
-            <Route
-              path="/"
-              element={
-                <RequireAuth>
-                  <HomePage />
-                </RequireAuth>
-              }
-            />
-            <Route
-              path="/repos/*"
-              element={
-                <RequireAuth>
-                  <RepoView />
-                </RequireAuth>
-              }
-            />
-            <Route
-              path="/sessions/:id"
-              element={
-                <RequireAuth>
-                  <SessionView />
-                </RequireAuth>
-              }
-            />
-            <Route
-              path="/search"
-              element={
-                <RequireAuth>
-                  <SearchPage />
-                </RequireAuth>
-              }
-            />
-            <Route
-              path="*"
-              element={
-                <div className="p-8 text-center text-sm text-muted-foreground">Not found.</div>
-              }
-            />
-          </Routes>
-        </main>
-      </div>
-    </AuthProvider>
-  );
-};
+const Protected = ({ children }: { children: ReactNode }) => (
+  <RequireAuth>
+    <AppShell>{children}</AppShell>
+  </RequireAuth>
+)
+
+export const AppRoutes = () => (
+  <Routes>
+    <Route path="/login" element={<LoginRoute />} />
+    <Route
+      path="/projects"
+      element={
+        <Protected>
+          <Projects />
+        </Protected>
+      }
+    />
+    <Route
+      path="/sync-status"
+      element={
+        <Protected>
+          <SyncStatus />
+        </Protected>
+      }
+    />
+    <Route
+      path="/sessions"
+      element={
+        <Protected>
+          <Sessions />
+        </Protected>
+      }
+    />
+    <Route
+      path="/sessions/:sessionId"
+      element={
+        <Protected>
+          <SessionDetail />
+        </Protected>
+      }
+    />
+    <Route path="*" element={<Navigate to="/projects" replace />} />
+  </Routes>
+)
+
+export const App = () => (
+  <AuthProvider>
+    <BrowserRouter>
+      <AppRoutes />
+    </BrowserRouter>
+  </AuthProvider>
+)

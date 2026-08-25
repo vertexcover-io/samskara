@@ -1,79 +1,100 @@
-// AI-generated. See PROMPT.md for the prompts and model used.
+import { randomUUID } from "node:crypto"
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises"
+import { dirname } from "node:path"
+import type pino from "pino"
+import * as lockfile from "proper-lockfile"
+import type { z } from "zod"
 
-import {
-  chmodSync,
-  closeSync,
-  existsSync,
-  fsyncSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  renameSync,
-  unlinkSync,
-  writeSync,
-} from "node:fs";
-import { dirname } from "node:path";
-import lockfile from "proper-lockfile";
+const LOCK_RETRY_MS = 20
+const LOCK_TIMEOUT_MS = 5_000
+const LOGGED_CONTENT_LIMIT = 2_000
+
+export type LockOptions = {
+  readonly timeoutMs?: number
+}
+
+export const readJson = async (path: string): Promise<unknown> => {
+  try {
+    return JSON.parse(await readFile(path, "utf8"))
+  } catch {
+    return undefined
+  }
+}
 
 /**
- * Atomic write: serialize, write to a sibling tempfile, fsync, rename over.
- *
- * Rename on POSIX is atomic on the same filesystem; readers either see the
- * old or the new content but never a half-written file. We chmod after
- * write so secret files (credentials.json) get `0600` before any reader
- * could open them.
+ * Null for a file that is absent, which is every first run. Anything present that will not parse
+ * throws, carrying the content it could not read so a caller can report it without a second read.
  */
-export const atomicWriteJson = (path: string, value: unknown, mode?: number): void => {
-  const dir = dirname(path);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
-  const fd = openSync(tmp, "w", mode ?? 0o644);
-  try {
-    writeSync(fd, JSON.stringify(value, null, 2));
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
-  if (mode !== undefined) chmodSync(tmp, mode);
-  renameSync(tmp, path);
-};
+export const readValidated = async <S extends z.ZodTypeAny>(
+  path: string,
+  schema: S,
+): Promise<z.output<S> | null> => {
+  const text = await readFile(path, "utf8").catch(() => null)
+  if (text === null) return null
 
-export const readJsonOr = <T>(path: string, fallback: T): T => {
-  if (!existsSync(path)) return fallback;
   try {
-    return JSON.parse(readFileSync(path, "utf8")) as T;
-  } catch {
-    return fallback;
+    return schema.parse(JSON.parse(text)) as z.output<S>
+  } catch (cause) {
+    throw Object.assign(new Error(`${path} did not parse`, { cause }), { content: text })
   }
-};
+}
 
 /**
- * Wrap a read-modify-write under proper-lockfile so concurrent CLI invocations
- * don't clobber each other. The lock lives next to the target file.
+ * Resets the file so the next read succeeds, which is what stops one corrupt file erroring on every
+ * read for the rest of the process. The content is logged first because the reset is what destroys
+ * it. Callers holding this file's lock must already hold it: this writes without taking one.
  */
-export const withFileLock = async <T>(path: string, fn: () => Promise<T> | T): Promise<T> => {
-  const dir = dirname(path);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  // proper-lockfile requires the target to exist; touch it.
-  if (!existsSync(path)) {
-    const fd = openSync(path, "a");
-    closeSync(fd);
-  }
-  const release = await lockfile.lock(path, {
-    retries: { retries: 30, factor: 1.5, minTimeout: 50, maxTimeout: 500 },
-    stale: 10_000,
-  });
+export const readOrReset = async <S extends z.ZodTypeAny>(
+  path: string,
+  schema: S,
+  empty: () => z.output<S>,
+  message: string,
+  log?: pino.Logger,
+): Promise<z.output<S>> => {
   try {
-    return await fn();
-  } finally {
-    await release();
+    return (await readValidated(path, schema)) ?? empty()
+  } catch (error) {
+    const { content } = error as { content?: string }
+    log?.error({ path, err: error, content: content?.slice(0, LOGGED_CONTENT_LIMIT) }, message)
+    await atomicWriteJson(path, empty())
+    return empty()
   }
-};
+}
 
-export const removeIfEmpty = (path: string): void => {
+export const atomicWriteJson = async (path: string, value: unknown): Promise<void> => {
+  await mkdir(dirname(path), { recursive: true })
+  const tempPath = `${path}.${process.pid}.${randomUUID()}.tmp`
+  await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, flush: true })
+  await rename(tempPath, path)
+}
+
+export const withFileLock = async <T>(
+  path: string,
+  action: () => Promise<T>,
+  options: LockOptions = {},
+): Promise<T> => {
+  await mkdir(dirname(path), { recursive: true })
+  const timeoutMs = options.timeoutMs ?? LOCK_TIMEOUT_MS
+  let release: (() => Promise<void>) | undefined
   try {
-    unlinkSync(path);
+    release = await lockfile.lock(path, {
+      realpath: false,
+      stale: 30_000,
+      update: 10_000,
+      retries: {
+        retries: Math.ceil(timeoutMs / LOCK_RETRY_MS),
+        minTimeout: LOCK_RETRY_MS,
+        maxTimeout: LOCK_RETRY_MS,
+        randomize: false,
+      },
+    })
   } catch {
-    // ignore
+    throw new Error(`timed out acquiring lock: ${path}.lock`)
   }
-};
+
+  try {
+    return await action()
+  } finally {
+    await release()
+  }
+}

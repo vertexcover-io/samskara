@@ -1,27 +1,20 @@
-// AI-generated. See PROMPT.md for the prompts and model used.
+import { fileURLToPath } from "node:url"
+import tailwindcss from "@tailwindcss/vite"
+import react from "@vitejs/plugin-react"
+import { defineConfig } from "vite"
 
-import { resolve } from "node:path";
-import tailwindcss from "@tailwindcss/vite";
-import react from "@vitejs/plugin-react";
-import { defineConfig } from "vite";
+// Ports are overridable so the e2e stack can run on its own pair without colliding
+// with a `bun dev` server already holding the defaults.
+const port = Number(process.env.WEB_PORT ?? 8000)
+const apiTarget = process.env.API_PROXY_TARGET ?? "http://localhost:3000"
 
 export default defineConfig({
+  envDir: fileURLToPath(new URL("../..", import.meta.url)),
   plugins: [react(), tailwindcss()],
-  resolve: {
-    alias: {
-      "@": resolve(__dirname, "./src"),
-    },
-  },
   server: {
-    port: 5173,
+    port,
     proxy: {
-      "/api": "http://localhost:3000",
-      "/mcp": "http://localhost:3000",
+      "/api": { target: apiTarget, changeOrigin: true },
     },
   },
-  build: {
-    outDir: "dist",
-    sourcemap: true,
-    target: "es2022",
-  },
-});
+})

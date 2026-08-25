@@ -1,31 +1,80 @@
-// AI-generated. See PROMPT.md for the prompts and model used.
+import { createReadStream, existsSync, watch as watchFs } from "node:fs"
+import { stat } from "node:fs/promises"
+import { createInterface } from "node:readline"
+import { prettyFactory } from "pino-pretty"
+import { currentLogPath, watchLogDir } from "../config/paths.js"
+import { resolveIo, type Writer } from "../io.js"
 
-import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { watchLogPath } from "../config/daemon.js";
-
-export interface LogsOptions {
-  follow?: boolean;
-  lines?: number;
+export type LogsOptions = {
+  readonly follow?: boolean
+  readonly colorize?: boolean
+  readonly stdout?: Writer
+  readonly stderr?: Writer
 }
 
-export const logsCommand = async (opts: LogsOptions = {}): Promise<number> => {
-  const path = watchLogPath();
+type Formatter = (line: string) => string
+
+const createFormatter = (colorize: boolean): Formatter => {
+  const pretty = prettyFactory({
+    colorize,
+    translateTime: "SYS:HH:MM:ss",
+    ignore: "pid,hostname",
+  })
+  return (line) => (line.trim() ? pretty(line) : "")
+}
+
+const printLogsFrom = async (
+  path: string,
+  start: number,
+  stdout: Writer,
+  format: Formatter,
+): Promise<void> => {
+  const reader = createInterface({
+    input: createReadStream(path, { encoding: "utf8", start }),
+    crlfDelay: Number.POSITIVE_INFINITY,
+  })
+  for await (const line of reader) stdout.write(format(line))
+}
+
+const sizeOf = (path: string): Promise<number> =>
+  stat(path)
+    .then((s) => s.size)
+    .catch(() => 0)
+
+export const logsCommand = async (options: LogsOptions = {}): Promise<number> => {
+  const { stdout, stderr } = resolveIo(options)
+  const path = currentLogPath()
+
   if (!existsSync(path)) {
-    process.stdout.write("no watcher logs yet — run `claude-sessions init` first.\n");
-    return 0;
+    stderr.write(`no watcher logs yet at ${path}\n`)
+    return 1
   }
-  const lines = opts.lines ?? 200;
-  if (opts.follow) {
-    return new Promise<number>((resolve) => {
-      const child = spawn("tail", ["-n", String(lines), "-F", path], { stdio: "inherit" });
-      child.on("close", (c) => resolve(c ?? 0));
-      child.on("error", () => resolve(127));
-    });
+
+  const format = createFormatter(options.colorize ?? true)
+  await printLogsFrom(path, 0, stdout, format)
+  if (!options.follow) return 0
+
+  let position = await sizeOf(path)
+  let draining = false
+  const drain = async (): Promise<void> => {
+    if (draining) return
+    draining = true
+    try {
+      const size = await sizeOf(path)
+      if (size < position) position = 0
+      if (size > position) {
+        await printLogsFrom(path, position, stdout, format)
+        position = size
+      }
+    } finally {
+      draining = false
+    }
   }
-  const contents = readFileSync(path, "utf8").split("\n");
-  const tail = contents.slice(Math.max(0, contents.length - lines)).join("\n");
-  process.stdout.write(tail);
-  if (!tail.endsWith("\n")) process.stdout.write("\n");
-  return 0;
-};
+
+  return new Promise<number>((_resolve, reject) => {
+    const watcher = watchFs(watchLogDir(), () => {
+      void drain().catch(reject)
+    })
+    watcher.on("error", reject)
+  })
+}

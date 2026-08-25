@@ -1,5 +1,5 @@
 {
-  "name": "@claude-sessions/core",
+  "name": "@samskara/core",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -8,18 +8,20 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "default": "./dist/index.js"
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "watch": "tsc -p tsconfig.json --watch --preserveWatchOutput",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "pino": "^9",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
-    "typescript": "^5.7.2",
-    "vitest": "^2.1.8"
+    "typescript": "5.7.3",
+    "vitest": "3.0.5"
   }
 }

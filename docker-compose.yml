@@ -1,76 +1,21 @@
-# AI-generated. See PROMPT.md for the prompts and model used.
+name: samskara
 
 services:
-  postgres:
+  db:
     image: pgvector/pgvector:pg16
-    container_name: claude-sessions-postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: claude_sessions
     ports:
-      - "5434:5432"
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: samskara
+      POSTGRES_PASSWORD: samskara
+      POSTGRES_DB: samskara
     volumes:
-      - claude_sessions_pg:/var/lib/postgresql/data
+      - samskara_pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d claude_sessions"]
+      test: ["CMD-SHELL", "pg_isready -U samskara -d samskara"]
       interval: 5s
       timeout: 5s
       retries: 10
 
-  api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: claude-sessions-api:local
-    container_name: claude-sessions-api
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      DATABASE_URL: postgres://postgres:postgres@postgres:5432/claude_sessions
-      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me-please}
-      EMBED_PROVIDER: ${EMBED_PROVIDER:-fake}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_EMBED_MODEL: ${OPENAI_EMBED_MODEL:-text-embedding-3-small}
-      PORT: 3000
-      NODE_ENV: ${NODE_ENV:-production}
-      COOKIE_SECURE: ${COOKIE_SECURE:-false}
-      # CLAUDE_SESSIONS_DEV=1 makes the container run with `node --watch`
-      # so server-dist changes (host-side `tsc --watch`) restart the
-      # process automatically. Web dist is read on every request, so
-      # `vite build --watch` is enough for SPA changes.
-      CLAUDE_SESSIONS_DEV: ${CLAUDE_SESSIONS_DEV:-0}
-    # Bind dist dirs from the host so we don't have to rebuild the
-    # container image on every code change. The paths match what the
-    # baked Dockerfile copies into the image.
-    volumes:
-      - ./packages/core/dist:/app/packages/core/dist
-      - ./packages/adapter-claude/dist:/app/packages/adapter-claude/dist
-      - ./packages/server/dist:/app/packages/server/dist
-      - ./packages/server/src/db/migrations:/app/packages/server/dist/src/db/migrations
-      - ./packages/web/dist:/app/packages/web/dist
-    ports:
-      - "3000:3000"
-    command:
-      [
-        "sh",
-        "-c",
-        "if [ \"$$CLAUDE_SESSIONS_DEV\" = \"1\" ]; then exec node --watch packages/server/dist/src/main.js; else exec node packages/server/dist/src/main.js; fi",
-      ]
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "node",
-          "-e",
-          "fetch('http://localhost:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
-        ]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-
 volumes:
-  claude_sessions_pg:
+  samskara_pgdata:

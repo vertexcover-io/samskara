@@ -1,0 +1,7 @@
+[pre-start]
+copy = "wt step copy-ignored"
+deps = "bun install"
+env = "bun run wt:setup"
+
+[pre-remove]
+db = "bun run wt:teardown || true"

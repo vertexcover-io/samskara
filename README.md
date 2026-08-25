@@ -1,230 +1,228 @@
-# claude-sessions
+# Samskara
 
-A personal-cloud product for indexing, summarizing, and searching Claude Code sessions across all your machines. The CLI watches `~/.claude/projects/**/*.jsonl`, redacts secrets, ingests events into a Postgres-backed server, generates per-session summaries with `claude -p`, and exposes the index through a web UI, REST API, and MCP server.
+Samskara records what your AI coding agent actually did, and makes it searchable.
 
-## Install
+Claude Code already writes a transcript of every session to `~/.claude/projects`. Those files are
+local, per-machine, and hard to read. Samskara watches them, ships the sessions you opt into to a
+server you run, and gives you a web UI to browse and search them — across projects, across
+machines, across everyone on the team.
 
-One line clones this repo, builds the CLI, puts `claude-sessions` on your PATH, installs the `claude-session` skill, and wires the Claude Code hooks. Needs `git`, `bun`, and `node` 22+.
+Capture is opt-in per folder: no session content leaves your machine until you run
+`samskara enable` in a project.
+
+## What gets captured
+
+- **The conversation** — prompts, replies, and the tool calls in between, including subagent branches.
+- **Artifacts** — files the agent created or edited, stored as *before*, *after*, and the diff.
+- **Git context** — the branch, commits, and pull requests a session touched.
+- **Token usage** and session duration, per session.
+
+## How it works
+
+```
+Claude Code                 samskara CLI                  server + web UI
+~/.claude/projects/  ──▶  watcher (background)  ──POST──▶  Postgres + pgvector
+   transcripts            reads enabled folders   /api/ingest      ▲
+                                                                   │
+                                                          browse & search at :8000
+```
+
+A `SessionStart` hook keeps the watcher alive: every time you start a Claude Code session, the hook
+makes sure the background watcher is running. The watcher polls transcripts, keeps a per-session
+checkpoint so it only sends what is new, and uploads artifacts in the background.
+
+## Requirements
+
+- [Bun](https://bun.sh) 1.2.19+ — package manager and test runner
+- Node 22+ — the CLI binary and the server both run on Node
+- Docker — Postgres + pgvector
+- A GitHub OAuth app, and a GitHub org whose members are allowed to log in
+
+## Run the server
+
+### 1. Create a GitHub OAuth app
+
+Go to **GitHub → Settings → Developer settings → OAuth Apps → New OAuth App** and set:
+
+- **Homepage URL** — `http://localhost:8000`
+- **Authorization callback URL** — `http://localhost:3000/api/auth/github/callback`
+
+Generate a client secret. This is the only step nothing can do for you.
+
+### 2. Run setup
 
 ```sh
-# macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/vertexcover-io/claude-sessions/main/install.sh | bash
+bun run setup YOUR_GITHUB_ORG_SLUG
 ```
 
-```powershell
-# Windows (PowerShell)
-irm https://raw.githubusercontent.com/vertexcover-io/claude-sessions/main/install.ps1 | iex
-```
+That installs dependencies, writes `.env` from `.env.example` with a freshly generated
+`JWT_SECRET`, starts Postgres, migrates, seeds demo data, and registers your org. The first run
+stops and tells you to paste the client id and secret from step 1 into `.env`; run it again after
+you have. It is safe to re-run: it never rotates a secret that is already set, and it leaves a
+database that already has projects alone.
 
-Scripts: [`install.sh`](install.sh) (macOS/Linux) · [`install.ps1`](install.ps1) (Windows). See [Quickstart — CLI](#quickstart--cli) for what gets installed, env overrides, and next steps (`login`, `enable`).
+Only members of a registered org can log in. Leave the slug off and setup tells you how to add one
+later with `bun run seed:org YOUR_GITHUB_ORG_SLUG`. Every login re-checks the user's current GitHub
+orgs, so leaving an org on GitHub revokes access on the next login.
 
-## Architecture
+The variables setup writes:
 
-```
-+--------------------+        +----------------------+        +-----------+
-|  CLI (Node)        |        |  Server (Hono)       |        |  Postgres |
-|                    |        |                      |        |  + pgvec  |
-|  - watcher         |  HTTPS |  - REST routes       |  pg    |           |
-|  - redactor        | -----> |  - MCP transport     | -----> |  schema:  |
-|  - summarizer      |        |  - inline embedding  |        |  users,   |
-|  - fork rebuild    |        |  - hybrid search RRF |        |  repos,   |
-|                    | <----- |  - serves SPA dist   | <----- |  sessions,|
-+--------------------+        +----------------------+        |  events,  |
-        ^                              ^                      |  summaries|
-        |                              |                      |  embeddings,|
-        |                          REST + MCP                 |  blobs,   |
-        |                              |                      |  audit_log|
-+-------+--------+         +-----------+-----------+          +-----------+
-|  ~/.claude/    |         |  Web SPA (React)      |
-|  projects/     |         |  served from /        |
-|  *.jsonl       |         |  by the same server   |
-+----------------+         +-----------------------+
-```
+| Variable | What it is |
+|---|---|
+| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | from the OAuth app above — the only two you fill in |
+| `JWT_SECRET` | generated for you |
+| `DATABASE_URL` | `postgres://samskara:samskara@localhost:5433/samskara` (matches `docker-compose.yml`) |
+| `PUBLIC_BASE_URL` | where the API is reachable, `http://localhost:3000` |
+| `WEB_BASE_URL` | where the UI is, `http://localhost:8000` |
+| `COOKIE_SECURE` | `false` for local http, `true` behind https |
+| `JWT_EXPIRES_IN` | session lifetime, default `7d` |
+| `VITE_API_BASE_URL` | API base the SPA calls, `http://localhost:3000` |
 
-Single-process server, no worker, no Redis. All write-side work (redact, persist, embed) happens inline in the request that triggered it (REQ-038, REQ-063).
-
-## Quickstart — server
+### 3. Start it
 
 ```sh
-cd claude-sessions
-podman compose up -d postgres
-cp .env.example .env                  # edit DATABASE_URL, JWT_SECRET, OPENAI_API_KEY
+bun run dev               # API on :3000, web on :8000
+```
+
+Open http://localhost:8000 and sign in with GitHub.
+
+## Install the CLI
+
+The CLI is not published to npm yet, so you install it from this repo:
+
+```sh
 bun install
-bun run db:migrate                    # creates extensions, tables, indexes
-bun run --filter @claude-sessions/server dev
+bun run build --filter=@samskara/cli
+cd packages/cli && npm link
 ```
 
-Required env vars:
+That puts a `samskara` command on your PATH pointing at `packages/cli/dist/index.js`. Rebuild after
+pulling changes; the link keeps working. To remove it later: `npm unlink -g @samskara/cli`.
 
-| Var | Default | Notes |
-|---|---|---|
-| `DATABASE_URL` | `postgres://postgres:postgres@localhost:5433/claude_sessions` | pgvector image is mapped to host port 5433 in `docker-compose.yml` |
-| `JWT_SECRET` | — | 8+ chars, signs CLI/web/MCP tokens |
-| `EMBED_PROVIDER` | `openai` | `openai`, `bge`, `fake`, `none` |
-| `OPENAI_API_KEY` | — | Required when `EMBED_PROVIDER=openai` |
-| `OPENAI_EMBED_MODEL` | `text-embedding-3-small` | Must produce 1536-dim vectors |
-| `PORT` | `3000` | |
-| `WEB_DIST` | `packages/web/dist` | Static SPA served from this directory at `/` |
-
-Sign-in is **GitHub OAuth, gated to one organization**. Only members of `GITHUB_ORG` (default `vertexcover-io`) can log in; a user row is auto-created on first login. There is no password login. OAuth env vars:
-
-| Var | Default | Notes |
-|---|---|---|
-| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | — | From the GitHub OAuth app; required for sign-in |
-| `GITHUB_ORG` | `vertexcover-io` | Only `active` members may sign in |
-| `APP_BASE_URL` | request origin | Builds the OAuth `redirect_uri` (`<APP_BASE_URL>/api/auth/github/callback`) |
-
-All authenticated members can read every (non-private) session; writes (rename, summary, privacy) remain owner-only.
-
-## Quickstart — web
+### First run
 
 ```sh
-bun run --filter @claude-sessions/web build
-# packages/web/dist/ is now served by the running server at http://localhost:3000
+samskara init             # choose a server, log in, install the hook, start the watcher
+cd ~/code/my-project
+samskara enable           # start capturing this folder
 ```
 
-For development with hot reload:
+`init` first asks which server to talk to, offering the local defaults:
 
-```sh
-bun run --filter @claude-sessions/web dev    # vite at :5173, proxies /api to :3000
+```
+Samskara server URL [http://localhost:3000]:
+Samskara web URL [http://localhost:8000]:
 ```
 
-## Quickstart — CLI
+Press Enter to keep a default. The answers are saved to `~/.samskara/config.json` and every later
+command uses them, so this is asked once. Pass `--server URL` and `--web URL` to skip the questions,
+and re-run `samskara init` to point the CLI somewhere else. `SAMSKARA_API_URL` and
+`SAMSKARA_WEB_URL` still override the saved file for a single command; when either is set, `init`
+leaves that URL alone rather than asking. `samskara status` prints the server currently in use.
 
-### One-line install (recommended)
+Then `init` asks for a pairing code. Open the web UI, sign in, and pick **Pair the CLI → Generate code**
+from the account menu. A code never expires but works only once. The token it returns is stored at
+`~/.samskara/token` with mode `0600`.
 
-Clones this repo, builds the CLI, puts `claude-sessions` on your PATH, installs the
-`claude-session` skill, and wires the Claude Code hooks. Needs `git`, `bun`, and
-`node` 22+.
-
-```sh
-# macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/vertexcover-io/claude-sessions/main/install.sh | bash
-```
-
-```powershell
-# Windows (PowerShell)
-irm https://raw.githubusercontent.com/vertexcover-io/claude-sessions/main/install.ps1 | iex
-```
-
-The clone lives at `~/.local/share/claude-sessions` (`%LOCALAPPDATA%\claude-sessions`
-on Windows) and is the permanent install source — re-running the command updates and
-rebuilds it. Override the ref/location with `CLAUDE_SESSIONS_REF` / `CLAUDE_SESSIONS_SRC`.
-From inside a checkout, run `./install.sh` (or `.\install.ps1`) directly to build in place.
-
-Then point the CLI at a server and enable a repo:
-
-```sh
-claude-sessions login --server http://localhost:3000
-claude-sessions enable .
-```
-
-### Manual build
-
-```sh
-bun run --filter @claude-sessions/cli build
-node packages/cli/dist/main.js login --server http://localhost:3000
-node packages/cli/dist/main.js enable .
-node packages/cli/dist/main.js watch
-```
-
-Token + per-repo state live under `~/.claude-sessions/` (override with `CLAUDE_SESSIONS_HOME`).
-
-## CLI commands
+## CLI reference
 
 | Command | What it does |
 |---|---|
-| `login --server <url>` | Open the browser to sign in with GitHub, then paste the pairing code; persists the token to `~/.claude-sessions/credentials.json` (mode 0600) |
-| `enable [path]` | Register a repo (cwd by default), upsert it on the server, backfill existing JSONL |
-| `disable [path] [--purge]` | Stop syncing this repo locally; `--purge` deletes its events from the server |
-| `status` | Print a table of enabled repos and their last-sync timestamps |
-| `sync` | One-shot catch-up: stream any pending events for every enabled repo |
-| `watch` | Long-running tail. Watches JSONL parents, dedupes via byte offsets, summarizes only on **live** session-end silence (pre-existing JSONLs are backfilled without invoking `claude -p`) |
-| `summarize <session-id>` / `summarize --all [--force] [--since <ISO>] [--yes]` | One-shot summarization. Skips sessions with an `ok` summary unless new events accumulate beyond the watermark (or `--force`). `--all` prompts before spending LLM quota; `--yes` skips the prompt |
-| `fork <session-id> --until <event-uuid> [--cwd <path>]` | Pull blob, truncate, rewrite cwd + sessionId, write a fresh JSONL under `~/.claude/projects/`, print resume command |
-| `name <session-id> [name]` | Set or clear the user-set display name (overrides LLM title) |
-| `find <query...>` | Open dashboard search at `<server>/search?q=...` |
-| `open` | Open the dashboard |
-| `mcp` | Mint an MCP-scoped JWT and print the `claude mcp add` command |
+| `samskara init` | Choose the server, log in, install the Claude Code `SessionStart` hook, start the watcher. Safe to re-run. |
+| `samskara init --server URL --web URL` | Same, without the questions. |
+| `samskara login [--code CODE]` | Pair with the web UI and store a CLI token. |
+| `samskara logout` | Stop the watcher and delete the stored token. |
+| `samskara enable [path]` | Register this folder with the server and start capturing it (defaults to the current directory). |
+| `samskara enable --all` | Also send sessions recorded *before* you enabled it. |
+| `samskara enable --sync-from 2026-07-01` | Only send sessions started after that date. |
+| `samskara disable [path]` | Stop capturing locally. Sessions already uploaded stay on the server. |
+| `samskara status` | Projects, capture state, last sync time, watcher PID. Start here when something looks off. |
+| `samskara logs [-f]` | Pretty-print the watcher log. `-f` streams new lines. |
+| `samskara restart` | Stop the watcher and start a fresh one. |
+| `samskara replay SESSION_ID` | Delete a session server-side and locally, then re-capture it from scratch. |
+| `samskara search [QUERY]` | Search captured sessions from the terminal and print each hit's URL. |
+| `samskara install-hooks` / `uninstall-hooks` | Install or remove the `SessionStart` hook by hand. |
+| `samskara watch [--foreground]` | Start the watcher daemon directly; `--foreground` runs the loop in this terminal. |
 
-## Server endpoints
+`--verbose` on any command turns on debug logging.
 
-REST (all `/api/*` routes require cookie or bearer auth):
+`enable` registers the folder with the server, so it needs a stored login and a reachable server —
+with either missing it exits 1 and writes nothing. By default it starts the clock now, so turning
+capture on for an old project does not retroactively upload years of history.
 
-- `GET  /api/auth/github/start` — begin the org-gated GitHub OAuth web flow
-- `GET  /api/auth/github/callback` — exchange code, gate on org membership, set the `session` cookie (audience `web`)
-- `POST /api/auth/cli-code` / `POST /api/auth/cli-exchange` — browser pairing-code flow for the CLI (audience `cli`)
-- `GET  /api/auth/me`
-- `POST /api/auth/logout`
-- `POST /api/auth/mcp-token` — exchange auth for an MCP-scoped JWT
-- `GET  /api/repos` — enabled repos with session counts
-- `GET  /api/repos/:canonical/sessions` — session list per repo
-- `POST /api/repos/enable` / `POST /api/repos/disable`
-- `POST /api/ingest` — batch upload session + events (CLI watcher target)
-- `GET  /api/sessions` — recent feed across all members' (non-private) sessions; `?user=<github_login>` filters by author
-- `GET  /api/sessions/:id` — metadata + summary + display_name resolution
-- `GET  /api/sessions/:id/events` — chronological event stream
-- `POST /api/sessions/:id/summary` — store summary; embedding is generated inline
-- `PUT  /api/sessions/:id/blob` / `GET /api/sessions/:id/blob` — raw NDJSON bytes
-- `PATCH /api/sessions/:id` — set name; flip `is_private` (privacy-flip wipes events/summary/embedding/blob)
-- `GET  /api/search?q=...` — hybrid FTS + pgvector cosine, merged with RRF
+`samskara search` takes the same filters as the web UI's `/sessions` page and the same query grammar
+(see [Using the web UI](#using-the-web-ui)): `--project`, `--user`, `--repo`, `--branch`, `--pr`,
+`--commit`, `--range` (`--from`/`--to` for `custom`), `--tz`, `--sort`, `--page`, `--limit`.
+`--project` and `--repo` take a name or an id — an ambiguous or unrecognized name fails rather than
+guessing, and lists the closest known names. `--here` fills project, repo and branch from the current
+checkout (explicit flags win over it). `--first` keeps only the top hit; `--url` and `--json` print
+machine-readable output instead of the default table; `--open` opens the top hit in a browser.
 
-MCP (mounted at `/mcp/:token`, six tools):
+Everything the CLI stores lives in `~/.samskara` — the token, which folders are enabled, per-session
+ingest checkpoints, cached `search` filter names, the watcher pid, and `logs/current.log`. Override
+the whole directory with `SAMSKARA_HOME`.
 
-- `search_sessions`, `get_session`, `find_sessions_for_pr`, `get_my_recent_sessions`, `mark_current_session_private`, `mark_current_session_public`
+## Using the web UI
 
-Full details: [`docs/api.md`](docs/api.md).
+| Route | What you get |
+|---|---|
+| `/projects` | Every project you can read — session count, last activity, last session title |
+| `/sessions` | Session index with search and filters |
+| `/sessions/:id` | One session: Conversation, Timeline, Tool Calls, and Artifacts tabs, with subagent branches you can expand |
+| `/sync-status` | Each project you can read, paired with every user who belongs to it and when they last synced it |
 
-## Tech stack
+Filters live in the query string, so any view you are looking at is a link you can paste to a
+teammate, and Back/Forward work the way you expect.
 
-- **Runtime**: Bun for install/scripts, Node 22 for the long-running server
-- **Server**: Hono, `@hono/node-server`, Drizzle ORM, `postgres`
-- **DB**: Postgres 16 with `pgvector` extension (HNSW cosine), Postgres FTS via `to_tsvector`
-- **Auth**: GitHub OAuth (org-gated), JWT via `jose` (audiences: `cli`, `web`, `mcp`)
-- **MCP**: `@modelcontextprotocol/sdk` Streamable HTTP transport
-- **CLI**: `commander`, `chokidar`, `proper-lockfile`, `undici` (tests)
-- **Web**: React 18, Vite 6, TanStack Query/Virtual, Tailwind v4, Shiki for code, react-markdown + remark-gfm
-- **Build**: Turborepo, TypeScript strict, Biome (lint + format), Vitest, testcontainers for DB-backed tests
-
-## Privacy model
-
-- **Per-repo opt-in**: nothing leaves the box until `claude-sessions enable <path>` runs (REQ-013)
-- **Per-session sidecar**: drop a zero-byte `~/.claude-sessions/sessions/<sessionId>.private` to withdraw a session — the watcher PATCHes `is_private: true` next tick, the server hard-deletes events/summary/embedding/blob (REQ-040, sessions-route privacy flip)
-- **Defense-in-depth redaction**: the CLI redacts every string leaf before upload, the server redacts again at write time (`packages/server/src/redact.ts`) so a misconfigured client cannot poison the store
-- **Owner-only RBAC**: every read/write checks `sessions.user_id = caller`; cross-user reads are 404
-- **Audit log**: blob reads, session detail reads, privacy flips, and renames write to `audit_log`
-
-## Why this is a monorepo inside a flat-tools repo
-
-`vibe-tools` is otherwise one folder per single-file tool. This deviates because it has 6 packages with distinct deploy targets (CLI binary, HTTP server, web SPA, shared types, adapter, test config), needs Postgres + pgvector, and ships long-lived processes. Keeping it as a self-contained subdirectory means it brings its own Turborepo, Biome, Vitest, and `bun` workspaces without leaking into the parent's "every script is independent" invariant.
-
-## Layout
+Search supports a small deliberate grammar:
 
 ```
-claude-sessions/
-├── docker-compose.yml             # pgvector/pgvector:pg16 on port 5433
-├── package.json                   # workspace root
-├── turbo.json                     # build/test/typecheck/db:migrate pipelines
-├── biome.json                     # formatter + linter
-├── tsconfig.base.json             # strict, ES2022, ESNext, Bundler
-├── docs/                          # design + reference docs
-└── packages/
-    ├── core/                      # canonical types, pricing, redaction, repo detection
-    ├── adapter-claude/            # JSONL → canonical event stream
-    ├── cli/                       # `claude-sessions` binary
-    ├── server/                    # Hono + Postgres + pgvector + MCP
-    ├── web/                       # React SPA
-    └── test-config/               # shared vitest config
+auth refactor            both words
+"rate limit"             exact phrase
+deploy -staging          exclude a word
+redis OR valkey          either
+migrat*                  prefix match
 ```
 
-## More docs
+Filters you can combine with it: `project`, `user`, `repo`, `branch`, `pr`, `commit`,
+`range` (`hour` / `today` / `week` / `month` / `custom` with `from` and `to`), and
+`sort` (`recent`, `oldest`, `tokens`, `project`, `relevance`).
 
-- [`docs/architecture.md`](docs/architecture.md) — components, data flows, schema, decision log
-- [`docs/cli.md`](docs/cli.md) — full CLI reference
-- [`docs/api.md`](docs/api.md) — REST + MCP API reference
-- [`docs/development.md`](docs/development.md) — local dev, testing, package map
-- [`../docs/spec/claude-session-finder/`](../docs/spec/claude-session-finder/) — original spec, plan, phase notes
+The same query and filters are available from the terminal with `samskara search` (see
+[CLI reference](#cli-reference)).
 
-## License
+## Development
 
-Private — internal vibe-tools.
+| Package | What it holds |
+|---|---|
+| `@samskara/core` | Shared types, the collector framework (`SourceAdapter` + Claude plugin), the logging factory |
+| `@samskara/cli` | The `samskara` binary — pairing, capture opt-in, the watcher |
+| `@samskara/server` | Hono API on Node, Drizzle + postgres-js + pgvector |
+| `@samskara/web` | Vite + React + Tailwind UI |
+
+```sh
+bun run dev          # API + web, watch mode
+bun run build        # build every package
+bun run typecheck    # every package, plus the e2e project
+bun run lint         # biome check ., including the DB naming rule
+bun run format       # biome format --write .
+bun run test         # every package's unit tests
+bun run e2e          # Playwright, on a throwaway database it creates and drops
+bun run cli -- status   # run the CLI from source, without linking
+```
+
+Database helpers:
+
+```sh
+bun run stack:up / stack:down          # Postgres container
+bun run db:generate                    # generate a migration from schema.ts
+bun run db:migrate                     # bring a database fully up to date
+bun run db:verify                      # read-only: assert it already is
+```
+
+`db:migrate` is the only supported way to change a database's shape — it runs drizzle-kit's
+migrations and then the post-migrate steps in `packages/server/src/db/steps.ts` (today, the
+full-text search indexes, which cannot be built inside a migration's transaction).
+
+See [CLAUDE.md](CLAUDE.md) for the contributor detail: working on several branches at once, the
+database naming rule, the seed/identity snapshot, and the logging conventions.

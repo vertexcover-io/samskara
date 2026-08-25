@@ -1,146 +1,124 @@
-# claude-sessions — Project Instructions for Claude Code
+# Samskara
 
-A Turborepo monorepo (6 packages) inside the flat `vibe-tools` repo. Captures Claude Code session JSONLs, summarizes them, and serves a web UI + MCP server for search.
+Bun + Turborepo monorepo. Packages: `core` (ingest/domain), `server` (Hono + Drizzle + Postgres),
+`web` (React + Vite), `cli`. Tests are vitest; lint/format is biome. TDD — write the test first.
 
-Read this first; it encodes invariants the codebase relies on.
+## New machine
 
-## Packages
-
-- `@claude-sessions/core` — canonical types, pricing, redaction, repo-detect. **All shared types live here.**
-- `@claude-sessions/adapter-claude` — Claude Code JSONL → `CanonicalEvent` adapter, with byteOffset resume.
-- `@claude-sessions/cli` — `claude-sessions` binary: login, enable, disable, status, watch, sync, find, open, mcp, fork, name. Owns redaction, summarization, upload, retry.
-- `@claude-sessions/server` — Hono + Postgres (pgvector) + Drizzle. Auth, ingest, search, MCP, blob, audit. Hosts the SPA static assets at `/`.
-- `@claude-sessions/web` — Vite + React 18 + Tailwind v4 SPA.
-- `@claude-sessions/test-config` — shared vitest config.
-
-## Architectural Invariants
-
-These are load-bearing. Don't change them without understanding why.
-
-### Canonical types live in `core`
-
-`CanonicalEvent`, `CanonicalSession`, `SessionSummary`, `InterventionEvent`, `RepoIdentity` are all in `packages/core/src/types.ts` (and `repo-detect.ts`). **Never duplicate these in another package.** Import:
-
-```ts
-import type { CanonicalEvent, SessionSummary } from "@claude-sessions/core";
+```bash
+bun run setup YOUR_GITHUB_ORG_SLUG
+bun run dev
 ```
 
-If you need a util in two packages, move it to `core` and re-export. That's how `canonicalizeRepo` ended up in `core/repo-detect.ts` after phase 3.
+`setup` installs, writes `.env` with a generated `JWT_SECRET`, starts Postgres, migrates, seeds and
+registers the org. It stops on the first run to have you paste the GitHub OAuth client id and
+secret into `.env` — the only manual step. Re-running is safe: it never rotates a secret that is
+already set and leaves a database that already has projects alone. Worktrees additionally need
+`brew install worktrunk && wt config shell install`.
 
-### Summarization runs in the CLI, not the server
+`.env` is gitignored, so nothing here is shared between machines: ports and database names are all
+derived locally.
 
-The CLI invokes `claude -p` with the structured-output schema, mines PRs deterministically (regex over messages + `gh pr list` fallback), merges, and uploads via `POST /api/sessions/:id/summary`. The server never calls `claude` — it has no Anthropic credentials and shouldn't.
+## Worktrees
 
-If you're tempted to add `claude -p` to the server, stop and put it in `cli/src/summarizer/`.
+**Always create worktrees with the `create-worktree` skill, never with `git worktree add` and never
+with the harness `using-git-worktrees` skill.**
 
-**The in-loop agent authors summaries; there is no timer.** The primary trigger is a `Stop` hook (`claude-sessions stop-hook`, installed alongside the `SessionStart` hook by `install-hooks`). When a substantive session has no fresh summary, the hook emits `decision: "block"` once (guarded by `stop_hook_active`) so the live agent runs `summarize --current --from-agent` and pushes its own summary. `claude -p` is a **manual last resort** — it only runs when someone explicitly invokes `summarize <id>` / `--all` without `--from-agent`. The watcher (`JsonlWatcher`) only tails and uploads events; it never summarizes. The old `SessionEndDetector` 60s-silence trigger has been removed.
+`wt` (worktrunk) drives creation, and `.config/wt.toml` hooks give each worktree its own Postgres
+database and its own port pair. That isolation is the whole point: every branch shares one Postgres
+container, so without a per-branch database a migration on one branch rewrites the schema every
+other branch is reading, and two branches cannot run the app at once.
 
-**Settings gate the Stop-hook nag and learnings.** `~/.claude-sessions/settings.json` (`config/settings.ts`, read via `readSettings()`; toggled with `claude-sessions config set/get/list`) holds `summary_enabled` (default `false`) and `learnings_enabled` (default `false`). When `summary_enabled` is false the Stop hook returns without blocking (no nag) — provisional titles (`prompt-hook`) and manual `summarize` are **not** gated. When `learnings_enabled` is false (the default) the Stop hook omits the learnings clause + signal anchors, and `summarizeAndUpload` **omits** the `learnings` field from the upload (omit, not `[]`, so existing server-side learnings are preserved). The pipeline default is `readSettings().learnings_enabled`, overridable via `PipelineDeps.learningsEnabled` (tests).
+The rule that matters: **`.env` must be a real file in each worktree, never a symlink to the main
+checkout's `.env`.** A symlink means one `DATABASE_URL` for every branch, and editing it in a
+worktree silently edits the main checkout. `bun run wt:setup` replaces a symlink with a copy.
 
-**Provisional first-prompt title.** A `UserPromptSubmit` hook (`claude-sessions prompt-hook`, also installed by `install-hooks`) gives a brand-new session a readable title immediately instead of `Session <id>`. The hook probes the server and, when no `ok` summary exists, injects a one-time `hookSpecificOutput.additionalContext` instruction telling the in-loop agent to run `summarize --current --from-agent --provisional` as its first action. The hook never summarizes itself; it fails open on every uncertainty (the turn is blocking with a 30s timeout). The provisional summary is stamped `model: "heuristic"` so it is never treated as authoritative — the end-of-session Stop-hook agent summary (`model: "agent"`) supersedes it.
+| Command | What it does |
+|---|---|
+| `wt switch --create feat/thing` | Creates the worktree and runs the hooks (copy env, install, per-branch db, migrate, seed) |
+| `wt list` | Worktrees and their status |
+| `wt remove` | Removes the worktree; the `pre-remove` hook drops its database |
+| `bun run wt:setup` | Re-runs env + database setup for the current worktree (idempotent) |
+| `bun run wt:teardown` | Drops only the current worktree's database |
 
-The watermark still gates re-summarization: `Summarizer.summarize` skips when an existing `ok` summary's `summarized_event_count` is within `minResumarizeDelta` (default 5) of the current count. `readWatermark` (`summarizer/watermark.ts`) is the shared predicate — the Summarizer uses it to decide whether to re-summarize, and the Stop hook uses it to decide whether to nag. **A `model: "heuristic"` summary is always treated as not-fresh** (in both `readWatermark` and the Summarizer's `backfillOnly` skip) so the provisional title is always upgradable. The `summaries.summarized_event_count` column (nullable; `0004_summarized_event_count.sql`) is the persisted watermark. `summarize --force` and `Summarizer({ force: true })` bypass the gate; agent-authored (`--from-agent`) summaries are always written.
+Only `.env` crosses over from the main checkout: `.worktreeinclude` is an allowlist and a file must
+be both gitignored and listed there. `node_modules`, `dist` and `.turbo` are rebuilt per worktree,
+Where worktrees land is a personal setting
+(`worktree-path` in `~/.config/worktrunk/config.toml`), so do not assume `.worktrees/`; read
+`git worktree list` instead.
 
-**Per-session learnings ride the summary push.** Failure episodes the agent diagnoses travel inside the same `summarize --from-agent` body as an optional `learnings` array (snake_case `SessionLearning` in `core/types.ts`; never a separate command/endpoint). The Stop hook computes deterministic evidence anchors over the full JSONL (`summarizer/signals.ts → detectSignals`) and inlines them into the block reason so long sessions stay diagnosable. The server (`POST /:id/summary`) **delete-and-replaces** the whole `learnings` set per session, but only when `status === "ok"` **and** the field is present — an omitted `learnings` leaves existing rows untouched (a failed/partial re-run must not wipe good learnings), while `[]` is an explicit "clean session" that clears them. Every learning must cite ≥1 `event_uuid` (evidence-anchored; enforced in `parseLearnings` and the server zod schema). Provenance (`model`/`generated_at`/`summarized_event_count`) is stamped server-side from the summary envelope. Learnings are returned bundled in `GET /:id` and surfaced in the web **Learnings** tab (`learnings` table, migration `0006_learnings.sql`; no embedding column — per-session display is local). CTRL+C mid-turn loses only the final turn's learnings; backfill with a manual `summarize <id>` over the complete JSONL. Read via `claude-sessions learnings <id>` (deterministic markdown from `core/render-learnings.ts`, the single source of truth shared with the UI).
+Each worktree's `.env` records `WT_SLUG` and `WT_PORT_OFFSET`. The offset is derived from the branch
+name, so ports are stable across runs; server is `3000 + offset`, web is `8000 + offset`. Run
+`bun run wt:setup` and it prints the db url, api url and web url for the current worktree.
 
-### Redaction is canonical at the CLI; server is defense in depth
+**Logging in inside a worktree.** You do not log in again — you reuse the session you already have.
+Cookies are not scoped by port, so the `session` cookie set at `localhost:8000` is sent to
+`localhost:8252` too, and every worktree copies `.env` so `JWT_SECRET` matches. The only thing that
+used to break was the lookup in `requireAuth`: the JWT carries your user's uuid as `sub`, and the
+worktree's fresh database had no such row.
 
-`packages/core/src/redact.ts` is THE redaction implementation (regex patterns + Shannon-entropy heuristic, idempotent). The CLI runs it on every event before upload. The server runs `redactDeep` (which wraps `core.redact`) on ingest payloads as a safety net for misbehaving or legacy clients.
+`.seed/identity.json` fixes that. It is a snapshot of this machine's users, orgs and memberships,
+written by `bun run seed:capture` (and by `bun run setup`, once you have signed in). `bun run seed`
+restores it **keeping the same uuid** and grants the restored users admin on the demo project. A
+generated uuid would not do — it would authenticate as nobody.
 
-`redact(redact(x)) === redact(x)` — keep this property. The replacement token `[REDACTED:kind]` is non-matching against any pattern.
+The file is gitignored: it holds real uuids and emails, and a uuid is only meaningful on the machine
+that generated it. `.worktreeinclude` lists `.seed/`, so worktrunk copies it into every new worktree
+alongside `.env` — which is why the seed needs no source database, no environment variable and no
+knowledge of the main checkout.
 
-**Env-line redact wins over more specific patterns** (e.g. an OpenAI-key regex). When `OPENAI_KEY=sk-...` appears, the env-line regex captures the whole line including the value. This is intentional defense-in-depth — don't "fix" it.
+JSON rather than SQL on purpose: it stores TypeScript property names (`githubId`), and Drizzle turns
+those into whatever the branch's schema currently calls that column. A `.sql` dump bakes in
+`github_id` and breaks on the first branch that renames it — which is precisely the situation
+worktrees create.
 
-### Embedding provider is pluggable
+If a restore warns that the id was not preserved, the target database already held that GitHub id
+under a different uuid.
 
-`EMBED_PROVIDER` env var selects the strategy (in `packages/server/src/embed/index.ts`):
+What still does not work in a worktree is the GitHub round trip itself: clicking "Sign in" sends
+`redirect_uri=http://localhost:PORT/...` and a GitHub OAuth app matches host *and port* exactly
+against its one registered callback (`http://localhost:3000`). So sign in on the main checkout at
+`http://localhost:8000`, then open the worktree — you are already in.
 
-- `openai` (default): `text-embedding-3-small` via raw fetch (no SDK)
-- `bge`: stub, throws "not implemented in v0"
-- `fake`: deterministic SHA256-derived L2-normalized 1536-vector — used by tests so CI doesn't need an OpenAI key
-- `none`: skip embedding entirely
+## Database
 
-When adding a new provider, keep the 1536-dim contract — the `summaries.embedding` column is `vector(1536)`.
+One Postgres container (`docker compose -p samskara up -d`) on port 5433, many databases inside it.
+Main checkout uses `samskara`; a worktree uses `samskara_BRANCH_SLUG`.
 
-### pgvector embedding is generated inline on summary upload (no worker)
+- `bun run db:generate` — generate a migration from `packages/server/src/db/schema.ts`
+- `bun run db:migrate` — the only way to bring a database up to date: drizzle-kit's migrations, then every step in `packages/server/src/db/steps.ts`, against whatever `DATABASE_URL` the local `.env` names
+- `bun run db:verify` — read-only check that every step is already converged
+- `bun run seed` — idempotent dev fixture: dev user, org, project, 3 sessions, then restores `.seed/identity.json` if it is there. `--from FILE` reads a different snapshot; `--if-empty` makes it a no-op when the database already has projects, which is how `setup` stays safe to re-run
+- `bun run seed:capture` — write `.seed/identity.json` from the current database. `--to FILE` writes elsewhere. Writes nothing when no real user has signed in yet
+- `bun run seed:org ORG_SLUG` — register a real GitHub org
 
-`POST /api/sessions/:id/summary` runs the embedding call and inserts into `summaries.embedding` in the same transaction. Search is immediately consistent. **Don't introduce a queue or worker without a real reason** — v0 traffic is single-user and the CLI is already async.
+**Post-migrate steps.** Some database work cannot live in a migration: `create index
+concurrently` is rejected inside a migration's transaction, so the full-text search indexes are
+built outside the migration journal. `db:migrate` runs drizzle-kit and then every step registered
+in `MIGRATION_STEPS` (`packages/server/src/db/steps.ts`), under one advisory lock. Never migrate a
+database any other way — a setup path that runs only `drizzle-kit migrate` yields a schema-correct
+database with no search indexes, and search then scans and re-tokenizes all of `messages` on every
+query, which looks like a hang rather than a missing step.
 
-### `event_uuid` is the dedupe key
+A step is a module beside `steps.ts` exporting `{ name, run, verify }`. `run` converges and must be
+idempotent, because it runs on every migrate including ones with no new migrations; `verify` only
+reads, and backs `db:verify`.
 
-Server upserts ingest events on `event_uuid`. Idempotent re-uploads depend on this. EDGE-002 (inode replacement) and the retry/backoff loop both rely on it. Any new ingest path must preserve uniqueness per (session, line).
+`drizzle.config.ts` has no default `DATABASE_URL`. If it is unset the migration fails loudly rather
+than quietly migrating the main checkout's database.
 
-### JWT `aud` claim distinguishes token types
+**Column naming.** Every table and column name is camelCase. A Biome plugin
+(`packages/server/src/db/naming.grit`) enforces it against `packages/server/src/db/schema.ts`, so
+`bun run lint` fails on a snake_case name. The plugin reads TypeScript, not SQL, so a hand-written
+migration that adds a column without touching `schema.ts` is not checked — keep `schema.ts` the
+source of truth and generate migrations from it.
 
-- `aud=api` — normal session token (login)
-- `aud=mcp` — MCP server token (issued by `POST /api/auth/mcp-token`)
+The server's test suite starts a real `pgvector/pgvector:pg16` container via testcontainers and runs
+the migrations against it. Those tests skip themselves when Docker is not available.
 
-Middleware checks `aud` per route. Don't collapse the two.
+## Logging
 
-### Auth is GitHub OAuth (org-gated); reads are global, writes are owner-only
-
-Login is the GitHub OAuth web flow (`GET /api/auth/github/start` → `…/callback`), gated to one org via `GITHUB_ORG` (only `active` members; checked with the user token against `GET /user/memberships/orgs/{org}`). There is **no password login** — `auth/github.ts` is the injectable client seam (stub it in tests via `buildApp(db, env, { githubClient })`), and `db/users.ts` `upsertGithubUser` resolves by `github_id` then **adopts an existing row by email** then inserts. The CLI is unchanged: it still uses the pairing-code flow on top of the web session.
-
-**Reads are global, writes are owner-scoped.** Every GET read path (sessions list, `:id` detail + sub-routes, repos, search, facets, MCP, `lib/sessions-internal.ts`) dropped the `eq(sessions.userId, …)` filter — any authenticated member sees all **non-private** sessions, each carrying an `author { github_login, avatar_url }` (LEFT JOIN `users`). Private sessions are hidden from everyone's lists; their detail stays masked `(private)`. **Mutations keep `eq(sessions.userId, user.id)`** (PATCH, summary POST, blob/artifact write, privacy flip) — don't globalize those. Ingest auto-grants `user_repos` on first push instead of gating. The `role` column is vestigial (no admin concept); don't build authorization on it. `?user=<github_login>` filters lists/search; the users facet powers the dropdowns.
-
-### TIMESTAMPTZ everywhere
-
-All timestamp columns are `timestamp with time zone`. ISO strings on the wire end in `Z`. Drizzle returns `Date`; raw `postgres-js` template literals return strings (use the query builder for `Z`-suffix assertions).
-
-## Test Patterns
-
-- **Server integration tests use `testcontainers`** with `pgvector/pgvector:pg16`. Don't migrate to pg-mem / sqlite — pgvector, FTS, and IMMUTABLE-indexed expressions don't survive the substitution.
-- **`execFile`-based subprocesses (claude, gh) are mocked via `vi.mock("node:child_process")`**. Don't add a heavyweight mock library — `vi.mock` + a typed `execFile` factory is enough. See `packages/cli/src/summarizer/claude-runner.test.ts`.
-- **CLI integration tests use an in-process HTTP mock server** — see `packages/cli/tests/helpers/mock-server.ts`. Avoids spinning up the real Hono server for CLI-side flows.
-- **Web tests use jsdom**. `tanstack-virtual` returns 0-height scroll containers under jsdom — flat-render below 50 events, virtualize above (already wired in `TranscriptList`).
-- **Use real Postgres for any FTS/vector/IMMUTABLE-index assertion**. Mocks lie about Postgres semantics.
-
-## Tooling
-
-- **Bun** for install + script running. Workspace root: `claude-sessions/`. Run `bun install` from there.
-- **Turbo** for task orchestration (`bun run test`, `bun run typecheck`, `bun run lint`, `bun run build`).
-- **Biome** for lint + format. `biome check .` from the workspace root.
-- **TypeScript strict** + `verbatimModuleSyntax: true`. Always use `import type` for types.
-- **Drizzle** ORM + raw SQL migrations in `packages/server/src/db/migrations/`. Both kept in sync by hand.
-- **Docker compose** at `claude-sessions/docker-compose.yml` runs Postgres on `:5433` for local dev.
-
-## Common Gotchas
-
-- **Postgres FTS index needs an IMMUTABLE wrapper function** (`summaries_fts_text(...)`). Naive `to_tsvector('english', coalesce(...))` fails because `coalesce` over `regconfig` is STABLE.
-- **MCP SDK SSE transport is deprecated** (1.29.0+). Use `WebStandardStreamableHTTPServerTransport` (stateless, `enableJsonResponse: true`) — Hono-compatible.
-- **chokidar v4 has named exports only**: `import { watch as chokidarWatch, type FSWatcher } from "chokidar"`.
-- **Biome `useLiteralKeys` vs TS `noUncheckedIndexedAccess`** — use dot access on `process.env.X`. Still narrows to `string | undefined`.
-- **`bytea` returns as Node `Buffer`** — copy into a fresh `Uint8Array` for `new Response(...)` byte-equality.
-- **4xx is non-retryable** in the CLI uploader — auth/RBAC failures don't burn the backoff schedule. See `cli/src/upload/retry.ts` and its `shouldRetry` predicate.
-- **Inode replacement (EDGE-002)**: when the persisted offset > new file size, reset offset to 0; server dedupe by `event_uuid` keeps it idempotent.
-- **`db.query.<table>.findFirst` requires `relations(...)` declarations**. We chose plain `db.select().from().where().limit(1)` to keep the schema relation-free. Don't add relations unless you really need them.
-- **Turbo doesn't pass env vars to tasks by default**. Add to `turbo.json`'s `env: [...]` passthrough list (e.g. `DATABASE_URL`, `JWT_SECRET`, `EMBED_PROVIDER`).
-- **rehype-shiki fails to compile under Node 25** (oniguruma native build). Currently no inline syntax highlighting in markdown. To re-add: `@shikijs/rehype` with a working Node pin.
-
-## Where to Find Things
-
-- Canonical types: `packages/core/src/types.ts`
-- Redaction: `packages/core/src/redact.ts`
-- Pricing: `packages/core/src/pricing.ts`
-- Repo identity / git detection: `packages/core/src/repo-detect.ts`
-- Adapter (Claude JSONL): `packages/adapter-claude/src/{index,stream}.ts`
-- Server entry: `packages/server/src/main.ts` → `app.ts` (router composition)
-- Server schema (SQL): `packages/server/src/db/migrations/0001_init.sql`
-- Server schema (Drizzle): `packages/server/src/db/schema.ts`
-- Embedding providers: `packages/server/src/embed/{index,openai,bge,fake}.ts`
-- Search (RRF + FTS + vector): `packages/server/src/lib/search-internal.ts`
-- MCP server (6 tools): `packages/server/src/routes/mcp.ts`
-- CLI entry: `packages/cli/src/main.ts`
-- CLI commands: `packages/cli/src/commands/` (incl. `summarize.ts` for one-shot + `--all` runs)
-- CLI watcher + uploader: `packages/cli/src/watcher/` and `packages/cli/src/upload/`
-- CLI summarizer: `packages/cli/src/summarizer/` (watermark + skip-rule live in `index.ts`)
-- Web SPA pages: `packages/web/src/pages/`
-- Web transcript components: `packages/web/src/components/transcript/`
-
-## Style
-
-- TypeScript strict; type all functions.
-- Prefer small, focused functions; early returns over nested conditionals.
-- No needless comments / docstrings.
-- No emojis in code or commit messages unless the user asks.
-- Commit conventions: per-tool addition uses `add <tool-name>: <one-line>`, but inside this monorepo prefer conventional `feat:` / `fix:` / `refactor:` prefixes.
+Every package logs NDJSON through `createLogger` from `@samskara/core` (pino underneath). Level
+comes from `LOG_LEVEL`, defaulting to `info` in production and `debug` elsewhere. `token`,
+`authorization`, `password` and `secret` are redacted from every line. Each API request gets a
+`reqId` that is echoed back on the response.
