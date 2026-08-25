@@ -43,9 +43,14 @@ program
 
 program
   .command("init")
-  .description("Authenticate, install the SessionStart hook, and start the watcher")
-  .action(async () => {
-    process.exitCode = await initCommand()
+  .description("Choose a server, authenticate, install the SessionStart hook, start the watcher")
+  .option("--server <url>", "Samskara API URL (default: http://localhost:3000)")
+  .option("--web <url>", "Samskara web URL (default: http://localhost:8000)")
+  .action(async (options: { server?: string; web?: string }) => {
+    process.exitCode = await initCommand({
+      ...(options.server === undefined ? {} : { server: options.server }),
+      ...(options.web === undefined ? {} : { web: options.web }),
+    })
   })
 
 program
@@ -70,7 +75,7 @@ program
   )
   .action(async (sessionId: string) => {
     process.exitCode = await replayCommand(sessionId, {
-      apiBase,
+      apiBase: apiBase(),
       token: await readToken(),
       fetch: globalThis.fetch,
       paths: {

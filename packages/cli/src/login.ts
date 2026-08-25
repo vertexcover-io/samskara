@@ -14,7 +14,7 @@ export type LoginOptions = {
 
 export const pairingInstructions = (): string =>
   [
-    `To get a pairing code, open ${webBase} and sign in, then choose "Pair the CLI"`,
+    `To get a pairing code, open ${webBase()} and sign in, then choose "Pair the CLI"`,
     "from the account menu and select Generate code. A code does not expire, but it can",
     "only be used once.",
   ].join("\n")
@@ -33,7 +33,7 @@ const promptForCode = async (): Promise<string> => {
 }
 
 const redeemCode = async (code: string): Promise<string> => {
-  const res = await fetch(`${apiBase}/api/auth/cli-exchange`, {
+  const res = await fetch(`${apiBase()}/api/auth/cli-exchange`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ code }),
@@ -56,7 +56,7 @@ const redeemCode = async (code: string): Promise<string> => {
 }
 
 export const verifyToken = async (token: string): Promise<PublicUser> => {
-  const res = await fetch(`${apiBase}/api/auth/me`, {
+  const res = await fetch(`${apiBase()}/api/auth/me`, {
     headers: { authorization: `Bearer ${token}` },
   })
   if (res.status === 401) {
@@ -86,7 +86,7 @@ const CHECK_TIMEOUT_MS = 3_000
 
 export const checkToken = async (token: string): Promise<TokenCheck> => {
   try {
-    const res = await fetch(`${apiBase}/api/auth/me`, {
+    const res = await fetch(`${apiBase()}/api/auth/me`, {
       headers: { authorization: `Bearer ${token}` },
       // A refused connection fails fast, but a blackholed one hangs until the network stack
       // gives up. The SessionStart hook awaits this, so the wait needs its own ceiling.
