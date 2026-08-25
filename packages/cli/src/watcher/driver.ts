@@ -167,6 +167,7 @@ const syncTrack = async (
   let sentThrough = 0
   let okChunks = 0
   let messagesSent = 0
+  let stoppedOnFailure = false
   const reqIds: string[] = []
   for (const request of sliceByMessages(records, MESSAGE_CAP)) {
     const resultIds = new Set(
@@ -179,6 +180,7 @@ const syncTrack = async (
       payloadFor(track, request.records, origin, chunkEvents),
     )
     if (status < 200 || status >= 300) {
+      stoppedOnFailure = true
       deps.log.warn(
         {
           sessionId: track.sessionId,
@@ -201,17 +203,19 @@ const syncTrack = async (
     )
   }
   if (sentThrough === 0) return undefined
-  deps.log.info(
-    {
-      sessionId: track.sessionId,
-      key: track.checkpointKey,
-      repo: track.project.slug,
-      chunks: okChunks,
-      messages: messagesSent,
-      reqIds,
-    },
-    "session synced",
-  )
+  const summary = {
+    sessionId: track.sessionId,
+    key: track.checkpointKey,
+    repo: track.project.slug,
+    chunks: okChunks,
+    messages: messagesSent,
+    reqIds,
+  }
+  if (stoppedOnFailure) {
+    deps.log.warn(summary, "session partially synced; the remaining chunks retry next cycle")
+  } else {
+    deps.log.info(summary, "session synced")
+  }
   const line =
     sentThrough === track.records.at(-1)?.lineNumber ? track.lastLineProcessed : sentThrough
   return wrap(track, deps.clock, track.checkpointAt(line))

@@ -938,4 +938,38 @@ describe("watcher driver", () => {
     expect(spy.warn[0]?.details.reqId).toBe(sink.requestIds[0])
     expect(spy.info.filter((call) => call.message === "session synced")).toHaveLength(0)
   })
+
+  test("a flush that stops on a failed chunk is not reported as a healthy sync", async () => {
+    const key = "/fake/partial.jsonl"
+    const track = {
+      type: "main" as const,
+      sessionId: "sess-partial",
+      project,
+      sourceRelativePath: key,
+      checkpointKey: key,
+      records: [record(1, MESSAGE_CAP + 5), record(2, 1)],
+      lastLineProcessed: 2,
+      checkpointAt: (lineNumber: number) => ({
+        source: "claude_code" as const,
+        mtime: 10,
+        size: 20,
+        lineProcessed: lineNumber,
+      }),
+    }
+    const stubPlugin = {
+      source: "claude_code",
+      collect: async () => [{ sessionId: "sess-partial", tracks: [track] }],
+    }
+
+    let call = 0
+    const sink = createInMemorySink(() => (++call === 1 ? 200 : 500))
+    const spy = spyLogger()
+    await runCycle(config, deps({ sink, glob: async () => [], plugin: stubPlugin, log: spy.log }))
+
+    expect(sink.received).toHaveLength(2)
+    expect(spy.info.filter((entry) => entry.message === "session synced")).toHaveLength(0)
+    const [partial] = spy.warn.filter((entry) => entry.message.includes("partially synced"))
+    expect(partial?.details.sessionId).toBe("sess-partial")
+    expect(partial?.details.chunks).toBe(1)
+  })
 })
