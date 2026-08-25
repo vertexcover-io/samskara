@@ -7,11 +7,17 @@ type CreateLoggerOptions = {
   destination?: pino.DestinationStream
 }
 
-const isValidLevel = (value: string): value is pino.Level => value in pino.levels.values
+const isValidLevel = (value: string): value is pino.LevelWithSilent =>
+  value === "silent" || value in pino.levels.values
 
-export const resolveLevel = (env: NodeJS.ProcessEnv): pino.Level => {
+const FALLBACKS: Record<string, pino.LevelWithSilent> = {
+  production: "info",
+  test: "silent",
+}
+
+export const resolveLevel = (env: NodeJS.ProcessEnv): pino.LevelWithSilent => {
   const raw = env.LOG_LEVEL
-  const fallback: pino.Level = env.NODE_ENV === "production" ? "info" : "debug"
+  const fallback = FALLBACKS[env.NODE_ENV ?? ""] ?? "debug"
 
   if (raw === undefined) return fallback
   if (isValidLevel(raw)) return raw

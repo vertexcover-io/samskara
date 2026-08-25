@@ -46,9 +46,10 @@ export const createWatchLogger = (options: WatchLoggerOptions = {}): WatchLogger
   const targets: Target[] = options.pretty ? [rollTarget(), prettyTarget] : [rollTarget()]
   const destination = pino.transport({ targets })
 
+  // Not LOG_LEVEL: these lines go to the file `samskara logs` reads back, not to a terminal.
   const log = createLogger(
     { service: "samskara-cli" },
-    { destination, ...(options.verbose ? { level: "debug" } : {}) },
+    { destination, level: options.verbose ? "debug" : "info" },
   )
 
   const ready = (): Promise<void> =>

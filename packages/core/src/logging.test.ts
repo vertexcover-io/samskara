@@ -32,6 +32,32 @@ describe("resolveLevel", () => {
     expect(resolveLevel({ NODE_ENV: "development" })).toBe("debug")
   })
 
+  test("S3: NODE_ENV=test with no LOG_LEVEL defaults to silent", () => {
+    expect(resolveLevel({ NODE_ENV: "test" })).toBe("silent")
+  })
+
+  test("S3: an explicit LOG_LEVEL still wins under NODE_ENV=test", () => {
+    expect(resolveLevel({ NODE_ENV: "test", LOG_LEVEL: "debug" })).toBe("debug")
+  })
+
+  test("S2: LOG_LEVEL=silent resolves to silent rather than warning", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+
+    expect(resolveLevel({ LOG_LEVEL: "silent" })).toBe("silent")
+    expect(warnSpy).not.toHaveBeenCalled()
+
+    warnSpy.mockRestore()
+  })
+
+  test("S4a: an invalid LOG_LEVEL under NODE_ENV=test falls back to silent", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+
+    expect(resolveLevel({ LOG_LEVEL: "chatty", NODE_ENV: "test" })).toBe("silent")
+    expect(warnSpy).toHaveBeenCalledOnce()
+
+    warnSpy.mockRestore()
+  })
+
   test("S4a: LOG_LEVEL=chatty in production falls back to info, warns once, does not throw", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
 
