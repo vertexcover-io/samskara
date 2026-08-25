@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto"
-import { zValidator } from "@hono/zod-validator"
 import {
   type ArtifactUploadPayload,
   artifactUploadSchema,
@@ -12,6 +11,7 @@ import type { Db } from "../db/client.js"
 import { type ServeHeaders, serveHeadersFor } from "../lib/artifact-serving.js"
 import type { Env } from "../lib/env.js"
 import { type AuthVariables, requireAuth } from "../lib/require-auth.js"
+import { validate } from "../lib/validate.js"
 import {
   type ArtifactDetailRow,
   type ArtifactSummaryRow,
@@ -119,7 +119,7 @@ export const artifactRoutes = ({ db, env }: Deps) =>
     .post(
       "/",
       requireAuth({ db, env }, ["cli"]),
-      zValidator("json", artifactUploadSchema),
+      validate("json", artifactUploadSchema),
       async (context) => {
         const payload = context.req.valid("json")
         const isBinary = payload.encoding === "base64"
@@ -186,7 +186,7 @@ export const artifactRoutes = ({ db, env }: Deps) =>
     .get(
       "/session/:sessionId/files/*",
       requireAuth({ db, env }, ["web"]),
-      zValidator("query", rawQuerySchema),
+      validate("query", rawQuerySchema),
       async (context) => {
         const { which } = context.req.valid("query")
         const marker = "/files/"
@@ -208,7 +208,7 @@ export const artifactRoutes = ({ db, env }: Deps) =>
     .get(
       "/:artifactId/raw",
       requireAuth({ db, env }, ["web"]),
-      zValidator("query", rawQuerySchema),
+      validate("query", rawQuerySchema),
       async (context) => {
         const { which } = context.req.valid("query")
         const found = await getArtifactBytes(

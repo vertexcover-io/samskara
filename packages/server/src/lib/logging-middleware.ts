@@ -2,11 +2,17 @@ import { randomUUID } from "node:crypto"
 import type { MiddlewareHandler } from "hono"
 import type pino from "pino"
 
-export const loggingMiddleware = (
-  rootLog: pino.Logger,
-): MiddlewareHandler<{ Variables: { log: pino.Logger } }> => {
+const MAX_REQUEST_ID = 128
+
+declare module "hono" {
+  interface ContextVariableMap {
+    log: pino.Logger
+  }
+}
+
+export const loggingMiddleware = (rootLog: pino.Logger): MiddlewareHandler => {
   return async (c, next) => {
-    const forwarded = c.req.header("x-request-id")?.trim()
+    const forwarded = c.req.header("x-request-id")?.trim().slice(0, MAX_REQUEST_ID)
     const reqId = forwarded ? forwarded : randomUUID()
     c.header("x-request-id", reqId)
 

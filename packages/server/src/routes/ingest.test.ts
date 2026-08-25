@@ -24,6 +24,7 @@ import {
 } from "../db/schema.js"
 import type { Env } from "../lib/env.js"
 import { signToken } from "../lib/jwt.js"
+import { captureLogger } from "../lib/test-logger.js"
 import * as projectsRepo from "../repositories/projects.repo.js"
 
 const dockerAvailable = () => {
@@ -102,6 +103,34 @@ const mainPayload = (
           role: "assistant",
           timestamp: "2026-07-23T00:00:00.000Z",
           content: { type: "text", value: "hi" },
+        },
+      ],
+    },
+  ],
+})
+
+const subagentPayload = (sessionId: string): IngestPayload => ({
+  type: "subagent",
+  sessionId,
+  sourceRelativePath: `subagents/${sessionId}.jsonl`,
+  project,
+  agent: { agentId: "agent-z" },
+  records: [
+    {
+      lineUuid: "0191d942-3ba5-7dba-9a7d-22d65b30258e",
+      lineNumber: 1,
+      raw: {},
+      messages: [
+        {
+          subIndex: 0,
+          sessionId,
+          source: "claude_code",
+          sourceSchemaVersion: 1,
+          trackId: "agent:agent-z",
+          msgType: "custom",
+          subType: "fixture",
+          timestamp: "2026-07-23T00:00:00.000Z",
+          agentId: "agent-z",
         },
       ],
     },
@@ -756,5 +785,72 @@ describe.skipIf(!dockerAvailable())("ingest route", () => {
       .from(projects)
       .where(eq(projects.id, session?.projectId ?? ""))
     expect(sessionProject?.ownerUserId).toBe(routeUserId)
+  })
+
+  test("a rejected payload logs the fields that failed, so a 400 is diagnosable from the log alone", async () => {
+    const capture = captureLogger()
+    const loud = buildApp(db, env, { rootLog: capture.log })
+
+    const res = await post(loud, { type: "main", sessionId: "x" }, cliToken)
+
+    expect(res.status).toBe(400)
+    const [line] = capture.at("warn")
+    expect(line?.msg).toBe("request validation failed")
+    expect((line?.issues as ReadonlyArray<{ path: string }> | undefined)?.length).toBeGreaterThan(0)
+    expect(line?.reqId).toBeTruthy()
+  })
+
+  test("a 409 warns with the session it could not find, rather than leaving a bare status", async () => {
+    const capture = captureLogger()
+    const loud = buildApp(db, env, { rootLog: capture.log })
+
+    const res = await post(loud, subagentPayload("no-session-logged"), cliToken)
+
+    expect(res.status).toBe(409)
+    const [line] = capture.at("warn")
+    expect(line?.msg).toBe("ingest rejected: no such session for this user")
+    expect(line?.sessionId).toBe("no-session-logged")
+    expect(line?.userId).toBe(routeUserId)
+  })
+
+  test("a 403 warns with the project the caller was refused, and by whom", async () => {
+    const [otherOwner] = await db
+      .insert(users)
+      .values({ githubId: 9104, githubLogin: "forbidden-log-owner" })
+      .returning()
+    if (!otherOwner) throw new Error("seed owner failed")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "private", slug: "forbidden-log-private" },
+      ownerId: otherOwner.id,
+    })
+
+    const capture = captureLogger()
+    const loud = buildApp(db, env, { rootLog: capture.log })
+    const res = await post(
+      loud,
+      mainPayload("sess-forbidden-log", { name: "x", slug: "x-slug", projectId }),
+      cliToken,
+    )
+
+    expect(res.status).toBe(403)
+    const [line] = capture.at("warn")
+    expect(line?.msg).toBe("ingest rejected: project not writable by this user")
+    expect(line?.projectId).toBe(projectId)
+    expect(line?.userId).toBe(routeUserId)
+  })
+
+  test("an accepted ingest reports who sent what, on one line", async () => {
+    const capture = captureLogger()
+    const loud = buildApp(db, env, { rootLog: capture.log })
+
+    await post(loud, mainPayload("sess-observability"), cliToken)
+
+    const [line] = capture.at("info").filter((entry) => entry.msg === "request complete")
+    expect(line?.userId).toBe(routeUserId)
+    expect(line?.sessionId).toBe("sess-observability")
+    expect(line?.repo).toBe(project.slug)
+    expect(line?.eventCount).toBe(1)
+    expect(line?.status).toBe(200)
+    expect(line?.reqId).toBeTruthy()
   })
 })

@@ -1,9 +1,9 @@
-import { zValidator } from "@hono/zod-validator"
 import { createProjectRequestSchema } from "@samskara/core"
 import { Hono } from "hono"
 import type { Db } from "../db/client.js"
 import type { Env } from "../lib/env.js"
 import { type AuthVariables, requireAuth } from "../lib/require-auth.js"
+import { validate } from "../lib/validate.js"
 import { listAccessibleSummaries, type ProjectSummaryRow } from "../repositories/projects.repo.js"
 import { findOrCreateProject } from "../services/projects.js"
 
@@ -30,7 +30,7 @@ export const projectsRoutes = ({ db, env }: Deps) =>
     .post(
       "/",
       requireAuth({ db, env }, ["cli"]),
-      zValidator("json", createProjectRequestSchema),
+      validate("json", createProjectRequestSchema),
       async (c) => {
         const user = c.get("user")
         const result = await findOrCreateProject(db, user.id, c.req.valid("json"))

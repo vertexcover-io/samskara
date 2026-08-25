@@ -2,9 +2,11 @@ import { serve } from "@hono/node-server"
 import { createLogger } from "@samskara/core"
 import { buildApp } from "./app.js"
 import { createDb } from "./db/client.js"
+import { installCrashHandlers } from "./lib/crash-handlers.js"
 import { loadEnv } from "./lib/env.js"
 
 const rootLog = createLogger({ service: "samskara-server" })
+installCrashHandlers(rootLog)
 
 const env = loadEnv()
 const databaseUrl = process.env.DATABASE_URL

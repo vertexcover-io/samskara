@@ -1,5 +1,4 @@
 import { randomBytes } from "node:crypto"
-import { zValidator } from "@hono/zod-validator"
 import { type PublicUser, publicUserSchema } from "@samskara/core"
 import { Hono } from "hono"
 import { z } from "zod"
@@ -14,6 +13,7 @@ import {
 import type { Env } from "../lib/env.js"
 import { signToken } from "../lib/jwt.js"
 import { type AuthVariables, requireAuth } from "../lib/require-auth.js"
+import { validate } from "../lib/validate.js"
 import {
   gateOrgs,
   isSuperAdminLogin,
@@ -70,7 +70,7 @@ export const authRoutes = ({ db, env, githubClient, pairingStore }: Deps) =>
       setStateCookie(c, state, env)
       return c.redirect(authorizeUrl(env, state))
     })
-    .get("/github/callback", zValidator("query", callbackQuerySchema), async (c) => {
+    .get("/github/callback", validate("query", callbackQuerySchema), async (c) => {
       const { code, state: queryState } = c.req.valid("query")
       const cookieState = readStateCookie(c)
       if (!queryState || !cookieState || queryState !== cookieState) {
@@ -117,7 +117,7 @@ export const authRoutes = ({ db, env, githubClient, pairingStore }: Deps) =>
     .post("/cli-code", requireAuth({ db, env }, ["web"]), (c) =>
       c.json({ code: pairingStore.mint(c.get("user").id) }, 200),
     )
-    .post("/cli-exchange", zValidator("json", cliExchangeSchema), async (c) => {
+    .post("/cli-exchange", validate("json", cliExchangeSchema), async (c) => {
       const { code } = c.req.valid("json")
       const userId = pairingStore.redeem(code)
       if (!userId) return c.json({ error: "unauthorized" }, 401)
