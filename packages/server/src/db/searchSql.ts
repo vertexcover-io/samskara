@@ -1,12 +1,23 @@
-export const SEARCH_INDEX_VERSION = "v2" as const
+import {
+  SEARCH_DOCUMENT_TEXT,
+  type SearchTable,
+  searchCap,
+  searchVectorExpression,
+} from "./schema.js"
+
+export const SEARCH_INDEX_VERSION = "v3" as const
+export const SEARCH_VECTOR_COLUMN = "searchVector" as const
 
 export type SearchSourceKind = "session" | "message" | "pullRequest" | "toolCall" | "toolResult"
 
 export type SearchDocument = {
   readonly sourceKind: SearchSourceKind
-  readonly table: "sessions" | "messages" | "pullRequests" | "toolCall" | "toolResult"
+  readonly table: SearchTable
   readonly indexName: string
   readonly multiplier: number
+  /** Uncapped searchable text, qualified by the table name. */
+  readonly text: string
+  /** The stored `searchVector` column's generating expression. */
   readonly vector: string
 }
 
@@ -17,65 +28,31 @@ export type SearchFilterIndex = {
   readonly where?: string
 }
 
-const cap = (value: string): string => `public.samskara_search_cap(${value})`
-const jsonText = (column: string): string =>
-  `public.samskara_search_json_text(coalesce(${column}, '{}'::jsonb))`
-const vector = (value: string): string => `to_tsvector('simple'::regconfig, ${cap(value)})`
+const document = (
+  sourceKind: SearchSourceKind,
+  table: SearchTable,
+  multiplier: number,
+): SearchDocument => ({
+  sourceKind,
+  table,
+  multiplier,
+  indexName: `${table}_session_search_${SEARCH_INDEX_VERSION}_idx`,
+  text: SEARCH_DOCUMENT_TEXT[table],
+  vector: searchVectorExpression(SEARCH_DOCUMENT_TEXT[table]),
+})
 
-/**
- * `concat_ws` is STABLE in PostgreSQL and therefore cannot appear in an expression index. These
- * immutable equivalents produce the same searchable lexemes for the nullable fields here and are
- * used for indexes, matches, ranks, and snippets alike. Keep them structurally identical at every
- * use.
- */
-// PostgreSQL deparses left-associative concatenation with its parse-tree nesting. Spell that tree
-// explicitly so runtime expressions and pg_get_indexdef retain the same meaningful structure.
-const sessionDocument = `((coalesce("sessions"."title", '') || ' ') || "sessions"."id")`
-const messageDocument = `(((("messages"."id"::text || ' ') || ${jsonText('"messages"."content"')}) || ' ') || ${jsonText('"messages"."details"')})`
-const toolCallDocument = `(("toolCall"."toolId" || ' ') || ${jsonText('"toolCall"."toolInput"')})`
-const toolResultDocument = `(("toolResult"."toolId" || ' ') || ${jsonText('"toolResult"."result"')})`
-
-/**
- * These expressions are the only searchable documents in V1. Keep the values identical wherever
- * they are used: expression indexes, matches, ranks, and snippets.
- */
+/** Multipliers weight a hit by where it was found; a session title outranks a tool result. */
 export const SEARCH_DOCUMENTS: ReadonlyArray<SearchDocument> = [
-  {
-    sourceKind: "session",
-    table: "sessions",
-    indexName: "sessions_session_search_v2_idx",
-    multiplier: 4,
-    vector: vector(sessionDocument),
-  },
-  {
-    sourceKind: "message",
-    table: "messages",
-    indexName: "messages_session_search_v2_idx",
-    multiplier: 1.5,
-    vector: vector(messageDocument),
-  },
-  {
-    sourceKind: "pullRequest",
-    table: "pullRequests",
-    indexName: "pullRequests_session_search_v2_idx",
-    multiplier: 3,
-    vector: vector(`coalesce("pullRequests"."title", '')`),
-  },
-  {
-    sourceKind: "toolCall",
-    table: "toolCall",
-    indexName: "toolCall_session_search_v2_idx",
-    multiplier: 1,
-    vector: vector(toolCallDocument),
-  },
-  {
-    sourceKind: "toolResult",
-    table: "toolResult",
-    indexName: "toolResult_session_search_v2_idx",
-    multiplier: 0.75,
-    vector: vector(toolResultDocument),
-  },
+  document("session", "sessions", 4),
+  document("message", "messages", 1.5),
+  document("pullRequest", "pullRequests", 3),
+  document("toolCall", "toolCall", 1),
+  document("toolResult", "toolResult", 0.75),
 ]
+
+/** The capped text the stored vector was built from, re-aliased for a runtime `ts_headline`. */
+export const searchText = (document: SearchDocument, alias: string): string =>
+  searchCap(document.text.replaceAll(`"${document.table}".`, `${alias}.`))
 
 export const SEARCH_FILTER_INDEXES: ReadonlyArray<SearchFilterIndex> = [
   {
@@ -120,7 +97,7 @@ export const SEARCH_FILTER_INDEXES: ReadonlyArray<SearchFilterIndex> = [
 ]
 
 export const searchIndexDefinition = (document: SearchDocument): string =>
-  `create index "${document.indexName}" on "${document.table}" using gin (${document.vector})`
+  `create index "${document.indexName}" on "${document.table}" using gin ("${SEARCH_VECTOR_COLUMN}") with (fastupdate=off)`
 
 export const filterIndexDefinition = (index: SearchFilterIndex): string => {
   const predicate = index.where === undefined ? "" : ` where ${index.where}`

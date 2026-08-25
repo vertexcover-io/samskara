@@ -127,6 +127,20 @@
       "when": 1787583897666,
       "tag": "0017_camelcase_column_rename",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1787597828537,
+      "tag": "0018_search_cap_long_tokens",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1787598084414,
+      "tag": "0019_search_vector_columns",
+      "breakpoints": true
     }
   ]
 }
