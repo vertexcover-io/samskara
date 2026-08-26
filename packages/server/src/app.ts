@@ -30,6 +30,7 @@ export const buildApp = (db: Db, env: Env, deps: Deps = {}) => {
   const app = new Hono<{ Variables: Variables }>()
     .use(loggingMiddleware(rootLog))
     .get("/health", (c) => c.json({ status: "ok" }, 200))
+    .get("/api/health", (c) => c.json({ status: "ok" }, 200))
     .route("/api/auth", authRoutes({ db, env, githubClient, pairingStore }))
     .route("/api/ingest", ingestRoutes({ db, env }))
     .route("/api/artifacts", artifactRoutes({ db, env }))

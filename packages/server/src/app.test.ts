@@ -66,6 +66,12 @@ describe("static web assets", () => {
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ status: "ok" })
   })
+
+  test("S7: /api/health answers the platform health probe", async () => {
+    const res = await app().request("/api/health")
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ status: "ok" })
+  })
 })
 
 describe("static web assets when WEB_DIST is unset", () => {

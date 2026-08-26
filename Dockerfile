@@ -41,4 +41,5 @@ COPY --from=builder /app/packages/server/migrations packages/server/migrations
 COPY --from=builder /app/packages/web/dist packages/web/dist
 
 EXPOSE 3000
-CMD ["node", "packages/server/dist/index.js"]
+
+CMD ["sh", "-c", "node packages/server/dist/scripts/migrateRuntime.js && exec node packages/server/dist/index.js"]
