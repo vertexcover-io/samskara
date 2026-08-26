@@ -29,7 +29,7 @@ FROM node:22-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
-ENV WEB_DIST=/app/packages/web/dist
+ENV WEB_DIST=packages/web/dist
 
 COPY --from=builder /app/package.json /app/bun.lock ./
 COPY --from=builder /app/node_modules ./node_modules
