@@ -35,6 +35,20 @@ describe("loadEnv", () => {
     expect(loadEnv({ ...complete, SUPER_ADMIN_LOGINS: "  " }).superAdminLogins).toEqual([])
   })
 
+  // Production sets PUBLIC_BASE_URL but not WEB_BASE_URL: the API and the UI are one origin,
+  // since the server serves the built web app. A localhost fallback here silently sent every
+  // post-login redirect to a machine the user is not on.
+  test("falls back to PUBLIC_BASE_URL when WEB_BASE_URL is absent", () => {
+    const { WEB_BASE_URL: _omitted, ...withoutWeb } = complete
+    expect(loadEnv(withoutWeb).webBaseUrl).toBe("http://localhost:3000")
+  })
+
+  test("prefers an explicit WEB_BASE_URL over PUBLIC_BASE_URL", () => {
+    expect(loadEnv({ ...complete, WEB_BASE_URL: "http://localhost:9999" }).webBaseUrl).toBe(
+      "http://localhost:9999",
+    )
+  })
+
   test("defaults JWT_EXPIRES_IN to 7d and honors an override", () => {
     expect(loadEnv(complete).jwtExpiresIn).toBe("7d")
     expect(loadEnv({ ...complete, JWT_EXPIRES_IN: "1h" }).jwtExpiresIn).toBe("1h")

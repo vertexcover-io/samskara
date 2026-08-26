@@ -252,6 +252,29 @@ describe.skipIf(!dockerAvailable())("auth routes (callback + start)", () => {
     expect(exchanged).toBe(false)
   })
 
+  // GitHub answers a spent or invalid code with HTTP 200 and an { error } body, so the client
+  // throws rather than returning a token. Unguarded, that escaped as a raw 500 to the browser.
+  test("S3b: a failed code exchange redirects as exchange_failed instead of throwing", async () => {
+    const app = buildApp(db, env, {
+      githubClient: {
+        exchangeCode: async () => {
+          throw new Error("github code exchange failed")
+        },
+        getProfile: async () => ({ githubId: 1, login: "x" }),
+        getOrgs: async () => ["vertexcover-io"],
+        getVerifiedEmails: async () => [],
+      },
+    })
+
+    const res = await app.request("/api/auth/github/callback?code=spent&state=s1", {
+      headers: { cookie: "oauth_state=s1" },
+    })
+
+    expect(res.status).toBe(302)
+    expect(res.headers.get("location")).toBe("http://localhost:8000/?error=exchange_failed")
+    expect(sessionFrom(res.headers.get("set-cookie"))).toBeUndefined()
+  })
+
   test("S4: repeated callback for the same github_id does not duplicate user or membership", async () => {
     const build = (login: string) =>
       buildApp(db, env, {

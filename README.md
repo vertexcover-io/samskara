@@ -78,7 +78,7 @@ The variables setup writes:
 | `JWT_SECRET` | generated for you |
 | `DATABASE_URL` | `postgres://samskara:samskara@localhost:5433/samskara` (matches `docker-compose.yml`) |
 | `PUBLIC_BASE_URL` | where the API is reachable, `http://localhost:3000` |
-| `WEB_BASE_URL` | where the UI is, `http://localhost:8000` |
+| `WEB_BASE_URL` | where the UI is, `http://localhost:8000`; defaults to `PUBLIC_BASE_URL` when unset, since the server also serves the built web app |
 | `COOKIE_SECURE` | `false` for local http, `true` behind https |
 | `JWT_EXPIRES_IN` | session lifetime, default `7d` |
 | `VITE_API_BASE_URL` | API base the SPA calls, `http://localhost:3000` |

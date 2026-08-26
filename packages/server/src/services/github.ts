@@ -37,8 +37,16 @@ export const createGithubClient = (env: Env): GithubClient => ({
         redirect_uri: redirectUri,
       }),
     })
-    const body = (await readJson(res, "code exchange")) as { access_token?: string }
-    if (!body.access_token) throw new Error("github code exchange failed")
+    // GitHub reports a spent or invalid code as HTTP 200 with an { error } body, so res.ok
+    // says nothing here -- the error field is the only signal, and it names the cause.
+    const body = (await readJson(res, "code exchange")) as {
+      access_token?: string
+      error?: string
+      error_description?: string
+    }
+    if (!body.access_token) {
+      throw new Error(`github code exchange failed${body.error ? `: ${body.error}` : ""}`)
+    }
     return { accessToken: body.access_token }
   },
 

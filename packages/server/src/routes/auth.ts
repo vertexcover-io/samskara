@@ -81,7 +81,15 @@ export const authRoutes = ({ db, env, githubClient, pairingStore }: Deps) =>
 
       if (!code) return c.redirect(webUrl(env, "/?error=bad_state"))
 
-      const { accessToken } = await githubClient.exchangeCode(code, callbackUrl(env))
+      // A spent, expired or replayed code comes back from GitHub as HTTP 200 with an { error }
+      // body, which the client surfaces as a throw. Let it escape and the user sees a raw 500
+      // instead of the login page every other failure here redirects them to.
+      let accessToken: string
+      try {
+        ;({ accessToken } = await githubClient.exchangeCode(code, callbackUrl(env)))
+      } catch {
+        return c.redirect(webUrl(env, "/?error=exchange_failed"))
+      }
       const [profile, orgSlugs] = await Promise.all([
         githubClient.getProfile(accessToken),
         githubClient.getOrgs(accessToken),
