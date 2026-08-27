@@ -1,4 +1,4 @@
-import { realpath } from "node:fs/promises"
+import { realpath, stat } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
 import type { ProjectIdentity } from "@samskara/core"
 import { runGitOrNull } from "../git.js"
@@ -42,10 +42,21 @@ export const gitRootOf = async (startDir: string): Promise<string | null> => {
 /**
  * One canonical form for the whole identity: absolute, normalized, and symlink-resolved. Every
  * consumer -- containment, `relative()`, the slug -- reads the same string, so nothing downstream
- * re-resolves and no two of them can disagree. `realpath` throws on a path that does not exist,
- * which leaves the normalized form as the answer.
+ * re-resolves and no two of them can disagree.
+ *
+ * Null when the directory is not there. Git cannot run in a folder that is gone -- a removed
+ * worktree, a deleted checkout -- and the path-derived fallback below would then mint a slug for
+ * it that matches no project, which every caller reads as "capture is off" rather than "this
+ * cannot be identified". The fallback is still right for a directory that exists without being a
+ * git repo, so it stays; it just needs the directory to be real.
  */
-export const resolveProject = async (startDir: string): Promise<ProjectIdentity> => {
+export const resolveProject = async (startDir: string): Promise<ProjectIdentity | null> => {
+  const live = await stat(startDir).then(
+    (entry) => entry.isDirectory(),
+    () => false,
+  )
+  if (!live) return null
+
   const declared = (await gitRootOf(startDir)) ?? resolve(startDir)
   const root = await realpath(declared).catch(() => declared)
   const remote = await runGitOrNull(["config", "--get", "remote.origin.url"], root)

@@ -65,7 +65,6 @@ export const globAll = async (
 }
 
 export type WatchOptions = {
-  readonly projectOverride?: ProjectIdentity
   readonly log: pino.Logger
 }
 
@@ -93,32 +92,26 @@ export const drainWorkers = (
 ): Promise<void> => Promise.race([workers, sleep(graceMs)]).then(onDrained)
 
 export const watch = async (options: WatchOptions): Promise<void> => {
-  const { log, projectOverride } = options
+  const { log } = options
   // Checked once so a daemon with no credentials at all fails loudly at startup; the sinks read
   // the token again on every request, so a later `samskara login` lands without a restart.
   if (!(await readToken())) throw new Error("no token found; run `samskara login` first")
   // Read at call time, not module load: SAMSKARA_HOME decides where the queue lives, and the
   // daemon must write under whichever home the process was started with.
   const config: WatcherConfig = { statePath: statePath(), artifactQueuePath: artifactQueuePath() }
-  // An explicit override captures unconditionally; otherwise only enabled projects, and only
-  // sessions started after the project's cutoff.
-  const shouldCapture = projectOverride
-    ? undefined
-    : (project: ProjectIdentity) => isProjectEnabled(project.slug)
-  const cutoffFor = projectOverride
-    ? undefined
-    : (project: ProjectIdentity) => syncFromFor(project.slug)
   const deps: WatcherDeps = {
     fs: nodeFs,
     clock: { now: () => Date.now() },
     sink: createHttpSink({ apiBase: apiBase(), readToken, fetch: globalThis.fetch }),
     glob: (pattern) => globAll(pattern, log),
     plugin: createClaudePlugin(nodeFs),
-    resolveProject: projectOverride
-      ? async () => projectOverride
-      : async (dir) => withStoredProjectId(await resolveProject(dir)),
-    ...(shouldCapture ? { shouldCapture } : {}),
-    ...(cutoffFor ? { syncFromFor: cutoffFor } : {}),
+    resolveProject: async (dir) => {
+      const identity = await resolveProject(dir)
+      return identity === null ? null : withStoredProjectId(identity)
+    },
+    // Only enabled projects, and only sessions started after the project's cutoff.
+    shouldCapture: (project) => isProjectEnabled(project.slug),
+    syncFromFor: (project) => syncFromFor(project.slug),
     log,
   }
 

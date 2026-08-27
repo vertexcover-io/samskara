@@ -1,15 +1,27 @@
+import { stat } from "node:fs/promises"
 import { resolve } from "node:path"
-import { describe, expect, test, vi } from "vitest"
+import { beforeEach, describe, expect, test, vi } from "vitest"
 import { runGitOrNull } from "../git.js"
 import { resolveProject } from "./resolveProject.js"
 
 vi.mock("../git.js", () => ({ runGitOrNull: vi.fn(async () => null) }))
+// The identities under test are pure path arithmetic, so the directories stay imaginary.
+vi.mock("node:fs/promises", () => ({
+  realpath: vi.fn(async (path: string) => path),
+  stat: vi.fn(async () => ({ isDirectory: () => true })),
+}))
 
 const git = vi.mocked(runGitOrNull)
 
 const gitReturning = (byArgs: Record<string, string | null>) => {
   git.mockImplementation(async (args) => byArgs[args.join(" ")] ?? null)
 }
+
+beforeEach(() => {
+  vi.mocked(stat).mockResolvedValue({ isDirectory: () => true } as unknown as Awaited<
+    ReturnType<typeof stat>
+  >)
+})
 
 describe("resolveProject", () => {
   test("resolves remote identity from the canonical root of a linked worktree", async () => {
@@ -73,12 +85,30 @@ describe("resolveProject", () => {
     })
   })
 
+  test("a directory that is gone has no identity, rather than one invented from its path", async () => {
+    // A cwd read from an old transcript can name a removed worktree. Git cannot run there, and the
+    // path-derived fallback would mint a slug matching no project -- which reads downstream as
+    // "capture is off" rather than "this cannot be identified".
+    vi.mocked(stat).mockRejectedValue(new Error("ENOENT: no such file or directory"))
+
+    expect(await resolveProject("/work/app/.worktrees/gone")).toBeNull()
+    expect(git).not.toHaveBeenCalled()
+  })
+
+  test("a path that exists but is not a directory has no identity either", async () => {
+    vi.mocked(stat).mockResolvedValue({ isDirectory: () => false } as unknown as Awaited<
+      ReturnType<typeof stat>
+    >)
+
+    expect(await resolveProject("/work/app/notes.txt")).toBeNull()
+  })
+
   test("a relative start dir is resolved against the cwd before it becomes an identity", async () => {
     const project = await resolveProject("some/nested/dir")
 
-    expect(project.root).toBe(resolve("some/nested/dir"))
-    expect(project.name).toBe("dir")
+    expect(project?.root).toBe(resolve("some/nested/dir"))
+    expect(project?.name).toBe("dir")
     // Whatever the platform's separator is, none of it survives into the slug.
-    expect(project.slug).not.toMatch(/[/\\]/)
+    expect(project?.slug).not.toMatch(/[/\\]/)
   })
 })

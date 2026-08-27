@@ -190,6 +190,8 @@ describe("watcher driver", () => {
   test("does not advance the watermark on a 409 and retries next cycle", async () => {
     const sub = join(projects, "sess-1", "subagents", "agent-af66.jsonl")
     await mkdir(join(projects, "sess-1", "subagents"), { recursive: true })
+    // The parent's main transcript: it is what names the directory's project.
+    await writeFile(join(projects, "sess-1.jsonl"), `${assistantLine("l1", "sess-1")}\n`, "utf8")
     await writeFile(sub, `${assistantLine("s1", "sess-1", { agentId: "af66" })}\n`, "utf8")
     await writeFile(
       sub.replace(/\.jsonl$/, ".meta.json"),
@@ -282,6 +284,30 @@ describe("watcher driver", () => {
     expect(sink.received[0]?.project).toEqual(resolved)
     const msgs = sink.received[0]?.records.flatMap((r) => r.messages) ?? []
     expect(msgs.every((m) => m.gitBranch === "main")).toBe(true)
+  })
+
+  test("remembers each transcript directory's project, so a folder that later disappears still syncs", async () => {
+    const main = join(projects, "sess-1.jsonl")
+    await writeFile(main, `${assistantLine("l1", "sess-1")}\n`, "utf8")
+
+    const store = await runCycle(config, deps({ glob: async () => [main] }))
+    expect(store.projects).toEqual({ [projects]: project })
+
+    // The cwd is gone now -- a removed worktree -- so the resolver has no answer. The remembered
+    // entry stands in and the session keeps syncing.
+    await writeFile(
+      main,
+      `${assistantLine("l1", "sess-1")}\n${assistantLine("l2", "sess-1")}\n`,
+      "utf8",
+    )
+    const sink = createInMemorySink()
+    const next = await runCycle(
+      config,
+      deps({ sink, glob: async () => [main], resolveProject: async () => null }),
+    )
+
+    expect(sink.received[0]?.project).toEqual(project)
+    expect(next.projects).toEqual({ [projects]: project })
   })
 
   test("derives a missing source sessionId from the transcript path", async () => {
@@ -439,6 +465,9 @@ describe("watcher driver", () => {
     test("a subagent flush carries no session origin, so it cannot re-stamp the session it belongs to", async () => {
       const sub = join(projects, "sess-1", "subagents", "agent-af66.jsonl")
       await mkdir(join(projects, "sess-1", "subagents"), { recursive: true })
+      // The parent's main transcript: it is what names the directory's project. The subagent ran
+      // elsewhere -- that is the point of this test -- so its own cwd must not decide anything.
+      await writeFile(join(projects, "sess-1.jsonl"), `${assistantLine("l1", "sess-1")}\n`, "utf8")
       await writeFile(
         sub,
         `${assistantLine("s1", "sess-1", { agentId: "af66", cwd: "/work/serana" })}\n`,
@@ -683,7 +712,7 @@ describe("watcher driver", () => {
         withQueue(queuePath),
         deps({
           glob: async () => [main],
-          // The --project-slug override path synthesizes an identity carrying no root.
+          // An identity carrying no root: artifact capture has nothing to scan.
           resolveProject: async () => project,
         }),
       )

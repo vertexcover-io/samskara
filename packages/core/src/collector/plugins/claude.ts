@@ -118,6 +118,7 @@ export type ClaudePathContext = {
   readonly trackId: string
   readonly agentId?: string
   readonly sourceRelativePath: string
+  // Absolute: it is both the grouping key and the directory holding the session's main transcript.
   readonly projectDir: string
 }
 
@@ -132,13 +133,22 @@ const MAIN_PATH = /^[^/]+\/([^/]+\.jsonl)$/
 const SUBAGENT_PATH = /^[^/]+\/(([^/]+)\/subagents\/(?:.+\/)?(agent-(.+)\.jsonl|[^/]+\.jsonl))$/
 const WORKFLOW_JOURNAL_PATH = /\/subagents\/workflows\/[^/]+\/journal\.jsonl$/
 
+/**
+ * A workflow's `journal.jsonl` sits beside its agent transcripts but records orchestration steps,
+ * not a conversation. It is deliberately not collected -- a known non-transcript, not an
+ * unrecognized shape, so discovering one is not worth a warning.
+ */
+export const isIgnoredClaudePath = (path: string): boolean =>
+  WORKFLOW_JOURNAL_PATH.test(normalizePath(path))
+
 export const classifyClaudePath = (
   transcriptPath: string,
   discoveryRoot: string,
 ): ClaudePathContext | null => {
   const normalized = normalizePath(transcriptPath)
-  const rootRelative = normalized.slice(normalizePath(discoveryRoot).replace(/\/$/, "").length + 1)
-  const projectDir = rootRelative.slice(0, rootRelative.indexOf("/"))
+  const root = normalizePath(discoveryRoot).replace(/\/$/, "")
+  const rootRelative = normalized.slice(root.length + 1)
+  const projectDir = `${root}/${rootRelative.slice(0, rootRelative.indexOf("/"))}`
   const mainMatch = MAIN_PATH.exec(rootRelative)
   const subagentMatch = SUBAGENT_PATH.exec(rootRelative)
 
@@ -1123,13 +1133,13 @@ const collectTrack = async (
 type LocatedFile = { readonly path: string; readonly location: ClaudePathContext }
 
 /**
- * Every transcript under one `~/.claude/projects/<encoded-cwd>/` shares a cwd, subagents included,
- * so one probe decides the whole directory. The cwd is read from transcript content, never from the
- * directory name: the encoding flattens `/` and a literal `-` to the same character.
+ * Only main transcripts name the directory: a subagent runs wherever its parent sent it, so its cwd
+ * is its own. Each is addressed by session id rather than taken from `files`, which in one cycle
+ * may hold nothing but subagents whose mains are long since checkpointed.
  *
- * Probing walks siblings until one answers, since a resumed transcript can have no cwd among its
- * new lines. The resolved identity is cached for the daemon's lifetime — a directory's cwd and git
- * remote are fixed — but an unresolved one is evicted so it stays retryable.
+ * `remembered` is the answer from a run when the folder still existed, and stands in once it is
+ * gone. A resolved identity is cached for the daemon's lifetime; an unresolved one is evicted so it
+ * stays retryable.
  */
 const projectForDir = async (
   cache: Map<string, Promise<ProjectIdentity | null>>,
@@ -1137,20 +1147,30 @@ const projectForDir = async (
   dir: string,
   files: ReadonlyArray<LocatedFile>,
   deps: CollectDeps,
+  remembered?: ProjectIdentity,
 ): Promise<ProjectIdentity | null> => {
   const hit = cache.get(dir)
   if (hit) return hit
 
   const pending = (async () => {
-    for (const { path } of files) {
+    const probed = new Set<string>()
+    for (const { location } of files) {
+      const mainPath = `${dir}/${location.sessionId}.jsonl`
+      if (probed.has(mainPath)) continue
+      probed.add(mainPath)
       try {
-        const cwd = cwdFrom(parseJsonLines(completeLines(await fs.readFile(path))))
-        if (cwd) return await deps.resolveProject(cwd)
+        const cwd = cwdFrom(parseJsonLines(completeLines(await fs.readFile(mainPath))))
+        if (!cwd) continue
+        const project = await deps.resolveProject(cwd)
+        if (!project) continue
+        deps.rememberProject?.(dir, project)
+        return project
       } catch {
-        // An unparseable sibling is reported when it is collected; keep probing.
+        // A main transcript that is missing or unparseable is reported when it is collected
+        // itself; keep probing the directory's other sessions.
       }
     }
-    return null
+    return remembered ?? null
   })()
   cache.set(dir, pending)
 
@@ -1171,6 +1191,7 @@ export const createClaudePlugin = (fs: FileSystem): AgentPlugin => {
       const changed = compact(
         await Promise.all(
           discovered.map(async (path): Promise<LocatedFile | null> => {
+            if (isIgnoredClaudePath(path)) return null
             const discoveryRoot = discoveryRootFor(path)
             if (!discoveryRoot) {
               deps.log.warn({ path }, "Claude transcript path missing .claude/projects root")
@@ -1197,7 +1218,14 @@ export const createClaudePlugin = (fs: FileSystem): AgentPlugin => {
       // Resolve and enablement-check per directory, before any transcript is normalized.
       const tracks = await Promise.all(
         [...byDir].map(async ([dir, files]): Promise<ReadonlyArray<SessionTrack | null>> => {
-          const project = await projectForDir(projectByDir, fs, dir, files, deps)
+          const project = await projectForDir(
+            projectByDir,
+            fs,
+            dir,
+            files,
+            deps,
+            prev.projects?.[dir],
+          )
           if (!project) {
             deps.log.warn({ dir }, "Claude project directory has no resolvable cwd")
             return []

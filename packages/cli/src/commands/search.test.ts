@@ -575,8 +575,13 @@ describe("hereFilters", () => {
     projectId: "11111111-1111-4111-8111-111111111111",
   }
 
-  beforeEach(() => {
+  // A real directory: `--here` reads the checkout it is standing in, and a folder that is not
+  // there has no identity at all. Everything else about the identity comes from the git mock.
+  let here: string
+
+  beforeEach(async () => {
     vi.mocked(getProject).mockResolvedValue(REGISTERED)
+    here = await mkdtemp(join(tmpdir(), "samskara-here-"))
   })
 
   test("takes the project id from the registry and the repo and branch from the checkout", async () => {
@@ -586,7 +591,7 @@ describe("hereFilters", () => {
       "rev-parse --abbrev-ref HEAD": "feat/thing",
     })
 
-    expect(await hereFilters("/work/app")).toEqual({
+    expect(await hereFilters(here)).toEqual({
       project: "11111111-1111-4111-8111-111111111111",
       repo: "vertexcover-io/samskara",
       branch: "feat/thing",
@@ -600,16 +605,22 @@ describe("hereFilters", () => {
       "rev-parse --abbrev-ref HEAD": "HEAD",
     })
 
-    expect(await hereFilters("/work/app")).toEqual({
+    expect(await hereFilters(here)).toEqual({
       project: "11111111-1111-4111-8111-111111111111",
       repo: "vertexcover-io/samskara",
     })
+  })
+
+  test("a folder that is not there contributes nothing rather than filtering on an invented slug", async () => {
+    gitReturning({ "config --get remote.origin.url": "git@github.com:vertexcover-io/samskara.git" })
+
+    expect(await hereFilters(join(here, "gone"))).toEqual({})
   })
 
   test("a folder that is neither registered nor a remote-backed repo contributes nothing", async () => {
     vi.mocked(getProject).mockResolvedValue(null)
     gitReturning({})
 
-    expect(await hereFilters("/tmp/scratch")).toEqual({})
+    expect(await hereFilters(here)).toEqual({})
   })
 })

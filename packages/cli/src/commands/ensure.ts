@@ -46,9 +46,11 @@ export const ensureCommand = async (options: EnsureOptions = {}): Promise<number
     }
 
     const project = await resolveProject(options.cwd ?? process.cwd())
-    if (!(await isProjectEnabled(project.slug))) {
+    if (project === null || !(await isProjectEnabled(project.slug))) {
       context.push(
-        `This project (${project.slug}) is not enabled for Samskara capture. Ask the user whether to enable it; if they agree, run \`samskara enable\`.`,
+        project === null
+          ? "This folder could not be identified, so Samskara captures nothing here."
+          : `This project (${project.slug}) is not enabled for Samskara capture. Ask the user whether to enable it; if they agree, run \`samskara enable\`.`,
       )
       // A disabled project uploads nothing, so a server round trip would only add startup latency.
       emitContext(stdout, context)

@@ -37,7 +37,7 @@ export type WatcherDeps = {
   readonly sink: { send(payload: IngestPayload): Promise<SinkResult> }
   readonly glob: (pattern: string) => Promise<ReadonlyArray<string>>
   readonly plugin: AgentPlugin
-  readonly resolveProject: (startDir: string) => Promise<ProjectIdentity>
+  readonly resolveProject: (startDir: string) => Promise<ProjectIdentity | null>
   readonly log: pino.Logger
   readonly shouldCapture?: (project: ProjectIdentity) => Promise<boolean>
   readonly syncFromFor?: (project: ProjectIdentity) => Promise<string | undefined>
@@ -332,17 +332,25 @@ export const runCycle = async (
 ): Promise<CheckpointStore> => {
   // The cycle writes the store back at the end, so the file repairs itself; what it cannot do is
   // tell anyone that every session is about to be sent again from its first line.
-  const prev = await readCheckpoints(deps.fs, config.statePath).catch((err: unknown) => {
-    deps.log.error(
-      { path: config.statePath, err },
-      "checkpoint store did not parse; every session resyncs from the start",
-    )
-    return { checkpoints: {} }
-  })
+  const prev: CheckpointStore = await readCheckpoints(deps.fs, config.statePath).catch(
+    (err: unknown) => {
+      deps.log.error(
+        { path: config.statePath, err },
+        "checkpoint store did not parse; every session resyncs from the start",
+      )
+      return { checkpoints: {} }
+    },
+  )
+  // Every directory identity resolved from disk this cycle, merged into the store below. Once a
+  // cwd is gone -- a removed worktree -- it is the only way its sessions stay attributable.
+  const resolved = new Map<string, ProjectIdentity>()
   const collectDeps: CollectDeps = {
     fs: deps.fs,
     glob: deps.glob,
     resolveProject: deps.resolveProject,
+    rememberProject: (dir, project) => {
+      resolved.set(dir, project)
+    },
     log: deps.log,
     ...(deps.shouldCapture ? { shouldCapture: deps.shouldCapture } : {}),
     ...(deps.syncFromFor ? { syncFromFor: deps.syncFromFor } : {}),
@@ -356,15 +364,18 @@ export const runCycle = async (
   if (artifactQueuePath !== undefined) {
     for (const batch of batches) {
       const root = batch.tracks[0]?.project.root
-      // No root means the --project-slug override path, which synthesizes an identity without
-      // one. Silent by design: it recurs every cycle for the whole run.
+      // `root` is optional on the identity, and artifact capture is meaningless without one.
       if (root === undefined) continue
       await enqueueArtifacts(batch, root, artifactQueuePath, deps)
     }
   }
 
   const checkpoints = Object.assign({}, prev.checkpoints, ...results)
-  const next: CheckpointStore = { checkpoints }
+  const projects = { ...prev.projects, ...Object.fromEntries(resolved) }
+  const next: CheckpointStore = {
+    checkpoints,
+    ...(Object.keys(projects).length > 0 ? { projects } : {}),
+  }
   await writeCheckpoints(deps.fs, config.statePath, next)
   return next
 }

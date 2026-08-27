@@ -121,16 +121,10 @@ program
   .command("watch")
   .description("Start the capture daemon in the background (logs to watch.log)")
   .option("--foreground", "run the capture loop in this process instead of detaching")
-  .option("--project-name <name>", "override project name (default: resolved from the session dir)")
-  .option("--project-slug <slug>", "override project slug (default: resolved from the session dir)")
-  .action(async (options: { foreground?: boolean; projectName?: string; projectSlug?: string }) => {
-    const { projectName, projectSlug } = options
-    const projectOverride =
-      projectName && projectSlug ? { name: projectName, slug: projectSlug } : undefined
+  .action(async (options: { foreground?: boolean }) => {
     process.exitCode = await watchCommand({
       foreground: Boolean(options.foreground),
       verbose: Boolean(program.opts<{ verbose?: boolean }>().verbose),
-      ...(projectOverride ? { projectOverride } : {}),
     })
   })
 
