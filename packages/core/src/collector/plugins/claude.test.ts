@@ -1,10 +1,10 @@
 import { mkdir, mkdtemp, readFile, rename, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
-import { describe, expect, test } from "vitest"
+import { dirname, join } from "node:path"
+import { describe, expect, test, vi } from "vitest"
 import type { ProjectIdentity } from "../../ingest/types.js"
 import { createLogger } from "../../logging.js"
-import type { CheckpointStore, CollectDeps } from "../types.js"
+import type { Checkpoint, CheckpointStore, CollectDeps } from "../types.js"
 import {
   classifyClaudePath,
   createClaudePlugin,
@@ -39,6 +39,24 @@ const collectDeps = (
 })
 
 const empty: CheckpointStore = { checkpoints: {} }
+
+const warnLogger = (warn: () => void): CollectDeps["log"] =>
+  ({
+    ...createLogger({ service: "claude-test" }, { level: "silent" }),
+    warn,
+  }) as unknown as CollectDeps["log"]
+
+const checkpointFor = async (path: string): Promise<Checkpoint> => {
+  const { mtimeMs, size } = await stat(path)
+  return {
+    source: "claude_code",
+    filePath: path,
+    lastUpdatedAt: "2026-08-01T00:00:00.000Z",
+    mtime: mtimeMs,
+    size,
+    lineProcessed: 1,
+  }
+}
 
 const transcript = (...lines: ReadonlyArray<unknown>): string =>
   `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`
@@ -195,7 +213,7 @@ describe("normalizeClaude", () => {
       sessionId: "sess-1",
       trackId: "main",
       sourceRelativePath: "sess-1.jsonl",
-      projectDir: "-Users-me-app",
+      projectDir: `${root}/-Users-me-app`,
     })
     expect(
       classifyClaudePath(`${root}/bucket/sess-1/subagents/workflows/wf/agent-a1.jsonl`, root),
@@ -204,7 +222,7 @@ describe("normalizeClaude", () => {
       trackId: "agent:a1",
       agentId: "a1",
       sourceRelativePath: "sess-1/subagents/workflows/wf/agent-a1.jsonl",
-      projectDir: "bucket",
+      projectDir: `${root}/bucket`,
     })
     expect(
       classifyClaudePath(`${root}/bucket/sess-1/subagents/workflows/wf/journal.jsonl`, root),
@@ -955,6 +973,8 @@ describe("collect", () => {
     const dir = await mkTranscriptDir()
     await mkdir(join(dir, "sess-1", "subagents"), { recursive: true })
     const path = join(dir, "sess-1", "subagents", "agent-af66.jsonl")
+    // The parent's main transcript: it is what names the directory's project.
+    await writeFile(join(dir, "sess-1.jsonl"), `${JSON.stringify(assistantLine)}\n`, "utf8")
     await writeFile(path, `${JSON.stringify({ ...assistantLine, agentId: "af66" })}\n`, "utf8")
     await writeFile(
       path.replace(/\.jsonl$/, ".meta.json"),
@@ -1408,5 +1428,131 @@ describe("collect", () => {
     const plugin = createClaudePlugin(nodeFs)
     const batches = await plugin.collect(empty, collectDeps([path]))
     expect(batches).toHaveLength(0)
+  })
+
+  test("a subagent's cwd never decides the directory: the main transcript does, whatever the file order", async () => {
+    // A subagent can run anywhere -- a worktree, a sibling checkout -- so its `cwd` is not the
+    // directory's. Only the main transcript's cwd is, and readdir order must not change that.
+    const dir = await mkTranscriptDir()
+    const main = join(dir, "sess-1.jsonl")
+    const sub = join(dir, "sess-1", "subagents", "agent-a1.jsonl")
+    await mkdir(dirname(sub), { recursive: true })
+    await writeFile(main, `${JSON.stringify(assistantLine)}\n`, "utf8")
+    await writeFile(
+      sub,
+      `${JSON.stringify({ ...assistantLine, cwd: "/work/app/.worktrees/gone" })}\n`,
+      "utf8",
+    )
+
+    const seen: string[] = []
+    const deps = collectDeps([sub, main], {
+      resolveProject: async (cwd: string) => {
+        seen.push(cwd)
+        return project
+      },
+    })
+
+    const batches = await createClaudePlugin(nodeFs).collect(empty, deps)
+
+    expect(seen).toEqual(["/work/app"])
+    expect(batches).toHaveLength(1)
+    expect(batches[0]?.tracks).toHaveLength(2)
+  })
+
+  test("resolves from the main transcript even when only a subagent changed", async () => {
+    // After a restart the mains are already checkpointed, so a cycle can see nothing but a
+    // subagent. The directory's identity still has to come from the main transcript.
+    const dir = await mkTranscriptDir()
+    const main = join(dir, "sess-1.jsonl")
+    const sub = join(dir, "sess-1", "subagents", "agent-a1.jsonl")
+    await mkdir(dirname(sub), { recursive: true })
+    await writeFile(main, `${JSON.stringify(assistantLine)}\n`, "utf8")
+    await writeFile(
+      sub,
+      `${JSON.stringify({ ...assistantLine, cwd: "/work/app/.worktrees/gone" })}\n`,
+      "utf8",
+    )
+
+    const seen: string[] = []
+    const batches = await createClaudePlugin(nodeFs).collect(
+      { checkpoints: { [main]: await checkpointFor(main) } },
+      collectDeps([sub, main], {
+        resolveProject: async (cwd: string) => {
+          seen.push(cwd)
+          return project
+        },
+      }),
+    )
+
+    expect(seen).toEqual(["/work/app"])
+    expect(batches[0]?.tracks.map((track) => track.type)).toEqual(["subagent"])
+  })
+
+  test("a cwd the resolver cannot identify leaves the directory unresolved and retryable", async () => {
+    // A removed worktree: the resolver has no answer, so the directory has none either. Warned
+    // rather than swallowed, and never cached -- the folder may come back.
+    const dir = await mkTranscriptDir()
+    const path = join(dir, "sess-1.jsonl")
+    await writeFile(path, `${JSON.stringify(assistantLine)}\n`, "utf8")
+
+    const warn = vi.fn()
+    const plugin = createClaudePlugin(nodeFs)
+    const deps = collectDeps([path], {
+      resolveProject: async () => null,
+      log: warnLogger(warn),
+    })
+
+    expect(await plugin.collect(empty, deps)).toHaveLength(0)
+    expect(warn).toHaveBeenCalledTimes(1)
+    // Not cached: a second cycle probes again rather than reusing the failure.
+    expect(await plugin.collect(empty, deps)).toHaveLength(0)
+    expect(warn).toHaveBeenCalledTimes(2)
+  })
+
+  test("a remembered project stands in when the resolver can no longer identify the cwd", async () => {
+    const dir = await mkTranscriptDir()
+    const path = join(dir, "sess-1.jsonl")
+    await writeFile(path, `${JSON.stringify(assistantLine)}\n`, "utf8")
+
+    const batches = await createClaudePlugin(nodeFs).collect(
+      { checkpoints: {}, projects: { [dir]: project } },
+      collectDeps([path], { resolveProject: async () => null }),
+    )
+
+    expect(batches[0]?.tracks[0]?.project).toEqual(project)
+  })
+
+  test("a freshly resolved project is handed back to be remembered", async () => {
+    const dir = await mkTranscriptDir()
+    const path = join(dir, "sess-1.jsonl")
+    await writeFile(path, `${JSON.stringify(assistantLine)}\n`, "utf8")
+
+    const remembered: Array<readonly [string, ProjectIdentity]> = []
+    await createClaudePlugin(nodeFs).collect(
+      empty,
+      collectDeps([path], {
+        rememberProject: (key: string, identity: ProjectIdentity) => {
+          remembered.push([key, identity])
+        },
+      }),
+    )
+
+    expect(remembered).toEqual([[dir, project]])
+  })
+
+  test("skips a workflow journal quietly: it is a known non-transcript, not an unknown shape", async () => {
+    const dir = await mkTranscriptDir()
+    const journal = join(dir, "sess-1", "subagents", "workflows", "wf_abc", "journal.jsonl")
+    await mkdir(dirname(journal), { recursive: true })
+    await writeFile(journal, `${JSON.stringify(assistantLine)}\n`, "utf8")
+
+    const warn = vi.fn()
+    const batches = await createClaudePlugin(nodeFs).collect(
+      empty,
+      collectDeps([journal], { log: warnLogger(warn) }),
+    )
+
+    expect(batches).toHaveLength(0)
+    expect(warn).not.toHaveBeenCalled()
   })
 })

@@ -1,6 +1,11 @@
 import type pino from "pino"
 import { z } from "zod"
-import type { IngestPayload, ParsedRecord, ProjectIdentity } from "../ingest/types.js"
+import {
+  type IngestPayload,
+  type ParsedRecord,
+  type ProjectIdentity,
+  projectIdentitySchema,
+} from "../ingest/types.js"
 import type { FileSystem } from "./fs.js"
 
 export const checkpointBaseSchema = z.object({
@@ -18,7 +23,13 @@ export const claudeCheckpointSchema = checkpointBaseSchema.extend({
 
 export const checkpointSchema = claudeCheckpointSchema
 export const checkpointStoreSchema = z
-  .object({ checkpoints: z.record(z.string(), checkpointSchema) })
+  .object({
+    checkpoints: z.record(z.string(), checkpointSchema),
+    // Transcript directory -> the project it belongs to, learned while that directory's cwd still
+    // existed. A worktree that has since been removed can no longer be identified from disk, and
+    // its sessions would otherwise stop syncing the moment the folder goes.
+    projects: z.record(z.string(), projectIdentitySchema).optional(),
+  })
   .readonly()
 
 export type CheckpointBase = z.infer<typeof checkpointBaseSchema>
@@ -30,7 +41,12 @@ export type CheckpointBody = Omit<ClaudeCheckpoint, keyof CheckpointBase>
 export type CollectDeps = {
   readonly fs: FileSystem
   readonly glob: (pattern: string) => Promise<ReadonlyArray<string>>
-  readonly resolveProject: (startDir: string) => Promise<ProjectIdentity>
+  // Null when the directory cannot be identified -- it no longer exists, most often a removed
+  // worktree. A guess is worse than nothing here: it becomes a slug that matches no project, and
+  // every session under it is then dropped as "not enabled".
+  readonly resolveProject: (startDir: string) => Promise<ProjectIdentity | null>
+  // Handed every directory identity resolved from disk, so the caller can persist it.
+  readonly rememberProject?: (dir: string, project: ProjectIdentity) => void
   readonly log: pino.Logger
   // A plugin MUST drop tracks this rejects — the driver does not filter again. Consult it as early
   // as a file's project is known, so an unenabled project costs no parsing.

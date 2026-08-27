@@ -1,4 +1,4 @@
-import { realpath } from "node:fs/promises"
+import { realpath, stat } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
 import type { ProjectIdentity } from "@samskara/core"
 import { runGitOrNull } from "../git.js"
@@ -56,4 +56,18 @@ export const resolveProject = async (startDir: string): Promise<ProjectIdentity>
   }
 
   return { name: basename(root), slug: slugFromDir(root), root }
+}
+
+/**
+ * The identity of a directory that still exists, or null. A cwd read from an old transcript can
+ * name a worktree that has since been removed: git cannot run there, and `resolveProject`'s
+ * path-derived fallback would then invent a slug matching no enabled project -- which reads as
+ * "not captured" rather than "not identified". Null says the difference out loud.
+ */
+export const resolveLiveProject = async (startDir: string): Promise<ProjectIdentity | null> => {
+  const live = await stat(startDir).then(
+    (entry) => entry.isDirectory(),
+    () => false,
+  )
+  return live ? resolveProject(startDir) : null
 }
