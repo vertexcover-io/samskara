@@ -10,7 +10,7 @@ import { apiBase } from "../config.js"
 import { sleep } from "../io.js"
 import { runArtifactWorkers } from "./artifact-worker.js"
 import { runCycle, type WatcherConfig, type WatcherDeps } from "./driver.js"
-import { resolveLiveProject } from "./resolveProject.js"
+import { resolveProject } from "./resolveProject.js"
 import { createArtifactSink, createHttpSink } from "./sink.js"
 
 const CYCLE_MS = 10_000
@@ -117,7 +117,7 @@ export const watch = async (options: WatchOptions): Promise<void> => {
     resolveProject: projectOverride
       ? async () => projectOverride
       : async (dir) => {
-          const identity = await resolveLiveProject(dir)
+          const identity = await resolveProject(dir)
           return identity === null ? null : withStoredProjectId(identity)
         },
     ...(shouldCapture ? { shouldCapture } : {}),

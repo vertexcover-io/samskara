@@ -87,8 +87,12 @@ export const enableCommand = async (options: EnableOptions = {}): Promise<number
   const cwd = options.cwd ?? process.cwd()
   const path = resolve(cwd, options.path ?? cwd)
   const project = await resolveProject(path)
-  const existing = await getProject(project.slug)
   const { stdout, stderr } = resolveIo(options)
+  if (project === null) {
+    stderr.write(`There is no directory at "${path}", so there is nothing to enable.\n`)
+    return 1
+  }
+  const existing = await getProject(project.slug)
   const enabledAt = (options.now ?? (() => new Date()))().toISOString()
   const syncFrom = cutoffFor(options, enabledAt)
 

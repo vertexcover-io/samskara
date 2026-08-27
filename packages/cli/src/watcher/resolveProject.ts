@@ -42,10 +42,21 @@ export const gitRootOf = async (startDir: string): Promise<string | null> => {
 /**
  * One canonical form for the whole identity: absolute, normalized, and symlink-resolved. Every
  * consumer -- containment, `relative()`, the slug -- reads the same string, so nothing downstream
- * re-resolves and no two of them can disagree. `realpath` throws on a path that does not exist,
- * which leaves the normalized form as the answer.
+ * re-resolves and no two of them can disagree.
+ *
+ * Null when the directory is not there. Git cannot run in a folder that is gone -- a removed
+ * worktree, a deleted checkout -- and the path-derived fallback below would then mint a slug for
+ * it that matches no project, which every caller reads as "capture is off" rather than "this
+ * cannot be identified". The fallback is still right for a directory that exists without being a
+ * git repo, so it stays; it just needs the directory to be real.
  */
-export const resolveProject = async (startDir: string): Promise<ProjectIdentity> => {
+export const resolveProject = async (startDir: string): Promise<ProjectIdentity | null> => {
+  const live = await stat(startDir).then(
+    (entry) => entry.isDirectory(),
+    () => false,
+  )
+  if (!live) return null
+
   const declared = (await gitRootOf(startDir)) ?? resolve(startDir)
   const root = await realpath(declared).catch(() => declared)
   const remote = await runGitOrNull(["config", "--get", "remote.origin.url"], root)
@@ -56,18 +67,4 @@ export const resolveProject = async (startDir: string): Promise<ProjectIdentity>
   }
 
   return { name: basename(root), slug: slugFromDir(root), root }
-}
-
-/**
- * The identity of a directory that still exists, or null. A cwd read from an old transcript can
- * name a worktree that has since been removed: git cannot run there, and `resolveProject`'s
- * path-derived fallback would then invent a slug matching no enabled project -- which reads as
- * "not captured" rather than "not identified". Null says the difference out loud.
- */
-export const resolveLiveProject = async (startDir: string): Promise<ProjectIdentity | null> => {
-  const live = await stat(startDir).then(
-    (entry) => entry.isDirectory(),
-    () => false,
-  )
-  return live ? resolveProject(startDir) : null
 }

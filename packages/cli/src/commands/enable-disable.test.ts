@@ -210,6 +210,22 @@ describe("enable command", () => {
     expect(output.join("")).toContain("recorded earlier")
   })
 
+  test("a directory that cannot be identified is refused, not registered under an invented slug", async () => {
+    const { output } = await setup()
+    const errors: string[] = []
+    vi.mocked(resolveProject).mockResolvedValue(null)
+
+    const code = await enableCommand({
+      ...defaultDeps,
+      cwd: "/work/gone",
+      stdout: { write: (text) => output.push(text) },
+      stderr: { write: (text) => errors.push(text) },
+    })
+
+    expect(code).toBe(1)
+    expect(errors.join("")).toContain("/work/gone")
+  })
+
   test("EDGE-013: an unparseable --sync-from exits 1 and registers nothing", async () => {
     const { output } = await setup()
     const errors: string[] = []
@@ -530,6 +546,21 @@ describe("disable command", () => {
       enabled: false,
       enabledAt: "2026-07-25T10:00:00.000Z",
     })
+  })
+
+  test("a directory that cannot be identified is refused rather than disabling something else", async () => {
+    const { output } = await setup()
+    const errors: string[] = []
+    vi.mocked(resolveProject).mockResolvedValue(null)
+
+    const code = await disableCommand({
+      path: "/work/gone",
+      stdout: { write: (text) => output.push(text) },
+      stderr: { write: (text) => errors.push(text) },
+    })
+
+    expect(code).toBe(1)
+    expect(errors.join("")).toContain("/work/gone")
   })
 
   test("REQ-011,EDGE-005: unknown and already-disabled projects succeed idempotently", async () => {

@@ -457,10 +457,10 @@ export const hereFilters = async (cwd: string): Promise<HereFilters> => {
     resolveProject(cwd),
     runGitOrNull(["rev-parse", "--abbrev-ref", "HEAD"], cwd),
   ])
-  const registered = await getProject(identity.slug)
+  const registered = identity === null ? null : await getProject(identity.slug)
   return {
     ...(registered?.projectId === undefined ? {} : { project: registered.projectId }),
-    ...(identity.remote === undefined
+    ...(identity?.remote === undefined
       ? {}
       : { repo: `${identity.remote.owner}/${identity.remote.repoName}` }),
     ...(branch === null || branch === "HEAD" ? {} : { branch }),
