@@ -1,19 +1,15 @@
+import type pino from "pino"
 import { z } from "zod"
 import { readSettings } from "./config/settings.js"
-
-/**
- * A dial left unset falls back to the code default below; a dial set to nonsense stops the process
- * rather than falling back. The daemon runs unattended for days, so a typo that silently reverted
- * to the default would show up only as throughput nobody chose.
- */
-const dial = z.coerce.number().int().positive().optional()
 
 const ConfigSchema = z.object({
   SAMSKARA_API_URL: z.string().min(1).optional(),
   SAMSKARA_WEB_URL: z.string().min(1).optional(),
-  SAMSKARA_MESSAGE_CAP: dial,
-  SAMSKARA_SESSION_CONCURRENCY: dial,
 })
+
+const url = z.string().min(1)
+const dial = z.coerce.number().int().positive()
+const POSITIVE_WHOLE = "a positive whole number"
 
 export const DEFAULT_API_URL = "http://localhost:3000"
 export const DEFAULT_WEB_URL = "http://localhost:8000"
@@ -47,7 +43,41 @@ export const apiBase = (): string =>
 export const webBase = (): string =>
   fromEnv().SAMSKARA_WEB_URL ?? readSettings()?.webUrl ?? DEFAULT_WEB_URL
 
-export const messageCap = (): number => fromEnv().SAMSKARA_MESSAGE_CAP ?? DEFAULT_MESSAGE_CAP
+export type ResolvedConfig = {
+  readonly apiUrl: string
+  readonly webUrl: string
+  readonly messageCap: number
+  readonly sessionConcurrency: number
+}
 
-export const sessionConcurrency = (): number =>
-  fromEnv().SAMSKARA_SESSION_CONCURRENCY ?? DEFAULT_SESSION_CONCURRENCY
+const resolve = <T>(
+  log: pino.Logger,
+  name: string,
+  schema: z.ZodType<T>,
+  fallback: T,
+  expected: string,
+): T => {
+  const value = process.env[name]
+  // Unset is the normal case, not a misconfiguration.
+  if (value === undefined || value.trim() === "") return fallback
+  const parsed = schema.safeParse(value)
+  if (parsed.success) return parsed.data
+  log.warn({ name, value, fallback }, `${name} is not ${expected}; using ${fallback}`)
+  return fallback
+}
+
+export const parseConfig = (log: pino.Logger): ResolvedConfig => {
+  const settings = readSettings()
+  return {
+    apiUrl: resolve(log, API_URL_ENV, url, settings?.apiUrl ?? DEFAULT_API_URL, "a url"),
+    webUrl: resolve(log, WEB_URL_ENV, url, settings?.webUrl ?? DEFAULT_WEB_URL, "a url"),
+    messageCap: resolve(log, MESSAGE_CAP_ENV, dial, DEFAULT_MESSAGE_CAP, POSITIVE_WHOLE),
+    sessionConcurrency: resolve(
+      log,
+      SESSION_CONCURRENCY_ENV,
+      dial,
+      DEFAULT_SESSION_CONCURRENCY,
+      POSITIVE_WHOLE,
+    ),
+  }
+}

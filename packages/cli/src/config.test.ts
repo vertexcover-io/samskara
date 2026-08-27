@@ -7,10 +7,10 @@ import {
   apiBase,
   DEFAULT_MESSAGE_CAP,
   DEFAULT_SESSION_CONCURRENCY,
-  messageCap,
-  sessionConcurrency,
+  parseConfig,
   webBase,
 } from "./config.js"
+import { spyLogger } from "./watcher/test-logger.js"
 
 const original = {
   home: process.env.SAMSKARA_HOME,
@@ -72,40 +72,70 @@ describe("server url resolution", () => {
   })
 })
 
-describe("ingest fan-out tuning", () => {
-  test("falls back to the code defaults when nothing is configured", () => {
-    expect(messageCap()).toBe(DEFAULT_MESSAGE_CAP)
-    expect(sessionConcurrency()).toBe(DEFAULT_SESSION_CONCURRENCY)
+describe("parseConfig", () => {
+  test("falls back to the code defaults when nothing is configured, saying nothing", () => {
+    const spy = spyLogger()
+
+    expect(parseConfig(spy.log)).toEqual({
+      apiUrl: "http://localhost:3000",
+      webUrl: "http://localhost:8000",
+      messageCap: DEFAULT_MESSAGE_CAP,
+      sessionConcurrency: DEFAULT_SESSION_CONCURRENCY,
+    })
+    expect(spy.warn).toEqual([])
   })
 
-  test("the environment overrides both dials", () => {
+  test("takes every dial from the environment when they are usable", () => {
+    process.env.SAMSKARA_API_URL = "http://localhost:3999"
     process.env.SAMSKARA_MESSAGE_CAP = "1200"
     process.env.SAMSKARA_SESSION_CONCURRENCY = "2"
+    const spy = spyLogger()
 
-    expect(messageCap()).toBe(1200)
-    expect(sessionConcurrency()).toBe(2)
+    const resolved = parseConfig(spy.log)
+
+    expect(resolved.apiUrl).toBe("http://localhost:3999")
+    expect(resolved.messageCap).toBe(1200)
+    expect(resolved.sessionConcurrency).toBe(2)
+    expect(spy.warn).toEqual([])
   })
 
-  test("reads the environment on every call, so the daemon is not frozen at import", () => {
-    expect(messageCap()).toBe(DEFAULT_MESSAGE_CAP)
+  test("falls back to the saved settings file before the code default", async () => {
+    await writeSettings({ apiUrl: "https://api.acme.dev", webUrl: "https://acme.dev" })
+    const spy = spyLogger()
 
-    process.env.SAMSKARA_MESSAGE_CAP = "750"
+    const resolved = parseConfig(spy.log)
 
-    expect(messageCap()).toBe(750)
+    expect(resolved.apiUrl).toBe("https://api.acme.dev")
+    expect(resolved.webUrl).toBe("https://acme.dev")
   })
 
   /**
-   * A dial that silently ignores a typo is worse than one that refuses to start: the daemon would
-   * run for days at a value nobody chose, and the only symptom is throughput.
+   * Never a throw. The watch loop catches everything a cycle raises, so a value that threw would
+   * leave a daemon alive, logging one line every cycle and never syncing.
    */
-  test("a value that is not a positive whole number fails loudly rather than falling back", () => {
-    process.env.SAMSKARA_SESSION_CONCURRENCY = "zero"
-    expect(() => sessionConcurrency()).toThrow(/SAMSKARA_SESSION_CONCURRENCY/)
+  test.each(["zero", "0", "-1", "2.5"])(
+    "%o is warned about once and replaced by the default rather than throwing",
+    (value) => {
+      process.env.SAMSKARA_SESSION_CONCURRENCY = value
+      const spy = spyLogger()
 
-    process.env.SAMSKARA_SESSION_CONCURRENCY = "0"
-    expect(() => sessionConcurrency()).toThrow(/SAMSKARA_SESSION_CONCURRENCY/)
+      expect(parseConfig(spy.log).sessionConcurrency).toBe(DEFAULT_SESSION_CONCURRENCY)
+      expect(spy.warn).toHaveLength(1)
+      expect(spy.warn[0]?.message).toContain("SAMSKARA_SESSION_CONCURRENCY")
+      expect(spy.warn[0]?.details).toMatchObject({ value, fallback: DEFAULT_SESSION_CONCURRENCY })
+    },
+  )
 
-    process.env.SAMSKARA_SESSION_CONCURRENCY = "2.5"
-    expect(() => sessionConcurrency()).toThrow(/SAMSKARA_SESSION_CONCURRENCY/)
+  test("warns once per unusable dial, naming each one", () => {
+    process.env.SAMSKARA_MESSAGE_CAP = "lots"
+    process.env.SAMSKARA_SESSION_CONCURRENCY = "-3"
+    const spy = spyLogger()
+
+    parseConfig(spy.log)
+
+    expect(spy.warn.map((entry) => entry.details.name)).toEqual([
+      "SAMSKARA_MESSAGE_CAP",
+      "SAMSKARA_SESSION_CONCURRENCY",
+    ])
   })
 })

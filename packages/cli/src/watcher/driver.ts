@@ -15,7 +15,6 @@ import type {
 import { readCheckpoints, writeCheckpoints } from "@samskara/core"
 import type pino from "pino"
 import { mapWithLimit } from "../concurrency.js"
-import { messageCap, sessionConcurrency } from "../config.js"
 import { collectArtifacts, type PotentialArtifact } from "./artifact-extract.js"
 import { type ArtifactQueueEntry, enqueue } from "./artifact-queue.js"
 import { shouldCaptureArtifacts } from "./containment.js"
@@ -29,6 +28,9 @@ export type WatcherConfig = {
   readonly statePath: string
   /** Absent means the cycle does no artifact work at all. */
   readonly artifactQueuePath?: string
+  /** Both resolved once at startup by `parseConfig`, so a cycle never re-reads the environment. */
+  readonly messageCap: number
+  readonly sessionConcurrency: number
 }
 
 export type WatcherDeps = {
@@ -158,6 +160,7 @@ const syncTrack = async (
   track: SessionTrack,
   origin: SessionOrigin,
   deps: WatcherDeps,
+  messageCap: number,
 ): Promise<Checkpoint | undefined> => {
   const records = await attributeRepos(track.records, track.project.root)
   // Collected once over the whole track, then attached to the chunk holding each event's
@@ -169,7 +172,7 @@ const syncTrack = async (
   let messagesSent = 0
   let stoppedOnFailure = false
   const reqIds: string[] = []
-  for (const request of sliceByMessages(records, messageCap())) {
+  for (const request of sliceByMessages(records, messageCap)) {
     const resultIds = new Set(
       request.records
         .flatMap((record) => record.messages)
@@ -241,10 +244,11 @@ const syncSession = async (
   batch: SessionBatch,
   prev: CheckpointStore,
   deps: WatcherDeps,
+  messageCap: number,
 ): Promise<Record<string, Checkpoint>> => {
   const updated: Record<string, Checkpoint> = {}
   for (const track of batch.tracks) {
-    const checkpoint = await syncTrack(track, await originFor(track, prev), deps)
+    const checkpoint = await syncTrack(track, await originFor(track, prev), deps, messageCap)
     if (checkpoint) updated[track.checkpointKey] = checkpoint
   }
   return updated
@@ -356,8 +360,8 @@ export const runCycle = async (
     ...(deps.syncFromFor ? { syncFromFor: deps.syncFromFor } : {}),
   }
   const batches = await deps.plugin.collect(prev, collectDeps)
-  const results = await mapWithLimit(batches, sessionConcurrency(), (batch) =>
-    syncSession(batch, prev, deps),
+  const results = await mapWithLimit(batches, config.sessionConcurrency, (batch) =>
+    syncSession(batch, prev, deps, config.messageCap),
   )
 
   // After the flush, before the checkpoint write: enqueuing earlier would queue artifacts for

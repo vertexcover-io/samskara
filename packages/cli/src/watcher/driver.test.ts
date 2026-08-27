@@ -158,7 +158,11 @@ describe("watcher driver", () => {
     dir = await mkdtemp(join(tmpdir(), "samskara-watch-"))
     projects = join(dir, ".claude", "projects", "bucket")
     await mkdir(projects, { recursive: true })
-    config = { statePath: join(dir, "state.json") }
+    config = {
+      statePath: join(dir, "state.json"),
+      messageCap: DEFAULT_MESSAGE_CAP,
+      sessionConcurrency: DEFAULT_SESSION_CONCURRENCY,
+    }
   })
 
   test("flushes a grown main file and advances the watermark", async () => {
