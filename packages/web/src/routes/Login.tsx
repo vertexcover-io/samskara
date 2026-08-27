@@ -1,3 +1,5 @@
+import { BuildStamp } from "../shell/BuildStamp.js"
+
 type SpineActor = "user" | "assistant" | "aside"
 
 type SpineRecord = {
@@ -104,6 +106,8 @@ const AccessColumn = () => (
         Continue with GitHub
       </a>
     </div>
+
+    <BuildStamp className="relative mx-auto mt-6 w-full max-w-[23rem] justify-end" />
   </section>
 )
 
