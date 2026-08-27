@@ -19,7 +19,7 @@
     "test:web": "turbo run test --filter=@samskara/web",
     "test:scripts": "cd scripts && bun test",
     "test:claude-session": "bun run scripts/claude-session-coverage.ts",
-    "cli": "bun packages/cli/src/index.ts",
+    "cli": "SAMSKARA_PROFILE=dev bun packages/cli/src/index.ts",
     "e2e": "bun run e2e/run.ts",
     "e2e:ui": "bun run e2e/run.ts --ui",
     "typecheck": "turbo run typecheck && tsc -p e2e/tsconfig.json",

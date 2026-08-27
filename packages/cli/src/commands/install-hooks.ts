@@ -3,6 +3,7 @@ import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { z } from "zod"
 import { resolveCliEntry } from "../config/daemon.js"
+import { profile } from "../config/paths.js"
 import { reportError, resolveIo, type Writer } from "../io.js"
 
 const hookCommandSchema = z
@@ -12,7 +13,10 @@ const hookMatcherSchema = z
   .object({ matcher: z.string().optional(), hooks: z.array(hookCommandSchema) })
   .passthrough()
 const recordSchema = z.record(z.string(), z.unknown())
-const marker = "samskara:ensure"
+const markerBase = "samskara:ensure"
+
+/** One marker per profile, so a dev install and a release install manage separate hook lines. */
+const marker = (): string => (profile() === "default" ? markerBase : `${markerBase}:${profile()}`)
 
 type Hook = z.infer<typeof hookCommandSchema>
 type Matcher = z.infer<typeof hookMatcherSchema>
@@ -51,11 +55,19 @@ const writeSettings = (path: string, settings: JsonRecord): void => {
   writeFileSync(path, `${JSON.stringify(settings, null, 2)}\n`)
 }
 
-const managedCommand = (): string =>
-  `${JSON.stringify(process.execPath)} ${JSON.stringify(resolveCliEntry())} ensure # ${marker}`
+/**
+ * Claude Code runs this command with its own environment, never the shell that installed it, so a
+ * non-default profile has to travel inside the command itself.
+ */
+const managedCommand = (): string => {
+  const prefix = profile() === "default" ? "" : `SAMSKARA_PROFILE=${profile()} `
+  return `${prefix}${JSON.stringify(process.execPath)} ${JSON.stringify(resolveCliEntry())} ensure # ${marker()}`
+}
 
+// Anchored, not `includes`: `samskara:ensure` is a prefix of `samskara:ensure:dev`, so a substring
+// match would let the default profile adopt every other profile's hook and overwrite it as stale.
 const isManaged = (hook: Hook): hook is Hook & { command: string } =>
-  hook.command?.includes(marker) === true
+  hook.command?.endsWith(`# ${marker()}`) === true
 
 const statusOf = (matchers: ReadonlyArray<Matcher>, want: string): Status => {
   const found = matchers.flatMap((matcher) => matcher.hooks.filter(isManaged))

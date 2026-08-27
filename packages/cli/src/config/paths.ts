@@ -1,7 +1,25 @@
 import { homedir } from "node:os"
 import { join } from "node:path"
 
-export const configHome = (): string => process.env.SAMSKARA_HOME ?? join(homedir(), ".samskara")
+/**
+ * A profile is what keeps a dev checkout and an installed release from fighting: each one gets its
+ * own directory, so they never share a token, a `config.json` or the `watch.pid` that decides
+ * whether a watcher is already running. `default` keeps the original directory, so an install that
+ * predates profiles needs no migration.
+ */
+export const profile = (): string => {
+  const name = process.env.SAMSKARA_PROFILE?.trim()
+  if (name === undefined || name === "") return "default"
+  // The profile is pasted into the shell command `install-hooks` writes into settings.json.
+  if (!/^[A-Za-z0-9_-]+$/.test(name)) {
+    throw new Error(`SAMSKARA_PROFILE must be letters, digits, dashes or underscores, not ${name}`)
+  }
+  return name
+}
+
+export const configHome = (): string =>
+  process.env.SAMSKARA_HOME ??
+  join(homedir(), profile() === "default" ? ".samskara" : `.samskara-${profile()}`)
 export const tokenPath = (): string => join(configHome(), "token")
 export const settingsPath = (): string => join(configHome(), "config.json")
 export const statePath = (): string => join(configHome(), "state.json")
