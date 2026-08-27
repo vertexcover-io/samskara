@@ -1,3 +1,4 @@
+import { serveStatic } from "@hono/node-server/serve-static"
 import { createLogger } from "@samskara/core"
 import { Hono } from "hono"
 import type pino from "pino"
@@ -35,6 +36,18 @@ export const buildApp = (db: Db, env: Env, deps: Deps = {}) => {
     .route("/api/projects", projectsRoutes({ db, env }))
     .route("/api/sessions", sessionsRoutes({ db, env }))
     .route("/api/sync-status", syncStatusRoutes({ db, env }))
+
+  if (env.webDist) {
+    const webDist = env.webDist
+    app.use("/*", async (c, next) => {
+      if (c.req.path.startsWith("/api/")) return next()
+      return serveStatic({ root: webDist })(c, next)
+    })
+    app.get("*", async (c, next) => {
+      if (c.req.path.startsWith("/api/")) return next()
+      return serveStatic({ path: `${webDist}/index.html` })(c, next)
+    })
+  }
 
   app.onError((err, c) => {
     ;(c.get("log") ?? rootLog).error({ err }, "server error")
