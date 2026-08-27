@@ -42,6 +42,8 @@ jobs:
 
       - run: bun run release:pack
 
+      - run: cp "dist/samskara-cli-${GITHUB_REF_NAME#v}.tgz" dist/samskara-cli.tgz
+
       - name: Publish the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
