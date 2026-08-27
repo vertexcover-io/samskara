@@ -3,7 +3,7 @@ import { checkpointStoreSchema } from "@samskara/core"
 import { readValidated } from "../config/atomic.js"
 import { readToken } from "../config/credentials.js"
 import { watcherPid } from "../config/daemon.js"
-import { statePath, watchLogDir } from "../config/paths.js"
+import { configHome, profile, statePath, watchLogDir } from "../config/paths.js"
 import { listProjects } from "../config/projects.js"
 import { apiBase, webBase } from "../config.js"
 import { relativeTime, resolveIo, type Writer } from "../io.js"
@@ -62,7 +62,9 @@ export const statusCommand = async (options: StatusOptions = {}): Promise<number
   stdout.write(`Account    ${await authLine()}\n`)
   stdout.write(`Server     ${apiBase()}\n`)
   stdout.write(`Web        ${webBase()}\n`)
-  stdout.write(`Logs       ${shortenPath(watchLogDir())}\n\n`)
+  stdout.write(`Logs       ${shortenPath(watchLogDir())}\n`)
+  // Two installs on one machine look identical otherwise, and each has its own token and urls.
+  stdout.write(`Profile    ${profile()}  (${shortenPath(configHome())})\n\n`)
 
   if (projects.length === 0) {
     stdout.write("No projects registered yet.\n")

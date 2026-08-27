@@ -13,7 +13,7 @@ import { dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import * as lockfile from "proper-lockfile"
 import { sleep } from "../io.js"
-import { configHome, watcherCrashLogPath, watchPidPath } from "./paths.js"
+import { configHome, profile, watcherCrashLogPath, watchPidPath } from "./paths.js"
 
 const START_LOCK_TIMEOUT_MS = 5_000
 const START_LOCK_RETRY_MS = 20
@@ -118,7 +118,12 @@ const spawnWatcher = (cliEntry: string) => {
     return spawn(process.execPath, [cliEntry, "watch", "--foreground"], {
       detached: true,
       stdio: ["ignore", stdoutFd, stderrFd],
-      env: { ...process.env, SAMSKARA_HOME: configHome(), SAMSKARA_DAEMON: "1" },
+      env: {
+        ...process.env,
+        SAMSKARA_HOME: configHome(),
+        SAMSKARA_PROFILE: profile(),
+        SAMSKARA_DAEMON: "1",
+      },
     })
   } finally {
     closeDescriptor(stdoutFd)

@@ -2,7 +2,7 @@ import { existsSync } from "node:fs"
 import { mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { describe, expect, test } from "vitest"
+import { afterEach, describe, expect, test } from "vitest"
 import { resolveCliEntry } from "../config/daemon.js"
 import { installHooksCommand, uninstallHooksCommand } from "./install-hooks.js"
 
@@ -149,5 +149,62 @@ describe("hook commands", () => {
 
     expect([installCode, uninstallCode]).toEqual([1, 1])
     expect(await readFile(path, "utf8")).toBe(contents)
+  })
+})
+
+const managedCommandsIn = (text: string): ReadonlyArray<string> =>
+  JSON.parse(text)
+    .hooks.SessionStart.flatMap(
+      (matcher: { hooks: ReadonlyArray<{ command?: string }> }) => matcher.hooks,
+    )
+    .map((hook: { command?: string }) => hook.command)
+    .filter(
+      (command: string | undefined): command is string =>
+        command?.includes("samskara:ensure") === true,
+    )
+
+describe("hook profiles", () => {
+  const quiet = { write: () => undefined }
+  const originalProfile = process.env.SAMSKARA_PROFILE
+
+  const withProfile = (value: string | undefined): void => {
+    if (value === undefined) delete process.env.SAMSKARA_PROFILE
+    else process.env.SAMSKARA_PROFILE = value
+  }
+
+  const install = (path: string, value: string | undefined): number => {
+    withProfile(value)
+    return installHooksCommand({ settingsPath: path, stdout: quiet })
+  }
+
+  afterEach(() => {
+    withProfile(originalProfile)
+  })
+
+  test("a dev install and a prod install keep separate hooks instead of overwriting each other", async () => {
+    const path = await settingsFile()
+
+    expect(install(path, undefined)).toBe(0)
+    const prodCommand = managedCommandIn(await readFile(path, "utf8"))
+    expect(install(path, "dev")).toBe(0)
+
+    // Both lines survive: the dev install must not read prod's hook as its own stale one.
+    const afterDev = managedCommandsIn(await readFile(path, "utf8"))
+    expect(afterDev).toHaveLength(2)
+    expect(afterDev).toContain(prodCommand)
+    // Claude Code runs the hook without the dev shell, so the profile rides in the command itself.
+    expect(afterDev.filter((command) => command.startsWith("SAMSKARA_PROFILE=dev "))).toHaveLength(
+      1,
+    )
+
+    // `samskara:ensure` is a prefix of `samskara:ensure:dev`, so a substring match here would let
+    // the prod install swallow the dev hook on the very next `samskara init`.
+    expect(install(path, undefined)).toBe(0)
+    expect(managedCommandsIn(await readFile(path, "utf8"))).toEqual(afterDev)
+
+    // Removing one profile leaves the other capturing.
+    withProfile("dev")
+    expect(uninstallHooksCommand({ settingsPath: path, stdout: quiet })).toBe(0)
+    expect(managedCommandsIn(await readFile(path, "utf8"))).toEqual([prodCommand])
   })
 })

@@ -186,7 +186,10 @@ machine-readable output instead of the default table; `--open` opens the top hit
 
 Everything the CLI stores lives in `~/.samskara` — the token, which folders are enabled, per-session
 ingest checkpoints, cached `search` filter names, the watcher pid, and `logs/current.log`. Override
-the whole directory with `SAMSKARA_HOME`.
+the whole directory with `SAMSKARA_HOME`, or name an install with `SAMSKARA_PROFILE`: `default` keeps
+`~/.samskara`, any other name gets `~/.samskara-NAME` and its own SessionStart hook, so two installs
+on one machine never share a token, a server URL or the watcher pid. `samskara status` prints which
+profile you are looking at.
 
 ## Using the web UI
 
@@ -234,7 +237,7 @@ bun run lint         # biome check ., including the DB naming rule
 bun run format       # biome format --write .
 bun run test         # every package's unit tests
 bun run e2e          # Playwright, on a throwaway database it creates and drops
-bun run cli -- status   # run the CLI from source, without linking
+bun run cli -- status   # the CLI from source, on its own `dev` profile
 ```
 
 Database helpers:
