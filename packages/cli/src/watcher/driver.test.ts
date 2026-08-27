@@ -712,7 +712,7 @@ describe("watcher driver", () => {
         withQueue(queuePath),
         deps({
           glob: async () => [main],
-          // The --project-slug override path synthesizes an identity carrying no root.
+          // An identity carrying no root: artifact capture has nothing to scan.
           resolveProject: async () => project,
         }),
       )

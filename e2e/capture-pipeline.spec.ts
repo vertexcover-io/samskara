@@ -75,12 +75,6 @@ type Harness = {
 }
 
 type HarnessOptions = {
-  /**
-   * `--project-slug` makes the watcher capture unconditionally and stub out project
-   * resolution. Tests that care about enablement must leave it off, so the daemon runs
-   * its real `isProjectEnabled` check and resolves the slug from the git remote.
-   */
-  readonly projectOverride?: boolean
   /** What `projects.json` records for this project; omit the entry entirely with `null`. */
   readonly enabled?: boolean | null
   /** The cutoff `samskara enable` would have stored; omitted means capture everything. */
@@ -99,15 +93,15 @@ type HarnessOptions = {
  * glob and its real state file are exercised — no test seam substitutes for either.
  */
 const startHarness = async (options: HarnessOptions = {}): Promise<Harness> => {
-  const { projectOverride = true, enabled = true, syncFrom, viaEnable = false } = options
+  const { enabled = true, syncFrom, viaEnable = false } = options
   const home = await mkdtemp(join(tmpdir(), "samskara-e2e-"))
   const samskaraHome = join(home, ".samskara")
   const cwd = join(home, "work", PROJECT_NAME)
   await mkdir(cwd, { recursive: true })
   await mkdir(samskaraHome, { recursive: true })
 
-  // A real git remote, so that without --project-slug the daemon's own resolver derives
-  // `acme-widgets` from it. Without this the slug would be the machine-specific path.
+  // A real git remote, so the daemon's own resolver derives `acme-widgets` from it. Without
+  // this the slug would be the machine-specific path.
   await execFileAsync("git", ["init", "-q"], { cwd })
   await execFileAsync("git", ["remote", "add", "origin", GIT_REMOTE], { cwd })
 
@@ -171,18 +165,11 @@ const startHarness = async (options: HarnessOptions = {}): Promise<Harness> => {
     })
     enableOutput = result.stdout
   } else {
-    child = spawn(
-      "bun",
-      [
-        CLI_ENTRY,
-        "watch",
-        "--foreground",
-        ...(projectOverride
-          ? ["--project-name", PROJECT_NAME, "--project-slug", PROJECT_SLUG]
-          : []),
-      ],
-      { cwd: REPO_ROOT, env: { ...env, SAMSKARA_DAEMON: "1" }, stdio: ["ignore", "pipe", "pipe"] },
-    )
+    child = spawn("bun", [CLI_ENTRY, "watch", "--foreground"], {
+      cwd: REPO_ROOT,
+      env: { ...env, SAMSKARA_DAEMON: "1" },
+      stdio: ["ignore", "pipe", "pipe"],
+    })
     const logs: string[] = []
     child.stdout?.on("data", (chunk: Buffer) => logs.push(chunk.toString()))
     child.stderr?.on("data", (chunk: Buffer) => logs.push(chunk.toString()))
@@ -444,8 +431,8 @@ test.describe("capture pipeline", () => {
     await expect(conversation.getByText(/switch inserts to upserts/i)).toBeVisible()
   })
 
-  test("P5: with no --project-slug override the daemon resolves the project from its git remote and captures it, because projects.json marks it enabled", async () => {
-    const { writer, sql } = await useHarness({ projectOverride: false, enabled: true })
+  test("P5: the daemon resolves the project from its git remote and captures it, because projects.json marks it enabled", async () => {
+    const { writer, sql } = await useHarness({ enabled: true })
 
     await writer.append([
       userLine("Resolve me from the git remote.", 0),
@@ -531,7 +518,6 @@ test.describe("capture pipeline", () => {
 
   test("P6: a project marked disabled in projects.json is skipped -- the daemon completes cycles and checkpoints nothing, and no rows reach Postgres", async () => {
     const { writer, sql, samskaraHome } = await useHarness({
-      projectOverride: false,
       enabled: false,
     })
 
@@ -674,7 +660,6 @@ test.describe("capture pipeline", () => {
     // old session's first line and before the new one's.
     const CUTOFF = new Date(Date.UTC(2026, 5, 1, 12, 30)).toISOString()
     const { sql, home, cwd, samskaraHome } = await useHarness({
-      projectOverride: false,
       enabled: true,
       syncFrom: CUTOFF,
     })
@@ -721,10 +706,7 @@ test.describe("capture pipeline", () => {
   })
 
   test("P12: a file written inside the project root is captured, and one outside it never is", async () => {
-    // No --project-slug override: only the real resolver derives a project root, and without
-    // a root the daemon skips artifact capture entirely.
     const { writer, sql, cwd } = await useHarness({
-      projectOverride: false,
       enabled: true,
     })
 
@@ -774,7 +756,6 @@ test.describe("capture pipeline", () => {
 
   test("P13: an edited file's backup pointer resolves into a stored base and diff, while an edit whose delta names no backup lands as editedUnknownBase", async () => {
     const { writer, sql, cwd, home } = await useHarness({
-      projectOverride: false,
       enabled: true,
     })
 
@@ -848,9 +829,8 @@ test.describe("capture pipeline", () => {
   })
 
   test("P14: a captured report's referenced media is captured too, under the same session, while a source file it links is not", async () => {
-    // No --project-slug override: artifact capture needs the real resolver's project root, and
-    // the tracked-reference filter needs the real `git ls-files` against this fixture repo.
-    const { writer, sql, cwd } = await useHarness({ projectOverride: false, enabled: true })
+    // The tracked-reference filter needs the real `git ls-files` against this fixture repo.
+    const { writer, sql, cwd } = await useHarness({ enabled: true })
 
     const verification = join(cwd, "verification")
     const report = join(verification, "proof-report.html")
@@ -937,9 +917,7 @@ test.describe("capture pipeline", () => {
   })
 
   test("A1: a file the agent edits during a captured session arrives in Postgres with its pre-session content and a diff, without delaying message capture", async () => {
-    // No --project-slug: the override path supplies no project root, so it would enqueue nothing.
     const { writer, sql, cwd, home } = await useHarness({
-      projectOverride: false,
       enabled: true,
     })
 
@@ -1043,7 +1021,7 @@ test.describe("capture pipeline", () => {
   })
 
   test("A2: artifacts captured by the real daemon read back through the API, and an uploaded type is never echoed -- a .js is served as inert text, while HTML and SVG render same-origin by design", async () => {
-    const { writer, sql, cwd } = await useHarness({ projectOverride: false, enabled: true })
+    const { writer, sql, cwd } = await useHarness({ enabled: true })
 
     // Everything an agent plausibly writes, including the two shapes that turn a captured file
     // into stored XSS if the server trusts what the client claimed about it.
@@ -1135,7 +1113,6 @@ test.describe("capture pipeline", () => {
     authedPage: page,
   }) => {
     const { writer, sql, cwd, home } = await useHarness({
-      projectOverride: false,
       enabled: true,
     })
 

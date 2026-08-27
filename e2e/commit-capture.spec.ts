@@ -33,6 +33,7 @@ const GIT_REMOTE = "git@github.com:acme/widgets.git"
 /** The sub-repo the commit is made in -- a different remote, so a different `repos` row. */
 const SUB_REPO_NAME = "serana"
 const SUB_REPO_REMOTE = "git@github.com:refrens/serana.git"
+const SUB_REPO_SLUG = "refrens-serana"
 
 const execFileAsync = promisify(execFile)
 
@@ -123,6 +124,15 @@ const startHarness = async (): Promise<Harness> => {
           enabled: true,
           enabledAt: new Date(Date.UTC(2026, 5, 1, 11)).toISOString(),
         },
+        // The session runs in the sub-repo, so the sub-repo is the project that owns it. Both are
+        // enabled: which one captures the session is decided by the transcript's cwd, and commits
+        // are attributed per message on top of that.
+        [SUB_REPO_SLUG]: {
+          name: SUB_REPO_NAME,
+          path: subRepo,
+          enabled: true,
+          enabledAt: new Date(Date.UTC(2026, 5, 1, 11)).toISOString(),
+        },
       },
     }),
     "utf8",
@@ -144,15 +154,9 @@ const startHarness = async (): Promise<Harness> => {
 
   const child: ChildProcess = spawn(
     "bun",
-    [
-      CLI_ENTRY,
-      "watch",
-      "--foreground",
-      "--project-name",
-      PROJECT_NAME,
-      "--project-slug",
-      PROJECT_SLUG,
-    ],
+    // No project override: the daemon derives `acme-widgets` from this fixture's git remote,
+    // which is the slug `projects.json` above marks enabled.
+    [CLI_ENTRY, "watch", "--foreground"],
     {
       cwd: REPO_ROOT,
       env: {

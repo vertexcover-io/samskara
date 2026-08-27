@@ -364,8 +364,7 @@ export const runCycle = async (
   if (artifactQueuePath !== undefined) {
     for (const batch of batches) {
       const root = batch.tracks[0]?.project.root
-      // No root means the --project-slug override path, which synthesizes an identity without
-      // one. Silent by design: it recurs every cycle for the whole run.
+      // `root` is optional on the identity, and artifact capture is meaningless without one.
       if (root === undefined) continue
       await enqueueArtifacts(batch, root, artifactQueuePath, deps)
     }
