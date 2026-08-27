@@ -6,7 +6,7 @@ import type pino from "pino"
 import { readToken } from "../config/credentials.js"
 import { artifactQueuePath, artifactStatePath, fileHistoryDir, statePath } from "../config/paths.js"
 import { getProject, isProjectEnabled, syncFromFor } from "../config/projects.js"
-import { apiBase } from "../config.js"
+import { parseConfig } from "../config.js"
 import { sleep } from "../io.js"
 import { runArtifactWorkers } from "./artifact-worker.js"
 import { runCycle, type WatcherConfig, type WatcherDeps } from "./driver.js"
@@ -96,13 +96,21 @@ export const watch = async (options: WatchOptions): Promise<void> => {
   // Checked once so a daemon with no credentials at all fails loudly at startup; the sinks read
   // the token again on every request, so a later `samskara login` lands without a restart.
   if (!(await readToken())) throw new Error("no token found; run `samskara login` first")
+  // Read once, here, so an unusable value is warned about at startup rather than swallowed by the
+  // loop's own catch every cycle.
+  const resolved = parseConfig(log)
   // Read at call time, not module load: SAMSKARA_HOME decides where the queue lives, and the
   // daemon must write under whichever home the process was started with.
-  const config: WatcherConfig = { statePath: statePath(), artifactQueuePath: artifactQueuePath() }
+  const config: WatcherConfig = {
+    statePath: statePath(),
+    artifactQueuePath: artifactQueuePath(),
+    messageCap: resolved.messageCap,
+    sessionConcurrency: resolved.sessionConcurrency,
+  }
   const deps: WatcherDeps = {
     fs: nodeFs,
     clock: { now: () => Date.now() },
-    sink: createHttpSink({ apiBase: apiBase(), readToken, fetch: globalThis.fetch }),
+    sink: createHttpSink({ apiBase: resolved.apiUrl, readToken, fetch: globalThis.fetch }),
     glob: (pattern) => globAll(pattern, log),
     plugin: createClaudePlugin(nodeFs),
     resolveProject: async (dir) => {
@@ -124,7 +132,7 @@ export const watch = async (options: WatchOptions): Promise<void> => {
     {
       fileHistoryDir: fileHistoryDir(),
       log,
-      sink: createArtifactSink({ apiBase: apiBase(), readToken, fetch: globalThis.fetch }),
+      sink: createArtifactSink({ apiBase: resolved.apiUrl, readToken, fetch: globalThis.fetch }),
       clock: { now: () => Date.now() },
       stopped: () => stopping,
     },

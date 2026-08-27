@@ -2,6 +2,7 @@ import { dirname, relative, resolve } from "node:path"
 import type { ArtifactUploadPayload } from "@samskara/core"
 import type pino from "pino"
 import { z } from "zod"
+import { runConcurrent } from "../concurrency.js"
 import { atomicWriteJson, readOrReset, readValidated, withFileLock } from "../config/atomic.js"
 import { runGitOrNull } from "../git.js"
 import { sleep } from "../io.js"
@@ -372,5 +373,5 @@ export const runArtifactWorkers = async (
 ): Promise<void> => {
   const inFlight = new Set<string>()
   const count = config.workers ?? DEFAULT_WORKER_COUNT
-  await Promise.all(Array.from({ length: count }, () => runWorker(config, deps, inFlight)))
+  await runConcurrent(count, () => runWorker(config, deps, inFlight))
 }
