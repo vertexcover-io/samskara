@@ -14,14 +14,14 @@ import type {
 } from "@samskara/core"
 import { readCheckpoints, writeCheckpoints } from "@samskara/core"
 import type pino from "pino"
+import { mapWithLimit } from "../concurrency.js"
+import { messageCap, sessionConcurrency } from "../config.js"
 import { collectArtifacts, type PotentialArtifact } from "./artifact-extract.js"
 import { type ArtifactQueueEntry, enqueue } from "./artifact-queue.js"
 import { shouldCaptureArtifacts } from "./containment.js"
 import { collectGitEvents } from "./gitEvents.js"
 import { createRepoResolver, resolveHeadSha } from "./resolveRepo.js"
 import type { SinkResult } from "./sink.js"
-
-export const MESSAGE_CAP = 2000
 
 export type Clock = { now(): number }
 
@@ -169,7 +169,7 @@ const syncTrack = async (
   let messagesSent = 0
   let stoppedOnFailure = false
   const reqIds: string[] = []
-  for (const request of sliceByMessages(records, MESSAGE_CAP)) {
+  for (const request of sliceByMessages(records, messageCap())) {
     const resultIds = new Set(
       request.records
         .flatMap((record) => record.messages)
@@ -356,7 +356,9 @@ export const runCycle = async (
     ...(deps.syncFromFor ? { syncFromFor: deps.syncFromFor } : {}),
   }
   const batches = await deps.plugin.collect(prev, collectDeps)
-  const results = await Promise.all(batches.map((batch) => syncSession(batch, prev, deps)))
+  const results = await mapWithLimit(batches, sessionConcurrency(), (batch) =>
+    syncSession(batch, prev, deps),
+  )
 
   // After the flush, before the checkpoint write: enqueuing earlier would queue artifacts for
   // records that never reached the server, and the worker would 409 on every one.

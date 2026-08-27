@@ -11,11 +11,11 @@ import {
   type ProjectIdentity,
 } from "@samskara/core"
 import { beforeEach, describe, expect, test, vi } from "vitest"
+import { DEFAULT_MESSAGE_CAP, DEFAULT_SESSION_CONCURRENCY } from "../config.js"
 import { enqueue } from "./artifact-queue.js"
 import { runArtifactWorkers } from "./artifact-worker.js"
 import {
   flushCause,
-  MESSAGE_CAP,
   runCycle,
   sliceByMessages,
   type WatcherConfig,
@@ -103,7 +103,7 @@ describe("sliceByMessages", () => {
   })
 
   test("S6: a 1,999-message record plus two-message record and one oversize record remain line atomic", () => {
-    const boundaryChunks = sliceByMessages([record(1, 1999), record(2, 2)], MESSAGE_CAP)
+    const boundaryChunks = sliceByMessages([record(1, 1999), record(2, 2)], DEFAULT_MESSAGE_CAP)
     expect(
       boundaryChunks.map((chunk) => chunk.records.flatMap((item) => item.messages).length),
     ).toEqual([1999, 2])
@@ -111,10 +111,21 @@ describe("sliceByMessages", () => {
       [1, 2],
     )
 
-    const oversizeChunks = sliceByMessages([record(3, 2500)], MESSAGE_CAP)
+    const oversizeChunks = sliceByMessages([record(3, 2500)], DEFAULT_MESSAGE_CAP)
     expect(oversizeChunks).toHaveLength(1)
     expect(oversizeChunks[0]?.records[0]?.messages).toHaveLength(2500)
     expect(oversizeChunks[0]?.lastCompleteLine).toBe(3)
+  })
+})
+
+describe("ingest fan-out budget", () => {
+  /**
+   * Chunks within a session are serial and sessions are capped, so this product is every message
+   * the CLI can have in flight at once. 2000 is what a single session was already allowed to send,
+   * so the bounded fan-out never puts more on the wire than one unbounded session used to.
+   */
+  test("the whole cycle never has more messages in flight than one session used to send", () => {
+    expect(DEFAULT_SESSION_CONCURRENCY * DEFAULT_MESSAGE_CAP).toBeLessThanOrEqual(2000)
   })
 })
 
@@ -251,7 +262,7 @@ describe("watcher driver", () => {
 
   test("caps a large scan into multiple chunks and reaches the final line", async () => {
     const main = join(projects, "sess-1.jsonl")
-    // Each line fans out into 2 messages; 1500 lines → 3000 messages → ≥2 chunks at cap 2000.
+    // Each line fans out into 2 messages; 1500 lines → 3000 messages → several chunks at the cap.
     const lines = Array.from({ length: 1500 }, (_, i) => assistantLine(`l${i + 1}`, "sess-1"))
     await writeFile(main, `${lines.join("\n")}\n`, "utf8")
 
@@ -373,6 +384,36 @@ describe("watcher driver", () => {
 
     expect(store.checkpoints[a]).toBeUndefined()
     expect(store.checkpoints[b]?.lineProcessed).toBe(1)
+  })
+
+  test("a first sync of many sessions never has more than the concurrency cap in flight", async () => {
+    const count = 12
+    const files = await Promise.all(
+      Array.from({ length: count }, async (_, index) => {
+        const path = join(projects, `sess-${index}.jsonl`)
+        await writeFile(path, `${assistantLine(`u${index}`, `sess-${index}`)}\n`, "utf8")
+        return path
+      }),
+    )
+
+    let inFlight = 0
+    let peak = 0
+    const sink = {
+      send: async () => {
+        inFlight += 1
+        peak = Math.max(peak, inFlight)
+        await new Promise((resolve) => setTimeout(resolve, 5))
+        inFlight -= 1
+        return { status: 200 }
+      },
+    }
+
+    const store = await runCycle(config, deps({ sink, glob: async () => files }))
+
+    expect(peak).toBeLessThanOrEqual(DEFAULT_SESSION_CONCURRENCY)
+    expect(peak).toBe(DEFAULT_SESSION_CONCURRENCY)
+    // The cap is scheduling only: every session still syncs in the same cycle.
+    for (const file of files) expect(store.checkpoints[file]?.lineProcessed).toBe(1)
   })
 
   describe("repo attribution", () => {
@@ -839,7 +880,7 @@ describe("watcher driver", () => {
       project,
       sourceRelativePath: key,
       checkpointKey: key,
-      records: [record(1, MESSAGE_CAP + 5), record(2, 1)],
+      records: [record(1, DEFAULT_MESSAGE_CAP + 5), record(2, 1)],
       lastLineProcessed: 2,
       checkpointAt: (lineNumber: number) => ({
         source: "claude_code" as const,
@@ -897,7 +938,7 @@ describe("watcher driver", () => {
       project,
       sourceRelativePath: key,
       checkpointKey: key,
-      records: [record(1, MESSAGE_CAP - 1), one(2, call), one(3, result)],
+      records: [record(1, DEFAULT_MESSAGE_CAP - 1), one(2, call), one(3, result)],
       lastLineProcessed: 3,
       checkpointAt: (lineNumber: number) => ({
         source: "claude_code" as const,
@@ -976,7 +1017,7 @@ describe("watcher driver", () => {
       project,
       sourceRelativePath: key,
       checkpointKey: key,
-      records: [record(1, MESSAGE_CAP + 5), record(2, 1)],
+      records: [record(1, DEFAULT_MESSAGE_CAP + 5), record(2, 1)],
       lastLineProcessed: 2,
       checkpointAt: (lineNumber: number) => ({
         source: "claude_code" as const,
