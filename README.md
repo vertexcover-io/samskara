@@ -94,16 +94,22 @@ Open http://localhost:8000 and sign in with GitHub.
 ## Install the CLI
 
 The CLI is not on npm. Every release attaches an installable tarball to its
-[GitHub release](https://github.com/vertexcover-io/samskara/releases), so install the latest one
-directly:
+[GitHub release](https://github.com/vertexcover-io/samskara/releases), under a name with no version
+in it, so this URL always resolves to the newest one:
+
+```sh
+npm i -g https://github.com/vertexcover-io/samskara/releases/latest/download/samskara-cli.tgz
+```
+
+To pin a release instead, take its own versioned asset — replace `VERSION` with the release you
+want, for example `v0.2.0` and `0.2.0`:
 
 ```sh
 npm i -g https://github.com/vertexcover-io/samskara/releases/download/vVERSION/samskara-cli-VERSION.tgz
 ```
 
-Replace `VERSION` with the release you want, for example `v0.1.0` and `0.1.0`. The tarball carries
-`@samskara/core` inside it, so nothing else has to be fetched from a registry. It needs Node 22+.
-To remove it later: `npm uninstall -g @samskara/cli`.
+The tarball carries `@samskara/core` inside it, so nothing else has to be fetched from a registry.
+It needs Node 22+. To remove it later: `npm uninstall -g @samskara/cli`.
 
 To upgrade, run `samskara upgrade`. It asks GitHub for the newest release, and if that is newer
 than the CLI you are running it installs that release's tarball over this one — the same
