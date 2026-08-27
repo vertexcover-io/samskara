@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
 import { atomicWriteJson, readJson } from "../config/atomic.js"
 import { filterOptionsPath } from "../config/paths.js"
 import { getProject } from "../config/projects.js"
-import { apiBase as resolveApiBase, webBase as resolveWebBase } from "../config.js"
+import { DEFAULT_API_URL as apiBase, DEFAULT_WEB_URL as webBase } from "../config.js"
 import { runGitOrNull } from "../git.js"
 
 vi.mock("../git.js", () => ({ runGitOrNull: vi.fn(async () => null) }))
@@ -13,10 +13,16 @@ vi.mock("../config/projects.js", () => ({ getProject: vi.fn(async () => null) })
 
 import { hereFilters, renderResults, resolveOption, searchCommand, searchQuery } from "./search.js"
 
-const apiBase = resolveApiBase()
-const webBase = resolveWebBase()
+const ORIGINAL_ENV = {
+  home: process.env.SAMSKARA_HOME,
+  api: process.env.SAMSKARA_API_URL,
+  web: process.env.SAMSKARA_WEB_URL,
+}
 
-const ORIGINAL_HOME = process.env.SAMSKARA_HOME
+const restoreEnv = (key: string, value: string | undefined): void => {
+  if (value === undefined) delete process.env[key]
+  else process.env[key] = value
+}
 
 /** Answers the git calls this suite cares about by their joined args, and null for the rest. */
 const gitReturning = (byArgs: Record<string, string | null>) => {
@@ -272,13 +278,17 @@ describe("searchCommand", () => {
     err = ""
     home = await mkdtemp(join(tmpdir(), "samskara-search-"))
     process.env.SAMSKARA_HOME = home
+    delete process.env.SAMSKARA_API_URL
+    delete process.env.SAMSKARA_WEB_URL
     await writeFile(join(home, "token"), "cli-token", "utf8")
     vi.mocked(runGitOrNull).mockResolvedValue(null)
     vi.mocked(getProject).mockResolvedValue(null)
   })
 
   afterEach(() => {
-    process.env.SAMSKARA_HOME = ORIGINAL_HOME
+    restoreEnv("SAMSKARA_HOME", ORIGINAL_ENV.home)
+    restoreEnv("SAMSKARA_API_URL", ORIGINAL_ENV.api)
+    restoreEnv("SAMSKARA_WEB_URL", ORIGINAL_ENV.web)
   })
 
   test("asks the server for exactly the UI's query string and prints each hit with its own url", async () => {
