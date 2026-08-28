@@ -42,10 +42,28 @@ const MARKUP =
 
 const isMarkup = (bytes: Buffer): boolean => MARKUP.test(bytes.subarray(0, 512).toString("utf8"))
 
-export const serveHeadersFor = (bytes: Buffer, isBinary: boolean): ServeHeaders => {
+const MARKUP_EXTENSIONS: ReadonlySet<string> = new Set(["html", "htm", "xhtml", "svg"])
+
+/**
+ * A generated page often opens on `<title>` or a bare `<div>` rather than a doctype, so content
+ * alone would file it as plain text and hand the browser a download. The name is consulted only
+ * for text bytes: binary keeps the signature allow-list, so a png named `.html` stays an image.
+ */
+const isMarkupNamed = (path: string): boolean =>
+  MARKUP_EXTENSIONS.has((path.split(".").pop() ?? "").toLowerCase())
+
+export const serveHeadersFor = (
+  bytes: Buffer,
+  isBinary: boolean,
+  relativePath = "",
+): ServeHeaders => {
   if (isMarkup(bytes)) return { contentType: TEXT_HTML, disposition: "inline" }
 
-  if (!isBinary) return { contentType: TEXT_PLAIN, disposition: "attachment" }
+  if (!isBinary) {
+    return isMarkupNamed(relativePath)
+      ? { contentType: TEXT_HTML, disposition: "inline" }
+      : { contentType: TEXT_PLAIN, disposition: "attachment" }
+  }
 
   const inert = INERT.find((sniffer) => sniffer.matches(bytes))
   if (inert) return { contentType: inert.contentType, disposition: "inline" }
