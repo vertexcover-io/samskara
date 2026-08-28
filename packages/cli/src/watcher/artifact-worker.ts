@@ -236,7 +236,7 @@ const enqueueReferences = async (
           path: ref,
           relativePath: relative(projectRoot, ref),
           projectRoot,
-          changeKind: "created",
+          created: true,
           observedAt,
           attempts: 0,
         }),

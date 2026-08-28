@@ -4,7 +4,7 @@ import { join } from "node:path"
 import { createClaudePlugin, type FileSystem, type ProjectIdentity } from "@samskara/core"
 import type pino from "pino"
 import { readToken } from "../config/credentials.js"
-import { artifactQueuePath, artifactStatePath, fileHistoryDir, statePath } from "../config/paths.js"
+import { artifactQueuePath, artifactStatePath, statePath } from "../config/paths.js"
 import { getProject, isProjectEnabled, syncFromFor } from "../config/projects.js"
 import { parseConfig } from "../config.js"
 import { sleep } from "../io.js"
@@ -130,7 +130,6 @@ export const watch = async (options: WatchOptions): Promise<void> => {
   const workers = runArtifactWorkers(
     { queuePath: artifactQueuePath(), statePath: artifactStatePath() },
     {
-      fileHistoryDir: fileHistoryDir(),
       log,
       sink: createArtifactSink({ apiBase: resolved.apiUrl, readToken, fetch: globalThis.fetch }),
       clock: { now: () => Date.now() },

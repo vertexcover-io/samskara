@@ -1,5 +1,6 @@
 import { expect, test } from "vitest"
 import {
+  artifactUploadSchema,
   createProjectRequestSchema,
   createProjectResponseSchema,
   ingestPayloadSchema,
@@ -148,7 +149,18 @@ test("a pull request git event carries its own repo on the ingest wire, and the 
   ])
 })
 
-// A PR number is the other half of its identity, so a zero or a negative must not reach the DB.
+const uploadBase = {
+  sessionId: "sess-1",
+  path: "/work/app/docs/notes.md",
+  relativePath: "docs/notes.md",
+  mimeType: "text/markdown",
+  changeKind: "editedUnknownBase" as const,
+  encoding: "utf8" as const,
+  currentContent: "hi",
+  currentHash: "hash",
+  observedAt: "2026-07-28T12:00:00.000Z",
+}
+
 test("a pull request event with a non-positive number is rejected at the wire boundary", () => {
   const withNumber = (number: number) =>
     ingestPayloadSchema.safeParse({
@@ -169,4 +181,25 @@ test("a pull request event with a non-positive number is rejected at the wire bo
   expect(withNumber(391)).toBe(true)
   expect(withNumber(0)).toBe(false)
   expect(withNumber(-1)).toBe(false)
+})
+
+test("an artifact upload validates with an optional base, and nothing else rides along", () => {
+  expect(artifactUploadSchema.safeParse(uploadBase).success).toBe(true)
+  expect(
+    artifactUploadSchema.safeParse({
+      ...uploadBase,
+      changeKind: "edited",
+      baseContent: "original\n",
+    }).success,
+  ).toBe(true)
+})
+
+test("the strict upload schema refuses a diff, an excerpt or an edit list the server no longer stores", () => {
+  for (const extra of [
+    { diff: "--- a\n+++ b\n" },
+    { oldFragment: "the replaced text" },
+    { edits: [{ callId: "call-1", seq: 10, hunks: [] }] },
+  ]) {
+    expect(artifactUploadSchema.safeParse({ ...uploadBase, ...extra }).success).toBe(false)
+  }
 })

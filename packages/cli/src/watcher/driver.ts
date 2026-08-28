@@ -15,7 +15,7 @@ import type {
 import { readCheckpoints, writeCheckpoints } from "@samskara/core"
 import type pino from "pino"
 import { mapWithLimit } from "../concurrency.js"
-import { collectArtifacts, type PotentialArtifact } from "./artifact-extract.js"
+import { collectArtifacts } from "./artifact-extract.js"
 import { type ArtifactQueueEntry, enqueue } from "./artifact-queue.js"
 import { shouldCaptureArtifacts } from "./containment.js"
 import { collectGitEvents } from "./gitEvents.js"
@@ -254,23 +254,6 @@ const syncSession = async (
   return updated
 }
 
-type TrackedCandidate = {
-  readonly sessionId: string
-  readonly candidate: PotentialArtifact
-}
-
-const candidatesOf = (
-  batch: SessionBatch,
-  root: string,
-  log: pino.Logger,
-): ReadonlyArray<TrackedCandidate> =>
-  batch.tracks.flatMap((track) =>
-    collectArtifacts(track.records, track.project.root ?? root, log).map((candidate) => ({
-      sessionId: track.sessionId,
-      candidate,
-    })),
-  )
-
 /**
  * A file already queued this run is queued again rather than remembered: the worker settles
  * duplicates on the content hash it already holds, so a second entry costs a queue write and
@@ -283,32 +266,32 @@ const enqueueArtifacts = async (
   deps: WatcherDeps,
 ): Promise<void> => {
   const observedAt = new Date(deps.clock.now()).toISOString()
-  const candidates = candidatesOf(batch, root, deps.log)
+  const artifacts = collectArtifacts(
+    batch.tracks.flatMap((track) => track.records),
+    root,
+  )
   const decisions = await shouldCaptureArtifacts(
-    candidates.map(({ candidate }) => candidate.path),
+    artifacts.map((artifact) => artifact.path),
     { projectRoot: root, allowScratch: true },
   )
 
-  const entries = candidates.flatMap(({ sessionId, candidate }, index): ArtifactQueueEntry[] => {
+  const entries = artifacts.flatMap((artifact, index): ArtifactQueueEntry[] => {
     const decision = decisions[index]
     if (!decision?.ok) {
       deps.log.debug(
-        { path: candidate.path, reason: decision?.reason },
+        { path: artifact.path, reason: decision?.reason },
         "artifact candidate skipped",
       )
       return []
     }
     return [
       {
-        sessionId,
+        sessionId: batch.sessionId,
         path: decision.path,
         relativePath: decision.relativePath,
         projectRoot: root,
-        changeKind: candidate.changeKind,
-        ...(candidate.backupFileName === undefined
-          ? {}
-          : { backupFileName: candidate.backupFileName }),
-        ...(candidate.oldFragment === undefined ? {} : { oldFragment: candidate.oldFragment }),
+        created: artifact.created,
+        ...(artifact.base === undefined ? {} : { base: artifact.base }),
         observedAt,
         attempts: 0,
       },
@@ -317,12 +300,12 @@ const enqueueArtifacts = async (
 
   if (entries.length > 0) await enqueue(queuePath, entries, deps.log)
 
-  if (candidates.length > 0) {
+  if (artifacts.length > 0) {
     deps.log.info(
       {
         root,
-        found: candidates.length,
-        skipped: candidates.length - entries.length,
+        found: artifacts.length,
+        skipped: artifacts.length - entries.length,
         enqueued: entries.length,
       },
       "artifact candidates enqueued",

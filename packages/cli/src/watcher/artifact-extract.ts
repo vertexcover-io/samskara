@@ -1,132 +1,83 @@
 import { isAbsolute, resolve } from "node:path"
-import type { NormalizedMessage, ParsedRecord } from "@samskara/core"
-import type pino from "pino"
+import type { ParsedRecord } from "@samskara/core"
 import { z } from "zod"
 
 export type PotentialArtifact = {
   readonly path: string
-  readonly changeKind: "created" | "edited"
-  readonly oldFragment?: string
-  readonly backupFileName?: string
+  readonly created: boolean
+  readonly base?: string
 }
-
-const filePath = z.string().min(1)
-
-const writeInput = z.object({ file_path: filePath })
-const editInput = z.object({ file_path: filePath, old_string: z.string().optional() })
-const multiEditInput = z.object({
-  file_path: filePath,
-  edits: z.array(z.object({ old_string: z.string().optional() })).optional(),
-})
-const notebookEditInput = z.object({ notebook_path: filePath })
-const deltaBackup = z.object({ backupFileName: z.string().nullable().optional() })
-
-type Write = { readonly path: string; readonly oldFragment?: string }
-
-/**
- * `Read` is deliberately absent: this is "artifacts the agent produced", not "files it touched".
- * Widening this map to every tool would silently capture everything the agent looked at.
- */
-const WRITE_FAMILY: Record<string, (input: unknown) => ReadonlyArray<Write>> = {
-  Write: (input) => {
-    const parsed = writeInput.safeParse(input)
-    return parsed.success ? [{ path: parsed.data.file_path }] : []
-  },
-  Edit: (input) => {
-    const parsed = editInput.safeParse(input)
-    if (!parsed.success) return []
-    const { file_path, old_string } = parsed.data
-    return [{ path: file_path, ...(old_string === undefined ? {} : { oldFragment: old_string }) }]
-  },
-  MultiEdit: (input) => {
-    const parsed = multiEditInput.safeParse(input)
-    if (!parsed.success) return []
-    const { file_path, edits } = parsed.data
-    return (edits ?? [{}]).map((edit) => ({
-      path: file_path,
-      ...(edit.old_string === undefined ? {} : { oldFragment: edit.old_string }),
-    }))
-  },
-  NotebookEdit: (input) => {
-    const parsed = notebookEditInput.safeParse(input)
-    return parsed.success ? [{ path: parsed.data.notebook_path }] : []
-  },
-}
-
-const CREATED_BY = "Write"
 
 const absolute = (path: string, cwd: string): string =>
   isAbsolute(path) ? path : resolve(cwd, path)
 
-/**
- * One fact drawn from a single message. A `write` is evidence the agent produced a file; a `backup`
- * only points at where its pre-session content lives and never implies a write of its own -- which
- * is why the two are separate variants rather than one partially-filled candidate.
- */
-type ExtractedFact =
-  | { readonly kind: "write"; readonly candidate: PotentialArtifact }
-  | { readonly kind: "backup"; readonly path: string; readonly backupFileName?: string }
-
-const fromToolCall = (
-  message: Extract<NormalizedMessage, { msgType: "toolCall" }>,
-  cwd: string,
-  log: pino.Logger,
-): ReadonlyArray<ExtractedFact> => {
-  const project = WRITE_FAMILY[message.details.name]
-  if (!project) return []
-
-  const writes = project(message.details.input)
-  if (writes.length === 0) {
-    log.debug({ tool: message.details.name }, "artifact tool input did not parse; skipping")
-    return []
+export const mergeArtifact = (a: PotentialArtifact, b: PotentialArtifact): PotentialArtifact => {
+  const created = a.created || b.created
+  return {
+    path: a.path,
+    created,
+    // A file the session created has no pre-session state, so a base seen later is its own output.
+    base: created ? a.base : (a.base ?? b.base),
   }
-
-  const changeKind = message.details.name === CREATED_BY ? "created" : "edited"
-  return writes.map((write) => ({
-    kind: "write" as const,
-    candidate: {
-      path: absolute(write.path, cwd),
-      changeKind,
-      ...(write.oldFragment === undefined ? {} : { oldFragment: write.oldFragment }),
-    },
-  }))
 }
 
-const fromFileEvent = (
-  message: Extract<NormalizedMessage, { msgType: "fileEvent" }>,
-  cwd: string,
-): ReadonlyArray<ExtractedFact> => {
-  const { details } = message
-  if (details.type === "edited") {
-    return [
-      {
-        kind: "write",
-        candidate: { path: absolute(details.path, cwd), changeKind: "edited" },
-      },
-    ]
-  }
-  if (details.type !== "delta") return []
+const agentWrite = z.object({
+  timestamp: z.string().datetime({ offset: true }),
+  toolUseResult: z.object({
+    filePath: z.string().min(1),
+    type: z.enum(["create", "update"]).optional(),
+    originalFile: z.string().nullish(),
+  }),
+})
 
-  // A delta is a base pointer, not evidence of a write, so it never creates a candidate.
-  const backup = deltaBackup.safeParse(details.backup)
-  const name = backup.success ? backup.data.backupFileName : undefined
-  return [
-    {
-      kind: "backup",
-      path: absolute(details.path, cwd),
-      ...(name === undefined || name === null ? {} : { backupFileName: name }),
-    },
-  ]
+const humanEdit = z.object({
+  attachment: z.object({
+    type: z.literal("edited_text_file"),
+    filename: z.string().min(1),
+  }),
+})
+
+const blank = (path: string): PotentialArtifact => ({ path, created: false })
+
+const timeOf = (record: ParsedRecord): number => {
+  const stamp = (record.raw as { timestamp?: unknown }).timestamp
+  return typeof stamp === "string" ? Date.parse(stamp) : 0
 }
 
-const factsOf = (
-  message: NormalizedMessage,
+export const collectArtifacts = (
+  records: ReadonlyArray<ParsedRecord>,
   cwd: string,
-  log: pino.Logger,
-): ReadonlyArray<ExtractedFact> => {
-  if (message.msgType === "toolCall") return fromToolCall(message, cwd, log)
-  if (message.msgType === "fileEvent") return fromFileEvent(message, cwd)
-  return []
+): ReadonlyArray<PotentialArtifact> => {
+  const byPath = new Map<string, PotentialArtifact>()
+
+  // Several transcripts are flattened in, and only the earliest write for a path holds its base.
+  const byTime = [...records].sort((a, b) => timeOf(a) - timeOf(b))
+
+  for (const record of byTime) {
+    const human = humanEdit.safeParse(record.raw)
+    if (human.success) {
+      const path = absolute(human.data.attachment.filename, cwd)
+      byPath.set(path, byPath.get(path) ?? blank(path))
+      continue
+    }
+
+    const agent = agentWrite.safeParse(record.raw)
+    if (!agent.success) continue
+
+    const { filePath, type, originalFile } = agent.data.toolUseResult
+    const path = absolute(filePath, cwd)
+
+    byPath.set(
+      path,
+      mergeArtifact(byPath.get(path) ?? blank(path), {
+        path,
+        created: type === "create",
+        base: originalFile ?? undefined,
+      }),
+    )
+  }
+
+  return [...byPath.values()]
 }
 
 const HTML_ATTR_REFERENCE = /(?<![\w:-])(?:src|href|poster)\s*=\s*["']([^"']*)["']/gi
@@ -166,30 +117,4 @@ export const referencedPaths = (content: string, fromDir: string): ReadonlyArray
   }
 
   return result
-}
-
-export const collectArtifacts = (
-  records: ReadonlyArray<ParsedRecord>,
-  cwd: string,
-  log: pino.Logger,
-): ReadonlyArray<PotentialArtifact> => {
-  const facts = records.flatMap((record) =>
-    record.messages.flatMap((message) => factsOf(message, cwd, log)),
-  )
-
-  const candidates = new Map<string, PotentialArtifact>()
-  for (const fact of facts) {
-    if (fact.kind === "write") {
-      const existing = candidates.get(fact.candidate.path)
-      candidates.set(fact.candidate.path, { ...existing, ...fact.candidate })
-      continue
-    }
-    const existing = candidates.get(fact.path)
-    if (!existing || fact.backupFileName === undefined) continue
-    candidates.set(fact.path, {
-      ...existing,
-      backupFileName: fact.backupFileName,
-    })
-  }
-  return [...candidates.values()]
 }

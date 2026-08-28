@@ -49,25 +49,23 @@ type UploadOverrides = {
   readonly baseContent?: string | null
   readonly encoding?: "utf8" | "base64"
   readonly mimeType?: string
+  readonly changeKind?: "created" | "edited" | "editedUnknownBase"
 }
 
 const upload = (over: UploadOverrides = {}) => {
   const currentContent = over.currentContent ?? "changed content\n"
   const base = over.baseContent === null ? undefined : (over.baseContent ?? "original content\n")
   const encoding = over.encoding ?? "utf8"
-  const decodedBase = base === undefined ? undefined : Buffer.from(base, encoding)
   return {
     sessionId: over.sessionId ?? SESSION_ID,
     path: over.path ?? FILE_PATH,
     relativePath: "docs/notes.md",
     mimeType: over.mimeType ?? "text/markdown",
-    changeKind: base === undefined ? "created" : "edited",
+    changeKind: over.changeKind ?? (base === undefined ? "created" : "edited"),
     encoding,
     currentContent,
     currentHash: over.currentHash ?? sha256(Buffer.from(currentContent, encoding)),
     ...(base === undefined ? {} : { baseContent: base }),
-    ...(decodedBase === undefined ? {} : { baseHash: sha256(decodedBase) }),
-    ...(base === undefined ? {} : { diff: "--- a\n+++ b\n-original\n+changed\n" }),
     observedAt: "2026-07-28T12:00:00.000Z",
   }
 }
@@ -139,7 +137,7 @@ describe.skipIf(!dockerAvailable())("artifacts route", () => {
     await db.delete(artifact)
   })
 
-  test("S26: an uploaded artifact is stored with its base, current content, and diff", async () => {
+  test("S26: an uploaded artifact is stored with its base, current content, and a server-rendered diff", async () => {
     const payload = upload()
     const res = await post(payload)
 
@@ -153,7 +151,8 @@ describe.skipIf(!dockerAvailable())("artifacts route", () => {
     // Decoded bytes, not the wire strings: a base64/utf8 mix-up would survive a string compare.
     expect(row.currentContent?.toString("utf8")).toBe("changed content\n")
     expect(row.baseContent?.toString("utf8")).toBe("original content\n")
-    expect(row.diff).toBe(payload.diff)
+    expect(row.diff).toContain("-original content")
+    expect(row.diff).toContain("+changed content")
     expect(row.relativePath).toBe("docs/notes.md")
     expect(row.mimeType).toBe("text/markdown")
     expect(row.isBinary).toBe(false)
@@ -216,6 +215,98 @@ describe.skipIf(!dockerAvailable())("artifacts route", () => {
 
     const rows = await db.select().from(artifact).where(eq(artifact.sessionId, SESSION_ID))
     expect(rows).toHaveLength(1)
+  })
+
+  test("SC21: the first upload settles the base, and the stored diff runs from it to the new current", async () => {
+    await post(upload({ baseContent: "base A\n", currentContent: "v1\n" }))
+    const res = await post(upload({ baseContent: "base B impostor\n", currentContent: "v2\n" }))
+
+    expect(res.status).toBe(200)
+    const rows = await db.select().from(artifact).where(eq(artifact.sessionId, SESSION_ID))
+    expect(rows[0]?.baseContent?.toString("utf8")).toBe("base A\n")
+    expect(rows[0]?.diff).toContain("-base A")
+    expect(rows[0]?.diff).toContain("+v2")
+  })
+
+  test("SC22: the first upload settles the change kind; created never later takes a base", async () => {
+    await post(upload({ baseContent: null, changeKind: "created", currentContent: "v1" }))
+    const res = await post(
+      upload({ baseContent: "impostor base", changeKind: "edited", currentContent: "v2" }),
+    )
+
+    expect(res.status).toBe(200)
+    const rows = await db.select().from(artifact).where(eq(artifact.sessionId, SESSION_ID))
+    expect(rows[0]?.changeKind).toBe("created")
+    expect(rows[0]?.baseContent).toBeNull()
+  })
+
+  test("SC24: a file with a base renders a diff, one without renders none at all", async () => {
+    const withBase = await post(
+      upload({
+        path: "/work/app/docs/with-base.md",
+        baseContent: "base content\n",
+        currentContent: "current content\n",
+      }),
+    )
+    const withoutBase = await post(
+      upload({
+        path: "/work/app/docs/without-base.md",
+        baseContent: null,
+        changeKind: "editedUnknownBase",
+      }),
+    )
+
+    expect(withBase.status).toBe(200)
+    expect(withoutBase.status).toBe(200)
+
+    const rows = await db.select().from(artifact).where(eq(artifact.sessionId, SESSION_ID))
+    const byPath = new Map(rows.map((row) => [row.path, row]))
+
+    const withBaseRow = byPath.get("/work/app/docs/with-base.md")
+    expect(withBaseRow?.diff).toContain("-base content")
+    expect(withBaseRow?.diff).toContain("+current content")
+    expect(withBaseRow?.baseContent).not.toBeNull()
+
+    const withoutBaseRow = byPath.get("/work/app/docs/without-base.md")
+    expect(withoutBaseRow?.diff).toBeNull()
+    expect(withoutBaseRow?.baseContent).toBeNull()
+  })
+
+  test("SC25 (regression): a binary file uploads with no diff", async () => {
+    const bytes = Buffer.from([0x00, 0xff, 0x10, 0x00, 0x7f])
+    const res = await post(
+      upload({
+        encoding: "base64",
+        currentContent: bytes.toString("base64"),
+        currentHash: sha256(bytes),
+        baseContent: null,
+        mimeType: "application/octet-stream",
+      }),
+    )
+
+    expect(res.status).toBe(200)
+    const { artifactId } = (await res.json()) as { artifactId: string }
+    const [row] = await db.select().from(artifact).where(eq(artifact.id, artifactId))
+    expect(row?.diff).toBeNull()
+  })
+
+  test("SC26: a payload carrying a client-computed diff is refused, not silently ignored", async () => {
+    const res = await post({
+      ...upload({ baseContent: null }),
+      diff: "--- a/legacy.md\n+++ b/legacy.md\n-old client diff\n+client-computed\n",
+    })
+
+    expect(res.status).toBe(400)
+  })
+
+  test("SC26: a later upload re-renders the diff against the stored base, not the payload's", async () => {
+    await post(upload({ baseContent: "base A\n", currentContent: "v1\n" }))
+    const res = await post(upload({ baseContent: "base B impostor\n", currentContent: "v2\n" }))
+
+    expect(res.status).toBe(200)
+    const rows = await db.select().from(artifact).where(eq(artifact.sessionId, SESSION_ID))
+    expect(rows[0]?.diff).toContain("-base A")
+    expect(rows[0]?.diff).not.toContain("base B impostor")
   })
 
   test("S29: the same file captured by two sessions yields two independent rows", async () => {

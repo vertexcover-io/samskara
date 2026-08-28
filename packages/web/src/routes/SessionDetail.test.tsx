@@ -646,7 +646,6 @@ test("SC22: the artifacts panel lists the captured files for the session - both 
           id: "cap-text",
           relativePath: "docs/notes.md",
           diff: null,
-          oldFragment: "The original note.",
         },
         {
           ...CAPTURED,
@@ -656,7 +655,6 @@ test("SC22: the artifacts panel lists the captured files for the session - both 
           isBinary: true,
           changeKind: "created",
           diff: null,
-          oldFragment: null,
         },
       ],
     },
@@ -670,7 +668,7 @@ test("SC22: the artifacts panel lists the captured files for the session - both 
   expect(within(list).getByRole("button", { name: /screenshot\.png/ })).toBeInTheDocument()
 
   const viewer = screen.getByRole("region", { name: /artifact viewer/i })
-  expect(within(viewer).getByText(/The original note\./)).toBeInTheDocument()
+  expect(within(viewer).getByText(/no diff captured/i)).toBeInTheDocument()
 
   await user.click(within(list).getByRole("button", { name: /screenshot\.png/ }))
   expect(within(viewer).getByRole("img")).toHaveAttribute(

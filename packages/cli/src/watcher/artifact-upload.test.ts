@@ -4,24 +4,15 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, test } from "vitest"
 import type { ArtifactQueueEntry } from "./artifact-queue.js"
-import {
-  classifyContentType,
-  computeArtifactDiff,
-  prepareUpload,
-  resolveBase,
-} from "./artifact-upload.js"
+import { classifyContentType, prepareUpload } from "./artifact-upload.js"
 import { silentLogger, spyLogger } from "./test-logger.js"
 
 let root = ""
-let fileHistory = ""
 
 const SESSION = "sess-artifact"
-const HASH = "3c32b39a"
 
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "samskara-artifact-"))
-  fileHistory = join(root, "file-history")
-  await mkdir(join(fileHistory, SESSION), { recursive: true })
 })
 
 afterEach(async () => {
@@ -35,23 +26,19 @@ const projectFile = async (relativePath: string, content: string | Buffer): Prom
   return path
 }
 
-const backupFile = async (name: string, content: string | Buffer): Promise<void> => {
-  await writeFile(join(fileHistory, SESSION, name), content)
-}
-
 const entryFor = (
   over: Partial<ArtifactQueueEntry> & { readonly path: string },
 ): ArtifactQueueEntry => ({
   sessionId: SESSION,
   relativePath: "docs/notes.md",
   projectRoot: "/work/app",
-  changeKind: "edited",
+  created: false,
   observedAt: "2026-07-28T10:00:00.000Z",
   attempts: 0,
   ...over,
 })
 
-const deps = (log = silentLogger()) => ({ fileHistoryDir: fileHistory, log })
+const deps = (log = silentLogger()) => ({ log })
 
 const ORIGINAL = "# Notes\n\nOriginal line.\nShared tail.\n"
 const CHANGED = "# Notes\n\nChanged line.\nShared tail.\n"
@@ -64,69 +51,61 @@ const wideText = (marker: string): string =>
   Array.from({ length: 200 }, (_, i) => `${marker}${i}-${marker.repeat(3000)}`).join("\n")
 
 describe("prepareUpload", () => {
-  test("S16: an edited file with a resolvable backup yields a base and a unified diff", async () => {
+  test("an edited file with a base yields baseContent and changeKind 'edited'", async () => {
     const path = await projectFile("docs/notes.md", CHANGED)
-    await backupFile(`${HASH}@v1`, ORIGINAL)
 
-    const upload = await prepareUpload(deps(), entryFor({ path, backupFileName: `${HASH}@v1` }))
+    const upload = await prepareUpload(deps(), entryFor({ path, base: ORIGINAL }))
 
     expect(upload?.changeKind).toBe("edited")
     expect(upload?.baseContent).toBe(ORIGINAL)
     expect(upload?.currentContent).toBe(CHANGED)
-    expect(upload?.baseHash).not.toBe(upload?.currentHash)
-    expect(upload?.diff).toContain("-Original line.")
-    expect(upload?.diff).toContain("+Changed line.")
-    expect(upload?.diff).toContain("docs/notes.md")
-    expect(upload?.diff).not.toContain(root)
   })
 
-  test("S17: a missing backup degrades to editedUnknownBase and keeps the fragment", async () => {
+  test("SC33: a base that is the empty string yields changeKind 'edited', not 'editedUnknownBase'", async () => {
     const path = await projectFile("docs/notes.md", CHANGED)
 
-    const upload = await prepareUpload(
-      deps(),
-      entryFor({ path, backupFileName: `${HASH}@v1`, oldFragment: "Original line." }),
-    )
+    const upload = await prepareUpload(deps(), entryFor({ path, base: "" }))
+
+    expect(upload?.changeKind).toBe("edited")
+    expect(upload?.baseContent).toBe("")
+  })
+
+  test("a change with no base yields editedUnknownBase, and still carries the current content", async () => {
+    const path = await projectFile("docs/notes.md", CHANGED)
+
+    const upload = await prepareUpload(deps(), entryFor({ path }))
 
     expect(upload?.changeKind).toBe("editedUnknownBase")
     expect(upload?.baseContent).toBeUndefined()
-    expect(upload?.baseHash).toBeUndefined()
-    expect(upload?.diff).toBeUndefined()
-    expect(upload?.oldFragment).toBe("Original line.")
     expect(upload?.currentContent).toBe(CHANGED)
   })
 
-  test("S18: an edited file with no backup pointer degrades without touching the disk", async () => {
-    const path = await projectFile("docs/notes.md", CHANGED)
-
-    const upload = await prepareUpload(deps(), entryFor({ path, oldFragment: "gone" }))
-
-    expect(upload?.changeKind).toBe("editedUnknownBase")
-    expect(upload?.baseContent).toBeUndefined()
-    expect(upload?.oldFragment).toBe("gone")
-  })
-
-  test("S20: a created file has no base and no diff", async () => {
+  test("created is tested first: changeKind stays 'created' even if the entry also carries a base", async () => {
     const path = await projectFile("docs/new.md", CHANGED)
-    await backupFile(`${HASH}@v1`, ORIGINAL)
 
     const upload = await prepareUpload(
       deps(),
-      entryFor({ path, changeKind: "created", backupFileName: `${HASH}@v1` }),
+      entryFor({ path, created: true, base: "content the session itself wrote" }),
     )
 
     expect(upload?.changeKind).toBe("created")
-    expect(upload?.baseContent).toBeUndefined()
-    expect(upload?.baseHash).toBeUndefined()
-    expect(upload?.diff).toBeUndefined()
     expect(upload?.currentContent).toBe(CHANGED)
   })
 
-  test("S23: a file written then deleted is skipped and logged at debug", async () => {
+  test("a created entry with no base at all also reports changeKind 'created'", async () => {
+    const path = await projectFile("docs/new.md", CHANGED)
+
+    const upload = await prepareUpload(deps(), entryFor({ path, created: true }))
+
+    expect(upload?.changeKind).toBe("created")
+    expect(upload?.baseContent).toBeUndefined()
+  })
+
+  test("a file written then deleted is skipped and logged at debug", async () => {
     const recorder = spyLogger()
 
     const upload = await prepareUpload(
-      { fileHistoryDir: fileHistory, log: recorder.log },
+      { log: recorder.log },
       entryFor({ path: join(root, "docs/vanished.md") }),
     )
 
@@ -141,28 +120,23 @@ describe("prepareUpload — binary and encoding", () => {
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
   ])
 
-  test("S21: a binary file is captured whole, base64-encoded, with no diff", async () => {
+  test("a binary file is captured whole, base64-encoded, with no base", async () => {
     const path = await projectFile("assets/logo.png", PNG)
-    await backupFile(`${HASH}@v1`, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]))
 
-    const upload = await prepareUpload(
-      deps(),
-      entryFor({ path, relativePath: "assets/logo.png", backupFileName: `${HASH}@v1` }),
-    )
+    const upload = await prepareUpload(deps(), entryFor({ path, relativePath: "assets/logo.png" }))
 
     expect(upload?.encoding).toBe("base64")
-    expect(upload?.diff).toBeUndefined()
+    expect(upload?.baseContent).toBeUndefined()
     expect(Buffer.from(upload?.currentContent ?? "", "base64")).toEqual(PNG)
   })
 
-  test("S21: a utf8 text file with a resolvable base is utf8-encoded and diffed", async () => {
+  test("a utf8 text file with a base is utf8-encoded and carries it through", async () => {
     const path = await projectFile("docs/notes.md", CHANGED)
-    await backupFile(`${HASH}@v1`, ORIGINAL)
 
-    const upload = await prepareUpload(deps(), entryFor({ path, backupFileName: `${HASH}@v1` }))
+    const upload = await prepareUpload(deps(), entryFor({ path, base: ORIGINAL }))
 
     expect(upload?.encoding).toBe("utf8")
-    expect(upload?.diff).toBeTruthy()
+    expect(upload?.baseContent).toBe(ORIGINAL)
   })
 })
 
@@ -172,10 +146,7 @@ describe("prepareUpload — size caps", () => {
     const path = await projectFile("docs/huge.md", oversize)
     const recorder = spyLogger()
 
-    const upload = await prepareUpload(
-      { fileHistoryDir: fileHistory, log: recorder.log },
-      entryFor({ path }),
-    )
+    const upload = await prepareUpload({ log: recorder.log }, entryFor({ path }))
 
     expect(upload).toBeNull()
     const warned = recorder.warn[0]
@@ -188,7 +159,7 @@ describe("prepareUpload — size caps", () => {
     const oversize = Buffer.alloc(50 * 1024 * 1024 + 1)
     const path = await projectFile("assets/huge.bin", oversize)
 
-    const upload = await prepareUpload(deps(), entryFor({ path, changeKind: "created" }))
+    const upload = await prepareUpload(deps(), entryFor({ path, created: true }))
 
     expect(upload).toBeNull()
   })
@@ -197,84 +168,23 @@ describe("prepareUpload — size caps", () => {
     const content = "b".repeat(5 * 1024 * 1024 - 1)
     const path = await projectFile("docs/big.md", content)
 
-    const upload = await prepareUpload(deps(), entryFor({ path, changeKind: "created" }))
+    const upload = await prepareUpload(deps(), entryFor({ path, created: true }))
 
     expect(upload?.currentContent).toHaveLength(content.length)
   })
 
-  test("S24: a diff past 1 MB is dropped while both contents are still captured", async () => {
+  test("a base over 1 MB is still carried through whole -- capping the rendered diff is the server's job", async () => {
     const base = wideText("b")
     const current = wideText("c")
     const path = await projectFile("docs/wide.md", current)
-    await backupFile(`${HASH}@v1`, base)
 
     const upload = await prepareUpload(
       deps(),
-      entryFor({ path, relativePath: "docs/wide.md", backupFileName: `${HASH}@v1` }),
+      entryFor({ path, relativePath: "docs/wide.md", base }),
     )
 
-    expect(upload?.diff).toBeUndefined()
     expect(upload?.baseContent).toBe(base)
     expect(upload?.currentContent).toBe(current)
-  })
-})
-
-describe("resolveBase", () => {
-  test("S19: the lowest surviving version wins over a lexicographic sort", async () => {
-    await backupFile(`${HASH}@v3`, "three")
-    await backupFile(`${HASH}@v10`, "ten")
-    await backupFile(`${HASH}@v2`, "two")
-
-    const resolved = await resolveBase(
-      deps(),
-      entryFor({ path: "/x", backupFileName: `${HASH}@v10` }),
-    )
-
-    expect(resolved?.baseContent.toString()).toBe("two")
-  })
-
-  test("S19: a named @v7 falls back to the surviving @v1", async () => {
-    await backupFile(`${HASH}@v1`, "one")
-
-    const resolved = await resolveBase(
-      deps(),
-      entryFor({ path: "/x", backupFileName: `${HASH}@v7` }),
-    )
-
-    expect(resolved?.baseContent.toString()).toBe("one")
-  })
-
-  test("S19: only versions of the named hash are considered", async () => {
-    await backupFile(`${HASH}@v5`, "mine")
-    await backupFile("deadbeef@v1", "someone else's")
-
-    const resolved = await resolveBase(
-      deps(),
-      entryFor({ path: "/x", backupFileName: `${HASH}@v5` }),
-    )
-
-    expect(resolved?.baseContent.toString()).toBe("mine")
-  })
-
-  test("S18: an entry with no backup pointer resolves to null without listing anything", async () => {
-    // Half of all delta lines carry no backupFileName, so this is the majority path and must stay
-    // cheap. `fileHistoryDir` points at a regular file: listing it would raise ENOTDIR, which
-    // resolveBase swallows into the same null -- so the assertion that distinguishes
-    // "short-circuited" from "tried and failed" is that no lock or read is attempted at all.
-    const notADirectory = await projectFile("not-a-dir", "x")
-
-    await expect(
-      resolveBase({ fileHistoryDir: notADirectory, log: silentLogger() }, entryFor({ path: "/x" })),
-    ).resolves.toBeNull()
-  })
-
-  test("S17: an absent history directory degrades to null rather than throwing", async () => {
-    const resolved = await resolveBase(
-      { fileHistoryDir: join(root, "nope"), log: silentLogger() },
-      entryFor({ path: "/x", backupFileName: `${HASH}@v1` }),
-    )
-
-    expect(resolved).toBeNull()
   })
 })
 
@@ -319,18 +229,5 @@ describe("classifyContentType", () => {
     const invalid = Buffer.from([0xff, 0xfe, 0xfd])
 
     expect(classifyContentType(invalid, "notes.md").isBinary).toBe(true)
-  })
-})
-
-describe("computeArtifactDiff", () => {
-  test("S16: the patch header names the relative path on both sides", () => {
-    const patch = computeArtifactDiff(ORIGINAL, CHANGED, "docs/notes.md")
-
-    expect(patch).toContain("--- docs/notes.md")
-    expect(patch).toContain("+++ docs/notes.md")
-  })
-
-  test("S24: a diff exceeding 1 MB is dropped", () => {
-    expect(computeArtifactDiff(wideText("b"), wideText("c"), "docs/wide.md")).toBeNull()
   })
 })
