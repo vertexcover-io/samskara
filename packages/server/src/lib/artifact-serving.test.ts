@@ -114,3 +114,41 @@ describe("serveHeadersFor", () => {
     expect(headers.disposition).toBe("attachment")
   })
 })
+
+describe("serveHeadersFor path-named markup", () => {
+  test("S46: an html fragment with no doctype is served inline as html when its path says html", () => {
+    const headers = serveHeadersFor(
+      Buffer.from('<title>Artifact Diff Capture</title>\n<link rel="stylesheet">', "utf8"),
+      false,
+      "scratchpad/pr37-review.html",
+    )
+
+    expect(headers.contentType).toBe("text/html; charset=utf-8")
+    expect(headers.disposition).toBe("inline")
+  })
+
+  test("S46: .htm and .svg are markup by name too, whatever case the path uses", () => {
+    expect(serveHeadersFor(Buffer.from("<div/>", "utf8"), false, "a/REPORT.HTM")).toMatchObject({
+      contentType: "text/html; charset=utf-8",
+      disposition: "inline",
+    })
+    expect(serveHeadersFor(Buffer.from("<g/>", "utf8"), false, "chart.svg")).toMatchObject({
+      contentType: "text/html; charset=utf-8",
+      disposition: "inline",
+    })
+  })
+
+  test("S46: a non-markup extension keeps the plain-text attachment path", () => {
+    const headers = serveHeadersFor(Buffer.from("<title>hi</title>", "utf8"), false, "notes.txt")
+
+    expect(headers.contentType).toBe("text/plain; charset=utf-8")
+    expect(headers.disposition).toBe("attachment")
+  })
+
+  test("S46: a png named .html is still sniffed as an image, not framed as markup", () => {
+    const headers = serveHeadersFor(PNG_MAGIC, true, "sneaky.html")
+
+    expect(headers.contentType).toBe("image/png")
+    expect(headers.disposition).toBe("inline")
+  })
+})

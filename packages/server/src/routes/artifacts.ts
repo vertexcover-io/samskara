@@ -105,9 +105,9 @@ export const rangeResponse = (
 
 const serveBytes = (
   context: Context<{ Variables: AuthVariables }>,
-  found: { readonly bytes: Buffer; readonly isBinary: boolean },
+  found: { readonly bytes: Buffer; readonly isBinary: boolean; readonly relativePath: string },
 ) => {
-  const serve = serveHeadersFor(found.bytes, found.isBinary)
+  const serve = serveHeadersFor(found.bytes, found.isBinary, found.relativePath)
   const response = rangeResponse(found.bytes, serve, context.req.header("range"))
 
   if (response.kind === "unsatisfiable") return context.body(null, 416, response.headers)

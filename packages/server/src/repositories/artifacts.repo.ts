@@ -108,6 +108,7 @@ export type ArtifactBytes = {
   readonly bytes: Buffer
   readonly isBinary: boolean
   readonly mimeType: string
+  readonly relativePath: string
 }
 
 /**
@@ -202,6 +203,7 @@ export const getArtifactBytes = async (
       currentContent: artifact.currentContent,
       isBinary: artifact.isBinary,
       mimeType: artifact.mimeType,
+      relativePath: artifact.relativePath,
     })
     .from(artifact)
     .innerJoin(sessions, eq(sessions.id, artifact.sessionId))
@@ -213,7 +215,12 @@ export const getArtifactBytes = async (
   const bytes = which === "base" ? row.baseContent : row.currentContent
   if (!bytes) return null
 
-  return { bytes, isBinary: row.isBinary, mimeType: row.mimeType }
+  return {
+    bytes,
+    isBinary: row.isBinary,
+    mimeType: row.mimeType,
+    relativePath: row.relativePath,
+  }
 }
 
 /**
@@ -240,6 +247,7 @@ export const getArtifactBytesByPath = async (
       currentContent: artifact.currentContent,
       isBinary: artifact.isBinary,
       mimeType: artifact.mimeType,
+      relativePath: artifact.relativePath,
     })
     .from(artifact)
     .innerJoin(sessions, eq(sessions.id, artifact.sessionId))
@@ -257,5 +265,10 @@ export const getArtifactBytesByPath = async (
   const bytes = which === "base" ? row.baseContent : row.currentContent
   if (!bytes) return null
 
-  return { bytes, isBinary: row.isBinary, mimeType: row.mimeType }
+  return {
+    bytes,
+    isBinary: row.isBinary,
+    mimeType: row.mimeType,
+    relativePath: row.relativePath,
+  }
 }
