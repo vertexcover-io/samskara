@@ -519,9 +519,6 @@ export const artifactUploadSchema = z
     currentContent: z.string(),
     currentHash: nonemptyString,
     baseContent: z.string().optional(),
-    baseHash: nonemptyString.optional(),
-    diff: z.string().optional(),
-    oldFragment: z.string().optional(),
     observedAt: timestamp,
   })
   .strict()

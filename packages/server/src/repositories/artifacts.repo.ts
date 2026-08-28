@@ -3,6 +3,22 @@ import type { Querier } from "../db/client.js"
 import { artifact, projects, sessions } from "../db/schema.js"
 import { visibleToUser } from "./projects.repo.js"
 
+/** Withheld for a binary artifact in SQL, not after: it renders no diff and a base can be 50MB. */
+export const findArtifactBase = async (
+  db: Querier,
+  sessionId: string,
+  path: string,
+): Promise<{ readonly baseContent: Buffer | null } | undefined> => {
+  const [row] = await db
+    .select({
+      baseContent: sql<Buffer | null>`case when "artifact"."isBinary" then null else "artifact"."baseContent" end`,
+    })
+    .from(artifact)
+    .where(and(eq(artifact.sessionId, sessionId), eq(artifact.path, path)))
+
+  return row
+}
+
 export type UpsertArtifactInput = {
   readonly sessionId: string
   readonly path: string
@@ -12,37 +28,21 @@ export type UpsertArtifactInput = {
   readonly changeKind: string
   readonly currentContent: Buffer
   readonly currentHash: string
-  readonly baseContent?: Buffer
-  readonly baseHash?: string
-  readonly diff?: string
-  readonly oldFragment?: string
-}
-
-export type UpsertArtifactResult = {
-  readonly artifactId: string
-  readonly updated: boolean
+  readonly baseContent: Buffer | null
+  readonly diff: string | null
 }
 
 /**
- * The base coalesces existing-first, so an incoming base can never displace a stored one. A later
- * upload carrying a base -- after a daemon restart, or a lost `artifacts.json` -- would be carrying
- * post-edit content re-derived as a "base"; because base is frozen on write, accepting it would
- * make every future diff for that file permanently wrong.
- *
- * Identifiers are written table-qualified inside the template: drizzle only auto-qualifies column
- * references inside its builder methods, never inside a raw `sql` fragment.
+ * `baseContent` and `changeKind` are absent on purpose: a column left out of `ON CONFLICT DO
+ * UPDATE` keeps its stored value, so only the first upload for a path decides them.
  */
 const set = {
-  baseContent: sql`coalesce("artifact"."baseContent", excluded."baseContent")`,
-  baseHash: sql`coalesce("artifact"."baseHash", excluded."baseHash")`,
   currentContent: sql`excluded."currentContent"`,
   currentHash: sql`excluded."currentHash"`,
   mimeType: sql`excluded."mimeType"`,
   isBinary: sql`excluded."isBinary"`,
   relativePath: sql`excluded."relativePath"`,
   diff: sql`excluded."diff"`,
-  oldFragment: sql`excluded."oldFragment"`,
-  changeKind: sql`excluded."changeKind"`,
   editCount: sql`"artifact"."editCount" + 1`,
   lastSeenAt: sql`now()`,
 }
@@ -50,23 +50,10 @@ const set = {
 export const upsertArtifact = async (
   db: Querier,
   input: UpsertArtifactInput,
-): Promise<UpsertArtifactResult> => {
+): Promise<{ readonly artifactId: string; readonly updated: boolean }> => {
   const [row] = await db
     .insert(artifact)
-    .values({
-      sessionId: input.sessionId,
-      path: input.path,
-      relativePath: input.relativePath,
-      mimeType: input.mimeType,
-      isBinary: input.isBinary,
-      changeKind: input.changeKind,
-      currentContent: input.currentContent,
-      currentHash: input.currentHash,
-      baseContent: input.baseContent ?? null,
-      baseHash: input.baseHash ?? null,
-      diff: input.diff ?? null,
-      oldFragment: input.oldFragment ?? null,
-    })
+    .values(input)
     .onConflictDoUpdate({ target: [artifact.sessionId, artifact.path], set })
     .returning({ id: artifact.id, editCount: artifact.editCount })
 
@@ -90,7 +77,6 @@ export type ArtifactSummaryRow = {
   readonly editCount: number
   readonly byteSize: number
   readonly diff: string | null
-  readonly oldFragment: string | null
   readonly hasBase: boolean
   readonly firstSeenAt: string
   readonly lastSeenAt: string
@@ -128,7 +114,6 @@ const visibleArtifact = (db: Querier, userId: string, where: ReturnType<typeof e
       editCount: artifact.editCount,
       byteSize: sql<number>`length("artifact"."currentContent")::int`,
       diff: artifact.diff,
-      oldFragment: artifact.oldFragment,
       hasBase: sql<boolean>`("artifact"."baseContent" is not null)`,
       firstSeenAt: sql<string>`${artifact.firstSeenAt}`,
       lastSeenAt: sql<string>`${artifact.lastSeenAt}`,

@@ -17,7 +17,7 @@ const entry = (over: Partial<ArtifactQueueEntry> = {}): ArtifactQueueEntry => ({
   path: "/work/app/docs/a.md",
   relativePath: "docs/a.md",
   projectRoot: "/work/app",
-  changeKind: "edited",
+  created: false,
   observedAt: "2026-07-28T12:00:00.000Z",
   attempts: 0,
   ...over,
@@ -53,8 +53,7 @@ describe("artifact queue", () => {
 
   test("S12: an entry with every optional field populated round-trips unchanged", async () => {
     const full = entry({
-      backupFileName: "3c32b39a@v1",
-      oldFragment: "before",
+      base: "original content",
       nextAttemptAt: "2026-07-28T12:05:00.000Z",
       attempts: 2,
     })
@@ -88,7 +87,7 @@ describe("artifact queue", () => {
     expect(await readQueue(queuePath)).toEqual({ version: 1, entries: [] })
   })
 
-  test("S10: re-enqueuing the same (sessionId, path) replaces rather than appends", async () => {
+  test("S10: re-enqueuing the same (sessionId, path) folds into one entry, keeping the latest observedAt", async () => {
     await enqueue(queuePath, [entry({ observedAt: "2026-07-28T12:00:00.000Z" })])
     await enqueue(queuePath, [entry({ observedAt: "2026-07-28T12:01:00.000Z" })])
     await enqueue(queuePath, [entry({ observedAt: "2026-07-28T12:02:00.000Z" })])
@@ -105,13 +104,34 @@ describe("artifact queue", () => {
     expect((await readQueue(queuePath)).entries).toHaveLength(2)
   })
 
-  test("S10: a replaced entry preserves nothing from the entry it replaced", async () => {
-    await enqueue(queuePath, [entry({ attempts: 7, oldFragment: "stale" })])
-    await enqueue(queuePath, [entry({ attempts: 0 })])
+  test("S10: folding carries the earlier base forward rather than discarding it", async () => {
+    await enqueue(queuePath, [entry({ base: "original" })])
+    await enqueue(queuePath, [entry({})])
 
     const [only] = (await readQueue(queuePath)).entries
-    expect(only?.attempts).toBe(0)
-    expect(only?.oldFragment).toBeUndefined()
+    expect(only?.base).toBe("original")
+  })
+
+  test("SC18: a base queued while an earlier entry is still pending survives the fold, and the backoff is not bypassed", async () => {
+    await enqueue(queuePath, [
+      entry({ base: "original", attempts: 2, nextAttemptAt: "2026-07-28T12:05:00.000Z" }),
+    ])
+    await enqueue(queuePath, [entry({ observedAt: "2026-07-28T12:03:00.000Z" })])
+
+    const [only] = (await readQueue(queuePath)).entries
+    expect(only?.base).toBe("original")
+    expect(only?.observedAt).toBe("2026-07-28T12:03:00.000Z")
+    expect(only?.nextAttemptAt).toBe("2026-07-28T12:05:00.000Z")
+    expect(only?.attempts).toBe(2)
+  })
+
+  test("SC18: created is sticky across a fold, and a later cycle's attempts never bypass an earlier backoff", async () => {
+    await enqueue(queuePath, [entry({ created: true, attempts: 3 })])
+    await enqueue(queuePath, [entry({ created: false, attempts: 0 })])
+
+    const [only] = (await readQueue(queuePath)).entries
+    expect(only?.created).toBe(true)
+    expect(only?.attempts).toBe(3)
   })
 
   test("S11: passing the depth threshold warns once and discards nothing", async () => {

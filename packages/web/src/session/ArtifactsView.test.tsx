@@ -18,7 +18,6 @@ const captured = (overrides: Partial<CapturedArtifact> = {}): CapturedArtifact =
   isBinary: false,
   changeKind: "edited",
   diff: null,
-  oldFragment: null,
   editCount: 1,
   byteSize: 42,
   hasBase: true,
@@ -168,52 +167,19 @@ test("S50: an edited artifact renders its diff with added and removed lines dist
   expect(added.className).not.toBe(removed.className)
 })
 
-test("S51: an artifact with no resolvable base shows its replaced excerpt labelled as an excerpt, not a diff", () => {
+test("S51: an edited artifact whose base never resolved shows the file as it stands, still labelled as edited", async () => {
+  const body = "# Notes\n\nThe replacement line."
+  vi.stubGlobal("fetch", () => Promise.resolve(new Response(body, { status: 200 })))
+
   render(
     <TestRouter initialEntries={["/s/1?tab=artifacts"]}>
-      <ArtifactsView
-        artifacts={[
-          captured({
-            changeKind: "editedUnknownBase",
-            diff: null,
-            oldFragment: "The original line.",
-          }),
-        ]}
-      />
+      <ArtifactsView artifacts={[captured({ changeKind: "editedUnknownBase", diff: null })]} />
     </TestRouter>,
   )
 
   const viewer = screen.getByRole("region", { name: /artifact viewer/i })
-  expect(within(viewer).getByText(/The original line\./)).toBeInTheDocument()
-  expect(within(viewer).getByText(/replaced excerpt/i)).toBeInTheDocument()
-  expect(within(viewer).queryByText(/no contents captured/i)).not.toBeInTheDocument()
-  expect(within(viewer).queryByText(/permission denied/i)).not.toBeInTheDocument()
-})
-
-test("SC24: an edited artifact shows the excerpt its edit replaced, and one whose oldFragment is null shows no such panel", () => {
-  render(
-    <TestRouter initialEntries={["/s/1?tab=artifacts"]}>
-      <ArtifactsView
-        artifacts={[
-          captured({ changeKind: "edited", diff: null, oldFragment: "The original line." }),
-        ]}
-      />
-    </TestRouter>,
-  )
-
-  const withFragment = screen.getByRole("region", { name: /artifact viewer/i })
-  expect(within(withFragment).getByText(/The original line\./)).toBeInTheDocument()
-  expect(within(withFragment).getByText(/replaced excerpt/i)).toBeInTheDocument()
-
-  const { container } = render(
-    <TestRouter initialEntries={["/s/2?tab=artifacts"]}>
-      <ArtifactsView
-        artifacts={[captured({ id: "c-2", changeKind: "edited", diff: null, oldFragment: null })]}
-      />
-    </TestRouter>,
-  )
-
-  expect(within(container).queryByText(/replaced excerpt/i)).not.toBeInTheDocument()
+  expect(within(viewer).getByText(/edited/i)).toBeInTheDocument()
+  expect(await within(viewer).findByText(/The replacement line\./)).toBeInTheDocument()
 })
 
 test("S52: a created artifact shows its content, without offering a diff pane", async () => {
@@ -228,11 +194,7 @@ test("S52: a created artifact shows its content, without offering a diff pane", 
 
   render(
     <TestRouter initialEntries={["/s/1?tab=artifacts"]}>
-      <ArtifactsView
-        artifacts={[
-          captured({ changeKind: "created", diff: null, oldFragment: null, editCount: 0 }),
-        ]}
-      />
+      <ArtifactsView artifacts={[captured({ changeKind: "created", diff: null, editCount: 0 })]} />
     </TestRouter>,
   )
 

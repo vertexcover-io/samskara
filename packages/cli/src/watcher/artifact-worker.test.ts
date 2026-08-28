@@ -85,14 +85,13 @@ describe("artifact workers", () => {
     path: filePath,
     relativePath: "docs/notes.md",
     projectRoot: dir,
-    changeKind: "created",
+    created: true,
     observedAt: "2026-07-28T12:00:00.000Z",
     attempts: 0,
     ...over,
   })
 
   const deps = (sink: ArtifactSink, now = 1_800_000_000_000): ArtifactWorkerDeps => ({
-    fileHistoryDir: join(dir, "file-history"),
     log: recorder.log,
     sink,
     clock: { now: () => now },
@@ -387,14 +386,9 @@ describe("artifact workers", () => {
   test("S34: an upload carrying a base records baseCaptured", async () => {
     const sessionId = "0b9d4c1e-7f3a-4c22-9a6e-1d5f8b2c3e40"
     const sink = scriptedSink([200])
-    const target = entry({ changeKind: "edited", backupFileName: "abc123@v1" })
+    const target = entry({ created: false, base: "base bytes\n" })
     await enqueue(queuePath, [target])
 
-    // A real backup on disk rather than a stubbed reader: the @vN lookup is the behaviour under
-    // test, and a stub would assert the stub's shape instead of the real directory scan.
-    const backupDir = join(dir, "file-history", target.sessionId)
-    await mkdir(backupDir, { recursive: true })
-    await writeFile(join(backupDir, "abc123@v1"), "base bytes\n", "utf8")
     await writeFile(target.path, "current bytes\n", "utf8")
 
     await runArtifactWorkers({ queuePath, statePath, workers: 1, drainOnce: true }, deps(sink))

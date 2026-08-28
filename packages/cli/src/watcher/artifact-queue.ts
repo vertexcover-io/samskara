@@ -1,6 +1,7 @@
 import type pino from "pino"
 import { z } from "zod"
 import { atomicWriteJson, readOrReset, readValidated, withFileLock } from "../config/atomic.js"
+import { mergeArtifact, type PotentialArtifact } from "./artifact-extract.js"
 
 export const QUEUE_DEPTH_WARN_THRESHOLD = 200
 
@@ -10,9 +11,8 @@ const queueEntrySchema = z
     path: z.string().min(1),
     relativePath: z.string().min(1),
     projectRoot: z.string().min(1),
-    changeKind: z.enum(["created", "edited", "editedUnknownBase"]),
-    backupFileName: z.string().min(1).optional(),
-    oldFragment: z.string().optional(),
+    created: z.boolean(),
+    base: z.string().optional(),
     observedAt: z.string().datetime(),
     attempts: z.number().int().nonnegative(),
     nextAttemptAt: z.string().datetime().optional(),
@@ -44,6 +44,24 @@ export const readQueueOrReset = (path: string, log?: pino.Logger): Promise<Artif
 
 export const keyOf = (entry: ArtifactQueueEntry): string => `${entry.sessionId}:${entry.path}`
 
+const artifactOf = (entry: ArtifactQueueEntry): PotentialArtifact => ({
+  path: entry.path,
+  created: entry.created,
+  ...(entry.base === undefined ? {} : { base: entry.base }),
+})
+
+/** Latest-wins, except the base, which folds, and the backoff, which a new sighting cannot reset. */
+const fold = (prev: ArtifactQueueEntry, next: ArtifactQueueEntry): ArtifactQueueEntry => {
+  const artifact = mergeArtifact(artifactOf(prev), artifactOf(next))
+  return {
+    ...next,
+    created: artifact.created,
+    ...(artifact.base === undefined ? {} : { base: artifact.base }),
+    attempts: Math.max(prev.attempts, next.attempts),
+    ...(prev.nextAttemptAt === undefined ? {} : { nextAttemptAt: prev.nextAttemptAt }),
+  }
+}
+
 export const enqueue = async (
   path: string,
   entries: ReadonlyArray<ArtifactQueueEntry>,
@@ -54,7 +72,10 @@ export const enqueue = async (
   await withFileLock(path, async () => {
     const current = await readQueueOrReset(path, log)
     const merged = new Map(current.entries.map((entry) => [keyOf(entry), entry]))
-    for (const entry of entries) merged.set(keyOf(entry), entry)
+    for (const entry of entries) {
+      const prev = merged.get(keyOf(entry))
+      merged.set(keyOf(entry), prev === undefined ? entry : fold(prev, entry))
+    }
 
     const next: ArtifactQueue = { version: 1, entries: [...merged.values()] }
     await atomicWriteJson(path, next)

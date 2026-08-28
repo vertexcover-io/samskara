@@ -122,7 +122,6 @@ type SeedArtifact = {
   readonly current: Buffer
   readonly base?: Buffer
   readonly diff?: string
-  readonly oldFragment?: string
   readonly sessionId?: string
 }
 
@@ -132,12 +131,20 @@ describe.skipIf(!dockerAvailable())("artifact read routes", () => {
   let db: Db
   let app: ReturnType<typeof buildApp>
   let ownerToken: string
+  let cliToken: string
   let viewerToken: string
   let strangerToken: string
   let foreignSessionId: string
 
   const get = (path: string, token: string, headers: Record<string, string> = {}) =>
     app.request(path, { headers: { authorization: `Bearer ${token}`, ...headers } })
+
+  const post = (payload: unknown) =>
+    app.request("/api/artifacts", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${cliToken}` },
+      body: JSON.stringify(payload),
+    })
 
   const seedArtifact = async (input: SeedArtifact): Promise<string> => {
     const [row] = await db
@@ -152,9 +159,7 @@ describe.skipIf(!dockerAvailable())("artifact read routes", () => {
         currentContent: input.current,
         currentHash: sha256(input.current),
         baseContent: input.base ?? null,
-        baseHash: input.base === undefined ? null : sha256(input.base),
         diff: input.diff ?? null,
-        oldFragment: input.oldFragment ?? null,
       })
       .returning({ id: artifact.id })
     if (!row) throw new Error("seed artifact failed")
@@ -213,6 +218,7 @@ describe.skipIf(!dockerAvailable())("artifact read routes", () => {
     })
 
     ownerToken = await signToken(env, { sub: ownerId, aud: "web" })
+    cliToken = await signToken(env, { sub: ownerId, aud: "cli" })
     viewerToken = await signToken(env, { sub: viewerId, aud: "web" })
     strangerToken = await signToken(env, { sub: strangerId, aud: "web" })
 
@@ -279,27 +285,41 @@ describe.skipIf(!dockerAvailable())("artifact read routes", () => {
     }
   })
 
-  test("SC23: the artifacts list route sends the replaced excerpt for an edited artifact, still withholding its contents", async () => {
-    await seedArtifact({
-      path: "/work/docs/notes.md",
-      relativePath: "docs/notes.md",
-      mimeType: "text/markdown",
-      isBinary: false,
-      changeKind: "edited",
-      current: Buffer.from("# Notes\n\nChanged.\n", "utf8"),
-      oldFragment: "Original.",
+  test("SC27: an edited file's diff reaches the web client through the artifact list route", async () => {
+    const uploadSessionId = "artifact-read-sc27-session"
+    const [owner] = await db.select().from(sessions).where(eq(sessions.id, SESSION_ID))
+    if (!owner) throw new Error("seeded session missing")
+    await db.insert(sessions).values({
+      id: uploadSessionId,
+      source: "claude_code",
+      userId: owner.userId,
+      projectId: owner.projectId,
     })
 
-    const res = await get(`/api/sessions/${SESSION_ID}/artifacts`, ownerToken)
+    const upload = await post({
+      sessionId: uploadSessionId,
+      path: "/work/docs/sc27.md",
+      relativePath: "docs/sc27.md",
+      mimeType: "text/markdown",
+      changeKind: "edited",
+      encoding: "utf8",
+      currentContent: "current\n",
+      currentHash: sha256(Buffer.from("current\n", "utf8")),
+      baseContent: "original\n",
+      observedAt: "2026-07-28T12:00:00.000Z",
+    })
+    expect(upload.status).toBe(200)
+
+    const res = await get(`/api/sessions/${uploadSessionId}/artifacts`, ownerToken)
     expect(res.status).toBe(200)
 
     const { artifacts } = (await res.json()) as {
       artifacts: ReadonlyArray<Record<string, unknown>>
     }
     expect(artifacts).toHaveLength(1)
-    expect(artifacts[0]).toMatchObject({ oldFragment: "Original." })
-    expect(artifacts[0]).not.toHaveProperty("currentContent")
-    expect(artifacts[0]).not.toHaveProperty("baseContent")
+    expect(artifacts[0]?.diff).toBeTruthy()
+
+    await db.delete(sessions).where(eq(sessions.id, uploadSessionId))
   })
 
   test("S40: a single text artifact reads back with its diff and both contents byte for byte", async () => {

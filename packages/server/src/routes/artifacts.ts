@@ -8,6 +8,7 @@ import {
 import { type Context, Hono } from "hono"
 import { z } from "zod"
 import type { Db } from "../db/client.js"
+import { renderBaseDiff } from "../lib/artifact-diff.js"
 import { type ServeHeaders, serveHeadersFor } from "../lib/artifact-serving.js"
 import type { Env } from "../lib/env.js"
 import { type AuthVariables, requireAuth } from "../lib/require-auth.js"
@@ -15,6 +16,7 @@ import { validate } from "../lib/validate.js"
 import {
   type ArtifactDetailRow,
   type ArtifactSummaryRow,
+  findArtifactBase,
   getArtifact,
   getArtifactBytes,
   getArtifactBytesByPath,
@@ -136,18 +138,23 @@ export const artifactRoutes = ({ db, env }: Deps) =>
           return context.json({ error: "artifactTooLarge" } as const, 413)
         }
 
-        // Scoped to the caller, not just existence: an `aud:cli` token is valid for any CLI
-        // installation, so an unscoped check would let one user's daemon attach artifacts to
-        // another user's session by guessing its id. Absent-or-not-yours both retry as 409 --
-        // the worker backs off the same way for "not synced yet" as for "not mine".
         if (!(await sessionsRepo.existsForUser(db, payload.sessionId, context.get("user").id))) {
           return context.json({ error: "sessionNotFound" } as const, 409)
         }
 
-        const base =
-          payload.baseContent === undefined ? undefined : decode(payload, payload.baseContent)
+        const incomingBase =
+          payload.baseContent === undefined ? null : decode(payload, payload.baseContent)
 
-        const result = await upsertArtifact(db, {
+        // A later upload's base is post-edit content, so once a row exists only its own base counts.
+        const existing = await findArtifactBase(db, payload.sessionId, payload.path)
+        const base = existing === undefined ? incomingBase : existing.baseContent
+
+        const diff =
+          base === null || isBinary
+            ? null
+            : renderBaseDiff(base.toString("utf8"), current.toString("utf8"), payload.relativePath)
+
+        const { artifactId, updated } = await upsertArtifact(db, {
           sessionId: payload.sessionId,
           path: payload.path,
           relativePath: payload.relativePath,
@@ -156,18 +163,16 @@ export const artifactRoutes = ({ db, env }: Deps) =>
           changeKind: payload.changeKind,
           currentContent: current,
           currentHash: payload.currentHash,
-          ...(base === undefined ? {} : { baseContent: base }),
-          ...(payload.baseHash === undefined ? {} : { baseHash: payload.baseHash }),
-          ...(payload.diff === undefined ? {} : { diff: payload.diff }),
-          ...(payload.oldFragment === undefined ? {} : { oldFragment: payload.oldFragment }),
+          baseContent: incomingBase,
+          diff,
         })
 
         context.get("log")?.setBindings({
           sessionId: payload.sessionId,
           relativePath: payload.relativePath,
-          updated: result.updated,
+          updated,
         })
-        return context.json(result, 200)
+        return context.json({ artifactId, updated }, 200)
       },
     )
     .get("/:artifactId", requireAuth({ db, env }, ["web"]), async (context) => {

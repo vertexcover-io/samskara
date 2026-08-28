@@ -72,7 +72,6 @@ type Exhibit = {
   readonly isBinary: boolean
   readonly relativePath: string | null
   readonly diff: string | null
-  readonly oldFragment: string | null
   readonly changeKind: string | null
   readonly editCount: number | null
 }
@@ -97,7 +96,6 @@ const fromFrameLink = (artifact: Artifact): Exhibit => ({
   isBinary: false,
   relativePath: null,
   diff: null,
-  oldFragment: null,
   changeKind: null,
   editCount: null,
 })
@@ -110,8 +108,7 @@ const fromCaptured = (artifact: CapturedArtifact, sessionId: string | null): Exh
   mimeType: artifact.mimeType,
   agent: null,
   access: "granted",
-  // The list route withholds text bodies; the diff and the fragment are what it does send. A
-  // created file has neither, so its body is fetched from the raw route on demand.
+  // The list route withholds text bodies; a file with no diff fetches its own from the raw route.
   content: null,
   mediaUrl: artifact.isBinary ? rawArtifactUrl(artifact.id) : null,
   textUrl: artifact.isBinary ? null : rawArtifactUrl(artifact.id),
@@ -127,7 +124,6 @@ const fromCaptured = (artifact: CapturedArtifact, sessionId: string | null): Exh
   isBinary: artifact.isBinary,
   relativePath: artifact.relativePath,
   diff: artifact.diff,
-  oldFragment: artifact.oldFragment,
   changeKind: artifact.changeKind,
   editCount: artifact.editCount,
 })
@@ -232,25 +228,6 @@ const DiffBody = ({ content, wrap }: { content: string; wrap: boolean }) => (
       )
     })}
   </pre>
-)
-
-/**
- * About one in five edited files resolves no base, so this is an ordinary outcome and reads as
- * one -- the excerpt is what the edit replaced, not a diff and not a failure.
- */
-const ReplacedExcerpt = ({ fragment }: { fragment: string }) => (
-  <section>
-    <h4 className="text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-ink-soft">
-      Replaced excerpt
-    </h4>
-    <p className="mt-1 text-[0.72rem] text-faded">
-      No pre-session copy of this file was found, so this is the text the edit replaced rather than
-      a diff.
-    </p>
-    <pre className="mt-2 overflow-x-auto border border-rule bg-panel p-3 font-mono text-[0.72rem] leading-relaxed">
-      {fragment}
-    </pre>
-  </section>
 )
 
 type FetchState =
@@ -435,7 +412,6 @@ const EditedBody = ({ exhibit, wrap }: { exhibit: Exhibit; wrap: boolean }) => {
       )
     }
     if (exhibit.diff !== null) return <DiffBody content={exhibit.diff} wrap={wrap} />
-    if (exhibit.oldFragment !== null) return <ReplacedExcerpt fragment={exhibit.oldFragment} />
     return (
       <Notice tone="faded" title="No diff captured">
         No pre-session copy of this file resolved, so there is nothing to compare against.
@@ -485,11 +461,11 @@ const Body = ({ exhibit, wrap }: { exhibit: Exhibit; wrap: boolean }) => {
   }
 
   // An edit carries a before AND an after, so it gets the switcher rather than one fixed pane.
-  if (exhibit.diff !== null || exhibit.oldFragment !== null || exhibit.baseUrl !== null) {
+  if (exhibit.diff !== null || exhibit.baseUrl !== null) {
     return <EditedBody exhibit={exhibit} wrap={wrap} />
   }
 
-  // A created page has no before to compare against, so the rendered page is the whole story.
+  // Nothing to compare against, so the file as it stands is the whole story.
   if (medium === "html" && exhibit.textUrl !== null) {
     return <Preview url={previewSrc(exhibit) ?? ""} name={nameOf(exhibit)} />
   }

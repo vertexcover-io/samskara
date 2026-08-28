@@ -1,13 +1,11 @@
 import { createHash } from "node:crypto"
-import { readdir, readFile } from "node:fs/promises"
-import { extname, join } from "node:path"
-import { MAX_BINARY_BYTES, MAX_DIFF_BYTES, MAX_TEXT_BYTES } from "@samskara/core"
-import { createTwoFilesPatch } from "diff"
+import { readFile } from "node:fs/promises"
+import { extname } from "node:path"
+import { MAX_BINARY_BYTES, MAX_TEXT_BYTES } from "@samskara/core"
 import type pino from "pino"
 import type { ArtifactQueueEntry } from "./artifact-queue.js"
 
 export type ArtifactUploadDeps = {
-  readonly fileHistoryDir: string
   readonly log: pino.Logger
 }
 
@@ -21,9 +19,6 @@ export type ArtifactUpload = {
   readonly currentContent: string
   readonly currentHash: string
   readonly baseContent?: string
-  readonly baseHash?: string
-  readonly diff?: string
-  readonly oldFragment?: string
   readonly observedAt: string
 }
 
@@ -85,99 +80,8 @@ export const classifyContentType = (
   return { isBinary, mimeType: mapped ?? "text/plain" }
 }
 
-export const computeArtifactDiff = (
-  base: string,
-  current: string,
-  relativePath: string,
-): string | null => {
-  const patch = createTwoFilesPatch(relativePath, relativePath, base, current)
-  return Buffer.byteLength(patch) > MAX_DIFF_BYTES ? null : patch
-}
-
-const versionOf = (name: string, hash: string): number | null => {
-  const suffix = name.startsWith(`${hash}@v`) ? name.slice(hash.length + 2) : null
-  if (suffix === null || !/^\d+$/.test(suffix)) return null
-  return Number.parseInt(suffix, 10)
-}
-
-/**
- * The named `@vN` recovers the hash only. `@vN` is the state before the Nth edit, not before the
- * session, so the lowest surviving version is the closest thing to a pre-session base -- freezing
- * the named one would store an intermediate state and produce a permanently misleading diff.
- */
-export const resolveBase = async (
-  deps: ArtifactUploadDeps,
-  entry: ArtifactQueueEntry,
-): Promise<{ readonly baseContent: Buffer; readonly backupPath: string } | null> => {
-  if (!entry.backupFileName) return null
-
-  const [hash] = entry.backupFileName.split("@v")
-  if (!hash) return null
-
-  const directory = join(deps.fileHistoryDir, entry.sessionId)
-  try {
-    const names = await readDirNames(directory)
-    const versions = names
-      .map((name) => ({ name, version: versionOf(name, hash) }))
-      .filter(
-        (candidate): candidate is { name: string; version: number } => candidate.version !== null,
-      )
-      .sort((a, b) => a.version - b.version)
-
-    const lowest = versions[0]
-    if (!lowest) return null
-
-    const backupPath = join(directory, lowest.name)
-    return { baseContent: await readFile(backupPath), backupPath }
-  } catch (error) {
-    deps.log.debug(
-      { directory, backupFileName: entry.backupFileName, err: error },
-      "artifact base could not be resolved; degrading to editedUnknownBase",
-    )
-    return null
-  }
-}
-
-const readDirNames = async (path: string): Promise<ReadonlyArray<string>> =>
-  readdir(path, { withFileTypes: true }).then((entries) =>
-    entries.filter((entry) => entry.isFile()).map((entry) => entry.name),
-  )
-
 const exceedsCap = (size: number, isBinary: boolean): boolean =>
   size > (isBinary ? MAX_BINARY_BYTES : MAX_TEXT_BYTES)
-
-type ResolvedBase = {
-  readonly changeKind: ArtifactUpload["changeKind"]
-  readonly baseContent?: string
-  readonly baseHash?: string
-  readonly diff?: string
-}
-
-const baseFieldsFor = async (
-  deps: ArtifactUploadDeps,
-  entry: ArtifactQueueEntry,
-  current: Buffer,
-  isBinary: boolean,
-): Promise<ResolvedBase> => {
-  if (entry.changeKind !== "edited") return { changeKind: entry.changeKind }
-
-  const resolved = await resolveBase(deps, entry)
-  if (!resolved) return { changeKind: "editedUnknownBase" }
-
-  const base = resolved.baseContent
-  const baseIsBinary = classifyContentType(base, entry.relativePath).isBinary
-  const diff =
-    isBinary || baseIsBinary
-      ? null
-      : computeArtifactDiff(base.toString("utf8"), current.toString("utf8"), entry.relativePath)
-
-  return {
-    changeKind: "edited",
-    baseContent: base.toString(isBinary ? "base64" : "utf8"),
-    baseHash: sha256(base),
-    ...(diff === null ? {} : { diff }),
-  }
-}
 
 export const prepareUpload = async (
   deps: ArtifactUploadDeps,
@@ -199,21 +103,23 @@ export const prepareUpload = async (
     return null
   }
 
-  const base = await baseFieldsFor(deps, entry, current, isBinary)
+  // Presence, not truthiness: a file that was empty before the session has a known, empty base.
+  const changeKind = entry.created
+    ? "created"
+    : entry.base !== undefined
+      ? "edited"
+      : "editedUnknownBase"
 
   return {
     sessionId: entry.sessionId,
     path: entry.path,
     relativePath: entry.relativePath,
     mimeType,
-    changeKind: base.changeKind,
+    changeKind,
     encoding: isBinary ? "base64" : "utf8",
     currentContent: current.toString(isBinary ? "base64" : "utf8"),
     currentHash: sha256(current),
-    ...(base.baseContent === undefined ? {} : { baseContent: base.baseContent }),
-    ...(base.baseHash === undefined ? {} : { baseHash: base.baseHash }),
-    ...(base.diff === undefined ? {} : { diff: base.diff }),
-    ...(entry.oldFragment === undefined ? {} : { oldFragment: entry.oldFragment }),
+    ...(entry.base === undefined ? {} : { baseContent: entry.base }),
     observedAt: entry.observedAt,
   }
 }

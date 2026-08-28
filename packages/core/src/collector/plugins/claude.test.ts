@@ -682,44 +682,31 @@ describe("normalizeClaude", () => {
     ).toMatchObject({ msgType: "localCommand", details: { status: "unknown" } })
   })
 
+  test("SC31 (regression): a file-history-delta or file-history-snapshot line is ingested as a bare timeline event, not parsed for its backup pointer, and never filed as a conversation message", () => {
+    // Verbatim from a real transcript.
+    const delta = {
+      type: "file-history-delta",
+      messageId: "dec9a485-69b6-475a-8d51-9f258c973f61",
+      snapshotMessageId: "c6479dc9-199e-44f9-8e9f-dac360fc17cd",
+      trackingPath: "packages/server/src/repositories/sessions.repo.ts",
+      backup: {
+        backupFileName: "def4ad517dc4265c@v1",
+        version: 1,
+        backupTime: "2026-07-26T06:43:13.909Z",
+      },
+    }
+    const snapshot = { type: "file-history-snapshot", messageId: "m", isUpdate: true, snapshot: {} }
+
+    for (const source of [delta, snapshot]) {
+      const [message] = normalizeClaude(source)
+      expect(message).toMatchObject({ msgType: "systemEvent", subType: source.type })
+      // Not a conversation message: the fallthrough would read this shape as a `user` line.
+      expect(message.msgType).not.toBe("message")
+    }
+  })
+
   test("S15: file and usage events preserve useful fields without duplication", () => {
     const fixtures = [
-      [
-        {
-          type: "file-history-snapshot",
-          messageId: "m",
-          isUpdate: true,
-          snapshot: { files: [] },
-        },
-        { type: "snapshot", messageId: "m", isUpdate: true, snapshot: { files: [] } },
-      ],
-      [
-        // Copied verbatim from a real transcript: Claude Code names the field `trackingPath`, not
-        // `path`. A fixture written from the design doc's prose instead of the wire format is what
-        // let every delta line fail to parse in production while the tests stayed green.
-        {
-          type: "file-history-delta",
-          messageId: "dec9a485-69b6-475a-8d51-9f258c973f61",
-          snapshotMessageId: "c6479dc9-199e-44f9-8e9f-dac360fc17cd",
-          trackingPath: "packages/server/src/repositories/sessions.repo.ts",
-          backup: {
-            backupFileName: "def4ad517dc4265c@v1",
-            version: 1,
-            backupTime: "2026-07-26T06:43:13.909Z",
-          },
-        },
-        {
-          type: "delta",
-          messageId: "dec9a485-69b6-475a-8d51-9f258c973f61",
-          snapshotMessageId: "c6479dc9-199e-44f9-8e9f-dac360fc17cd",
-          path: "packages/server/src/repositories/sessions.repo.ts",
-          backup: {
-            backupFileName: "def4ad517dc4265c@v1",
-            version: 1,
-            backupTime: "2026-07-26T06:43:13.909Z",
-          },
-        },
-      ],
       [
         {
           type: "attachment",

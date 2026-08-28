@@ -1,181 +1,208 @@
 import { join } from "node:path"
 import type { NormalizedMessage, ParsedRecord } from "@samskara/core"
-import { createLogger } from "@samskara/core"
 import { describe, expect, test } from "vitest"
-import { collectArtifacts, type PotentialArtifact, referencedPaths } from "./artifact-extract.js"
+import {
+  collectArtifacts,
+  mergeArtifact,
+  type PotentialArtifact,
+  referencedPaths,
+} from "./artifact-extract.js"
 
 const CWD = "/work/app"
 
-const log = createLogger({ service: "samskara-cli-test" }, { level: "silent" })
-
-const message = (over: Partial<NormalizedMessage> & { readonly subIndex: number }) =>
-  ({
-    sessionId: "sess-1",
-    source: "claude_code",
-    sourceSchemaVersion: 1,
-    trackId: "main",
-    ...over,
-  }) as NormalizedMessage
-
-const toolCall = (subIndex: number, name: string, input: unknown): NormalizedMessage =>
-  message({ subIndex, msgType: "toolCall", details: { callId: `c${subIndex}`, name, input } })
-
-const delta = (subIndex: number, path: string, backup: unknown): NormalizedMessage =>
-  message({ subIndex, msgType: "fileEvent", details: { type: "delta", path, backup } })
-
-const recordOf = (messages: ReadonlyArray<NormalizedMessage>): ParsedRecord => {
-  const [first, ...rest] = messages
-  if (!first) throw new Error("a record needs at least one message")
-  return {
-    lineUuid: "0191d942-3ba5-7dba-9a7d-22d65b30258c",
-    lineNumber: 1,
-    raw: {},
-    messages: [first, ...rest],
-  }
+// `collectArtifacts` reads `record.raw` alone, so this only exists to satisfy the type.
+const placeholderMessage: NormalizedMessage = {
+  subIndex: 0,
+  sessionId: "sess-1",
+  source: "claude_code",
+  sourceSchemaVersion: 1,
+  trackId: "main",
+  msgType: "custom",
+  subType: "fixture",
 }
 
-const collect = (messages: ReadonlyArray<NormalizedMessage>): ReadonlyArray<PotentialArtifact> =>
-  collectArtifacts([recordOf(messages)], CWD, log)
+const recordOf = (raw: unknown, lineUuid = "call-1", lineNumber = 1): ParsedRecord => ({
+  lineUuid,
+  lineNumber,
+  raw,
+  messages: [placeholderMessage],
+})
 
-const byPath = (candidates: ReadonlyArray<PotentialArtifact>, path: string) =>
-  candidates.find((candidate) => candidate.path === path)
+type WriteLineOptions = {
+  readonly type?: "create" | "update"
+  readonly originalFile?: string | null
+  readonly timestamp?: string
+}
+
+const writeLine = (filePath: string, over: WriteLineOptions = {}) => ({
+  timestamp: over.timestamp ?? "2026-07-28T12:00:00.000Z",
+  toolUseResult: {
+    filePath,
+    ...(over.type === undefined ? {} : { type: over.type }),
+    ...(over.originalFile === undefined ? {} : { originalFile: over.originalFile }),
+  },
+})
+
+const humanEditLine = (filename: string, timestamp = "2026-07-28T12:01:00.000Z") => ({
+  timestamp,
+  attachment: { type: "edited_text_file", filename },
+})
 
 describe("collectArtifacts", () => {
-  // Driving the write-family from a table means adding a tool here without adding it to the
-  // projection fails, rather than silently going uncaptured.
-  const writeFamily = [
-    { name: "Write", input: { file_path: "src/a.ts" }, path: "/work/app/src/a.ts" },
-    { name: "Edit", input: { file_path: "src/b.ts" }, path: "/work/app/src/b.ts" },
-    { name: "MultiEdit", input: { file_path: "src/c.ts" }, path: "/work/app/src/c.ts" },
-    {
-      name: "NotebookEdit",
-      input: { notebook_path: "src/d.ipynb" },
-      path: "/work/app/src/d.ipynb",
-    },
-  ] as const
+  test("SC1: a written file is captured by its absolute path", () => {
+    const record = recordOf(writeLine("src/a.ts", { type: "update" }), "call-1")
+    const [artifact] = collectArtifacts([record], CWD)
 
-  test("S1: every write-family tool call yields a candidate at its absolute path", () => {
-    const candidates = collect(
-      writeFamily.map((tool, index) => toolCall(index, tool.name, tool.input)),
+    expect(artifact?.path).toBe("/work/app/src/a.ts")
+    expect(artifact?.created).toBe(false)
+  })
+
+  test("SC2: a file written twice is one artifact, not two", () => {
+    const first = recordOf(writeLine("src/a.ts", { type: "update" }), "call-1", 1)
+    const second = recordOf(
+      writeLine("src/a.ts", { type: "update", timestamp: "2026-07-28T12:01:00.000Z" }),
+      "call-2",
+      2,
     )
 
-    expect(candidates.map((candidate) => candidate.path).sort()).toEqual(
-      writeFamily.map((tool) => tool.path).sort(),
+    expect(collectArtifacts([first, second], CWD)).toHaveLength(1)
+  })
+
+  test("SC3: the first pre-session content seen becomes the base", () => {
+    const first = recordOf(
+      writeLine("src/a.ts", { type: "update", originalFile: "first content" }),
+      "call-1",
+      1,
     )
-  })
-
-  test("S1: a Read tool call yields no candidate", () => {
-    expect(collect([toolCall(0, "Read", { file_path: "src/a.ts" })])).toEqual([])
-  })
-
-  test("S1: Write is created and the edit family is edited", () => {
-    const candidates = collect(
-      writeFamily.map((tool, index) => toolCall(index, tool.name, tool.input)),
-    )
-
-    expect(byPath(candidates, "/work/app/src/a.ts")?.changeKind).toBe("created")
-    expect(byPath(candidates, "/work/app/src/b.ts")?.changeKind).toBe("edited")
-    expect(byPath(candidates, "/work/app/src/c.ts")?.changeKind).toBe("edited")
-    expect(byPath(candidates, "/work/app/src/d.ipynb")?.changeKind).toBe("edited")
-  })
-
-  test("S1: an already-absolute path is kept rather than re-resolved against cwd", () => {
-    const candidates = collect([toolCall(0, "Write", { file_path: "/elsewhere/x.ts" })])
-
-    expect(candidates.map((candidate) => candidate.path)).toEqual(["/elsewhere/x.ts"])
-  })
-
-  test("S2: a MultiEdit naming three files yields three candidates", () => {
-    const candidates = collect([
-      toolCall(0, "MultiEdit", { file_path: "src/one.ts", edits: [{ old_string: "a" }] }),
-      toolCall(1, "MultiEdit", { file_path: "src/two.ts", edits: [{ old_string: "b" }] }),
-      toolCall(2, "MultiEdit", { file_path: "src/three.ts" }),
-    ])
-
-    expect(candidates.map((candidate) => candidate.path).sort()).toEqual([
-      "/work/app/src/one.ts",
-      "/work/app/src/three.ts",
-      "/work/app/src/two.ts",
-    ])
-  })
-
-  test("S2: a MultiEdit's several edits to one file collapse to a single candidate", () => {
-    const candidates = collect([
-      toolCall(0, "MultiEdit", {
-        file_path: "src/one.ts",
-        edits: [{ old_string: "first" }, { old_string: "second" }],
+    const second = recordOf(
+      writeLine("src/a.ts", {
+        type: "update",
+        originalFile: "second content",
+        timestamp: "2026-07-28T12:01:00.000Z",
       }),
-    ])
+      "call-2",
+      2,
+    )
 
-    expect(candidates).toHaveLength(1)
-    expect(candidates[0]?.oldFragment).toBe("second")
+    const [artifact] = collectArtifacts([first, second], CWD)
+    expect(artifact?.base).toBe("first content")
+    expect(artifact?.created).toBe(false)
   })
 
-  test("S3: a delta alone supplies no candidate", () => {
-    const candidates = collect([delta(0, "docs/a.md", { backupFileName: "3c32b39a@v1" })])
-
-    expect(candidates).toEqual([])
-  })
-
-  test("S3: a delta alongside an Edit contributes its backup pointer", () => {
-    const candidates = collect([
-      toolCall(0, "Edit", { file_path: "docs/a.md" }),
-      delta(1, "docs/a.md", { backupFileName: "3c32b39a@v1" }),
-    ])
-
-    expect(candidates).toHaveLength(1)
-    expect(candidates[0]?.backupFileName).toBe("3c32b39a@v1")
-  })
-
-  test("S4: a delta whose backupFileName is null leaves the candidate without a pointer", () => {
-    const candidates = collect([
-      toolCall(0, "Edit", { file_path: "docs/a.md" }),
-      delta(1, "docs/a.md", { backupFileName: null }),
-    ])
-
-    expect(candidates).toHaveLength(1)
-    expect(candidates[0]?.backupFileName).toBeUndefined()
-    // The cycle cannot decide `editedUnknownBase` -- resolving a base needs a disk read.
-    expect(candidates[0]?.changeKind).toBe("edited")
-  })
-
-  test("S5: a malformed tool input is skipped without dropping its record's other messages", () => {
-    const candidates = collect([
-      toolCall(0, "Write", { file_path: 42 }),
-      toolCall(1, "Edit", { file_path: "src/ok.ts" }),
-    ])
-
-    expect(candidates.map((candidate) => candidate.path)).toEqual(["/work/app/src/ok.ts"])
-  })
-
-  test("captures an Edit's old_string as the fragment", () => {
-    const candidates = collect([
-      toolCall(0, "Edit", { file_path: "src/a.ts", old_string: "before" }),
-    ])
-
-    expect(candidates[0]?.oldFragment).toBe("before")
-  })
-
-  test("dedupes repeated writes to one path, with the last write winning", () => {
-    const candidates = collect([
-      toolCall(0, "Edit", { file_path: "src/a.ts", old_string: "first" }),
-      toolCall(1, "Edit", { file_path: "src/a.ts", old_string: "second" }),
-    ])
-
-    expect(candidates).toHaveLength(1)
-    expect(candidates[0]?.oldFragment).toBe("second")
-  })
-
-  test("a fileEvent of type edited yields a candidate", () => {
-    const candidates = collect([
-      message({
-        subIndex: 0,
-        msgType: "fileEvent",
-        details: { type: "edited", path: "docs/a.md" },
+  test("SC3b: writes from two transcripts of one session settle the base by time, not by line", () => {
+    const main = recordOf(
+      writeLine("src/a.ts", { type: "update", originalFile: "earliest content" }),
+      "main-call",
+      500,
+    )
+    const subagent = recordOf(
+      writeLine("src/a.ts", {
+        type: "update",
+        originalFile: "later content",
+        timestamp: "2026-07-28T12:01:00.000Z",
       }),
-    ])
+      "sub-call",
+      3,
+    )
 
-    expect(candidates.map((candidate) => candidate.path)).toEqual(["/work/app/docs/a.md"])
+    // Passed sub-before-main, to prove the sort is on timestamp rather than array or line order.
+    const [artifact] = collectArtifacts([subagent, main], CWD)
+    expect(artifact?.base).toBe("earliest content")
+  })
+
+  test("SC4: a write recorded without pre-session content yields no base", () => {
+    const record = recordOf(writeLine("src/a.ts", { type: "update", originalFile: null }))
+
+    const [artifact] = collectArtifacts([record], CWD)
+    expect(artifact?.base).toBeUndefined()
+    expect(artifact?.created).toBe(false)
+  })
+
+  test("SC5: a file the session created never takes a base", () => {
+    const create = recordOf(writeLine("src/a.ts", { type: "create" }), "call-1", 1)
+    const edit = recordOf(
+      writeLine("src/a.ts", {
+        type: "update",
+        originalFile: "pre-session content",
+        timestamp: "2026-07-28T12:01:00.000Z",
+      }),
+      "call-2",
+      2,
+    )
+
+    const [artifact] = collectArtifacts([create, edit], CWD)
+    expect(artifact?.created).toBe(true)
+    expect(artifact?.base).toBeUndefined()
+  })
+
+  test("SC6: overwriting an existing file is not creating it", () => {
+    const record = recordOf(
+      writeLine("src/a.ts", { type: "update", originalFile: "existing content" }),
+    )
+
+    const [artifact] = collectArtifacts([record], CWD)
+    expect(artifact?.created).toBe(false)
+    expect(artifact?.base).toBe("existing content")
+  })
+
+  test("SC7: a file the human edited is captured with nothing but its path", () => {
+    const record = recordOf(humanEditLine("docs/a.md"))
+
+    const [artifact] = collectArtifacts([record], CWD)
+    expect(artifact?.path).toBe("/work/app/docs/a.md")
+    expect(artifact?.base).toBeUndefined()
+    expect(artifact?.created).toBe(false)
+  })
+
+  test("SC8: a human edit never erases the base a write recorded", () => {
+    const write = recordOf(
+      writeLine("docs/a.md", { type: "update", originalFile: "base content" }),
+      "call-1",
+      1,
+    )
+    const human = recordOf(humanEditLine("docs/a.md"), "call-2", 2)
+
+    const [artifact] = collectArtifacts([write, human], CWD)
+    expect(artifact?.base).toBe("base content")
+  })
+
+  test("SC10: lines that are not writes are ignored", () => {
+    const userMessage = recordOf({ type: "user", message: { role: "user", content: "hi" } })
+    const bashResult = recordOf({ type: "user", toolUseResult: "plain string output" })
+    const hook = recordOf({ type: "hook_success", hookEvent: "PostToolUse" })
+
+    expect(collectArtifacts([userMessage, bashResult, hook], CWD)).toEqual([])
+  })
+})
+
+describe("mergeArtifact", () => {
+  test("SC11: the earlier view's base survives the fold", () => {
+    const a: PotentialArtifact = { path: "/x", created: false, base: "content1" }
+    const b: PotentialArtifact = { path: "/x", created: false, base: "content2" }
+
+    expect(mergeArtifact(a, b).base).toBe("content1")
+  })
+
+  test("SC11: a later view's base fills a gap the earlier one left", () => {
+    const a: PotentialArtifact = { path: "/x", created: false }
+    const b: PotentialArtifact = { path: "/x", created: false, base: "content2" }
+
+    expect(mergeArtifact(a, b).base).toBe("content2")
+  })
+
+  test("SC11: the result is created when either view is", () => {
+    const created: PotentialArtifact = { path: "/x", created: true }
+    const notCreated: PotentialArtifact = { path: "/x", created: false }
+
+    expect(mergeArtifact(created, notCreated).created).toBe(true)
+    expect(mergeArtifact(notCreated, created).created).toBe(true)
+  })
+
+  test("SC12: a created file drops a base a later view carries", () => {
+    const created: PotentialArtifact = { path: "/x", created: true }
+    const withBase: PotentialArtifact = { path: "/x", created: false, base: "session-written" }
+
+    expect(mergeArtifact(created, withBase).base).toBeUndefined()
   })
 })
 

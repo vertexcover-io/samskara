@@ -652,10 +652,6 @@ const handleProgressMessage = (
   })
 }
 
-/** Requires `key` to be present on the object, even when its value may be undefined. */
-const requiredKey = <T extends z.ZodTypeAny>(schema: T, key: string) =>
-  schema.refine((value) => isObject(value) && key in value)
-
 const queueOperationSchema = z.object({
   operation: z.enum(["enqueue", "dequeue", "remove", "popAll"]).catch("unknown" as never),
   taskId: optionalString,
@@ -664,27 +660,6 @@ const queueOperationSchema = z.object({
   outputFile: optionalString,
   value: z.string().optional(),
 })
-const snapshotSchema = requiredKey(
-  z.object({ snapshot: z.unknown(), messageId: optionalString, isUpdate: z.boolean().optional() }),
-  "snapshot",
-)
-/**
- * Claude Code names the edited file `trackingPath` on a delta line. `path` is accepted too so an
- * older or renamed shape still parses, and both normalize to `path` for the rest of the pipeline.
- */
-const deltaSchema = requiredKey(
-  z
-    .object({
-      trackingPath: z.string().min(1).optional(),
-      path: z.string().min(1).optional(),
-      backup: z.unknown(),
-      messageId: optionalString,
-      snapshotMessageId: optionalString,
-    })
-    .transform(({ trackingPath, path, ...rest }) => ({ ...rest, path: trackingPath ?? path }))
-    .refine((value): value is typeof value & { path: string } => value.path !== undefined),
-  "backup",
-)
 const frameLinkSchema = z
   .object({ path: optionalString, url: optionalString, title: z.string().optional() })
   .refine((value) => value.path !== undefined || value.url !== undefined)
@@ -927,18 +902,10 @@ export const normalizeClaude = (
           detailedMessage(common, "queueOperation", details),
         ),
       ]
+    // Nothing reads the backup pointer these carry; kept as bare events for shape only.
     case "file-history-snapshot":
-      return [
-        buildParsed(snapshotSchema, data, common, type, (details) =>
-          detailedMessage(common, "fileEvent", { type: "snapshot", ...details }),
-        ),
-      ]
     case "file-history-delta":
-      return [
-        buildParsed(deltaSchema, data, common, type, (details) =>
-          detailedMessage(common, "fileEvent", { type: "delta", ...details }),
-        ),
-      ]
+      return [buildMessage(common, { msgType: "systemEvent", subType: type })]
     case "frame-link":
       return [
         buildParsed(frameLinkSchema, data, common, type, (details) =>

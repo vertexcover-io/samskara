@@ -101,7 +101,8 @@ export const toolResultLine = (
 
 /**
  * A `file-history-delta` line — Claude Code's record of the backup it took before editing a
- * file. It carries the pointer the daemon needs to resolve an artifact's pre-edit base.
+ * file. No consumer reads the pointer it carries; it is captured only to prove a transcript that
+ * contains one still ingests normally, as a bare timeline event.
  *
  * The edited file is named `trackingPath`, matching the real wire format. A fixture that used
  * `path` here passed while production silently resolved no bases at all.
@@ -116,6 +117,30 @@ export const deltaLine = (
   timestamp: iso(minute),
   trackingPath: path,
   backup: { backupFileName, version: 1, backupTime: iso(minute) },
+})
+
+/** `originalFile` is the content just before this write, and is absent for a large file. */
+export const writeResultLine = (
+  toolId: string,
+  filePath: string,
+  options: {
+    readonly type?: "create" | "update"
+    readonly originalFile?: string | null
+  },
+  minute: number,
+): TranscriptLine => ({
+  type: "user",
+  uuid: crypto.randomUUID(),
+  timestamp: iso(minute),
+  message: {
+    role: "user",
+    content: [{ type: "tool_result", tool_use_id: toolId, content: "OK" }],
+  },
+  toolUseResult: {
+    filePath,
+    ...(options.type === undefined ? {} : { type: options.type }),
+    ...(options.originalFile === undefined ? {} : { originalFile: options.originalFile }),
+  },
 })
 
 /** A `summary` line, which normalizes to a `systemEvent` row with subType `summary`. */

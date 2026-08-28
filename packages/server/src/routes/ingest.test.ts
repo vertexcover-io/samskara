@@ -592,7 +592,6 @@ describe.skipIf(!dockerAvailable())("ingest route", () => {
     expect([...familiesInPayload].sort()).toEqual([
       "compaction",
       "custom",
-      "fileEvent",
       "hookCall",
       "localCommand",
       "message",
@@ -606,14 +605,17 @@ describe.skipIf(!dockerAvailable())("ingest route", () => {
 
     const subTypesFor = (family: string) =>
       [...new Set(stored.filter((r) => r.msgType === family).map((r) => r.subType))].sort()
+    // Neither is parsed for its backup pointer any more, so both land here.
     expect(subTypesFor("systemEvent")).toEqual([
       "away_summary",
       "bridge_status",
+      "file-history-delta",
+      "file-history-snapshot",
       "informational",
       "model_refusal_fallback",
       "scheduled_task_fire",
     ])
-    // `file-history-delta` is absent here on purpose: it now parses into a fileEvent rather than
+    // `file-history-delta` is absent here on purpose: it now parses into a systemEvent rather than
     // falling through to `custom`. Its presence in this list was the recorded symptom of the
     // delta schema requiring `path` when Claude Code emits `trackingPath`.
     expect(subTypesFor("custom")).toEqual([
@@ -623,9 +625,8 @@ describe.skipIf(!dockerAvailable())("ingest route", () => {
       "mode",
       "permission-mode",
     ])
-    // The delta from the same recorded session lands as a fileEvent carrying its backup pointer.
     const deltas = stored.filter(
-      (row) => row.msgType === "fileEvent" && (row.details as { type?: string })?.type === "delta",
+      (row) => row.msgType === "systemEvent" && row.subType === "file-history-delta",
     )
     expect(deltas.length).toBeGreaterThan(0)
 

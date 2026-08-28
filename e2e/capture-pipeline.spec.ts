@@ -12,12 +12,12 @@ import { E2E_OTHER_USER_ID, E2E_USER_ID, orgId, seedDatabase } from "./seed.js"
 import {
   assistantLine,
   createTranscriptWriter,
-  deltaLine,
   secretBearingLine,
   summaryLine,
   toolCallLine,
   toolResultLine,
   userLine,
+  writeResultLine,
 } from "./transcript.js"
 
 const DATABASE_URL = requireDatabaseUrl()
@@ -723,8 +723,11 @@ test.describe("capture pipeline", () => {
     await writer.append([
       userLine("Write the ADR.", 0),
       toolCallLine("tool-write-1", "Write", { file_path: inScope }, 1),
+      writeResultLine("tool-write-1", inScope, { type: "create" }, 1),
       toolCallLine("tool-write-2", "Write", { file_path: excluded }, 2),
+      writeResultLine("tool-write-2", excluded, { type: "create" }, 2),
       toolCallLine("tool-write-3", "Write", { file_path: outside }, 3),
+      writeResultLine("tool-write-3", outside, { type: "create" }, 3),
     ])
 
     // Anchor on the transcript reaching Postgres, so a queue that never appears is
@@ -733,7 +736,7 @@ test.describe("capture pipeline", () => {
       () => sql<{ count: string }[]>`
         select count(*)::text as count from messages where "sessionId" = ${SESSION_ID}
       `,
-      (r) => Number(r[0]?.count ?? 0) >= 4,
+      (r) => Number(r[0]?.count ?? 0) >= 7,
       (r) => `${r[0]?.count ?? 0} message rows`,
     )
 
@@ -754,8 +757,8 @@ test.describe("capture pipeline", () => {
     await rm(outsideDir, { recursive: true, force: true })
   })
 
-  test("P13: an edited file's backup pointer resolves into a stored base and diff, while an edit whose delta names no backup lands as editedUnknownBase", async () => {
-    const { writer, sql, cwd, home } = await useHarness({
+  test("P13 (regression): a write result's own originalFile resolves into a stored base and diff, with no file-history lookup involved, while an edit that carries no originalFile lands as editedUnknownBase with no diff at all", async () => {
+    const { writer, sql, cwd } = await useHarness({
       enabled: true,
     })
 
@@ -765,15 +768,7 @@ test.describe("capture pipeline", () => {
     await writeFile(resolvable, "# Notes\n\nChanged line.\n", "utf8")
     await writeFile(unknownBase, "# Other\n\nAlso changed.\n", "utf8")
 
-    // The real backup Claude took before editing the first file. The second has none, which is
-    // the measured majority case and must still capture -- as editedUnknownBase.
-    const historyDir = join(home, ".claude", "file-history", SESSION_ID)
-    await mkdir(historyDir, { recursive: true })
-    await writeFile(join(historyDir, "3c32b39a@v1"), "# Notes\n\nOriginal line.\n", "utf8")
-
-    // Claude emits the Edit, then the delta recording the backup it took first. Only the
-    // first file's delta names a backup; the second carries null, which is the measured
-    // majority case and must still queue the artifact.
+    // Only the first file's result names an `originalFile`. No `~/.claude/file-history` exists.
     await writer.append([
       userLine("Edit both docs.", 0),
       toolCallLine(
@@ -782,9 +777,14 @@ test.describe("capture pipeline", () => {
         { file_path: resolvable, old_string: "Original line." },
         1,
       ),
-      deltaLine(resolvable, "3c32b39a@v1", 2),
-      toolCallLine("tool-edit-2", "Edit", { file_path: unknownBase, old_string: "Was here." }, 3),
-      deltaLine(unknownBase, null, 4),
+      writeResultLine(
+        "tool-edit-1",
+        resolvable,
+        { type: "update", originalFile: "# Notes\n\nOriginal line.\n" },
+        1,
+      ),
+      toolCallLine("tool-edit-2", "Edit", { file_path: unknownBase, old_string: "Was here." }, 2),
+      writeResultLine("tool-edit-2", unknownBase, { type: "update" }, 2),
     ])
 
     await pollUntil(
@@ -802,10 +802,9 @@ test.describe("capture pipeline", () => {
           changeKind: string
           baseContent: Buffer | null
           diff: string | null
-          oldFragment: string | null
         }[]
       >`
-        select path, "changeKind", "baseContent", diff, "oldFragment"
+        select path, "changeKind", "baseContent", diff
         from artifact where "sessionId" = ${SESSION_ID}
       `,
       (r) => r.length >= 2,
@@ -813,19 +812,18 @@ test.describe("capture pipeline", () => {
     )
 
     const byPath = new Map(rows.map((row) => [row.path, row]))
-    const withBackup = byPath.get(await realpath(resolvable))
-    const withoutBackup = byPath.get(await realpath(unknownBase))
+    const withBase = byPath.get(await realpath(resolvable))
+    const withoutBase = byPath.get(await realpath(unknownBase))
 
-    // The pointer carried the pre-edit content all the way from `file-history` into the column.
-    expect(withBackup?.changeKind).toBe("edited")
-    expect(withBackup?.baseContent?.toString("utf8")).toBe("# Notes\n\nOriginal line.\n")
-    expect(withBackup?.diff).toContain("-Original line.")
-    expect(withBackup?.diff).toContain("+Changed line.")
+    expect(withBase?.changeKind).toBe("edited")
+    expect(withBase?.baseContent?.toString("utf8")).toBe("# Notes\n\nOriginal line.\n")
+    expect(withBase?.diff).toContain("-Original line.")
+    expect(withBase?.diff).toContain("+Changed line.")
 
-    // No backup: captured anyway, honestly recorded as unrecoverable, keeping the fragment.
-    expect(withoutBackup?.changeKind).toBe("editedUnknownBase")
-    expect(withoutBackup?.baseContent).toBeNull()
-    expect(withoutBackup?.oldFragment).toBe("Was here.")
+    // Captured anyway, recorded as unrecoverable, and no diff invented for it.
+    expect(withoutBase?.changeKind).toBe("editedUnknownBase")
+    expect(withoutBase?.baseContent).toBeNull()
+    expect(withoutBase?.diff).toBeNull()
   })
 
   test("P14: a captured report's referenced media is captured too, under the same session, while a source file it links is not", async () => {
@@ -878,6 +876,7 @@ test.describe("capture pipeline", () => {
     await writer.append([
       userLine("Verify the feature and write the report.", 0),
       toolCallLine("tool-write-report", "Write", { file_path: report }, 1),
+      writeResultLine("tool-write-report", report, { type: "create" }, 1),
     ])
 
     await pollUntil(
@@ -917,7 +916,7 @@ test.describe("capture pipeline", () => {
   })
 
   test("A1: a file the agent edits during a captured session arrives in Postgres with its pre-session content and a diff, without delaying message capture", async () => {
-    const { writer, sql, cwd, home } = await useHarness({
+    const { writer, sql, cwd } = await useHarness({
       enabled: true,
     })
 
@@ -927,14 +926,7 @@ test.describe("capture pipeline", () => {
     const FINAL = "# Notes\n\nThe third line.\n"
 
     await mkdir(join(cwd, "docs"), { recursive: true })
-    await writeFile(notes, ORIGINAL, "utf8")
-
-    // The backup Claude Code itself takes before an edit, in its real on-disk layout.
-    const backupHash = "a1f0e9d8"
-    const historyDir = join(home, ".claude", "file-history", SESSION_ID)
-    await mkdir(historyDir, { recursive: true })
-    await writeFile(join(historyDir, `${backupHash}@v1`), ORIGINAL, "utf8")
-
+    // Only post-edit bytes land on disk; the pre-edit content rides the result line.
     await writeFile(notes, CHANGED, "utf8")
 
     await writer.append([
@@ -945,7 +937,7 @@ test.describe("capture pipeline", () => {
         { file_path: notes, old_string: "The original line." },
         1,
       ),
-      deltaLine(notes, `${backupHash}@v1`, 2),
+      writeResultLine("tool-edit-a1", notes, { type: "update", originalFile: ORIGINAL }, 1),
       userLine("Thanks, anything else worth noting?", 3),
       assistantLine("Nothing further -- the notes now read correctly.", 4),
     ])
@@ -1002,7 +994,7 @@ test.describe("capture pipeline", () => {
         { file_path: notes, old_string: "The replacement line." },
         5,
       ),
-      deltaLine(notes, `${backupHash}@v1`, 6),
+      writeResultLine("tool-edit-a1b", notes, { type: "update" }, 5),
     ])
 
     const updated = await pollUntil(
@@ -1041,8 +1033,11 @@ test.describe("capture pipeline", () => {
     await writer.append([
       userLine("Write the report, the diagram, and the helper.", 0),
       toolCallLine("tool-write-a2a", "Write", { file_path: report }, 1),
+      writeResultLine("tool-write-a2a", report, { type: "create" }, 1),
       toolCallLine("tool-write-a2b", "Write", { file_path: diagram }, 2),
+      writeResultLine("tool-write-a2b", diagram, { type: "create" }, 2),
       toolCallLine("tool-write-a2c", "Write", { file_path: script }, 3),
+      writeResultLine("tool-write-a2c", script, { type: "create" }, 3),
     ])
 
     await pollUntil(
@@ -1109,10 +1104,10 @@ test.describe("capture pipeline", () => {
     expect((await asStranger(`/api/sessions/${SESSION_ID}/artifacts`)).status).toBe(404)
   })
 
-  test("A2: a viewer opens a captured session in the browser and reads the real artifact and its diff, with no demo fixture present and no access for a stranger", async ({
+  test("SC32: an edited file's own result line resolves a diff, opening the Changes view straight onto a populated Diff tab -- and a viewer with no grant is refused, no demo fixture present", async ({
     authedPage: page,
   }) => {
-    const { writer, sql, cwd, home } = await useHarness({
+    const { writer, sql, cwd } = await useHarness({
       enabled: true,
     })
 
@@ -1122,13 +1117,7 @@ test.describe("capture pipeline", () => {
     const CHANGED = "# Notes\n\nThe replacement line.\n"
 
     await mkdir(join(cwd, "docs"), { recursive: true })
-    await writeFile(notes, ORIGINAL, "utf8")
-
-    const backupHash = "b2c1d0e9"
-    const historyDir = join(home, ".claude", "file-history", SESSION_ID)
-    await mkdir(historyDir, { recursive: true })
-    await writeFile(join(historyDir, `${backupHash}@v1`), ORIGINAL, "utf8")
-
+    // No `~/.claude/file-history` exists here: the base rides the result line.
     await writeFile(notes, CHANGED, "utf8")
 
     await writer.append([
@@ -1139,7 +1128,7 @@ test.describe("capture pipeline", () => {
         { file_path: notes, old_string: "The original line." },
         1,
       ),
-      deltaLine(notes, `${backupHash}@v1`, 2),
+      writeResultLine("tool-edit-a2ui", notes, { type: "update", originalFile: ORIGINAL }, 1),
     ])
 
     const resolvedPath = await realpath(notes)
@@ -1163,11 +1152,13 @@ test.describe("capture pipeline", () => {
     const file = list.getByRole("button", { name: /notes\.md/ })
     await expect(file).toBeVisible()
 
-    // Selecting it shows the diff the daemon computed, both sides of the change.
+    // A captured base means the Diff tab opens populated, with the "no diff" notice absent.
     await file.click()
     const viewer = page.getByRole("region", { name: /artifact viewer/i })
+    await expect(viewer.getByRole("tab", { name: "Diff" })).toHaveAttribute("aria-selected", "true")
     await expect(viewer.getByText("-The original line.")).toBeVisible()
     await expect(viewer.getByText("+The replacement line.")).toBeVisible()
+    await expect(viewer.getByText("No diff captured")).toHaveCount(0)
 
     // No fixture from the deleted DEMO_ARTIFACTS survives anywhere on the rendered page.
     const body = (await page.locator("body").textContent()) ?? ""

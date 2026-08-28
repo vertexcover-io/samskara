@@ -633,23 +633,29 @@ describe("watcher driver", () => {
       return path
     }
 
-    const writeLine = (uuid: string, sessionId: string, filePath: string) =>
+    type WriteLineOptions = {
+      readonly type?: "create" | "update"
+      readonly originalFile?: string | null
+      readonly timestamp?: string
+      readonly agentId?: string
+    }
+
+    const writeLine = (
+      uuid: string,
+      sessionId: string,
+      filePath: string,
+      over: WriteLineOptions = {},
+    ) =>
       JSON.stringify({
         uuid,
         sessionId,
         cwd: app,
-        timestamp: "2026-07-23T00:00:00.000Z",
-        message: {
-          role: "assistant",
-          model: "claude-opus-4-8",
-          content: [
-            {
-              type: "tool_use",
-              id: `toolu_${uuid}`,
-              name: "Write",
-              input: { file_path: filePath },
-            },
-          ],
+        timestamp: over.timestamp ?? "2026-07-23T00:00:00.000Z",
+        ...(over.agentId === undefined ? {} : { agentId: over.agentId }),
+        toolUseResult: {
+          filePath,
+          type: over.type ?? "create",
+          ...(over.originalFile === undefined ? {} : { originalFile: over.originalFile }),
         },
       })
 
@@ -683,11 +689,11 @@ describe("watcher driver", () => {
       )
 
       const queue = JSON.parse(await readFile(queuePath, "utf8")) as {
-        entries: Array<{ path: string; relativePath: string; changeKind: string }>
+        entries: Array<{ path: string; relativePath: string; created: boolean }>
       }
       expect(queue.entries.map((e) => e.path)).toEqual([target])
       expect(queue.entries[0]?.relativePath).toBe("src/a.ts")
-      expect(queue.entries[0]?.changeKind).toBe("created")
+      expect(queue.entries[0]?.created).toBe(true)
 
       // The artifact's own bytes are never read during a cycle -- only the transcript is.
       expect(reads).not.toContain(target)
@@ -695,28 +701,60 @@ describe("watcher driver", () => {
       expect(sink.received).toHaveLength(1)
     })
 
-    test("S16: a delta's backupFileName reaches the queue so the base can be resolved", async () => {
+    test("a write's originalFile reaches the queue as the entry's base", async () => {
       const main = join(projects, "sess-1.jsonl")
       await artifact("src/a.ts")
-      const deltaLine = JSON.stringify({
-        uuid: "l2",
-        sessionId: "sess-1",
-        cwd: app,
-        timestamp: "2026-07-23T00:00:01.000Z",
-        type: "file-history-delta",
-        // `trackingPath` is what Claude Code emits; `path` here silently resolved no bases at all.
-        trackingPath: "src/a.ts",
-        backup: { backupFileName: "3c32b39a@v1", version: 1 },
-      })
-      await writeFile(main, `${writeLine("l1", "sess-1", "src/a.ts")}\n${deltaLine}\n`, "utf8")
+      await writeFile(
+        main,
+        `${writeLine("l1", "sess-1", "src/a.ts", { type: "update", originalFile: "before\n" })}\n`,
+        "utf8",
+      )
       const queuePath = join(dir, "artifact-queue.json")
 
       await runCycle(withQueue(queuePath), deps({ glob: async () => [main], ...rootedDeps() }))
 
       const queue = JSON.parse(await readFile(queuePath, "utf8")) as {
-        entries: Array<{ backupFileName?: string }>
+        entries: Array<{ created: boolean; base?: string }>
       }
-      expect(queue.entries[0]?.backupFileName).toBe("3c32b39a@v1")
+      expect(queue.entries[0]?.created).toBe(false)
+      expect(queue.entries[0]?.base).toBe("before\n")
+    })
+
+    test("SC30 (regression): capture works with no file-history directory -- the edit's own result line carries a base all the way to a real upload, with enough there for a non-empty diff", async () => {
+      const main = join(projects, "sess-1.jsonl")
+      const queuePath = join(dir, "artifact-queue.json")
+      const statePath = join(dir, "artifacts.json")
+      const target = join(app, "docs/notes.md")
+      await mkdir(dirname(target), { recursive: true })
+      await writeFile(target, "Changed line.\n", "utf8")
+      await writeFile(
+        main,
+        `${writeLine("l1", "sess-1", "docs/notes.md", { type: "update", originalFile: "Original line.\n" })}\n`,
+        "utf8",
+      )
+
+      await runCycle(withQueue(queuePath), deps({ glob: async () => [main], ...rootedDeps() }))
+
+      const sent: Array<{ baseContent?: string; currentContent: string }> = []
+      const sink = {
+        send: async (payload: { baseContent?: string; currentContent: string }) => {
+          sent.push(payload)
+          return { status: 200 }
+        },
+      }
+      await runArtifactWorkers(
+        { queuePath, statePath, workers: 1, drainOnce: true },
+        {
+          log: createLogger({ service: "test" }, { level: "silent" }),
+          sink,
+          clock: { now: () => Date.now() },
+        },
+      )
+
+      expect(sent).toHaveLength(1)
+      expect(sent[0]?.baseContent).toBe("Original line.\n")
+      expect(sent[0]?.currentContent).toBe("Changed line.\n")
+      expect(sent[0]?.baseContent).not.toBe(sent[0]?.currentContent)
     })
 
     test("S9: an out-of-scope write is filtered out before it reaches the queue", async () => {
@@ -796,7 +834,7 @@ describe("watcher driver", () => {
           path: artifactFile,
           relativePath: "docs/a.md",
           projectRoot: dir,
-          changeKind: "created" as const,
+          created: true,
           observedAt: "2026-07-28T12:00:00.000Z",
           attempts: 0,
         },
@@ -805,7 +843,6 @@ describe("watcher driver", () => {
       const workers = runArtifactWorkers(
         { queuePath, statePath, workers: 1, drainOnce: true },
         {
-          fileHistoryDir: join(dir, "file-history"),
           log: createLogger({ service: "test" }, { level: "silent" }),
           sink: slowSink,
           clock: { now: () => Date.now() },
@@ -870,6 +907,49 @@ describe("watcher driver", () => {
 
       const queue = JSON.parse(await readFile(queuePath, "utf8")) as { entries: unknown[] }
       expect(queue.entries).toHaveLength(1)
+    })
+
+    test("SC40: a file written by both the main thread and a subagent merges into one queue entry, taking the earlier write's base", async () => {
+      const main = join(projects, "sess-1.jsonl")
+      const sub = join(projects, "sess-1", "subagents", "agent-af66.jsonl")
+      await mkdir(join(projects, "sess-1", "subagents"), { recursive: true })
+      const target = await artifact("src/shared.ts")
+
+      // Main is stamped after the subagent, so track order and time order pick different bases.
+      await writeFile(
+        main,
+        `${writeLine("main-write", "sess-1", "src/shared.ts", {
+          type: "update",
+          originalFile: "later main content\n",
+          timestamp: "2026-07-23T00:00:01.000Z",
+        })}\n`,
+        "utf8",
+      )
+      await writeFile(
+        sub,
+        `${writeLine("sub-write", "sess-1", "src/shared.ts", {
+          type: "update",
+          originalFile: "earlier subagent content\n",
+          timestamp: "2026-07-23T00:00:00.000Z",
+          agentId: "af66",
+        })}\n`,
+        "utf8",
+      )
+      await writeFile(
+        sub.replace(/\.jsonl$/, ".meta.json"),
+        JSON.stringify({ agentId: "af66" }),
+        "utf8",
+      )
+
+      const queuePath = join(dir, "artifact-queue.json")
+      await runCycle(withQueue(queuePath), deps({ glob: async () => [main, sub], ...rootedDeps() }))
+
+      const queue = JSON.parse(await readFile(queuePath, "utf8")) as {
+        entries: Array<{ path: string; base?: string }>
+      }
+      expect(queue.entries).toHaveLength(1)
+      expect(queue.entries[0]?.path).toBe(target)
+      expect(queue.entries[0]?.base).toBe("earlier subagent content\n")
     })
   })
 
