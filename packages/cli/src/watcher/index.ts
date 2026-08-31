@@ -6,7 +6,7 @@ import type pino from "pino"
 import { readToken } from "../config/credentials.js"
 import { artifactQueuePath, artifactStatePath, statePath } from "../config/paths.js"
 import { getProject, isProjectEnabled, syncFromFor } from "../config/projects.js"
-import { ALL_SCOPED_PATHS, scopeMismatch } from "../config/server-scope.js"
+import { ALL_SCOPED_PATHS, mismatchFact, scopeMismatch } from "../config/server-scope.js"
 import { parseConfig } from "../config.js"
 import { sleep } from "../io.js"
 import { runArtifactWorkers } from "./artifact-worker.js"
@@ -103,8 +103,7 @@ export const watch = async (options: WatchOptions): Promise<void> => {
   const [mismatch] = await scopeMismatch(ALL_SCOPED_PATHS())
   if (mismatch !== undefined) {
     throw new Error(
-      `Local state was captured against ${mismatch.recorded}, but this CLI is configured for ` +
-        `${mismatch.current}. Run \`samskara init --force\` before capturing again.`,
+      `${mismatchFact(mismatch)} Run \`samskara init --force\` before capturing again.`,
     )
   }
   // Read once, here, so an unusable value is warned about at startup rather than swallowed by the

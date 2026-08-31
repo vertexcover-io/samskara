@@ -111,6 +111,9 @@ test.each(["enable", "disable"])(
     const stderrLines = result.stderr.trim().split("\n").filter(Boolean)
     expect(stderrLines).toHaveLength(1)
     expect(stderrLines[0]).toContain("samskara init --force")
+    // A refusal has to say the command did nothing. The state it reports is true either way, so
+    // without this the user cannot tell whether it went ahead.
+    expect(stderrLines[0]).toContain("Nothing was changed")
   },
 )
 

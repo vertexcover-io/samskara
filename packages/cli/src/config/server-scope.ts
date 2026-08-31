@@ -68,9 +68,14 @@ export const ALL_SCOPED_PATHS = (): ReadonlyArray<string> => [
   filterOptionsPath(),
 ]
 
-const mismatchLine = (mismatch: Mismatch, fix: string): string =>
+/**
+ * The half every caller shares: what is true. What to do about it differs by caller and is written
+ * out there in full, rather than passed in as a trailing fragment -- `"first."` on its own says
+ * nothing at a call site, and a sentence assembled across a seam cannot be read from either end.
+ */
+export const mismatchFact = (mismatch: Mismatch): string =>
   `Local state was captured against ${mismatch.recorded}, but this CLI is configured for ` +
-  `${mismatch.current}. Run \`samskara init --force\` ${fix}\n`
+  `${mismatch.current}.`
 
 /**
  * Read-only commands call this. The daemon suppresses it: `daemon.ts` spawns the watcher as a child
@@ -82,19 +87,13 @@ export const warnOnServerChange = async (stderr: Writer): Promise<void> => {
   if (process.env.SAMSKARA_DAEMON === "1") return
   const [mismatch] = await scopeMismatch(TRIPWIRE_PATHS())
   if (mismatch === undefined) return
-  stderr.write(mismatchLine(mismatch, "to move it across."))
+  stderr.write(`${mismatchFact(mismatch)} Run \`samskara init --force\` to move it across.\n`)
 }
 
 /**
- * Commands that write a derived file call this. `enable` rewrites the whole of `projects.json` with
- * a fresh `apiBase`, so writing anything at all would re-stamp the file to the new server while
- * other entries still hold the old server's `projectId` -- the mismatch would erase itself.
- */
-/**
- * The commands that call `refuseOnServerChange` below. The `preAction` hook stays quiet for these,
- * because it would otherwise print its own warning immediately before the refusal prints a
- * near-identical one -- the same sentence twice, differing only in its last two words. Adding a
- * command to `refuseOnServerChange` means adding it here; `SC27` fails if the two drift apart.
+ * The commands calling `refuseOnServerChange` below. The `preAction` hook stays quiet for these, or
+ * it would print its own warning immediately before the refusal prints a near-identical one. Adding
+ * a command to `refuseOnServerChange` means adding it here; `SC27` fails if the two drift apart.
  */
 export const REFUSES_ON_SERVER_CHANGE: ReadonlySet<string> = new Set([
   "enable",
@@ -102,10 +101,17 @@ export const REFUSES_ON_SERVER_CHANGE: ReadonlySet<string> = new Set([
   "replay",
 ])
 
+/**
+ * Commands that write a derived file call this. `enable` rewrites the whole of `projects.json` with
+ * a fresh `apiBase`, so writing anything at all would re-stamp the file to the new server while
+ * other entries still hold the old server's `projectId` -- the mismatch would erase itself.
+ */
 export const refuseOnServerChange = async (stderr: Writer): Promise<boolean> => {
   const [mismatch] = await scopeMismatch(TRIPWIRE_PATHS())
   if (mismatch === undefined) return false
-  stderr.write(mismatchLine(mismatch, "first."))
+  stderr.write(
+    `${mismatchFact(mismatch)} Nothing was changed -- run \`samskara init --force\` first.\n`,
+  )
   return true
 }
 

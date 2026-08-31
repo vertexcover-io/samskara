@@ -44,7 +44,10 @@ export const ensureCommand = async (options: EnsureOptions = {}): Promise<number
           `is configured for ${mismatch.current}. Tell the user to run \`samskara init --force\`.`,
       )
     }
-    if (watcherPid() === null) {
+    // Not reached on a mismatch: `watch()` throws on one, so reviving would spawn a process that
+    // dies immediately -- once per session start, appending to the crash log each time -- and then
+    // report "the watcher did not stay running" on top of the line that already said why.
+    if (mismatch === undefined && watcherPid() === null) {
       await reviveWatcher()
       if (watcherPid() === null) {
         context.push(

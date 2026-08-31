@@ -152,4 +152,22 @@ describe("ensure command", () => {
     expect(streams.stdout.join("")).toContain("https://two.example")
     expect(streams.stdout.join("")).toContain("samskara init --force")
   })
+
+  // `watch()` throws on a mismatch, so reviving here spawns a process that dies immediately, once
+  // per Claude Code session start, and appends to the crash log every time.
+  test("SC28: a mismatch does not spawn a watcher that is guaranteed to die", async () => {
+    vi.mocked(watcherPid).mockReturnValue(null)
+    vi.mocked(scopeMismatch).mockResolvedValue([
+      { file: "/x/projects.json", recorded: "https://one.example", current: "https://two.example" },
+    ])
+    const streams = output()
+
+    const code = await ensureCommand(streams.writers)
+
+    expect(code).toBe(0)
+    expect(reviveWatcher).not.toHaveBeenCalled()
+    // And it says the one useful thing, not that plus "check the logs" for what it just explained.
+    expect(streams.stdout.join("")).toContain("samskara init --force")
+    expect(streams.stdout.join("")).not.toContain("did not stay running")
+  })
 })
