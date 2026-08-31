@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm"
-import type { Db } from "../db/client.js"
+import type { Db, Querier } from "../db/client.js"
 import { users } from "../db/schema.js"
 
 export type User = typeof users.$inferSelect
@@ -16,6 +16,14 @@ export type UpsertUserInput = {
 export const findById = async (db: Db, id: string): Promise<User | null> => {
   const [user] = await db.select().from(users).where(eq(users.id, id))
   return user ?? null
+}
+
+export const isSuperAdmin = async (db: Querier, id: string): Promise<boolean> => {
+  const [row] = await db
+    .select({ isSuperAdmin: users.isSuperAdmin })
+    .from(users)
+    .where(eq(users.id, id))
+  return row?.isSuperAdmin === true
 }
 
 export const demote = async (db: Db, id: string): Promise<void> => {
