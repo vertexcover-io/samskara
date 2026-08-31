@@ -18,7 +18,7 @@ import { watchCommand } from "./commands/watch.js"
 import { readToken } from "./config/credentials.js"
 import { startWatcherDaemon, stopWatcherDaemon } from "./config/daemon.js"
 import { artifactQueuePath, artifactStatePath, statePath } from "./config/paths.js"
-import { warnOnServerChange } from "./config/server-scope.js"
+import { REFUSES_ON_SERVER_CHANGE, warnOnServerChange } from "./config/server-scope.js"
 import { apiBase } from "./config.js"
 import { login } from "./login.js"
 import { cliVersion } from "./version.js"
@@ -44,7 +44,8 @@ program
   .version(cliVersion)
   .option("--verbose", "enable debug logging")
 
-program.hook("preAction", async () => {
+program.hook("preAction", async (_program, action) => {
+  if (REFUSES_ON_SERVER_CHANGE.has(action.name())) return
   await warnOnServerChange(process.stderr).catch(() => {})
 })
 

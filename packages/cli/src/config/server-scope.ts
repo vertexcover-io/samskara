@@ -90,6 +90,18 @@ export const warnOnServerChange = async (stderr: Writer): Promise<void> => {
  * a fresh `apiBase`, so writing anything at all would re-stamp the file to the new server while
  * other entries still hold the old server's `projectId` -- the mismatch would erase itself.
  */
+/**
+ * The commands that call `refuseOnServerChange` below. The `preAction` hook stays quiet for these,
+ * because it would otherwise print its own warning immediately before the refusal prints a
+ * near-identical one -- the same sentence twice, differing only in its last two words. Adding a
+ * command to `refuseOnServerChange` means adding it here; `SC27` fails if the two drift apart.
+ */
+export const REFUSES_ON_SERVER_CHANGE: ReadonlySet<string> = new Set([
+  "enable",
+  "disable",
+  "replay",
+])
+
 export const refuseOnServerChange = async (stderr: Writer): Promise<boolean> => {
   const [mismatch] = await scopeMismatch(TRIPWIRE_PATHS())
   if (mismatch === undefined) return false

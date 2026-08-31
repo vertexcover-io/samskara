@@ -87,6 +87,33 @@ test("SC7: a command run against a different server warns on stderr, naming both
   expect(result.stdout).toContain("Server")
 })
 
+// The preAction hook warns for every command, and a writing command refuses on its own. Both used
+// to fire, so one mismatch printed two near-identical lines differing only in their last two words.
+test.each(["enable", "disable"])(
+  "SC27: `%s` reports a mismatch once, not once per guard",
+  (command) => {
+    const home = mkdtempSync(join(tmpdir(), "samskara-scope-dup-"))
+    writeFileSync(
+      join(home, "config.json"),
+      JSON.stringify({ version: 1, apiUrl: "https://two.example", webUrl: "https://two.example" }),
+    )
+    writeFileSync(
+      join(home, "projects.json"),
+      JSON.stringify({ version: 1, apiBase: "https://one.example", projects: {} }),
+    )
+
+    const result = spawnSync("bun", [entry, command, home], {
+      encoding: "utf8",
+      env: { ...process.env, SAMSKARA_HOME: home },
+    })
+
+    expect(result.status).toBe(1)
+    const stderrLines = result.stderr.trim().split("\n").filter(Boolean)
+    expect(stderrLines).toHaveLength(1)
+    expect(stderrLines[0]).toContain("samskara init --force")
+  },
+)
+
 /** Stamped copies of every derived file, plus a real token, so a reset has something to move. */
 const seedScopedFiles = (home: string, apiBase: string): void => {
   writeFileSync(
