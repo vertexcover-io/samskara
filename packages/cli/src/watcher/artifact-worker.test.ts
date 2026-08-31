@@ -3,7 +3,8 @@ import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os"
 import { basename, dirname, join } from "node:path"
 import type { ArtifactUploadPayload } from "@samskara/core"
-import { beforeEach, describe, expect, test, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
+import { writeSettings } from "../config/settings.js"
 import { runGitOrNull } from "../git.js"
 import { type ArtifactQueueEntry, enqueue, readQueue } from "./artifact-queue.js"
 import {
@@ -74,6 +75,7 @@ const scriptedSink = (statuses: ReadonlyArray<number>): Recorder => {
 }
 
 describe("artifact workers", () => {
+  const originalHome = process.env.SAMSKARA_HOME
   let recorder = spyLogger()
   let dir: string
   let queuePath: string
@@ -106,6 +108,12 @@ describe("artifact workers", () => {
     filePath = join(dir, "notes.md")
     await writeFile(filePath, "current bytes\n", "utf8")
     recorder = spyLogger()
+    // The writers stamp via `persistedApiUrl()`, which reads `config.json` under `SAMSKARA_HOME`.
+    process.env.SAMSKARA_HOME = dir
+  })
+
+  afterEach(() => {
+    process.env.SAMSKARA_HOME = originalHome
   })
 
   test("a 401 is retried rather than dropped, so a later `samskara login` still syncs the artifact", async () => {
@@ -887,13 +895,45 @@ describe("artifact workers", () => {
       (await readArtifactState(statePath)).artifacts[stateKey(target.sessionId, target.path)],
     ).toEqual({ currentHash: sha256("current bytes\n"), baseCaptured: false })
   })
+
+  test("SC13: a queued artifact carries the server it's queued for through to a real upload", async () => {
+    await writeSettings({ apiUrl: "https://one.example", webUrl: "https://one.example" })
+    const target = entry()
+    await enqueue(queuePath, [target])
+    expect((await readQueue(queuePath)).apiBase).toBe("https://one.example")
+
+    const sink = scriptedSink([200])
+    await runArtifactWorkers({ queuePath, statePath, workers: 1, drainOnce: true }, deps(sink))
+
+    expect(sink.sent).toHaveLength(1)
+    expect((await readQueue(queuePath)).entries).toHaveLength(0)
+    expect((await readArtifactState(statePath)).apiBase).toBe("https://one.example")
+  })
 })
 
 describe("artifact state", () => {
+  const originalHome = process.env.SAMSKARA_HOME
   let statePath: string
 
   beforeEach(async () => {
-    statePath = join(await mkdtemp(join(tmpdir(), "samskara-artstate-")), "artifacts.json")
+    const dir = await mkdtemp(join(tmpdir(), "samskara-artstate-"))
+    statePath = join(dir, "artifacts.json")
+    process.env.SAMSKARA_HOME = dir
+  })
+
+  afterEach(() => {
+    process.env.SAMSKARA_HOME = originalHome
+  })
+
+  test("SC12: an artifact upload records the server it landed on", async () => {
+    await writeSettings({ apiUrl: "https://one.example", webUrl: "https://one.example" })
+    const key = stateKey("0b9d4c1e-7f3a-4c22-9a6e-1d5f8b2c3e40", "/work/app/a.md")
+
+    await advanceArtifactState(statePath, key, { currentHash: "abc", baseCaptured: true })
+
+    const state = await readArtifactState(statePath)
+    expect(state.apiBase).toBe("https://one.example")
+    expect(state.artifacts[key]).toEqual({ currentHash: "abc", baseCaptured: true })
   })
 
   test("S36: a missing state file reads back empty, a corrupt one throws", async () => {

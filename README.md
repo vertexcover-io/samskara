@@ -146,21 +146,34 @@ Samskara web URL [http://localhost:8000]:
 ```
 
 Press Enter to keep a default. The answers are saved to `~/.samskara/config.json` and every later
-command uses them, so this is asked once. Pass `--server URL` and `--web URL` to skip the questions,
-and re-run `samskara init` to point the CLI somewhere else. `SAMSKARA_API_URL` and
-`SAMSKARA_WEB_URL` still override the saved file for a single command; when either is set, `init`
-leaves that URL alone rather than asking. `samskara status` prints both URLs currently in use.
+command uses them, so this is asked once. Pass `--server URL` and `--web URL` to skip the questions.
+`SAMSKARA_API_URL` and `SAMSKARA_WEB_URL` still override the saved file for a single command; when
+either is set, `init` leaves that URL alone rather than asking. `samskara status` prints both URLs
+currently in use.
 
 Then `init` asks for a pairing code. Open the web UI, sign in, and pick **Pair the CLI → Generate code**
 from the account menu. A code never expires but works only once. The token it returns is stored at
 `~/.samskara/token` with mode `0600`.
 
+### Changing servers
+
+`state.json`, `artifacts.json`, `artifact-queue.json` and `projects.json` are built against one
+server and now record which. Point the CLI elsewhere and a mismatch stops things rather than letting
+them fail quietly: `status`, `search` and `logs` warn and carry on, `enable`, `disable` and `replay`
+refuse, and the watcher exits at startup.
+
+Move across with `samskara init --force`. It asks for the new URLs, then stops the watcher, copies
+every derived file **and your token** to `~/.samskara/backups/TIMESTAMP/`, clears the derived state,
+turns capture off for every project, and signs you out. It stops there — run `samskara login`, then
+`samskara enable` in each folder you want captured.
+
 ## CLI reference
 
 | Command | What it does |
 |---|---|
-| `samskara init` | Choose the server, log in, install the Claude Code `SessionStart` hook, start the watcher. Safe to re-run. |
+| `samskara init` | Choose the server, log in, install the Claude Code `SessionStart` hook, start the watcher. Refuses once a server is configured — see `--force`. |
 | `samskara init --server URL --web URL` | Same, without the questions. |
+| `samskara init --force` | Point a configured install at a different server: back up and clear the local state, disable every project, sign out. Does not log in or enable anything for you. |
 | `samskara login [--code CODE]` | Pair with the web UI and store a CLI token. |
 | `samskara logout` | Stop the watcher and delete the stored token. |
 | `samskara enable [path]` | Register this folder with the server and start capturing it (defaults to the current directory). |

@@ -1,6 +1,7 @@
 import { z } from "zod"
 import { atomicWriteJson, readValidated, withFileLock } from "./atomic.js"
 import { projectsPath } from "./paths.js"
+import { persistedApiUrl } from "./server-scope.js"
 
 const projectEntrySchema = z
   .object({
@@ -25,6 +26,7 @@ const projectEntrySchema = z
 const projectsFileSchema = z
   .object({
     version: z.literal(1),
+    apiBase: z.string().optional(),
     projects: z.record(z.string(), projectEntrySchema),
   })
   .strict()
@@ -72,6 +74,7 @@ export const upsertProject = async (slug: string, entry: ProjectEntry): Promise<
     const current = await readProjects()
     const next: ProjectsFile = {
       version: 1,
+      apiBase: persistedApiUrl(),
       projects: { ...current.projects, [slug]: entry },
     }
     await atomicWriteJson(projectsPath(), next)
@@ -89,6 +92,7 @@ export const setProjectEnabled = async (
     const nextEntry: ProjectEntry = { ...existing, enabled }
     await atomicWriteJson(projectsPath(), {
       version: 1,
+      apiBase: persistedApiUrl(),
       projects: { ...current.projects, [slug]: nextEntry },
     })
     return nextEntry

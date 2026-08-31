@@ -15,6 +15,7 @@ import type {
 import { readCheckpoints, writeCheckpoints } from "@samskara/core"
 import type pino from "pino"
 import { mapWithLimit } from "../concurrency.js"
+import { persistedApiUrl } from "../config/server-scope.js"
 import { collectArtifacts } from "./artifact-extract.js"
 import { type ArtifactQueueEntry, enqueue } from "./artifact-queue.js"
 import { shouldCaptureArtifacts } from "./containment.js"
@@ -363,6 +364,7 @@ export const runCycle = async (
   const projects = { ...prev.projects, ...Object.fromEntries(resolved) }
   const next: CheckpointStore = {
     checkpoints,
+    apiBase: persistedApiUrl(),
     ...(Object.keys(projects).length > 0 ? { projects } : {}),
   }
   await writeCheckpoints(deps.fs, config.statePath, next)

@@ -6,6 +6,7 @@ import type pino from "pino"
 import { readToken } from "../config/credentials.js"
 import { artifactQueuePath, artifactStatePath, statePath } from "../config/paths.js"
 import { getProject, isProjectEnabled, syncFromFor } from "../config/projects.js"
+import { ALL_SCOPED_PATHS, mismatchFact, scopeMismatch } from "../config/server-scope.js"
 import { parseConfig } from "../config.js"
 import { sleep } from "../io.js"
 import { runArtifactWorkers } from "./artifact-worker.js"
@@ -96,6 +97,12 @@ export const watch = async (options: WatchOptions): Promise<void> => {
   // Checked once so a daemon with no credentials at all fails loudly at startup; the sinks read
   // the token again on every request, so a later `samskara login` lands without a restart.
   if (!(await readToken())) throw new Error("no token found; run `samskara login` first")
+  const [mismatch] = await scopeMismatch(ALL_SCOPED_PATHS())
+  if (mismatch !== undefined) {
+    throw new Error(
+      `${mismatchFact(mismatch)} Run \`samskara init --force\` before capturing again.`,
+    )
+  }
   // Read once, here, so an unusable value is warned about at startup rather than swallowed by the
   // loop's own catch every cycle.
   const resolved = parseConfig(log)
