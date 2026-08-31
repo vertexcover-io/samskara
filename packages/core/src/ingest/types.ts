@@ -16,6 +16,15 @@ export const MSG_TYPES = [
   "custom",
 ] as const
 
+/**
+ * Every agent whose transcripts samskara can capture. The literal lives here because the server
+ * validates it from a Zod payload -- an unknown source at upload is a hard rejection, not a
+ * silent coercion. Each value is also the `source` of the AgentPlugin that produced it, so the
+ * watcher can name a plugin without a separate registry lookup.
+ */
+export const SESSION_SOURCES = ["claude_code", "opencode"] as const
+export type SessionSource = (typeof SESSION_SOURCES)[number]
+
 const nonemptyString = z.string().min(1)
 const nonnegativeInteger = z.number().int().nonnegative()
 const jsonValue = z.unknown()
@@ -63,7 +72,7 @@ export const normalizedContentSchema = z.discriminatedUnion("type", [
 const commonShape = {
   subIndex: nonnegativeInteger,
   sessionId: nonemptyString,
-  source: z.literal("claude_code"),
+  source: z.enum(SESSION_SOURCES),
   sourceSchemaVersion: z.number().int().positive(),
   trackId: nonemptyString,
   timestamp: timestamp.optional(),
@@ -451,6 +460,7 @@ export const gitEventSchema = z.discriminatedUnion("kind", [
 
 const ingestBaseShape = {
   sessionId: nonemptyString,
+  source: z.enum(SESSION_SOURCES),
   project: projectIdentitySchema,
   sourceRelativePath: nonemptyString,
   title: z.string().optional(),

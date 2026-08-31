@@ -12,6 +12,7 @@ import {
   projects,
   pullRequests,
   sessionPullRequests,
+  sessionReviews,
   sessions,
   subagents,
   tokenUsage,
@@ -46,6 +47,11 @@ const env: Env = {
   jwtSecret: "test-secret-value",
   jwtExpiresIn: "7d",
   superAdminLogins: [],
+  localLoginSecret: "",
+  localLoginLogin: "samskara-dev",
+  aiReviewModel: "zai-coding-plan/glm-5.3",
+  aiReviewHarness: "opencode",
+  aiReviewTimeoutMs: 600000,
 }
 
 type SessionRepo = {
@@ -66,6 +72,7 @@ type SessionSummary = {
   readonly tokensTotal: number
   readonly status: string
   readonly lastActiveAt: string
+  readonly hasAiReview: boolean
 }
 
 const seedUser = (db: Db, githubId: number, login: string, isSuperAdmin = false): Promise<string> =>
@@ -227,6 +234,56 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
 
     const detail = await request(db, admin, "/locked-session")
     expect(detail.status).toBe(200)
+  })
+
+  test("S44: rows carry hasAiReview for the ai-v1 analyzer only, and aiReview=done|missing filters on it", async () => {
+    const owner = await seedUser(db, 1701, "review-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Alpha", slug: "alpha" },
+      ownerId: owner,
+    })
+    await seedSpoken(db, owner, projectId, [
+      ["reviewed", "2026-08-20T10:00:00Z", "2026-08-20T10:01:00Z"],
+      ["heuristic-only", "2026-08-20T11:00:00Z", "2026-08-20T11:01:00Z"],
+      ["never-reviewed", "2026-08-20T12:00:00Z", "2026-08-20T12:01:00Z"],
+    ])
+    await db.insert(sessionReviews).values([
+      {
+        sessionId: "reviewed",
+        projectId,
+        analyzer: "ai-v1",
+        outcome: "productive",
+        friction: "none",
+        summary: "ai analysis landed",
+        signals: {},
+      },
+      {
+        sessionId: "heuristic-only",
+        projectId,
+        analyzer: "heuristic-v1",
+        outcome: "productive",
+        friction: "none",
+        summary: "static review only",
+        signals: {},
+      },
+    ])
+
+    const all = await listAs(db, owner)
+    expect(Object.fromEntries(all.map((row) => [row.id, row.hasAiReview]))).toEqual({
+      reviewed: true,
+      "heuristic-only": false,
+      "never-reviewed": false,
+    })
+
+    expect(idsOf(await listAs(db, owner, "?aiReview=done"))).toEqual(["reviewed"])
+    expect(sortedIdsOf(await listAs(db, owner, "?aiReview=missing"))).toEqual([
+      "heuristic-only",
+      "never-reviewed",
+    ])
+
+    const refused = await request(db, owner, "?aiReview=maybe")
+    expect(refused.status).toBe(400)
+    expect(await refused.json()).toEqual({ error: "invalidAiReview" })
   })
 
   test("S20: project, user, and range each narrow the list on their own - an unfiltered request returns all four sessions", async () => {
@@ -627,6 +684,7 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
       tokensTotal: 350,
       status: "complete",
       lastActiveAt: new Date("2026-02-05T11:30:00Z").toISOString(),
+      hasAiReview: false,
     })
   })
 

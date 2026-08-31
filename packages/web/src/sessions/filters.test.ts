@@ -52,6 +52,15 @@ describe("session filter URLs", () => {
     ).toEqual(EMPTY_FILTERS)
   })
 
+  test("S44: aiReview round-trips done|missing, and an unrecognized value widens rather than 400-ing the page", () => {
+    expect(roundTrip({ ...EMPTY_FILTERS, aiReview: "done" }).aiReview).toBe("done")
+    expect(serializeFilters({ ...EMPTY_FILTERS, aiReview: "missing" }).toString()).toBe(
+      "aiReview=missing",
+    )
+    expect(serializeFilters(EMPTY_FILTERS).toString()).not.toContain("aiReview")
+    expect(parseFilters(new URLSearchParams("aiReview=maybe")).aiReview).toBe(null)
+  })
+
   test("every result predicate and sort change resets the page", () => {
     const pageThree = { ...EMPTY_FILTERS, q: "auth", page: 3 }
     expect(changedFilters(pageThree, { branch: "main" }).page).toBe(1)

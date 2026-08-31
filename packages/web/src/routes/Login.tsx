@@ -1,3 +1,7 @@
+import { useEffect, useId, useState } from "react"
+import { fetchAuthMethods, localLogin } from "../api/account.js"
+import type { ApiError } from "../api/client.js"
+import { controlClass, labelClass } from "../components/TextField.js"
 import { BuildStamp } from "../shell/BuildStamp.js"
 
 type SpineActor = "user" | "assistant" | "aside"
@@ -46,6 +50,90 @@ const GithubMark = () => (
   </svg>
 )
 
+type LocalState =
+  | { readonly phase: "ready" }
+  | { readonly phase: "signing-in" }
+  | { readonly phase: "failed"; readonly message: string }
+
+const LOCAL_READY: LocalState = { phase: "ready" }
+
+const localErrorText = (error: ApiError): string => {
+  if (error.kind === "unauthorized") return "That secret did not match."
+  if (error.code === "unknown_user")
+    return "No seeded user to sign in as — run `bun run seed` first."
+  if (error.kind === "notFound") return "Local sign-in is not available."
+  return error.message
+}
+
+const LocalSecretControl = ({
+  onSignedIn = (path) => window.location.assign(path),
+}: {
+  readonly onSignedIn?: (path: string) => void
+}) => {
+  const [available, setAvailable] = useState(false)
+  const [secret, setSecret] = useState("")
+  const [state, setState] = useState<LocalState>(LOCAL_READY)
+  const secretId = useId()
+
+  useEffect(() => {
+    let active = true
+    fetchAuthMethods().then((result) => {
+      if (active) setAvailable(result.ok && result.data.local)
+    })
+    return () => {
+      active = false
+    }
+  }, [])
+
+  if (!available) return null
+
+  const signIn = () => {
+    if (state.phase === "signing-in") return
+    setState({ phase: "signing-in" })
+    localLogin(secret).then((result) => {
+      if (result.ok) {
+        onSignedIn("/")
+        return
+      }
+      setState({ phase: "failed", message: localErrorText(result.error) })
+    })
+  }
+
+  return (
+    <form
+      className="mt-6"
+      onSubmit={(event) => {
+        event.preventDefault()
+        signIn()
+      }}
+    >
+      <label className={labelClass} htmlFor={secretId}>
+        Local secret
+      </label>
+      <input
+        id={secretId}
+        type="password"
+        autoComplete="current-password"
+        className={controlClass}
+        value={secret}
+        onChange={(event) => setSecret(event.target.value)}
+      />
+      <button
+        type="submit"
+        disabled={state.phase === "signing-in" || secret.length === 0}
+        className="mt-2 w-full rounded-xs border border-ink px-4 py-2.5 text-[0.78rem] font-semibold text-ink transition-colors hover:bg-ink hover:text-panel-2 disabled:opacity-60"
+      >
+        {state.phase === "signing-in" ? "Signing in…" : "Sign in with local secret"}
+      </button>
+      {state.phase === "failed" ? (
+        <p role="alert" className="mt-3 text-[0.78rem] text-err">
+          {state.message}
+        </p>
+      ) : null}
+    </form>
+  )
+}
+
 const CustodySpine = () => (
   <ol className="mt-8 space-y-6">
     {SPINE.map((record, index) => (
@@ -88,7 +176,11 @@ const EvidencePanel = () => (
   </section>
 )
 
-const AccessColumn = () => (
+const AccessColumn = ({
+  onLocalSignedIn,
+}: {
+  readonly onLocalSignedIn?: (path: string) => void
+}) => (
   <section className="relative flex flex-col justify-center px-6 py-14 sm:px-10 lg:px-14">
     <div aria-hidden="true" className="ledger-ground pointer-events-none absolute inset-0" />
     <div className="animate-file-in relative mx-auto w-full max-w-[23rem] border border-rule bg-panel-2 p-8 shadow-card">
@@ -105,15 +197,21 @@ const AccessColumn = () => (
         <GithubMark />
         Continue with GitHub
       </a>
+
+      <LocalSecretControl onSignedIn={onLocalSignedIn} />
     </div>
 
     <BuildStamp className="relative mx-auto mt-6 w-full max-w-[23rem] justify-end" />
   </section>
 )
 
-export const Login = () => (
+export const Login = ({
+  onLocalSignedIn,
+}: {
+  readonly onLocalSignedIn?: (path: string) => void
+}) => (
   <main className="grid min-h-dvh grid-cols-1 lg:grid-cols-[1.05fr_1fr]">
     <EvidencePanel />
-    <AccessColumn />
+    <AccessColumn onLocalSignedIn={onLocalSignedIn} />
   </main>
 )

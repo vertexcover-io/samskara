@@ -1,6 +1,7 @@
 import { useEffect, useId, useState } from "react"
 import type { SessionFilterOptions } from "../api/types.js"
 import {
+  type AiReviewState,
   changedFilters,
   RANGE_LABEL,
   RANGES,
@@ -320,6 +321,22 @@ export const FilterBar = ({ filters, options, onChange, onClear }: Props) => {
           }
         />
         <RangeControl filters={filters} onChange={onChange} />
+        <Choice
+          label="AI analysis"
+          value={filters.aiReview ?? ""}
+          options={[
+            { value: "", label: "Any" },
+            { value: "done", label: "Analyzed" },
+            { value: "missing", label: "Not analyzed" },
+          ]}
+          onChange={(aiReview) =>
+            onChange(
+              changedFilters(filters, {
+                aiReview: aiReview === "" ? null : (aiReview as AiReviewState),
+              }),
+            )
+          }
+        />
         <Choice
           label="Sort by"
           value={filters.sort}

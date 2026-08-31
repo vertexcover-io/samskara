@@ -1,6 +1,7 @@
-import { render, screen } from "@testing-library/react"
+import { render, screen, waitFor } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { MemoryRouter } from "react-router-dom"
-import { expect, test } from "vitest"
+import { afterEach, expect, test, vi } from "vitest"
 import { Login } from "./Login.js"
 
 test("S1: the sign-in control is an anchor to /api/auth/github/start - not a button that never leaves the SPA", () => {
@@ -23,4 +24,112 @@ test("S2: the GitHub mark is decorative - it must not leak into the link's acces
 
   expect(screen.getByRole("link", { name: "Continue with GitHub" })).toBeInTheDocument()
   expect(screen.getByRole("heading", { level: 1, name: "samskara" })).toBeInTheDocument()
+})
+
+const jsonResponse = (status: number, body: unknown): Response =>
+  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
+
+type MethodsResponse = () => Promise<Response>
+type LocalResponse = (secret: string) => Promise<Response>
+
+/** Stubs /api/auth/methods (always called) and optionally /api/auth/local. */
+const stubAuthFetch = (methods: MethodsResponse, local?: LocalResponse): void => {
+  vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = typeof input === "string" ? input : input.toString()
+    if (path.endsWith("/api/auth/methods")) return methods()
+    if (path.endsWith("/api/auth/local")) {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { secret: string }
+      return local ? local(body.secret) : Promise.reject(new Error("no local stub"))
+    }
+    return Promise.reject(new Error(`unstubbed fetch: ${path}`))
+  })
+}
+
+const renderLogin = () =>
+  render(
+    <MemoryRouter>
+      <Login />
+    </MemoryRouter>,
+  )
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+  vi.restoreAllMocks()
+})
+
+test("L1: while /api/auth/methods says local=false the page shows only the GitHub control", async () => {
+  stubAuthFetch(() => Promise.resolve(jsonResponse(200, { github: true, local: false })))
+
+  renderLogin()
+
+  expect(await screen.findByRole("link", { name: /continue with github/i })).toBeInTheDocument()
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("button", { name: /sign in with local secret/i }),
+    ).not.toBeInTheDocument(),
+  )
+  expect(screen.queryByLabelText("Local secret")).not.toBeInTheDocument()
+})
+
+test("L2: once /api/auth/methods says local=true the page offers the local secret control beside GitHub", async () => {
+  stubAuthFetch(() => Promise.resolve(jsonResponse(200, { github: true, local: true })))
+
+  renderLogin()
+
+  expect(
+    await screen.findByRole("button", { name: /sign in with local secret/i }),
+  ).toBeInTheDocument()
+  expect(screen.getByLabelText("Local secret")).toBeInTheDocument()
+  expect(screen.getByRole("link", { name: /continue with github/i })).toBeInTheDocument()
+})
+
+test("L3: a successful local login sends the typed secret and reloads to /", async () => {
+  stubAuthFetch(
+    () => Promise.resolve(jsonResponse(200, { github: true, local: true })),
+    () => Promise.resolve(jsonResponse(200, { id: "u-9", githubLogin: "samskara-dev" })),
+  )
+  const signedIn = vi.fn()
+
+  render(
+    <MemoryRouter>
+      <Login onLocalSignedIn={signedIn} />
+    </MemoryRouter>,
+  )
+
+  await userEvent.type(await screen.findByLabelText("Local secret"), "open sesame")
+  await userEvent.click(screen.getByRole("button", { name: /sign in with local secret/i }))
+
+  await waitFor(() => expect(signedIn).toHaveBeenCalledWith("/"))
+})
+
+test("L4: a rejected secret (401) shows a short inline error and keeps the control usable", async () => {
+  stubAuthFetch(
+    () => Promise.resolve(jsonResponse(200, { github: true, local: true })),
+    () => Promise.resolve(jsonResponse(401, { error: "unauthorized" })),
+  )
+
+  renderLogin()
+
+  await userEvent.type(await screen.findByLabelText("Local secret"), "not-the-secret")
+  await userEvent.click(screen.getByRole("button", { name: /sign in with local secret/i }))
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(/secret/i)
+  expect(screen.getByRole("button", { name: /sign in with local secret/i })).toBeEnabled()
+})
+
+test("L5: a 404 unknown_user surfaces the seed hint rather than a generic failure", async () => {
+  stubAuthFetch(
+    () => Promise.resolve(jsonResponse(200, { github: true, local: true })),
+    () =>
+      Promise.resolve(
+        jsonResponse(404, { error: "unknown_user", message: "run `bun run seed` first" }),
+      ),
+  )
+
+  renderLogin()
+
+  await userEvent.type(await screen.findByLabelText("Local secret"), "open sesame")
+  await userEvent.click(screen.getByRole("button", { name: /sign in with local secret/i }))
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(/bun run seed/)
 })

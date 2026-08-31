@@ -31,6 +31,7 @@ const records: ReadonlyArray<ParsedRecord> = [
 
 const base = {
   sessionId: "sess-1",
+  source: "claude_code" as const,
   project: { name: "widget", slug: "acme-widget" },
   sourceRelativePath: "sess-1.jsonl",
   records,

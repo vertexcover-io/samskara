@@ -969,10 +969,14 @@ const isChanged = (
   stat: { readonly mtime: number; readonly size: number },
 ): boolean => {
   const checkpoint = prev.checkpoints[path]
-  return !checkpoint || checkpoint.mtime !== stat.mtime || checkpoint.size !== stat.size
+  // Cross-source checkpoints at the same key string (an opencode session id can collide with a
+  // file path on another host) are not a claude watermark -- treat as "no checkpoint" so the
+  // file is re-read.
+  if (checkpoint === undefined || checkpoint.source !== "claude_code") return true
+  return checkpoint.mtime !== stat.mtime || checkpoint.size !== stat.size
 }
 const fromLineFor = (prev: CheckpointStore, path: string): number =>
-  prev.checkpoints[path]?.lineProcessed ?? 0
+  prev.checkpoints[path]?.source === "claude_code" ? prev.checkpoints[path].lineProcessed : 0
 
 const firstTimestampIn = async (fs: FileSystem, path: string): Promise<string | undefined> => {
   try {
@@ -1077,6 +1081,7 @@ const collectTrack = async (
 
   const shared = {
     sessionId: location.sessionId,
+    source: SOURCE,
     project,
     sourceRelativePath: location.sourceRelativePath,
     records,

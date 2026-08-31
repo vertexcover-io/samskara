@@ -59,6 +59,11 @@ describe("loggingMiddleware", () => {
       jwtSecret: "test-secret-value",
       jwtExpiresIn: "7d",
       superAdminLogins: [],
+      localLoginSecret: "",
+      localLoginLogin: "samskara-dev",
+      aiReviewModel: "zai-coding-plan/glm-5.3",
+      aiReviewHarness: "opencode",
+      aiReviewTimeoutMs: 600000,
     }
     const app = buildApp({} as Db, env, { rootLog: testLog() })
     app.get("/__boom", () => {

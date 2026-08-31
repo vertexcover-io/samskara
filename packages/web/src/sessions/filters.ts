@@ -23,6 +23,10 @@ export const SORT_LABEL: Readonly<Record<Sort, string>> = {
   project: "Project name",
 }
 
+export const AI_REVIEW_STATES = ["done", "missing"] as const
+
+export type AiReviewState = (typeof AI_REVIEW_STATES)[number]
+
 export type SessionFilters = {
   readonly q: string | null
   readonly project: string | null
@@ -31,6 +35,7 @@ export type SessionFilters = {
   readonly branch: string | null
   readonly pr: string | null
   readonly commit: string | null
+  readonly aiReview: AiReviewState | null
   readonly range: Range
   readonly from: string | null
   readonly to: string | null
@@ -47,6 +52,7 @@ export const EMPTY_FILTERS: SessionFilters = {
   branch: null,
   pr: null,
   commit: null,
+  aiReview: null,
   range: "all",
   from: null,
   to: null,
@@ -60,6 +66,9 @@ const isRange = (value: string | null): value is Range =>
 
 const isSort = (value: string | null): value is Sort =>
   value !== null && SORTS.some((sort) => sort === value)
+
+const isAiReviewState = (value: string | null): value is AiReviewState =>
+  value !== null && AI_REVIEW_STATES.some((state) => state === value)
 
 const trimmed = (value: string | null): string | null => {
   if (value === null) return null
@@ -106,6 +115,9 @@ export const parseFilters = (params: URLSearchParams): SessionFilters => {
     branch: rawValue(params.get("branch")),
     pr: rawValue(params.get("pr")),
     commit: commitValue(params.get("commit")),
+    aiReview: isAiReviewState(params.get("aiReview"))
+      ? (params.get("aiReview") as AiReviewState)
+      : null,
     range: isRange(params.get("range")) ? (params.get("range") as Range) : "all",
     from: isoDate(params.get("from")),
     to: isoDate(params.get("to")),
@@ -126,6 +138,7 @@ export const serializeFilters = (filters: SessionFilters): URLSearchParams => {
   if (filters.branch !== null) params.set("branch", filters.branch)
   if (filters.pr !== null) params.set("pr", filters.pr)
   if (filters.commit !== null) params.set("commit", filters.commit.toLowerCase())
+  if (filters.aiReview !== null) params.set("aiReview", filters.aiReview)
   if (filters.range !== "all") params.set("range", filters.range)
   if (filters.range === "custom") {
     if (filters.from !== null) params.set("from", filters.from)

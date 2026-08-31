@@ -3,6 +3,48 @@
 Bun + Turborepo monorepo. Packages: `core` (ingest/domain), `server` (Hono + Drizzle + Postgres),
 `web` (React + Vite), `cli`. Tests are vitest; lint/format is biome. TDD — write the test first.
 
+## Subagents — parallel by default
+
+**The main conversation is a coordinator, not a worker.** Reserve it for synthesis, judgment,
+and decisions; delegate data-gathering, exploration, and well-specified implementation to
+subagents. Independent dispatches go out in one batch — sequential fan-out of independent work
+is the anti-pattern, in every phase (exploration, planning, implementation, verification).
+
+- **Delegate**: "how does X work", file/area surveys, pattern discovery, writing tests to a
+  spec, implementing a well-scoped change. **Do directly**: anything whose output feeds the
+  very next judgment call, and single quick reads.
+- **Route by dispatch shape.** Two subagent mechanisms exist; the shape of the work picks
+  the lane:
+  - **Harness-native Task tool — the default.** Bounded work that fits one prompt and
+    returns one answer: exploration, surveys, research, test-writing waves, spec'd
+    implementation chunks. Fire-and-forget, batched in parallel, nothing to clean up.
+  - **Herdr-spawned panes — for work with a lifespan or an audience.** Long builds the
+    owner should be able to watch or join mid-run (takeover), cross-model deliberation,
+    lanes that must outlive the current session or take sequential briefings, and anything
+    likely to need interactive unblocking (a live pane can be read, re-prompted, and have
+    its questions answered in place).
+- **Detect the environment, then go.** The same rule serves both setups: run
+  `test "${HERDR_ENV:-}" = 1` once before dispatching. Inside Herdr, long-lifespan work
+  goes to a sibling pane via the `herdr` skill (AGENTS.md routes to it; read it before any
+  herdr command). Outside Herdr, everything routes through the harness Task tool — the
+  dispatch-shape rule above still applies, the pane lane just isn't available.
+- **GLM-5.3 is the default, MiniMax the second lane.** This machine runs opencode subagents
+  under two coding plans — default to `zai-coding-plan/glm-5.3` for almost everything
+  (judgment, design, roadmaps, synthesis, and implementation too); reach for
+  `minimax-coding-plan/MiniMax-M3` when you want a genuinely independent second opinion on
+  the same question, or a second parallel lane and GLM is already carrying the main one.
+  Pin the model on every subagent: in opencode, a herdr pane takes `--model` at
+  `agent start`; an unpinned dispatch inherits whatever context it landed in.
+- **Herdr hygiene** (inside Herdr only): number the tabs you create (`0 mc / …`, `1 …`) as
+  breadcrumbs, and **close what you opened** when its work is done — tabs and panes you
+  created, not the user's. Long-running shared infrastructure (the dev stack) is the
+  exception: it stays until the owner says stop.
+- **Test-first waves for TDD.** When a task is big enough to wave: one subagent writes the
+  failing tests (given requirements and patterns, no implementation context), the gate runs
+  them red, then implementation subagents get the failing tests. The information boundary is
+  the enforcement — that is why the dispatches are separate. Small or inherently sequential
+  tasks skip the wave and just do TDD inline.
+
 ## New machine
 
 ```bash
@@ -85,6 +127,12 @@ against its one registered callback (`http://localhost:3000`). So sign in on the
 One Postgres container (`docker compose -p samskara up -d`) on port 5433, many databases inside it.
 Main checkout uses `samskara`; a worktree uses `samskara_BRANCH_SLUG`.
 
+No Docker on the machine? `scripts/local-pg.sh start` runs a dedicated local PostgreSQL cluster
+on the same port 5433 with the same role, database and `DATABASE_URL`, using the Homebrew
+PostgreSQL binaries. Only one of the two can own port 5433 at a time — stop the other before
+switching (`scripts/local-pg.sh stop` / `bun run stack:down`). The schema needs no extensions
+today, so plain PostgreSQL is enough; `recreate` drops and rebuilds the cluster from migrations.
+
 - `bun run db:generate` — generate a migration from `packages/server/src/db/schema.ts`
 - `bun run db:migrate` — the only way to bring a database up to date: drizzle-kit's migrations, then every step in `packages/server/src/db/steps.ts`, against whatever `DATABASE_URL` the local `.env` names
 - `bun run db:verify` — read-only check that every step is already converged
@@ -122,6 +170,72 @@ Every package logs NDJSON through `createLogger` from `@samskara/core` (pino und
 comes from `LOG_LEVEL`, defaulting to `info` in production and `debug` elsewhere. `token`,
 `authorization`, `password` and `secret` are redacted from every line. Each API request gets a
 `reqId` that is echoed back on the response.
+
+## Hot reloads kill running reviews — check first
+
+`tsx watch` restarts the server whenever `packages/server/src/**` (or a rebuilt dependency's
+dist) changes, and the AI-review job registry is in-memory: **every restart silently kills any
+running review**, and `tsx watch` does not re-read `.env` on reload (env vars need a full
+restart). Before editing server files, rebuilding a package, or changing `.env`, check whether
+a review is in flight — `curl -s localhost:3000/api/sessions/:id/aireview` returns `"job"` while
+one runs, or ask the owner. Batch your edits, and never restart mid-run when avoidable.
+
+## Long-running operations: progress before timeout
+
+Anything that takes more than a few seconds — a harness run, a watcher sweep, a large migration,
+a long curl chain — is debugged by **watching it move**, not by waiting on a timeout. The rule:
+
+1. **Define the observable signals up front, before the run.** For an LLM-backed pipeline:
+   - `export_written` (with byte count, workspace path)
+   - `harness_spawning` / `harness_spawned` (with the command line + sandbox id)
+   - `harness_first_byte` (the ms from spawn to the first stdout byte — the single best
+     "is it alive?" signal)
+   - `xml_parsed` / `grounded` / `persisted` (each at a phase boundary)
+   Each milestone logs `{ milestone, elapsedMs, sessionId }` via `createLogger` so the server
+   log is grep-able, and is also exposed through any "current state" API so a CLI client can
+   render progress without tailing the log.
+
+2. **The CLI surfaces the latest milestone on a cadence (15–30 s is usually right).** A
+   watching human should be able to read "still working (job abc…, harness_first_byte 4 s
+   ago, 62 s total)" and tell from that one line whether the run is healthy, stuck, or
+   mid-failure. Never let a long op look frozen.
+
+3. **Smoke-test on the smallest input first.** A 5-message session, a 1-record artifact, a
+   one-row migration — the fastest thing that still exercises every layer. Scale up only
+   after the small one passes cleanly; otherwise the long op doubles as your only signal.
+
+4. **Log the names of the things a watcher would want to tail.** Workspace path, sandbox id,
+   log file path inside the sandbox. Anyone debugging should be able to `ls`, `msb logs`, or
+   `tail -f` without rummaging through the server source.
+
+5. **Timeout messages name the last milestone.** When the wall clock trips, the message
+   includes the latest server event so the next person knows where the run got stuck, not
+   just that it stopped.
+
+### Watching a live AI-review run
+
+Pipeline milestones cover the server-side view; what the reviewer agent itself is doing
+inside the msb VM lives in the sandbox's `exec.log` (one JSON line per stderr/stdout event,
+the agent's bash prompts appear as `"d":"\u001b[0m$ \u001b[0m<cmd>"`). The repo ships a
+companion tool for that — the AI-review watcher — that reads both streams in parallel,
+counts repetitions, and flags stuck / thrashing patterns in real time:
+
+```sh
+# in one terminal: kick off the review
+SAMSKARA_API_URL=http://localhost:3000 \
+  bun packages/cli/src/index.ts review <session-id> --ai --timeout 540000
+
+# in another terminal: watch it
+scripts/ai-review-watch.sh                # tail milestones + flag stuck (default 90 s)
+scripts/ai-review-watch.sh -t 30          # tighter stuck threshold for small sessions
+scripts/ai-review-watch.sh --peek 30      # one-shot: dump the agent's last 30 bash calls
+```
+
+The watcher prints each milestone (`milestone harness_first_byte`), each new bash command
+the agent runs (with a `REPEAT(n)` tag once n > 3 and a `THRASHING` warning past 5), and an
+explicit `STUCK` line if `harness_spawning` is the last milestone for longer than the
+threshold — at which point it tells you to `peek`. Run it any time you would have written a
+`sleep 30; grep ...` loop in the shell.
 
 ## Releases
 

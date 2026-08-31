@@ -58,6 +58,11 @@ export const SessionRow = ({ session, to }: Props) => {
       <span className="min-w-0">
         <span className="block truncate text-[0.875rem] font-semibold">
           {title ?? <span className="text-faded italic">untitled session</span>}
+          {session.hasAiReview ? (
+            <span className="ml-1.5 inline-flex items-center rounded-xs border border-rule px-1.5 py-px align-middle font-mono text-[0.62rem] font-semibold uppercase tracking-[0.06em] text-ink-soft">
+              AI review
+            </span>
+          ) : null}
         </span>
         <span className="block truncate font-mono text-[0.72rem] text-ink-soft">
           {userLogin} · {repo === null ? null : `${repoLabel(repo)} · `}

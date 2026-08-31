@@ -402,6 +402,103 @@ export const subagents = pgTable(
  *
  * No `byteSize` column: `length(currentContent)` is O(1) on bytea and cannot drift out of sync.
  */
+/**
+ * One structured analysis of a session. Unique on (sessionId, analyzer): re-running the same
+ * analyzer version replaces its review rather than stacking copies, while a future analyzer
+ * version writes its own row alongside — reviews are comparable, not overwritten.
+ */
+export const sessionReviews = pgTable(
+  "sessionReviews",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    sessionId: text("sessionId")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    projectId: uuid("projectId")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    analyzer: text("analyzer").notNull(),
+    outcome: text("outcome").notNull(),
+    friction: text("friction").notNull(),
+    summary: text("summary").notNull(),
+    signals: jsonb("signals").notNull(),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    unique("sessionReviews_session_analyzer_unique").on(t.sessionId, t.analyzer),
+    check(
+      "sessionReviews_outcome_check",
+      sql`${t.outcome} in ('shipped', 'productive', 'struggled', 'aborted')`,
+    ),
+    check("sessionReviews_friction_check", sql`${t.friction} in ('none', 'moderate', 'high')`),
+    index("sessionReviews_project_idx").on(t.projectId),
+  ],
+)
+
+/**
+ * A curated lesson extracted from reviews, deduplicated by (projectId, fingerprint): the
+ * fingerprint ignores occurrence counts, so the same lesson seen in five sessions is one row
+ * whose occurrenceCount says five — once per distinct session, enforced through
+ * learningSessions. Evidence is capped by the extractor, and a capped array is appended to
+ * (never replaced) so accepting a lesson never loses its history.
+ */
+export const learnings = pgTable(
+  "learnings",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("projectId")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    audience: text("audience").notNull(),
+    category: text("category").notNull(),
+    title: text("title").notNull(),
+    detail: text("detail").notNull(),
+    evidence: jsonb("evidence").notNull(),
+    fingerprint: text("fingerprint").notNull(),
+    status: text("status").notNull().default("candidate"),
+    occurrenceCount: integer("occurrenceCount").notNull().default(1),
+    sourceReviewId: uuid("sourceReviewId").references(() => sessionReviews.id, {
+      onDelete: "set null",
+    }),
+    firstSeenAt: timestamp("firstSeenAt", { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp("lastSeenAt", { withTimezone: true }).notNull().defaultNow(),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    unique("learnings_project_fingerprint_unique").on(t.projectId, t.fingerprint),
+    check("learnings_audience_check", sql`${t.audience} in ('agent', 'human')`),
+    check("learnings_status_check", sql`${t.status} in ('candidate', 'accepted', 'superseded')`),
+    index("learnings_project_status_idx").on(t.projectId, t.status),
+    index("learnings_audience_idx").on(t.audience),
+  ],
+)
+
+/**
+ * The sessions that already contributed to a learning. occurrenceCount counts distinct
+ * sessions, not reviews: a re-review of the same session must not bump it, so every
+ * persist records the (learning, session) pair here and the upsert conditions its bump on
+ * the pair's novelty. Keyed by session rather than by review so two analyzers reviewing
+ * the same session still count it once.
+ */
+export const learningSessions = pgTable(
+  "learningSessions",
+  {
+    learningId: uuid("learningId")
+      .notNull()
+      .references(() => learnings.id, { onDelete: "cascade" }),
+    sessionId: text("sessionId")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    createdAt,
+  },
+  (t) => [
+    primaryKey({ columns: [t.learningId, t.sessionId] }),
+    index("learningSessions_sessionId_idx").on(t.sessionId),
+  ],
+)
+
 export const artifact = pgTable(
   "artifact",
   {

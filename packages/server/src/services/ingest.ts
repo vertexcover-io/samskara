@@ -276,7 +276,7 @@ export const ingest = async (ctx: Ctx, payload: IngestPayload): Promise<IngestRe
       if (payload.type === "main") {
         await sessionsRepo.upsert(tx, {
           id: payload.sessionId,
-          source: "claude_code",
+          source: payload.source,
           userId,
           projectId,
           fields: {

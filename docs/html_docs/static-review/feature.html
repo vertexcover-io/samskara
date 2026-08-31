@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Static session review — feature doc</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  /* Light theme only, by decision — no dark mode, no theme button.
+     Design language borrowed from an internal pattern-engineering audit
+     report: mono uppercase section labels with a blue bar, bordered cards,
+     chips, flat 90s-tech geometry (no rounded corners, no shadows). */
+  :root{
+    --bg:#ffffff; --bg-elevated:#fafafa;
+    --line:#e5e5e5; --line-strong:#d4d4d4;
+    --ink:#171717; --ink-2:#525252; --ink-3:#a3a3a3; --mono-ink:#737373;
+    --blue:#1d4ed8; --blue-light:#eff6ff; --blue-dark:#1e40af;
+    --low:#b3392f; --low-soft:#fdf1f0;
+    --mid:#a36a1c; --mid-soft:#fdf6ea;
+    --high:#1f7a4d; --high-soft:#edf7f1;
+    --sans:Manrope,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{background:var(--bg);color:var(--ink);font:16px/1.6 var(--sans);
+       padding:0 2rem 6rem;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:64rem;margin:0 auto}
+  a{color:var(--blue)}
+  p{color:var(--ink-2)}
+  strong{color:var(--ink);font-weight:700}
+  ul,ol{color:var(--ink-2)}
+  li{margin:.3rem 0}
+  code{font-family:var(--mono);font-size:.85em;background:var(--blue-light);
+       color:var(--blue-dark);padding:.1em .35em}
+  pre{background:var(--bg-elevated);border:1px solid var(--line);
+      padding:.85rem 1.1rem;overflow-x:auto;line-height:1.5}
+  pre code{background:none;color:var(--ink);padding:0;font-size:.82rem}
+  .num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+
+  /* ---------- header ---------- */
+  header{padding:4.5rem 0 2.8rem;border-bottom:1px solid var(--line)}
+  .kicker{font-family:var(--mono);font-size:.72rem;letter-spacing:.08em;
+          text-transform:uppercase;color:var(--mono-ink);margin:0 0 1rem;
+          display:flex;align-items:center;gap:.75rem}
+  .kicker::before{content:"";width:2rem;height:3px;background:var(--blue)}
+  h1{font-weight:800;letter-spacing:-.03em;line-height:1.15;
+     font-size:clamp(1.5rem,2.8vw,2.2rem);margin:0;max-width:38ch;text-wrap:balance}
+  h1 em{font-style:normal;color:var(--blue)}
+  .headmeta{display:flex;gap:.5rem;flex-wrap:wrap;margin-top:1.4rem}
+  .chip{font-family:var(--mono);font-size:.72rem;border:1px solid var(--line-strong);
+        background:var(--bg);padding:.3rem .75rem;color:var(--ink-2)}
+  .chip strong{color:var(--ink);font-weight:600}
+
+  /* ---------- sections ---------- */
+  section{padding:3rem 0 0}
+  h2.label{display:flex;align-items:center;gap:.75rem;margin:0 0 1.4rem;
+     font-family:var(--mono);font-size:.72rem;font-weight:600;
+     letter-spacing:.08em;text-transform:uppercase;color:var(--mono-ink)}
+  h2.label::before{content:"";width:2rem;height:3px;background:var(--blue)}
+  h3{margin:1.6rem 0 .5rem;font-size:1.02rem;font-weight:700;letter-spacing:-.01em}
+
+  /* ---------- cards ---------- */
+  .card{background:var(--bg);border:1px solid var(--line);
+        padding:1.2rem 1.4rem;margin:0 0 .8rem}
+  .card h3{margin:0 0 .35rem}
+  .card p{margin:.2rem 0;max-width:75ch;font-size:.94rem}
+  .card .file{font-family:var(--mono);font-size:.72rem;color:var(--mono-ink);
+        letter-spacing:.03em;margin:0 0 .4rem;display:block}
+
+  /* ---------- numbered walk (steps) ---------- */
+  ol.walk{margin:0;padding:0;list-style:none;counter-reset:st}
+  ol.walk li{counter-increment:st;display:flex;gap:1.1rem;align-items:baseline;
+             background:var(--bg);border:1px solid var(--line);
+             padding:.95rem 1.2rem;margin-bottom:.55rem;font-size:.95rem}
+  ol.walk li::before{content:counter(st,decimal-leading-zero);font-family:var(--mono);
+             font-weight:700;font-size:1.1rem;color:var(--blue);min-width:1.8rem}
+  ol.walk li>div{color:var(--ink-2)}
+  ol.walk li>div strong{color:var(--ink)}
+
+  /* ---------- status tags ---------- */
+  .tag{font-family:var(--mono);font-size:.66rem;letter-spacing:.06em;
+       text-transform:uppercase;padding:.22rem .6rem;flex-shrink:0}
+  .tag.built{background:var(--high-soft);color:var(--high)}
+  .tag.planned{background:var(--mid-soft);color:var(--mid)}
+  .tag.blue{background:var(--blue-light);color:var(--blue-dark)}
+
+  /* ---------- aside ---------- */
+  .note{background:var(--mid-soft);border-left:3px solid var(--mid);
+        padding:.85rem 1.1rem;margin:1rem 0;font-size:.9rem;color:var(--ink)}
+
+  /* ---------- command row ---------- */
+  .cmd{display:flex;gap:.5rem;align-items:center;margin:.7rem 0}
+  .cmd code{flex:1 1 auto;background:var(--bg-elevated);border:1px solid var(--line);
+        color:var(--ink);padding:.5rem .8rem;font-size:.8rem;overflow-wrap:anywhere}
+  .btn{background:var(--bg);border:1px solid var(--line-strong);
+       padding:.45rem .8rem;cursor:pointer;font:600 .72rem var(--mono);
+       letter-spacing:.04em;text-transform:uppercase;color:var(--ink-2)}
+  .btn:hover{border-color:var(--blue);color:var(--blue)}
+
+  /* ---------- tables ---------- */
+  .tablewrap{overflow-x:auto;border:1px solid var(--line);margin:.7rem 0}
+  table{border-collapse:collapse;width:100%;font-size:.9rem;background:var(--bg)}
+  th,td{text-align:left;padding:.65rem .9rem;border-bottom:1px solid var(--line);vertical-align:top}
+  tr:last-child td{border-bottom:none}
+  th{font-family:var(--mono);font-size:.66rem;letter-spacing:.08em;
+     text-transform:uppercase;color:var(--mono-ink);font-weight:600}
+  td:first-child code{background:none;color:var(--ink);padding:0}
+
+  /* ---------- accordion ---------- */
+  details.fold{background:var(--bg);border:1px solid var(--line);margin:0 0 .55rem}
+  details.fold summary{cursor:pointer;padding:.9rem 1.2rem;font-size:.95rem;
+        color:var(--ink);list-style:none;display:flex;gap:.8rem;align-items:baseline}
+  details.fold summary::-webkit-details-marker{display:none}
+  details.fold summary::before{content:"+";font-family:var(--mono);font-weight:700;
+        color:var(--blue);min-width:1rem}
+  details.fold[open] summary::before{content:"–"}
+  details.fold summary strong{color:var(--ink)}
+  details.fold .fold-body{padding:0 1.2rem 1rem 3rem;font-size:.92rem;color:var(--ink-2)}
+  details.fold .fold-body p{max-width:75ch}
+
+  /* ---------- anchor nav ---------- */
+  /* A slim sticky bar under the header, listing the page's own sections as
+     links to their ids. Plain CSS + anchors — no scroll-spy JS, current
+     section not tracked. Example:
+       <nav class="anchornav"><a href="#why">Why this exists</a>
+         <a href="#picture">The working picture</a></nav>
+     Give each linked <section> a matching id: <section id="why">. */
+  nav.anchornav{position:sticky;top:0;z-index:5;display:flex;gap:1.4rem;
+        overflow-x:auto;white-space:nowrap;background:var(--bg);
+        border-bottom:1px solid var(--line);padding:.85rem 0;margin:0}
+  nav.anchornav a{font-family:var(--mono);font-size:.7rem;font-weight:600;
+        letter-spacing:.06em;text-transform:uppercase;color:var(--mono-ink);
+        text-decoration:none;flex-shrink:0}
+  nav.anchornav a:hover{color:var(--blue)}
+
+  /* ---------- expandable table row ---------- */
+  /* A condensed list where each row's own detail folds open in place —
+     for many short items whose full text is long. The row itself is a
+     <details class="fold row"> with a <summary class="row-summary"> laid
+     out in columns (flex), and the body holds the full text verbatim.
+     Example:
+       <details class="fold row">
+         <summary class="row-summary">
+           <span class="row-name">Thing</span>
+           <span class="row-status">One-line status</span>
+           <span class="tag planned">state</span>
+         </summary>
+         <div class="fold-body"><p>Full detail text, verbatim.</p></div>
+       </details>
+     Use this instead of the conformance-matrix modal when the items are a
+     flat list read top to bottom, not a grid compared across two axes. */
+  details.fold.row summary.row-summary{gap:1rem}
+  .row-summary .row-name{font-weight:700;color:var(--ink);min-width:10ch}
+  .row-summary .row-status{color:var(--ink-2);flex:1 1 auto;font-size:.9rem}
+
+  /* ---------- conformance matrix + modal ---------- */
+  table.matrix th:first-child{position:sticky;left:0;background:var(--bg-elevated)}
+  table.matrix td:first-child{position:sticky;left:0;background:var(--bg);
+        font-family:var(--mono);font-size:.8rem;white-space:nowrap}
+  table.matrix td{padding:.35rem .45rem;text-align:center}
+  .cell-btn{font:600 .66rem var(--mono);letter-spacing:.05em;text-transform:uppercase;
+        border:1px solid transparent;padding:.3rem .55rem;cursor:pointer;min-width:3.4rem}
+  .cell-btn.ok{background:var(--high-soft);color:var(--high)}
+  .cell-btn.part{background:var(--mid-soft);color:var(--mid)}
+  .cell-btn.off{background:var(--low-soft);color:var(--low)}
+  .cell-btn.na{background:var(--bg-elevated);color:var(--ink-3);cursor:default}
+  .cell-btn:not(.na):hover{border-color:currentColor}
+  dialog.cell-modal{border:1px solid var(--line-strong);padding:0;max-width:34rem;
+        width:calc(100vw - 4rem)}
+  dialog.cell-modal::backdrop{background:rgba(0,0,0,.35)}
+  dialog.cell-modal .modal-head{display:flex;justify-content:space-between;gap:1rem;
+        align-items:baseline;padding:1rem 1.3rem;border-bottom:1px solid var(--line);
+        font-family:var(--mono);font-size:.78rem;color:var(--mono-ink)}
+  dialog.cell-modal .modal-body{padding:1rem 1.3rem 1.3rem;font-size:.93rem;
+        color:var(--ink-2);line-height:1.6}
+  dialog.cell-modal .btn{flex-shrink:0}
+
+  /* ---------- foot ---------- */
+  .foot{border-top:1px solid var(--line);padding-top:1.1rem;margin-top:3.5rem;
+        font-size:.76rem;color:var(--ink-3);font-family:var(--mono);line-height:1.6}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+
+<header>
+<p class="kicker">Feature doc</p>
+<h1>Static session review</h1>
+<div class="headmeta">
+<span class="chip"><strong>kind</strong> static (deterministic)</span>
+<span class="chip"><strong>analyzer</strong> heuristic-v1</span>
+<span class="chip"><strong>llm</strong> none &mdash; deterministic</span>
+<span class="chip"><strong>curation</strong> human-check-only</span>
+</div>
+</header>
+
+<nav class="anchornav"><a href="#what">What it is</a><a href="#flow">The flow</a><a href="#events">Data shape</a><a href="#ontology">Ontology</a><a href="#rules">Decision rules</a><a href="#code">Code map</a><a href="#gaps">Gaps</a><a href="#hands">By hand</a></nav>
+
+<section id="what">
+<h2 class="label">What it is</h2>
+<p>After a coding session is captured, samskara reviews it and records what kind of session it was: did the work land, how much did the agent fight, and what should be learned from it. This page covers the <strong>static review</strong> &mdash; the deterministic analyzer named <code>heuristic-v1</code>, which is the only analyzer that exists today. It counts what the transcript shows (turn boundaries, tool results, edit timing) and never reads prose, so the same session always reviews the same way and no API key is ever required. Its output is a review row plus candidate lessons that wait for a human to accept or reject them; it is deliberately not a summary of what the session said.</p><p>An <strong>AI review</strong> is a planned, distinct thing: a second analyzer with its own name that implements the same <code>SessionAnalyzer</code> interface and would read the conversation with an LLM. It does not exist yet, and the heuristic stays the floor so the feature never depends on one. Every review row names its analyzer, so a verdict always says which kind produced it.</p>
+</section>
+
+<section id="flow">
+<h2 class="label">The flow end to end</h2>
+<p>Seven stages, trigger to visible result. A reader who stops here still knows how the feature works.</p>
+<ol class="walk">
+<li><div><strong>Trigger.</strong> A review starts when someone calls <code>POST /api/sessions/:id/review</code> or runs <code>samskara review</code>. Both paths end in the same server function, <code>reviewAndPersist</code>. Nothing triggers a review on its own yet.</div></li>
+<li><div><strong>Load.</strong> The server loads the session with <code>getDetail</code>, the same call the web UI&rsquo;s session page uses &mdash; so a review sees exactly the rows a reader sees, and a user who cannot read a session cannot review it.</div></li>
+<li><div><strong>Project.</strong> The stored messages map into a small neutral event vocabulary: turn, userMessage, toolCall, toolResult, edit, compaction, commit, pullRequest, tokens. Tool names join by <code>callId</code>, because results carry no name. Text survives only for user messages; the review never reads what anybody said, only when and in what order things happened.</div></li>
+<li><div><strong>Analyze.</strong> <code>HeuristicSessionAnalyzer</code> folds the event stream into signals, then classifies friction and outcome from those signals.</div></li>
+<li><div><strong>Extract.</strong> <code>LearningExtractor</code> walks the same signals into candidate lessons, each for an agent audience or a human audience, each fingerprinted for deduplication.</div></li>
+<li><div><strong>Persist.</strong> The review upserts into <code>sessionReviews</code>, unique on <code>(sessionId, analyzer)</code>; each candidate upserts into <code>learnings</code> by fingerprint as <code>candidate</code>, so re-reviewing a session does not duplicate rows.</div></li>
+<li><div><strong>Surface.</strong> The <code>/learnings</code> web page lists candidates per project with Accept / Reject / Retire (human-check-only, editor-gated), and <code>samskara learn --write</code> exports accepted lessons into the repo&rsquo;s <code>.harness/knowledge/</code>.</div></li>
+</ol>
+</section>
+
+<section id="events">
+<h2 class="label">The data shape</h2>
+<p>The event vocabulary is the smallest honest unit the review speaks internally. Signals are its counted version: turns, aborted turns, user prompts, tool calls, tool failures and rate, error loops, edits per path, compactions, prompts-after-failures, rapid re-prompts, commits, pull requests, and four token totals.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Event kind</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>turn</code></td><td>a turn boundary, completed or aborted; the last one decides the abort check</td></tr>
+<tr><td><code>userMessage</code></td><td>a human prompt; <code>isMeta</code> marks harness injections, which are ignored</td></tr>
+<tr><td><code>toolCall</code> / <code>toolResult</code></td><td>a tool invocation and its outcome, joined by <code>callId</code></td></tr>
+<tr><td><code>edit</code></td><td>a Write/Edit/MultiEdit/NotebookEdit call touching a file path</td></tr>
+<tr><td><code>compaction</code></td><td>the transcript was compacted</td></tr>
+<tr><td><code>commit</code> / <code>pullRequest</code></td><td>landing evidence &mdash; the work reached git</td></tr>
+<tr><td><code>tokens</code></td><td>a token accounting line</td></tr>
+</tbody></table></div>
+</section>
+
+
+<section id="ontology">
+<h2 class="label">The ontology</h2>
+<p>Every enumerated state the feature can be in, what each value means, and where it is enforced. If a state is not in these lists, it cannot exist.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Enum (review output)</th><th>Values</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>outcome</code></td><td><code>shipped</code> <code>productive</code> <code>struggled</code> <code>aborted</code></td><td>did the work land, and how painful was the road</td></tr>
+<tr><td><code>friction</code></td><td><code>none</code> <code>moderate</code> <code>high</code></td><td>how much the agent fought (independent of landing)</td></tr>
+<tr><td><code>audience</code></td><td><code>agent</code> <code>human</code></td><td>who a lesson is written for</td></tr>
+<tr><td><code>lesson status</code></td><td><code>candidate</code> <code>accepted</code> <code>superseded</code></td><td>the curation lifecycle; born <code>candidate</code></td></tr>
+</tbody></table></div>
+<p>All four are enforced by check constraints on the tables themselves (<code>sessionReviews</code>, <code>learnings</code>), so the database rejects any other value. The review row also carries <code>analyzer</code> &mdash; <code>heuristic-v1</code> today, the static analyzer this page describes. A session page shows this name beside the verdict, so a reader always knows which kind of review produced it.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Enum (projection input)</th><th>Values</th></tr></thead>
+<tbody>
+<tr><td><code>msgType</code></td><td><code>message</code> <code>toolCall</code> <code>toolResult</code> <code>progress</code> <code>hookCall</code> <code>queueOperation</code> <code>turnEvent</code> <code>compaction</code> <code>localCommand</code> <code>fileEvent</code> <code>usage</code> <code>systemEvent</code> <code>custom</code></td></tr>
+<tr><td><code>role</code></td><td><code>user</code> <code>assistant</code> <code>system</code> <code>developer</code> <code>unknown</code></td></tr>
+<tr><td><code>toolResult status</code></td><td><code>success</code> <code>failure</code> <code>cancelled</code> <code>unknown</code></td></tr>
+<tr><td><code>turn status</code></td><td><code>completed</code> <code>aborted</code> <code>unknown</code></td></tr>
+<tr><td><code>artifact changeKind</code></td><td><code>created</code> <code>edited</code> <code>editedUnknownBase</code></td></tr>
+</tbody></table></div>
+<p>Input vocabularies are enforced by zod schemas at ingest. Two projection rules collapse them into review states: a turn whose status is <code>unknown</code> reviews as <code>completed</code> (only <code>aborted</code> counts as aborted), and a user message with <code>isMeta</code> set is ignored as a harness injection, not a human prompt.</p>
+<div class="card">
+<span class="file">legal combinations</span>
+<p>Outcome and friction are independent &mdash; all twelve pairs can exist, and <code>shipped</code> with <code>high</code> friction is a real, visible state. Within outcome itself, <code>shipped</code> and <code>aborted</code> are mutually exclusive by construction: <code>aborted</code> requires zero commits and <code>shipped</code> requires at least one commit or pull request, so no session can be both. <code>productive</code> and <code>struggled</code> differ only by friction &mdash; high friction with nothing landed is <code>struggled</code>.</p>
+</div>
+<div class="card">
+<span class="file">lesson lifecycle</span>
+<p>Lessons are born <code>candidate</code> from any review, and only a project editor (or owner/admin) can move them, via <code>PATCH /api/learnings/:id/status</code>. The intended transitions: <code>candidate &rarr; accepted</code> (the Accept button), <code>candidate &rarr; superseded</code> (Reject), <code>accepted &rarr; superseded</code> (Retire &mdash; the UI labels the state &ldquo;Retired&rdquo;), and <code>superseded &rarr; candidate</code> (a &ldquo;Back to candidate&rdquo; button on retired rows). The server validates the value and the editor&rsquo;s right to set it, not the transition. Nothing but a human moves a lesson to accepted, ever.</p>
+</div>
+<div class="card">
+<span class="file">lesson categories &mdash; the extractor&rsquo;s fixed taxonomy</span>
+<p><code>tool-retry</code> (a tool kept failing before succeeding), <code>rework</code> (the same file edited many times), <code>supervision</code> (prompts arriving while failures piled up), <code>prompt-shape</code>, <code>task-shape</code>, <code>context-hygiene</code> (human-audience lessons about how the work was asked for).</p>
+</div>
+</section>
+
+<section id="rules">
+<h2 class="label">Decision rules, with their real thresholds</h2>
+<div class="card">
+<span class="file">friction &mdash; answered first</span>
+<p><strong>high</strong> if any error loop exists (3 or more consecutive failures of the same tool), or the tool failure rate exceeds 0.25, or 2 or more prompts arrived while failures were piling up &mdash; the human correcting course. <strong>moderate</strong> if the failure rate exceeds 0.10, or any turn was aborted. Otherwise <strong>none</strong>.</p>
+</div>
+<div class="card">
+<span class="file">outcome &mdash; did the work land</span>
+<p><strong>aborted</strong> when the final turn aborted and zero commits. <strong>shipped</strong> when at least one commit or pull request exists, whatever the friction was &mdash; a high-friction shipped session stays visible as shipped with high friction because both fields are reported side by side. <strong>struggled</strong> when friction was high with nothing landed. <strong>productive</strong> for everything else.</p>
+</div>
+<div class="card">
+<span class="file">fingerprints</span>
+<p>Lesson fingerprints are <code>audience:category:subject</code>, so the same lesson from different sessions converges on one row with an occurrence count instead of duplicating.</p>
+</div>
+</section>
+
+<section id="code">
+<h2 class="label">Where the code is</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Job</th><th>File</th></tr></thead>
+<tbody>
+<tr><td>event vocabulary + projection</td><td><code>packages/core/src/review/events.ts</code></td></tr>
+<tr><td>heuristic fold: signals, friction, outcome</td><td><code>packages/core/src/review/analyzer.ts</code></td></tr>
+<tr><td>signals &rarr; candidate lessons</td><td><code>packages/core/src/review/extractor.ts</code></td></tr>
+<tr><td>orchestration: load, review, persist</td><td><code>packages/server/src/services/review.ts</code></td></tr>
+<tr><td>sessionReviews + learnings persistence</td><td><code>packages/server/src/repositories/reviews.repo.ts</code></td></tr>
+<tr><td>HTTP surface</td><td><code>packages/server/src/routes/reviews.ts</code></td></tr>
+<tr><td>CLI review</td><td><code>packages/cli/src/commands/review.ts</code></td></tr>
+<tr><td>CLI learn</td><td><code>packages/cli/src/commands/learn.ts</code></td></tr>
+<tr><td>curation page</td><td><code>packages/web/src/routes/Learnings.tsx</code></td></tr>
+</tbody></table></div>
+</section>
+
+<section id="gaps">
+<h2 class="label">What is deliberately not there</h2>
+<details class="fold"><summary>&ldquo;Shipped&rdquo; cannot happen today, so every session is mislabeled.</summary>
+<div class="fold-body"><p>The load step fetches the session&rsquo;s commits and pull requests, and the projection step throws them away &mdash; it maps messages only, so landing evidence never reaches the analyzer. Every session is mislabeled productive or struggled. This is the top fix in the roadmap.</p></div></details>
+<details class="fold"><summary>No automatic trigger: reviews run only when a person asks.</summary>
+<div class="fold-body"><p>Both entry points are explicit &mdash; the HTTP route and the CLI command. The watcher never starts a review; the roadmap item is review-on-quiet, a sweep in the watcher&rsquo;s existing ten-second cycle.</p></div></details>
+<details class="fold"><summary>Subagent tracks are not separated from the main conversation.</summary>
+<div class="fold-body"><p>A subagent&rsquo;s task prompt counts as a human prompt, and interleaving across tracks makes re-reviews wobble. The stored rows already carry a track id; the projection ignores it.</p></div></details>
+<details class="fold"><summary>Occurrence counts inflate on re-review, and fingerprints split across machines.</summary>
+<div class="fold-body"><p>Reviewing the same session twice counts as seeing the lesson twice &mdash; the count should move only when a different session shows it. And lesson fingerprints use absolute file paths, so the same lesson on two machines is two lessons.</p></div></details>
+<details class="fold"><summary>An LLM analyzer is planned as an option, not a requirement.</summary>
+<div class="fold-body"><p>An AI review would implement the same <code>SessionAnalyzer</code> interface under its own name (an <code>llm-*</code> analyzer, distinct from <code>heuristic-v1</code>), behind the same tests; the heuristics stay the floor so the feature never requires an API key to work.</p></div></details>
+</section>
+
+<section id="hands">
+<h2 class="label">How to see it work by hand</h2>
+<div class="cmd"><code>bun packages/cli/src/index.ts review --recent 1</code><button class="btn">Copy</button></div>
+<div class="cmd"><code>psql postgres://samskara:samskara@localhost:5433/samskara -c 'select "sessionId", outcome, friction, summary from "sessionReviews" order by "analyzedAt" desc limit 5'</code><button class="btn">Copy</button></div>
+<div class="cmd"><code>psql postgres://samskara:samskara@localhost:5433/samskara -c 'select "audience", "category", status, "occurrenceCount" from learnings limit 10'</code><button class="btn">Copy</button></div>
+<p>The review prints its verdict and summary; the queries show the persisted rows and any candidate lessons. Accepting a lesson is a button on <code>http://localhost:8000/learnings</code>.</p>
+</section>
+
+
+<div class="foot">Source of truth: docs/html_docs/static-review/feature.md &mdash; when the two disagree, the md is right and this page gets fixed. Built on docs/skills/writeup/SHELL.html.</div>
+</div>
+
+<dialog class="cell-modal">
+  <div class="modal-head"><span class="modal-title"></span>
+    <button class="btn modal-close">Close</button></div>
+  <div class="modal-body"></div>
+</dialog>
+
+<script>
+(() => {
+  // One listener for every Copy button, so a new command row needs no script.
+  document.addEventListener("click", (e) => {
+    var b = e.target.closest(".cmd .btn");
+    if (!b) return;
+    var code = b.parentElement.querySelector("code");
+    if (!code) return;
+    navigator.clipboard.writeText(code.textContent).then(() => {
+      var was = b.textContent;
+      b.textContent = "Copied";
+      setTimeout(() => { b.textContent = was; }, 1200);
+    });
+  });
+
+  // Conformance-matrix cells: any .cell-btn with data-detail opens the one
+  // shared modal. data-title names the cell (e.g. "transfer — labware");
+  // data-detail is the self-contained explanation.
+  var modal = document.querySelector("dialog.cell-modal");
+  if (modal) {
+    document.addEventListener("click", (e) => {
+      var c = e.target.closest(".cell-btn[data-detail]");
+      if (c) {
+        modal.querySelector(".modal-title").textContent = c.dataset.title || "";
+        modal.querySelector(".modal-body").textContent = c.dataset.detail;
+        modal.showModal();
+      }
+      if (e.target.closest(".modal-close")) modal.close();
+      // click on the backdrop closes it
+      if (e.target === modal) modal.close();
+    });
+  }
+})();
+</script>
+</body>
+</html>
