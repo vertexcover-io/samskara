@@ -31,6 +31,7 @@ describe("replayCommand", () => {
   let started: number
   let stopped: number
   let out: string
+  let err: string
 
   const write = (text: string) => {
     out += text
@@ -109,6 +110,7 @@ describe("replayCommand", () => {
       started += 1
     },
     stdout: { write },
+    stderr: { write: (text: string) => (err += text) },
     ...over,
   })
 
@@ -128,6 +130,7 @@ describe("replayCommand", () => {
     started = 0
     stopped = 0
     out = ""
+    err = ""
     await seed()
   })
 
@@ -248,7 +251,8 @@ describe("replayCommand", () => {
 
     expect(await replayCommand(SESSION, deps())).toBe(1)
 
-    expect(out).toContain("samskara init --force")
+    expect(err).toContain("samskara init --force")
+    expect(out).toBe("")
     expect(stopped).toBe(0)
     expect(started).toBe(0)
     expect(Object.keys((await readState()).checkpoints).sort()).toEqual([

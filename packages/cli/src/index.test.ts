@@ -86,7 +86,7 @@ test("SC7: a command run against a different server warns on stderr, naming both
   expect(result.stdout).toContain("Server")
 })
 
-// The hook warns for every command and a writing command refuses on its own; both used to fire.
+// A warn and a refusal both used to fire, printing the same sentence twice.
 test.each(["enable", "disable"])(
   "SC27: `%s` reports a mismatch once, not once per guard",
   (command) => {

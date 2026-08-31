@@ -71,13 +71,6 @@ export const warnOnServerChange = async (stderr: Writer): Promise<void> => {
   stderr.write(`${mismatchFact(mismatch)} Run \`samskara init --force\` to move it across.\n`)
 }
 
-// The `preAction` hook stays quiet for these, or every refusal prints two near-identical lines.
-export const REFUSES_ON_SERVER_CHANGE: ReadonlySet<string> = new Set([
-  "enable",
-  "disable",
-  "replay",
-])
-
 export const refuseOnServerChange = async (stderr: Writer): Promise<boolean> => {
   const [mismatch] = await scopeMismatch(TRIPWIRE_PATHS())
   if (mismatch === undefined) return false

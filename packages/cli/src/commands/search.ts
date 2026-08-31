@@ -5,6 +5,7 @@ import { atomicWriteJson, readJson } from "../config/atomic.js"
 import { readToken } from "../config/credentials.js"
 import { filterOptionsPath } from "../config/paths.js"
 import { getProject } from "../config/projects.js"
+import { warnOnServerChange } from "../config/server-scope.js"
 import { apiBase, webBase } from "../config.js"
 import { runGitOrNull } from "../git.js"
 import { errorMessage, relativeTime, resolveIo, type Writer } from "../io.js"
@@ -375,6 +376,7 @@ const openInBrowser = async (url: string): Promise<void> => {
 
 export const searchCommand = async (options: SearchOptions, deps: SearchDeps): Promise<number> => {
   const { stdout, stderr } = resolveIo(deps)
+  await warnOnServerChange(stderr).catch(() => {})
   const now = (deps.now ?? (() => new Date()))()
 
   const token = await readToken()

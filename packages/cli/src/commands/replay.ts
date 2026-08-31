@@ -17,6 +17,7 @@ export type ReplayDeps = {
   readonly stopWatcher: () => Promise<boolean>
   readonly startWatcher: () => Promise<unknown>
   readonly stdout?: Writer
+  readonly stderr?: Writer
 }
 
 /**
@@ -111,8 +112,8 @@ const deleteRemote = async (deps: ReplayDeps, sessionId: string): Promise<string
  * begin with.
  */
 export const replayCommand = async (sessionId: string, deps: ReplayDeps): Promise<number> => {
-  const { stdout } = resolveIo(deps)
-  if (await refuseOnServerChange(stdout)) return 1
+  const { stdout, stderr } = resolveIo(deps)
+  if (await refuseOnServerChange(stderr)) return 1
 
   if (!deps.token) {
     stdout.write("Not logged in. Run `samskara login` first.\n")

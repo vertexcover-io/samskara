@@ -167,9 +167,6 @@ every derived file **and your token** to `~/.samskara/backups/TIMESTAMP/`, clear
 turns capture off for every project, and signs you out. It stops there — run `samskara login`, then
 `samskara enable` in each folder you want captured.
 
-Nothing prunes `~/.samskara/backups/`. The tokens in it are only as dead as the servers that issued
-them, so delete old ones when you no longer want them on disk.
-
 ## CLI reference
 
 | Command | What it does |
