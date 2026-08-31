@@ -138,13 +138,10 @@ export const initCommand = async (options: InitOptions = {}): Promise<number> =>
   }
 
   // `--force` is permission to move to a different server, not an instruction to wipe state that
-  // never actually moved (D13). "Moved" is judged the same way every other command judges it: does
-  // a scoped file's own stamp disagree with the server just confirmed -- not whether this
-  // invocation happened to rewrite config.json, which a config.json edited by hand outside `init`
-  // would already show as unchanged.
-  // Two independent signals, because each sees a case the other is blind to: the url comparison
-  // catches an install whose files predate the stamp, and the stamp catches a config.json edited by
-  // hand outside `init`, where this invocation changed nothing.
+  // never actually moved (D13). Two signals decide it, because each sees a case the other cannot:
+  // the url comparison catches an install whose files predate the stamp and so disagree with
+  // nothing, and the stamp catches a config.json edited by hand outside `init`, where this
+  // invocation rewrote no url at all.
   const changedServer = wasConfigured && options.force === true
   const mismatch = changedServer ? await scopeMismatch(ALL_SCOPED_PATHS()) : []
   if (changedServer && (movedServer || mismatch.length > 0)) {

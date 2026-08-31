@@ -1,7 +1,7 @@
 import { basename, sep } from "node:path"
 import { checkpointStoreSchema } from "@samskara/core"
 import { atomicWriteJson, readJson, withFileLock } from "../config/atomic.js"
-import { refuseOnServerChange, stampOf } from "../config/server-scope.js"
+import { refuseOnServerChange, stampIn } from "../config/server-scope.js"
 import { resolveIo, type Writer } from "../io.js"
 
 export type ReplayDeps = {
@@ -27,6 +27,16 @@ export type ReplayDeps = {
 export const belongsToSession = (filePath: string, sessionId: string): boolean =>
   basename(filePath) === `${sessionId}.jsonl` || filePath.includes(`${sep}${sessionId}${sep}`)
 
+/**
+ * Carries the stamp already on disk across rather than re-deriving it. A replay removes one
+ * session; it is not the moment to decide the file now belongs to a different server, and the
+ * value is in the object these callers have already read.
+ */
+const carried = (value: unknown): { readonly apiBase?: string } => {
+  const recorded = stampIn(value)
+  return recorded === null ? {} : { apiBase: recorded }
+}
+
 const clearCheckpoints = async (path: string, sessionId: string): Promise<number> =>
   withFileLock(path, async () => {
     const parsed = checkpointStoreSchema.safeParse(await readJson(path))
@@ -36,10 +46,9 @@ const clearCheckpoints = async (path: string, sessionId: string): Promise<number
       ([, checkpoint]) => !belongsToSession(checkpoint.filePath, sessionId),
     )
     const dropped = Object.keys(parsed.data.checkpoints).length - kept.length
-    const recorded = await stampOf(path)
     if (dropped > 0)
       await atomicWriteJson(path, {
-        ...(recorded === null ? {} : { apiBase: recorded }),
+        ...carried(parsed.data),
         checkpoints: Object.fromEntries(kept),
       })
     return dropped
@@ -54,11 +63,10 @@ const clearArtifactState = async (path: string, sessionId: string): Promise<numb
 
     const kept = Object.entries(artifacts).filter(([key]) => !key.startsWith(`${sessionId}:`))
     const dropped = Object.keys(artifacts).length - kept.length
-    const recorded = await stampOf(path)
     if (dropped > 0)
       await atomicWriteJson(path, {
         version: 1,
-        ...(recorded === null ? {} : { apiBase: recorded }),
+        ...carried(state),
         artifacts: Object.fromEntries(kept),
       })
     return dropped
@@ -72,11 +80,10 @@ const clearQueue = async (path: string, sessionId: string): Promise<number> =>
 
     const kept = entries.filter((entry) => entry.sessionId !== sessionId)
     const dropped = entries.length - kept.length
-    const recorded = await stampOf(path)
     if (dropped > 0)
       await atomicWriteJson(path, {
         version: 1,
-        ...(recorded === null ? {} : { apiBase: recorded }),
+        ...carried(queue),
         entries: kept,
       })
     return dropped

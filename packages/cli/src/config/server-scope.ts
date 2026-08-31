@@ -28,11 +28,13 @@ export type Mismatch = {
  */
 export const persistedApiUrl = (): string => readSettings()?.apiUrl ?? DEFAULT_API_URL
 
-export const stampOf = async (path: string): Promise<string | null> => {
-  const value = await readJson(path)
+/** For a caller that has already read the file and should not read it a second time. */
+export const stampIn = (value: unknown): string | null => {
   const stamp = (value as { apiBase?: unknown } | null)?.apiBase
   return typeof stamp === "string" && stamp !== "" ? stamp : null
 }
+
+export const stampOf = async (path: string): Promise<string | null> => stampIn(await readJson(path))
 
 /**
  * A missing stamp is not a mismatch: it is what a file predating this feature, or a file that does
