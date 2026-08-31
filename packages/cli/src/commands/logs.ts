@@ -3,6 +3,7 @@ import { stat } from "node:fs/promises"
 import { createInterface } from "node:readline"
 import { prettyFactory } from "pino-pretty"
 import { currentLogPath, watchLogDir } from "../config/paths.js"
+import { warnOnServerChange } from "../config/server-scope.js"
 import { resolveIo, type Writer } from "../io.js"
 
 export type LogsOptions = {
@@ -43,6 +44,7 @@ const sizeOf = (path: string): Promise<number> =>
 
 export const logsCommand = async (options: LogsOptions = {}): Promise<number> => {
   const { stdout, stderr } = resolveIo(options)
+  await warnOnServerChange(stderr).catch(() => {})
   const path = currentLogPath()
 
   if (!existsSync(path)) {
