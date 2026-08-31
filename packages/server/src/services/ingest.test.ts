@@ -89,6 +89,7 @@ const mainPayload = (
 ): IngestPayload => ({
   type: "main",
   sessionId,
+  source: "claude_code",
   sourceRelativePath: `${sessionId}.jsonl`,
   project,
   records: recordsFrom(items),
@@ -102,6 +103,7 @@ const subagentPayload = (
 ): IngestPayload => ({
   type: "subagent",
   sessionId,
+  source: "claude_code",
   sourceRelativePath: `${sessionId}/subagents/agent-${agentId}.jsonl`,
   project,
   agent: { agentId, agentType: "auditor", description: "fixture subagent" },

@@ -38,7 +38,13 @@ export type WatcherDeps = {
   readonly clock: Clock
   readonly sink: { send(payload: IngestPayload): Promise<SinkResult> }
   readonly glob: (pattern: string) => Promise<ReadonlyArray<string>>
-  readonly plugin: AgentPlugin
+  /**
+   * Every registered plugin runs each cycle. The watcher was written for one plugin at a time
+   * (Claude Code), and the second source adapter arrives through the registry so the cycle
+   * iterates and merges all their batches. Checkpoints are per plugin via the source-aware
+   * `track.checkpointKey`.
+   */
+  readonly plugins: ReadonlyArray<AgentPlugin>
   readonly resolveProject: (startDir: string) => Promise<ProjectIdentity | null>
   readonly log: pino.Logger
   readonly shouldCapture?: (project: ProjectIdentity) => Promise<boolean>
@@ -342,7 +348,10 @@ export const runCycle = async (
     ...(deps.shouldCapture ? { shouldCapture: deps.shouldCapture } : {}),
     ...(deps.syncFromFor ? { syncFromFor: deps.syncFromFor } : {}),
   }
-  const batches = await deps.plugin.collect(prev, collectDeps)
+  const batchLists = await Promise.all(
+    deps.plugins.map((plugin) => plugin.collect(prev, collectDeps)),
+  )
+  const batches = batchLists.flat()
   const results = await mapWithLimit(batches, config.sessionConcurrency, (batch) =>
     syncSession(batch, prev, deps, config.messageCap),
   )

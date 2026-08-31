@@ -2,6 +2,7 @@ import type { ReactNode } from "react"
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom"
 import { AuthProvider, useAuth } from "./auth/AuthProvider.js"
 import { RequireAuth } from "./auth/RequireAuth.js"
+import { Learnings } from "./routes/Learnings.js"
 import { Login } from "./routes/Login.js"
 import { Projects } from "./routes/Projects.js"
 import { SessionDetail } from "./routes/SessionDetail.js"
@@ -56,6 +57,14 @@ export const AppRoutes = () => (
       element={
         <Protected>
           <SessionDetail />
+        </Protected>
+      }
+    />
+    <Route
+      path="/learnings"
+      element={
+        <Protected>
+          <Learnings />
         </Protected>
       }
     />

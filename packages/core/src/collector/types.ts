@@ -5,6 +5,7 @@ import {
   type ParsedRecord,
   type ProjectIdentity,
   projectIdentitySchema,
+  type SessionSource,
 } from "../ingest/types.js"
 import type { FileSystem } from "./fs.js"
 
@@ -21,7 +22,24 @@ export const claudeCheckpointSchema = checkpointBaseSchema.extend({
   lineProcessed: z.number(),
 })
 
-export const checkpointSchema = claudeCheckpointSchema
+/**
+ * An opencode session's progress is a timestamp, not a file mtime: opencode writes one row per
+ * session in SQLite and increments `time_updated` as messages land. Watermarking on the message
+ * id the cycle last shipped means re-runs read only what is new, even after a compaction the
+ * daemon never saw.
+ */
+export const opencodeCheckpointSchema = checkpointBaseSchema.extend({
+  source: z.literal("opencode"),
+  /** Session row's `time_updated` at the moment of the last successful flush. */
+  timeUpdated: z.number(),
+  /** Last message id shipped; cheaper than re-counting and stable across rows the server deduped. */
+  lastMessageId: z.string(),
+})
+
+export const checkpointSchema = z.discriminatedUnion("source", [
+  claudeCheckpointSchema,
+  opencodeCheckpointSchema,
+])
 export const checkpointStoreSchema = z
   .object({
     checkpoints: z.record(z.string(), checkpointSchema),
@@ -34,9 +52,17 @@ export const checkpointStoreSchema = z
 
 export type CheckpointBase = z.infer<typeof checkpointBaseSchema>
 export type ClaudeCheckpoint = z.infer<typeof claudeCheckpointSchema>
+export type OpencodeCheckpoint = z.infer<typeof opencodeCheckpointSchema>
 export type Checkpoint = z.infer<typeof checkpointSchema>
 export type CheckpointStore = z.infer<typeof checkpointStoreSchema>
-export type CheckpointBody = Omit<ClaudeCheckpoint, keyof CheckpointBase>
+export type ClaudeCheckpointBody = Omit<ClaudeCheckpoint, keyof CheckpointBase>
+export type OpencodeCheckpointBody = Omit<OpencodeCheckpoint, keyof CheckpointBase>
+/**
+ * Each plugin stamps its own `source` on the body it returns; the discriminated union on
+ * `Checkpoint` carries it through. The base fields are filled by the driver after the plugin
+ * decides what changed.
+ */
+export type CheckpointBody = ClaudeCheckpointBody | OpencodeCheckpointBody
 
 export type CollectDeps = {
   readonly fs: FileSystem
@@ -69,6 +95,6 @@ export type SessionBatch = {
 }
 
 export interface AgentPlugin {
-  readonly source: string
+  readonly source: SessionSource
   collect(prev: CheckpointStore, deps: CollectDeps): Promise<ReadonlyArray<SessionBatch>>
 }

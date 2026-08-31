@@ -39,6 +39,11 @@ const env: Env = {
   jwtSecret: "test-secret-value",
   jwtExpiresIn: "7d",
   superAdminLogins: [],
+  localLoginSecret: "",
+  localLoginLogin: "samskara-dev",
+  aiReviewModel: "zai-coding-plan/glm-5.3",
+  aiReviewHarness: "opencode",
+  aiReviewTimeoutMs: 600000,
 }
 
 type ProjectSummary = {
@@ -270,6 +275,81 @@ describe.skipIf(!dockerAvailable())("GET /api/projects", () => {
     const anonymous = await app.request("/api/projects")
     expect(anonymous.status).toBe(401)
     expect(await anonymous.json()).toEqual({ error: "unauthorized" })
+  })
+})
+
+describe.skipIf(!dockerAvailable())("GET /api/projects/resolve", () => {
+  let container: StartedPostgreSqlContainer
+  let teardown: () => Promise<void>
+  let db: Db
+
+  beforeAll(async () => {
+    container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start()
+    const url = container.getConnectionUri()
+    execFileSync("bun", ["run", "db:migrate"], {
+      cwd: packageDir,
+      env: { ...process.env, DATABASE_URL: url },
+      stdio: "inherit",
+    })
+    const created = createDb(url)
+    db = created.db
+    teardown = async () => {
+      await created.client.end()
+      await container.stop()
+    }
+  }, 120_000)
+
+  afterAll(async () => {
+    await teardown?.()
+  })
+
+  beforeEach(async () => {
+    await db.delete(sessions)
+    await db.delete(userProjectGrant)
+    await db.delete(projects)
+    await db.delete(userOrgs)
+    await db.delete(orgs)
+    await db.delete(users)
+  })
+
+  test("TR-3: a cli token resolves its accessible projects as id/name/slug - and a stranger's project stays hidden", async () => {
+    const owner = await seedUser(db, 901, "resolve-owner")
+    const stranger = await seedUser(db, 902, "resolve-stranger")
+    const mine = await projectsRepo.upsert(db, {
+      identity: { name: "Samskara Web", slug: "samskara-web" },
+      ownerId: owner,
+    })
+    await projectsRepo.upsert(db, {
+      identity: { name: "Stranger Thing", slug: "stranger-thing" },
+      ownerId: stranger,
+    })
+
+    const token = await signToken(env, { sub: owner, aud: "cli" })
+    const res = await buildApp(db, env).request("/api/projects/resolve", {
+      headers: { authorization: `Bearer ${token}` },
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { projects: ReadonlyArray<Record<string, unknown>> }
+    expect(body.projects).toEqual([{ id: mine, name: "Samskara Web", slug: "samskara-web" }])
+  })
+
+  test("TR-3: web tokens and anonymous callers are refused - resolve is the CLI's endpoint", async () => {
+    const owner = await seedUser(db, 903, "resolve-guarded")
+    await projectsRepo.upsert(db, {
+      identity: { name: "Guarded", slug: "resolve-guarded" },
+      ownerId: owner,
+    })
+    const app = buildApp(db, env)
+
+    const anonymous = await app.request("/api/projects/resolve")
+    expect(anonymous.status).toBe(401)
+
+    const webToken = await signToken(env, { sub: owner, aud: "web" })
+    const withWeb = await app.request("/api/projects/resolve", {
+      headers: { authorization: `Bearer ${webToken}` },
+    })
+    expect(withWeb.status).toBe(401)
+    expect(await withWeb.json()).toEqual({ error: "unauthorized" })
   })
 })
 

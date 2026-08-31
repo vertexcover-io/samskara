@@ -20,3 +20,4 @@ blob-report/
 .playwright/
 .humanlayer
 e2e/fixtures/p12-outside-*/
+.opencode/opencode.json

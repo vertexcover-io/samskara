@@ -1,7 +1,14 @@
 import { glob as nodeGlob, readdir, readFile, rename, stat, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
-import { createClaudePlugin, type FileSystem, type ProjectIdentity } from "@samskara/core"
+import {
+  createClaudePlugin,
+  createOpencodePlugin,
+  type FileSystem,
+  openDatabase,
+  type ProjectIdentity,
+  register,
+} from "@samskara/core"
 import type pino from "pino"
 import { readToken } from "../config/credentials.js"
 import { artifactQueuePath, artifactStatePath, statePath } from "../config/paths.js"
@@ -15,6 +22,28 @@ import { createArtifactSink, createHttpSink } from "./sink.js"
 
 const CYCLE_MS = 10_000
 const SHUTDOWN_GRACE_MS = 5_000
+
+/**
+ * The set of plugins the watcher runs each cycle. The Claude plugin is unconditional; the
+ * opencode plugin is included only when its database exists and can be opened read-only --
+ * an absent opencode install is normal, and the daemon must not refuse to start because of it.
+ */
+const activePlugins = async (
+  log: pino.Logger,
+): Promise<ReadonlyArray<ReturnType<typeof createClaudePlugin>>> => {
+  const claude = createClaudePlugin(nodeFs)
+  register(claude)
+  try {
+    const dbPath = join(homedir(), ".local", "share", "opencode", "opencode.db")
+    const db = await openDatabase(dbPath)
+    const opencode = createOpencodePlugin({ db })
+    register(opencode)
+    return [claude, opencode]
+  } catch (err) {
+    log.debug({ err }, "opencode plugin disabled: database unreachable")
+    return [claude]
+  }
+}
 
 const expandHome = (pattern: string): string =>
   pattern.startsWith("~/") ? join(homedir(), pattern.slice(2)) : pattern
@@ -65,6 +94,7 @@ export const globAll = async (
 }
 
 export type WatchOptions = {
+  readonly projectOverride?: ProjectIdentity
   readonly log: pino.Logger
 }
 
@@ -92,7 +122,7 @@ export const drainWorkers = (
 ): Promise<void> => Promise.race([workers, sleep(graceMs)]).then(onDrained)
 
 export const watch = async (options: WatchOptions): Promise<void> => {
-  const { log } = options
+  const { log, projectOverride } = options
   // Checked once so a daemon with no credentials at all fails loudly at startup; the sinks read
   // the token again on every request, so a later `samskara login` lands without a restart.
   if (!(await readToken())) throw new Error("no token found; run `samskara login` first")
@@ -112,14 +142,21 @@ export const watch = async (options: WatchOptions): Promise<void> => {
     clock: { now: () => Date.now() },
     sink: createHttpSink({ apiBase: resolved.apiUrl, readToken, fetch: globalThis.fetch }),
     glob: (pattern) => globAll(pattern, log),
-    plugin: createClaudePlugin(nodeFs),
-    resolveProject: async (dir) => {
-      const identity = await resolveProject(dir)
-      return identity === null ? null : withStoredProjectId(identity)
-    },
-    // Only enabled projects, and only sessions started after the project's cutoff.
-    shouldCapture: (project) => isProjectEnabled(project.slug),
-    syncFromFor: (project) => syncFromFor(project.slug),
+    plugins: await activePlugins(log),
+    resolveProject: projectOverride
+      ? async () => projectOverride
+      : async (dir) => {
+          const identity = await resolveProject(dir)
+          return identity === null ? null : withStoredProjectId(identity)
+        },
+    // Only enabled projects, and only sessions started after the project's cutoff; an
+    // explicit override captures unconditionally.
+    ...(projectOverride
+      ? {}
+      : {
+          shouldCapture: (project: ProjectIdentity) => isProjectEnabled(project.slug),
+          syncFromFor: (project: ProjectIdentity) => syncFromFor(project.slug),
+        }),
     log,
   }
 

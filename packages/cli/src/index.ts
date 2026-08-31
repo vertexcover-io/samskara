@@ -7,11 +7,13 @@ import { enableCommand } from "./commands/enable.js"
 import { ensureCommand } from "./commands/ensure.js"
 import { initCommand } from "./commands/init.js"
 import { installHooksCommand, uninstallHooksCommand } from "./commands/install-hooks.js"
+import { learnCommand } from "./commands/learn.js"
 import { logoutCommand } from "./commands/logout.js"
 import { logsCommand } from "./commands/logs.js"
 import { reassignCommand } from "./commands/reassign.js"
 import { replayCommand } from "./commands/replay.js"
 import { restartCommand } from "./commands/restart.js"
+import { reviewCommand } from "./commands/review.js"
 import { type SearchOptions, searchCommand } from "./commands/search.js"
 import { statusCommand } from "./commands/status.js"
 import { upgradeCommand } from "./commands/upgrade.js"
@@ -132,6 +134,50 @@ program
   )
 
 program
+  .command("review [sessionId]")
+  .description("Analyze a session (default: the most recent) for outcome, friction and learnings")
+  .option("--recent <n>", "review the N most recent sessions instead of one")
+  .option("--ai", "run the harness AI review and wait for its verdict")
+  .option("--json", "with --ai: print the raw AI review JSON")
+  .option("--timeout <ms>", "with --ai: how long to wait for the verdict, in ms (default 600000)")
+  .action(
+    async (
+      sessionId: string | undefined,
+      options: { recent?: string; ai?: boolean; json?: boolean; timeout?: string },
+    ) => {
+      const recent = options.recent === undefined ? undefined : Number.parseInt(options.recent, 10)
+      const timeout =
+        options.timeout === undefined ? undefined : Number.parseInt(options.timeout, 10)
+      process.exitCode = await reviewCommand(sessionId === undefined ? undefined : sessionId, {
+        ...(Number.isFinite(recent) ? { recent } : {}),
+        ...(options.ai === true ? { ai: true } : {}),
+        ...(options.json === true ? { json: true } : {}),
+        ...(Number.isFinite(timeout) ? { timeoutMs: timeout } : {}),
+      })
+    },
+  )
+
+program
+  .command("learn")
+  .description("List accepted learnings, or write them into this repo with --write")
+  .option("--project <name>", "project name, slug, or id to learn from")
+  .option("--audience <who>", "agent or human")
+  .option("--status <state>", "candidate, accepted or superseded (default accepted)")
+  .option("--write", "write LEARNINGS.md and .harness/knowledge/ into this repo")
+  .option("--out <dir>", "directory to write into (default: current directory)")
+  .action(
+    async (options: {
+      project?: string
+      audience?: string
+      status?: string
+      write?: boolean
+      out?: string
+    }) => {
+      process.exitCode = await learnCommand(options)
+    },
+  )
+
+program
   .command("status")
   .description("Show registered projects, sync timestamps, and watcher status")
   .action(async () => {
@@ -158,6 +204,7 @@ program
   .option("--branch <name>", "git branch")
   .option("--pr <number>", "pull request number")
   .option("--commit <sha>", "commit sha, or at least 7 characters of one")
+  .option("--ai-review <state>", "done or missing: whether the AI analysis has run")
   .option("--range <range>", "all, hour, today, week, month or custom")
   .option("--from <date>", "start of a custom range, as YYYY-MM-DD")
   .option("--to <date>", "end of a custom range, as YYYY-MM-DD")

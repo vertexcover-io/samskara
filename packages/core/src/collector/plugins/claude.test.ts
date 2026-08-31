@@ -900,8 +900,9 @@ describe("collect", () => {
     expect(track?.records[0]?.messages).toHaveLength(3)
     expect(track?.project).toEqual(project)
     expect(track?.checkpointKey).toBe(path)
-    expect(track?.checkpointAt(1).lineProcessed).toBe(1)
-    expect(track?.checkpointAt(1).source).toBe("claude_code")
+    const body = track?.checkpointAt(1)
+    if (body?.source !== "claude_code") throw new Error("expected claude_code body")
+    expect(body.lineProcessed).toBe(1)
   })
 
   test("the session title is the last ai-title line, so a retitled session ends up current", async () => {

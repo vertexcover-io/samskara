@@ -6,7 +6,17 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!**/dist", "!**/node_modules", "!**/migrations"]
+    "includes": [
+      "**",
+      "!**/dist",
+      "!**/node_modules",
+      "!**/migrations",
+      "!**/.claude",
+      "!docs/skills",
+      "!docs/html_docs",
+      "!docs/pr_reviews",
+      "!writeup"
+    ]
   },
   "formatter": {
     "enabled": true,

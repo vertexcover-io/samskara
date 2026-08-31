@@ -152,6 +152,7 @@ export type SessionSummaryRow = {
   readonly tokensTotal: number
   readonly status: string
   readonly lastActiveAt: string
+  readonly hasAiReview: boolean
   readonly match: SessionMatch | null
 }
 
@@ -181,6 +182,8 @@ export type SessionListFilter = {
   readonly branch?: string
   readonly prNumber?: number
   readonly commit?: string
+  /** "done" keeps only sessions with a landed ai-v1 review; "missing" the rest. */
+  readonly aiReview?: "done" | "missing"
   readonly searchQuery?: ParsedSessionQuery
   readonly since?: Date
   /** Exclusive UTC boundary. */
@@ -219,6 +222,12 @@ const tokensFor = (sessionId: SQL): SQL<number> => sql`(
   from "tokenUsage"
   join "messages" on "messages"."id" = "tokenUsage"."messageId"
   where "messages"."sessionId" = ${sessionId}
+)`
+
+/** The badge's definition of "AI analysis ran": a landed ai-v1 row — the same test the analyze route applies. */
+const aiReviewExists = (sessionId: SQL): SQL => sql`exists (
+  select 1 from "sessionReviews" sr
+  where sr."sessionId" = ${sessionId} and sr."analyzer" = 'ai-v1'
 )`
 
 const status = sql<string>`case when ${messageCount} = 0 then 'empty' else 'complete' end`
@@ -467,6 +476,12 @@ const filterPredicates = (
         ? sql`false`
         : sql`exists (select 1 from "commits" c where c."sessionId" = a.id and lower(c."sha") = ${resolvedCommit?.toLowerCase()})`,
     )
+  if (filter.aiReview !== undefined)
+    clauses.push(
+      filter.aiReview === "done"
+        ? aiReviewExists(sql`a.id`)
+        : sql`not ${aiReviewExists(sql`a.id`)}`,
+    )
   return clauses
 }
 
@@ -548,6 +563,7 @@ export const listAccessible = async (
     select p.id, ${derivedTitle} as title, p."projectId", p."projectName", p."projectSlug", p."userLogin",
       r.host as "repoHost", r.owner as "repoOwner", r."repoName" as "repoName", ${durationMs} as "durationMs",
       ${isTokenSort ? sql`p."tokensTotal"` : tokensFor(sql`"sessions"."id"`)} as "tokensTotal", ${status} as status,
+      ${aiReviewExists(sql`p.id`)} as "hasAiReview",
       p."lastActiveAt", p."sourceKind", p."sourceRowId", p.score, p.total, t."sourceText",
       case when t."sourceText" is null then null else ts_headline('simple'::regconfig, t."sourceText", ${query ?? sql`null::tsquery`}, ${SNIPPET_OPTIONS}) end as headline
     from paged p join "sessions" on "sessions".id = p.id left join "repos" r on r.id = ${dominantRepoId}
@@ -574,6 +590,7 @@ export const listAccessible = async (
       tokensTotal: Number(row.tokensTotal),
       status: row.status as string,
       lastActiveAt: String(row.lastActiveAt),
+      hasAiReview: row.hasAiReview === true,
       match:
         row.sourceKind === null
           ? null
@@ -607,6 +624,7 @@ export type SessionFactsRow = {
   readonly projectName: string
   readonly projectSlug: string
   readonly userLogin: string
+  readonly source: string
   readonly repo: SessionRepo | null
   readonly durationMs: number | null
   readonly messageCount: number
@@ -622,6 +640,8 @@ export type MessageRow = {
   readonly subType: string | null
   readonly role: string | null
   readonly lineNumber: number
+  readonly subIndex: number
+  readonly trackId: string
   readonly timestamp: string | null
   readonly agentId: string | null
   readonly isSubagent: boolean
@@ -716,6 +736,7 @@ const findVisibleSession = async (
       projectName: projects.name,
       projectSlug: projects.slug,
       userLogin: users.githubLogin,
+      source: sessions.source,
       ...repoColumns,
       durationMs,
       messageCount,
@@ -772,6 +793,8 @@ export const getDetail = async (
           subType: messages.subType,
           role: messages.role,
           lineNumber: messages.lineNumber,
+          subIndex: messages.subIndex,
+          trackId: messages.trackId,
           timestamp: sql<string | null>`${messages.timestamp}`,
           agentId: messages.agentId,
           isSubagent: messages.isSubagent,

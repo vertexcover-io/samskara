@@ -17,6 +17,7 @@ export type SearchFlags = {
   readonly branch?: string
   readonly pr?: string
   readonly commit?: string
+  readonly aiReview?: string
   readonly range?: string
   readonly from?: string
   readonly to?: string
@@ -40,6 +41,7 @@ export const searchQuery = (flags: SearchFlags): URLSearchParams => {
     ["branch", flags.branch],
     ["pr", flags.pr],
     ["commit", flags.commit?.toLowerCase()],
+    ["aiReview", flags.aiReview],
     ["range", flags.range === "all" ? undefined : flags.range],
     ["from", custom ? flags.from : undefined],
     ["to", custom ? flags.to : undefined],
@@ -231,6 +233,7 @@ const REFUSALS: Readonly<Record<string, string>> = {
   invalidBranch: "--branch is not a branch name this server accepts.",
   invalidPrNumber: "--pr takes a pull request number, like --pr 17.",
   invalidCommit: "--commit takes 7 to 40 hex characters of a commit sha.",
+  invalidAiReview: "--ai-review takes done or missing.",
   ambiguousCommit: "--commit matches several commits. Give more of it.",
   invalidRange: "--range takes all, hour, today, week, month or custom.",
   invalidSort: "--sort takes relevance, recent, oldest, tokens or project.",

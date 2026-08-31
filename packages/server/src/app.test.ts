@@ -18,6 +18,11 @@ const env: Env = {
   jwtExpiresIn: "7d",
   superAdminLogins: [],
   webDist: "tmp-web-dist-fixture",
+  localLoginSecret: "",
+  localLoginLogin: "samskara-dev",
+  aiReviewModel: "zai-coding-plan/glm-5.3",
+  aiReviewHarness: "opencode",
+  aiReviewTimeoutMs: 600000,
 }
 
 const fixtureRoot = join(process.cwd(), env.webDist as string)

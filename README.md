@@ -40,7 +40,9 @@ checkpoint so it only sends what is new, and uploads artifacts in the background
 
 - [Bun](https://bun.sh) 1.2.19+ — package manager and test runner
 - Node 22+ — the CLI binary and the server both run on Node
-- Docker — Postgres + pgvector
+- Docker — Postgres + pgvector. (No Docker? A local PostgreSQL works too: run
+  `scripts/local-pg.sh start` instead of the container — same port, same `DATABASE_URL`. The
+  schema only needs core Postgres today; the pgvector image is future-proofing.)
 - A GitHub OAuth app, and a GitHub org whose members are allowed to log in
 
 ## Run the server
@@ -62,9 +64,10 @@ bun run setup YOUR_GITHUB_ORG_SLUG
 
 That installs dependencies, writes `.env` from `.env.example` with a freshly generated
 `JWT_SECRET`, starts Postgres, migrates, seeds demo data, and registers your org. The first run
-stops and tells you to paste the client id and secret from step 1 into `.env`; run it again after
-you have. It is safe to re-run: it never rotates a secret that is already set, and it leaves a
-database that already has projects alone.
+stops and tells you to paste the client secret from step 1 into `.env` (the client id ships
+prefilled — replace it if you made your own OAuth app); run it again after you have. It is safe
+to re-run: it never rotates a secret that is already set, and it leaves a database that already
+has projects alone.
 
 Only members of a registered org can log in. Leave the slug off and setup tells you how to add one
 later with `bun run seed:org YOUR_GITHUB_ORG_SLUG`. Every login re-checks the user's current GitHub
@@ -74,7 +77,7 @@ The variables setup writes:
 
 | Variable | What it is |
 |---|---|
-| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | from the OAuth app above — the only two you fill in |
+| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | from the OAuth app above — the id ships prefilled and the secret is the one you fill in |
 | `JWT_SECRET` | generated for you |
 | `DATABASE_URL` | `postgres://samskara:samskara@localhost:5433/samskara` (matches `docker-compose.yml`) |
 | `PUBLIC_BASE_URL` | where the API is reachable, `http://localhost:3000` |
@@ -90,6 +93,11 @@ bun run dev               # API on :3000, web on :8000
 ```
 
 Open http://localhost:8000 and sign in with GitHub.
+
+For local development without a GitHub OAuth app, set `LOCAL_LOGIN_SECRET` in `.env` and the
+sign-in page also offers a local-secret sign-in as the seeded `samskara-dev` user (`LOCAL_LOGIN_LOGIN`
+can point at any other seeded login; run `bun run seed` first). Leave `LOCAL_LOGIN_SECRET` unset in
+any real deployment.
 
 ## Install the CLI
 
@@ -187,7 +195,8 @@ capture on for an old project does not retroactively upload years of history.
 
 `samskara search` takes the same filters as the web UI's `/sessions` page and the same query grammar
 (see [Using the web UI](#using-the-web-ui)): `--project`, `--user`, `--repo`, `--branch`, `--pr`,
-`--commit`, `--range` (`--from`/`--to` for `custom`), `--tz`, `--sort`, `--page`, `--limit`.
+`--commit`, `--ai-review` (`done`/`missing`), `--range` (`--from`/`--to` for `custom`), `--tz`,
+`--sort`, `--page`, `--limit`.
 `--project` and `--repo` take a name or an id — an ambiguous or unrecognized name fails rather than
 guessing, and lists the closest known names. `--here` fills project, repo and branch from the current
 checkout (explicit flags win over it). `--first` keeps only the top hit; `--url` and `--json` print
@@ -233,7 +242,7 @@ The same query and filters are available from the terminal with `samskara search
 
 | Package | What it holds |
 |---|---|
-| `@samskara/core` | Shared types, the collector framework (`SourceAdapter` + Claude plugin), the logging factory |
+| `@samskara/core` | Shared types, the collector framework (`AgentPlugin` + Claude plugin), the logging factory |
 | `@samskara/cli` | The `samskara` binary — pairing, capture opt-in, the watcher |
 | `@samskara/server` | Hono API on Node, Drizzle + postgres-js + pgvector |
 | `@samskara/web` | Vite + React + Tailwind UI |

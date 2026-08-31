@@ -146,7 +146,7 @@ describe("watcher driver", () => {
     clock: { now: () => 0 },
     sink: createInMemorySink(),
     glob: async () => [],
-    plugin: createClaudePlugin(nodeFs),
+    plugins: [createClaudePlugin(nodeFs)],
     resolveProject: async () => project,
     log: createLogger({ service: "samskara-cli-test" }, { level: "silent" }),
     ...over,
@@ -176,7 +176,9 @@ describe("watcher driver", () => {
     expect(sink.received[0]?.type).toBe("main")
     expect(sink.received[0]?.records).toHaveLength(1)
     expect(sink.received[0]?.records[0]?.messages).toHaveLength(2)
-    expect(store.checkpoints[main]?.lineProcessed).toBe(1)
+    expect((store.checkpoints[main] as { lineProcessed: number } | undefined)?.lineProcessed).toBe(
+      1,
+    )
     // `samskara status` groups sync times by slug, so every checkpoint must carry one.
     expect(store.checkpoints[main]?.projectSlug).toBe(project.slug)
   })
@@ -221,7 +223,7 @@ describe("watcher driver", () => {
     const accepting = createInMemorySink(() => 200)
     const next = await runCycle(config, deps({ sink: accepting, glob: async () => [sub] }))
     expect(accepting.received).toHaveLength(1)
-    expect(next.checkpoints[sub]?.lineProcessed).toBe(1)
+    expect((next.checkpoints[sub] as { lineProcessed: number } | undefined)?.lineProcessed).toBe(1)
   })
 
   test("processes main before subagent within a session", async () => {
@@ -252,7 +254,9 @@ describe("watcher driver", () => {
     const sink = createInMemorySink()
     const store = await runCycle(config, deps({ sink, glob: async () => [main] }))
     expect(sink.received[0]?.records.map((item) => item.lineNumber)).toEqual([1])
-    expect(store.checkpoints[main]?.lineProcessed).toBe(1)
+    expect((store.checkpoints[main] as { lineProcessed: number } | undefined)?.lineProcessed).toBe(
+      1,
+    )
 
     await writeFile(
       main,
@@ -273,7 +277,9 @@ describe("watcher driver", () => {
     const sink = createInMemorySink()
     const store = await runCycle(config, deps({ sink, glob: async () => [main] }))
     expect(sink.received.length).toBeGreaterThanOrEqual(2)
-    expect(store.checkpoints[main]?.lineProcessed).toBe(1500)
+    expect((store.checkpoints[main] as { lineProcessed: number } | undefined)?.lineProcessed).toBe(
+      1500,
+    )
   })
 
   test("resolves the project from the session cwd and stamps per-message git facts", async () => {
@@ -340,7 +346,9 @@ describe("watcher driver", () => {
 
     expect(sink.received).toHaveLength(1)
     expect(sink.received[0]?.sessionId).toBe("no-session")
-    expect(store.checkpoints[main]?.lineProcessed).toBe(1)
+    expect((store.checkpoints[main] as { lineProcessed: number } | undefined)?.lineProcessed).toBe(
+      1,
+    )
   })
 
   test("a 401 flush names the cause and the fix, not a bare 'flush failed'", async () => {
@@ -387,7 +395,7 @@ describe("watcher driver", () => {
     const store = await runCycle(config, deps({ sink, glob: async () => [a, b] }))
 
     expect(store.checkpoints[a]).toBeUndefined()
-    expect(store.checkpoints[b]?.lineProcessed).toBe(1)
+    expect((store.checkpoints[b] as { lineProcessed: number } | undefined)?.lineProcessed).toBe(1)
   })
 
   test("a first sync of many sessions never has more than the concurrency cap in flight", async () => {
@@ -417,7 +425,10 @@ describe("watcher driver", () => {
     expect(peak).toBeLessThanOrEqual(DEFAULT_SESSION_CONCURRENCY)
     expect(peak).toBe(DEFAULT_SESSION_CONCURRENCY)
     // The cap is scheduling only: every session still syncs in the same cycle.
-    for (const file of files) expect(store.checkpoints[file]?.lineProcessed).toBe(1)
+    for (const file of files) {
+      const checkpoint = store.checkpoints[file] as { lineProcessed?: number } | undefined
+      expect(checkpoint?.lineProcessed).toBe(1)
+    }
   })
 
   describe("repo attribution", () => {
@@ -800,7 +811,9 @@ describe("watcher driver", () => {
         }),
       )
 
-      expect(store.checkpoints[main]?.lineProcessed).toBe(1)
+      expect(
+        (store.checkpoints[main] as { lineProcessed: number } | undefined)?.lineProcessed,
+      ).toBe(1)
       expect(await readFile(queuePath, "utf8").catch(() => null)).toBeNull()
     })
 
@@ -858,7 +871,9 @@ describe("watcher driver", () => {
       )
 
       // The cycle finished and checkpointed while the upload was still held open.
-      expect(store.checkpoints[main]?.lineProcessed).toBe(1)
+      expect(
+        (store.checkpoints[main] as { lineProcessed: number } | undefined)?.lineProcessed,
+      ).toBe(1)
       expect(inFlight).toBe(true)
 
       release()
@@ -960,6 +975,7 @@ describe("watcher driver", () => {
     const key = "/fake/huge.jsonl"
     const track = {
       type: "main" as const,
+      source: "claude_code" as const,
       sessionId: "sess-huge",
       project,
       sourceRelativePath: key,
@@ -974,13 +990,16 @@ describe("watcher driver", () => {
       }),
     }
     const stubPlugin = {
-      source: "claude_code",
+      source: "claude_code" as const,
       collect: async () => [{ sessionId: "sess-huge", tracks: [track] }],
     }
 
     let call = 0
     const sink = createInMemorySink(() => (++call === 1 ? 500 : 200))
-    const store = await runCycle(config, deps({ sink, glob: async () => [], plugin: stubPlugin }))
+    const store = await runCycle(
+      config,
+      deps({ sink, glob: async () => [], plugins: [stubPlugin] }),
+    )
 
     expect(sink.received.length).toBe(1)
     expect(store.checkpoints[key]).toBeUndefined()
@@ -1018,6 +1037,7 @@ describe("watcher driver", () => {
     }
     const track = {
       type: "main" as const,
+      source: "claude_code" as const,
       sessionId: "sess-split",
       project,
       sourceRelativePath: key,
@@ -1032,12 +1052,12 @@ describe("watcher driver", () => {
       }),
     }
     const stubPlugin = {
-      source: "claude_code",
+      source: "claude_code" as const,
       collect: async () => [{ sessionId: "sess-split", tracks: [track] }],
     }
 
     const sink = createInMemorySink()
-    await runCycle(config, deps({ sink, glob: async () => [], plugin: stubPlugin }))
+    await runCycle(config, deps({ sink, glob: async () => [], plugins: [stubPlugin] }))
 
     expect(sink.received).toHaveLength(2)
     expect(sink.received[0]).not.toHaveProperty("gitEvents")
@@ -1097,6 +1117,7 @@ describe("watcher driver", () => {
     const key = "/fake/partial.jsonl"
     const track = {
       type: "main" as const,
+      source: "claude_code" as const,
       sessionId: "sess-partial",
       project,
       sourceRelativePath: key,
@@ -1111,14 +1132,17 @@ describe("watcher driver", () => {
       }),
     }
     const stubPlugin = {
-      source: "claude_code",
+      source: "claude_code" as const,
       collect: async () => [{ sessionId: "sess-partial", tracks: [track] }],
     }
 
     let call = 0
     const sink = createInMemorySink(() => (++call === 1 ? 200 : 500))
     const spy = spyLogger()
-    await runCycle(config, deps({ sink, glob: async () => [], plugin: stubPlugin, log: spy.log }))
+    await runCycle(
+      config,
+      deps({ sink, glob: async () => [], plugins: [stubPlugin], log: spy.log }),
+    )
 
     expect(sink.received).toHaveLength(2)
     expect(spy.info.filter((entry) => entry.message === "session synced")).toHaveLength(0)
