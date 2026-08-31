@@ -101,6 +101,8 @@ export type ResetDeps = {
 
 export type ResetReport = {
   readonly backupDir: string
+  /** What was copied. Not every scoped file exists on a given install. */
+  readonly backedUp: ReadonlyArray<string>
   readonly cleared: ReadonlyArray<string>
   readonly projects: number
 }
@@ -151,10 +153,20 @@ export const resetServerScope = async (deps: ResetDeps): Promise<ResetReport> =>
 
   const backupDir = join(configHome(), "backups", new Date().toISOString().replace(/:/g, "-"))
   await mkdir(backupDir, { recursive: true })
-  for (const file of ALL_SCOPED_PATHS()) {
-    await copyFile(file, join(backupDir, basename(file))).catch(() => {})
+
+  // Records what landed rather than what was looked for: most of these files are absent on any
+  // given install, and the count is printed to say the data is safe immediately before it is
+  // deleted. A number describing the attempt would overstate that at the worst possible moment.
+  const backedUp: string[] = []
+  const backUp = async (file: string, name: string): Promise<void> => {
+    const copied = await copyFile(file, join(backupDir, name)).then(
+      () => true,
+      () => false,
+    )
+    if (copied) backedUp.push(file)
   }
-  await copyFile(tokenPath(), join(backupDir, "token")).catch(() => {})
+  for (const file of ALL_SCOPED_PATHS()) await backUp(file, basename(file))
+  await backUp(tokenPath(), "token")
 
   const cleared = DERIVED_PATHS()
   for (const file of cleared) {
@@ -164,5 +176,5 @@ export const resetServerScope = async (deps: ResetDeps): Promise<ResetReport> =>
   const projects = await disableProjects()
   await deleteToken()
 
-  return { backupDir, cleared, projects }
+  return { backupDir, backedUp, cleared, projects }
 }

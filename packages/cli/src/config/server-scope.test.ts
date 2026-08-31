@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs"
-import { mkdtemp, readFile, writeFile } from "node:fs/promises"
+import { mkdtemp, readdir, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, test } from "vitest"
@@ -204,5 +204,18 @@ describe("resetServerScope", () => {
       enabled: false,
       enabledAt: "2026-07-25T10:00:00.000Z",
     })
+  })
+
+  // The count is printed to reassure the user their data is safe, immediately before it is deleted.
+  // A number describing what was attempted rather than what landed is worse than no number.
+  test("SC26: reports the files it actually backed up, not the ones it looked for", async () => {
+    await writeSettings({ apiUrl: "https://one.example", webUrl: "https://one.example" })
+    await writeFile(projectsPath(), JSON.stringify({ version: 1, projects: {} }), "utf8")
+    await writeFile(tokenPath(), "sometoken", "utf8")
+
+    const report = await resetServerScope({ stopWatcher: async () => false })
+
+    expect([...report.backedUp].sort()).toEqual([projectsPath(), tokenPath()].sort())
+    expect((await readdir(report.backupDir)).sort()).toEqual(["projects.json", "token"])
   })
 })

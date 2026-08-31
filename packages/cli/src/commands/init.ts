@@ -150,7 +150,7 @@ export const initCommand = async (options: InitOptions = {}): Promise<number> =>
   if (changedServer && (movedServer || mismatch.length > 0)) {
     const report = await resetServerScope({ stopWatcher: stopWatcherDaemon })
     stdout.write(
-      `Backed up ${report.cleared.length} file(s) to ${report.backupDir}.\n` +
+      `Backed up ${report.backedUp.length} file(s) to ${report.backupDir}.\n` +
         `Capture is off for ${report.projects} project(s) and you are signed out.\n` +
         `Next: run \`samskara login\`, then \`samskara enable\` in each folder you want captured.\n`,
     )
