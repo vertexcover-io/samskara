@@ -622,6 +622,26 @@ describe("enable command with a pinned project", () => {
     expect(after?.syncFrom).toBeUndefined()
   })
 
+  test("an unfinished reassign survives an enable that rewrites the entry - dropping pendingFrom would strand the sessions it names", async () => {
+    const { output } = await setup()
+    const stdout = { write: (text: string) => output.push(text) }
+    await enableCommand({ ...defaultDeps, cwd: "/work/widget", stdout })
+    const enabled = await getProject(identity.slug)
+    if (!enabled) throw new Error("expected the project to be enabled")
+    await upsertProject(identity.slug, {
+      ...enabled,
+      projectId: OTHER_PROJECT_ID,
+      pinned: true,
+      pendingFrom: FAKE_PROJECT_ID,
+    })
+
+    await enableCommand({ ...defaultDeps, cwd: "/work/widget", all: true, stdout })
+
+    const after = await getProject(identity.slug)
+    expect(after?.projectId).toBe(OTHER_PROJECT_ID)
+    expect(after?.pendingFrom).toBe(FAKE_PROJECT_ID)
+  })
+
   test("an unpinned folder still follows the server, so an owner decided after enabling is picked up", async () => {
     const { output } = await setup()
     const stdout = { write: (text: string) => output.push(text) }

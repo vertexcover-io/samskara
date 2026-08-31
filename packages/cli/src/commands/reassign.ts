@@ -183,12 +183,15 @@ const confirmed = async (params: {
  * The registry is what the watcher reads, so the order decides which way a half-finished reassign
  * fails. Pinned first: a crash then sends new sessions to the destination, which a re-run
  * reconciles. Pinned last would leave the history moved while the folder still fed the old
- * project -- and the entry would still name the old project, so a re-run could not tell anything
- * had happened. A restore that itself fails is reported rather than swallowed.
+ * project. Either order overwrites `projectId` before the outcome is known, so the source is
+ * recorded in `pendingFrom` for the duration -- otherwise a re-run would read the destination as
+ * its own source, conclude the move had landed, and never go back for the stranded sessions.
+ * A restore that itself fails is reported rather than swallowed.
  */
 const withPin = async <T>(params: {
   readonly slug: string
   readonly entry: ProjectEntry
+  readonly source: string
   readonly destination: string
   readonly stderr: Writer
   readonly run: () => Promise<T>
@@ -197,9 +200,15 @@ const withPin = async <T>(params: {
     ...params.entry,
     projectId: params.destination,
     pinned: true,
+    pendingFrom: params.source,
   })
   try {
-    return await params.run()
+    const result = await params.run()
+    // Dropped by rebuilding the entry rather than spreading it: `params.entry` may itself carry a
+    // `pendingFrom` from an earlier interrupted run, and spreading would carry that forward.
+    const { pendingFrom: _settled, ...rest } = params.entry
+    await upsertProject(params.slug, { ...rest, projectId: params.destination, pinned: true })
+    return result
   } catch (error) {
     await upsertProject(params.slug, params.entry).catch(() => {
       params.stderr.write(
@@ -222,7 +231,7 @@ export const reassignCommand = async (options: ReassignOptions = {}): Promise<nu
   }
 
   const entry = await getProject(identity.slug)
-  const fromProjectId = entry?.projectId
+  const fromProjectId = entry?.pendingFrom ?? entry?.projectId
   if (entry === null || fromProjectId === undefined) {
     stderr.write(
       `"${identity.slug}" has no project on the server yet. Run \`samskara enable\` here first, then reassign it.\n`,
@@ -246,6 +255,11 @@ export const reassignCommand = async (options: ReassignOptions = {}): Promise<nu
 
   try {
     const projects = await listProjects(deps)
+    if (entry.pendingFrom !== undefined) {
+      stdout.write(
+        `A previous reassign of "${identity.slug}" did not finish, so its sessions are still in the project below.\n`,
+      )
+    }
     const current = projects.find((project) => project.id === fromProjectId)
     stdout.write(
       current === undefined
@@ -278,6 +292,7 @@ export const reassignCommand = async (options: ReassignOptions = {}): Promise<nu
     const { moved } = await withPin({
       slug: identity.slug,
       entry,
+      source: fromProjectId,
       destination: destination.id,
       stderr,
       run: () => postReassign(deps, destination.id, { fromProjectId, scope }),

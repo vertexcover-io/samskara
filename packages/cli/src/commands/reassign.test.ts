@@ -177,6 +177,61 @@ describe("reassign command", () => {
     expect(entry?.pinned).toBe(true)
   })
 
+  test("an interrupted reassign is resumed from the project the sessions are actually in, not from the destination the pin already names", async () => {
+    const { io, output } = await setup()
+    // What a kill between the pin write and the server's answer leaves behind.
+    const crashed = await getProject(identity.slug)
+    if (!crashed) throw new Error("expected the project to exist")
+    await upsertProject(identity.slug, {
+      ...crashed,
+      projectId: TO,
+      pinned: true,
+      pendingFrom: FROM,
+    })
+    const { fetch, calls } = stubFetch(ok(4))
+
+    const code = await reassignCommand({ ...base, ...io, fetch, to: TO, yes: true })
+
+    expect(code).toBe(0)
+    expect(output.join("")).toContain("did not finish")
+    // FROM, not TO: reading the source off `projectId` would report the move as already landed.
+    expect(calls[1]?.body).toEqual({ fromProjectId: FROM, scope: "mine" })
+    const entry = await getProject(identity.slug)
+    expect(entry?.projectId).toBe(TO)
+    expect(entry?.pendingFrom).toBeUndefined()
+  })
+
+  test("the source is recorded before the server call and cleared only once it succeeds", async () => {
+    const { io } = await setup()
+    let pendingAtCallTime: string | undefined
+    const spying = (async (url: string | URL, init?: RequestInit): Promise<Response> => {
+      const href = String(url)
+      if (href.endsWith("/api/projects") && init?.method === undefined) {
+        return new Response(JSON.stringify(listBody), { status: 200 })
+      }
+      pendingAtCallTime = (await getProject(identity.slug))?.pendingFrom
+      return new Response(JSON.stringify({ moved: 2 }), { status: 200 })
+    }) as unknown as typeof globalThis.fetch
+
+    await reassignCommand({ ...base, ...io, fetch: spying, to: TO, yes: true })
+
+    expect(pendingAtCallTime).toBe(FROM)
+    expect((await getProject(identity.slug))?.pendingFrom).toBeUndefined()
+  })
+
+  test("a refused move clears the pending source too, since nothing is left half-done", async () => {
+    const { io } = await setup()
+    const { fetch } = stubFetch(
+      () => new Response(JSON.stringify({ error: "destinationForbidden" }), { status: 403 }),
+    )
+
+    await reassignCommand({ ...base, ...io, fetch, to: TO, yes: true })
+
+    const entry = await getProject(identity.slug)
+    expect(entry?.projectId).toBe(FROM)
+    expect(entry?.pendingFrom).toBeUndefined()
+  })
+
   test("answering no moves nothing and leaves the registry untouched", async () => {
     const { io, output } = await setup()
     const { fetch, calls } = stubFetch(ok(9))

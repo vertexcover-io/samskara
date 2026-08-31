@@ -127,7 +127,15 @@ export const enableCommand = async (options: EnableOptions = {}): Promise<number
   // project it was reassigned to; only an explicit reassign moves it again.
   const pinnedId = existing?.pinned === true ? existing.projectId : undefined
   const projectId = pinnedId ?? registered.id
-  const keepPin = existing?.pinned === true ? { pinned: true as const } : {}
+  // `pendingFrom` rides along with the pin: this branch rebuilds the entry from scratch, and
+  // dropping it would strand the sessions of a reassign that has not finished.
+  const keepPin =
+    existing?.pinned === true
+      ? {
+          pinned: true as const,
+          ...(existing.pendingFrom === undefined ? {} : { pendingFrom: existing.pendingFrom }),
+        }
+      : {}
 
   if (existing?.enabled === true && !askedForCutoff) {
     if (existing.projectId === projectId) {
