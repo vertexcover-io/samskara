@@ -97,8 +97,6 @@ export const watch = async (options: WatchOptions): Promise<void> => {
   // Checked once so a daemon with no credentials at all fails loudly at startup; the sinks read
   // the token again on every request, so a later `samskara login` lands without a restart.
   if (!(await readToken())) throw new Error("no token found; run `samskara login` first")
-  // Before any cycle runs: a cycle stamps its store with the current server, which would re-stamp
-  // state.json to the new one while its checkpoints still describe the old -- erasing the mismatch.
   const [mismatch] = await scopeMismatch(ALL_SCOPED_PATHS())
   if (mismatch !== undefined) {
     throw new Error(

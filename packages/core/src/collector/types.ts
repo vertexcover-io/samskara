@@ -29,8 +29,7 @@ export const checkpointStoreSchema = z
     // existed. A worktree that has since been removed can no longer be identified from disk, and
     // its sessions would otherwise stop syncing the moment the folder goes.
     projects: z.record(z.string(), projectIdentitySchema).optional(),
-    // Core never reads this. It is declared so the CLI's stamp survives a parse: the schema is not
-    // `.strict()`, so an undeclared key would be silently stripped.
+    // Core never reads this; it is declared only so the CLI's stamp survives a non-strict parse.
     apiBase: z.string().optional(),
   })
   .readonly()

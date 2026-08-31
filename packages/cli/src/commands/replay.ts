@@ -27,8 +27,7 @@ export type ReplayDeps = {
 export const belongsToSession = (filePath: string, sessionId: string): boolean =>
   basename(filePath) === `${sessionId}.jsonl` || filePath.includes(`${sep}${sessionId}${sep}`)
 
-// Carries across the stamp already on disk: a replay removes one session, and is not the moment to
-// decide the file now belongs to a different server.
+// The stamp on disk, not a fresh one: a replay removes a session, it does not re-home the file.
 const carried = (value: unknown): { readonly apiBase?: string } => {
   const recorded = stampIn(value)
   return recorded === null ? {} : { apiBase: recorded }

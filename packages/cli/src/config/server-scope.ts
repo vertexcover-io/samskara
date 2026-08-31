@@ -32,8 +32,7 @@ export const stampIn = (value: unknown): string | null => {
 
 export const stampOf = async (path: string): Promise<string | null> => stampIn(await readJson(path))
 
-// A missing stamp is not a mismatch: a file predating this feature, or one not yet written, is
-// adopted as belonging to the current server.
+// A missing stamp is not a mismatch: an unstamped file is adopted as belonging to the current server.
 export const scopeMismatch = async (
   paths: ReadonlyArray<string>,
 ): Promise<ReadonlyArray<Mismatch>> => {
@@ -64,8 +63,7 @@ export const mismatchFact = (mismatch: Mismatch): string =>
   `Local state was captured against ${mismatch.recorded}, but this CLI is configured for ` +
   `${mismatch.current}.`
 
-// Silent in the daemon: it re-runs this whole program, and its stderr goes to a crash log nobody
-// reads. `watch()` reports the same condition through its own logger instead.
+// Silent in the daemon: its stderr goes to a crash log nobody reads, so `watch()` logs it instead.
 export const warnOnServerChange = async (stderr: Writer): Promise<void> => {
   if (process.env.SAMSKARA_DAEMON === "1") return
   const [mismatch] = await scopeMismatch(TRIPWIRE_PATHS())
@@ -74,7 +72,6 @@ export const warnOnServerChange = async (stderr: Writer): Promise<void> => {
 }
 
 // The `preAction` hook stays quiet for these, or every refusal prints two near-identical lines.
-// SC27 fails if this drifts from the commands actually calling `refuseOnServerChange`.
 export const REFUSES_ON_SERVER_CHANGE: ReadonlySet<string> = new Set([
   "enable",
   "disable",
@@ -108,8 +105,7 @@ const DERIVED_PATHS = (): ReadonlyArray<string> => [
   filterOptionsPath(),
 ]
 
-// Writes `projects.json` directly rather than through `projects.ts`: that module imports
-// `persistedApiUrl` from here, so calling back into it would make the two files import each other.
+// Direct, not via `projects.ts`: that module imports from here, so calling back would be circular.
 const disableProjects = async (): Promise<number> =>
   withFileLock(projectsPath(), async () => {
     const raw = (await readJson(projectsPath())) as
@@ -130,9 +126,8 @@ const disableProjects = async (): Promise<number> =>
     return Object.keys(cleared).length
   })
 
-// Order is not interchangeable: stop, then back up, then delete. A running watcher rewrites these
-// files after its own flush and takes no lock, so a copy taken before it stops can catch one
-// mid-rewrite.
+// Order matters: stop, back up, delete. A running watcher rewrites these files under no lock, so a
+// copy taken before it stops can catch one mid-rewrite.
 export const resetServerScope = async (deps: ResetDeps): Promise<ResetReport> => {
   await deps.stopWatcher()
 
