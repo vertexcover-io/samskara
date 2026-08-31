@@ -146,21 +146,63 @@ Samskara web URL [http://localhost:8000]:
 ```
 
 Press Enter to keep a default. The answers are saved to `~/.samskara/config.json` and every later
-command uses them, so this is asked once. Pass `--server URL` and `--web URL` to skip the questions,
-and re-run `samskara init` to point the CLI somewhere else. `SAMSKARA_API_URL` and
-`SAMSKARA_WEB_URL` still override the saved file for a single command; when either is set, `init`
-leaves that URL alone rather than asking. `samskara status` prints both URLs currently in use.
+command uses them, so this is asked once. Pass `--server URL` and `--web URL` to skip the questions.
+`SAMSKARA_API_URL` and `SAMSKARA_WEB_URL` still override the saved file for a single command; when
+either is set, `init` leaves that URL alone rather than asking. `samskara status` prints both URLs
+currently in use.
+
+Once a server is configured, `samskara init` refuses to run again — moving to a different server is
+`samskara init --force`, and repairing an install is `samskara install-hooks` or `samskara restart`.
+See [Changing servers](#changing-servers).
 
 Then `init` asks for a pairing code. Open the web UI, sign in, and pick **Pair the CLI → Generate code**
 from the account menu. A code never expires but works only once. The token it returns is stored at
 `~/.samskara/token` with mode `0600`.
 
+### Changing servers
+
+Several files under `~/.samskara/` are derived from whichever server they were built against:
+`state.json` records which sessions are already uploaded, `artifacts.json` which artifacts are
+already sent, `artifact-queue.json` what is still pending, and `projects.json` holds a `projectId`
+the server minted. Each one now carries an `apiBase` recording where it came from.
+
+Point the CLI at a different server and none of that is true any more — the new server has none of
+those sessions, and those project ids belong to someone else's database. So a mismatch stops things
+rather than letting them fail quietly:
+
+- `samskara status`, `search` and `logs` print one line saying which server the state came from, then
+  carry on.
+- `samskara enable`, `disable` and `replay` refuse and change nothing.
+- The capture watcher exits at startup instead of uploading.
+
+Moving across is one command:
+
+```sh
+samskara init --force
+```
+
+It asks for the new URLs, then stops the watcher, copies every derived file **and your token** to
+`~/.samskara/backups/TIMESTAMP/`, clears the derived state, turns capture off for every project and
+strips its stale id, and deletes the token. It stops there, and prints what to do next:
+
+```sh
+samskara login                        # pair with the new server
+cd ~/code/my-project && samskara enable   # opt this folder back in
+```
+
+It deliberately does not log you in or re-enable anything. Sending a folder's whole session history
+to a different server is worth deciding one folder at a time.
+
+Nothing prunes `~/.samskara/backups/`. The tokens inside are only as dead as the servers that issued
+them, so delete old ones when you no longer want them on disk.
+
 ## CLI reference
 
 | Command | What it does |
 |---|---|
-| `samskara init` | Choose the server, log in, install the Claude Code `SessionStart` hook, start the watcher. Safe to re-run. |
+| `samskara init` | Choose the server, log in, install the Claude Code `SessionStart` hook, start the watcher. Refuses once a server is configured — see `--force`. |
 | `samskara init --server URL --web URL` | Same, without the questions. |
+| `samskara init --force` | Point a configured install at a different server: back up and clear the local state, disable every project, sign out. Does not log in or enable anything for you. |
 | `samskara login [--code CODE]` | Pair with the web UI and store a CLI token. |
 | `samskara logout` | Stop the watcher and delete the stored token. |
 | `samskara enable [path]` | Register this folder with the server and start capturing it (defaults to the current directory). |
