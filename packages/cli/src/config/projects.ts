@@ -10,6 +10,9 @@ const projectEntrySchema = z
     enabledAt: z.string().datetime(),
     syncFrom: z.string().datetime().optional(),
     projectId: z.string().uuid().optional(),
+    /** Set by `samskara reassign`. Stops `enable` from re-deriving the project from the folder's
+     * slug and silently dragging the folder back to where it was reassigned from. */
+    pinned: z.boolean().optional(),
   })
   .strict()
   .readonly()

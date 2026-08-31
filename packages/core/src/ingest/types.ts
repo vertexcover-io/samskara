@@ -378,6 +378,20 @@ export const projectOwnerSchema = z
   .object({ type: z.enum(["user", "org"]), slug: nonemptyString })
   .strict()
 
+/**
+ * `scope` decides whose sessions move. "mine" is the default because a shared project holds other
+ * people's sessions too, and relocating a folder must not drag their history along; "all" is the
+ * deliberate opt-in, and the server demands admin on the source for it.
+ */
+export const reassignSessionsRequestSchema = z
+  .object({
+    fromProjectId: z.string().uuid(),
+    scope: z.enum(["mine", "all"]).default("mine"),
+  })
+  .strict()
+
+export const reassignSessionsResponseSchema = z.object({ moved: nonnegativeInteger }).strict()
+
 export const createProjectResponseSchema = z
   .object({
     id: z.string().uuid(),
@@ -541,6 +555,8 @@ export type ProjectRemote = z.infer<typeof projectRemoteSchema>
 export type CreateProjectRequest = z.infer<typeof createProjectRequestSchema>
 export type ProjectOwner = z.infer<typeof projectOwnerSchema>
 export type CreateProjectResponse = z.infer<typeof createProjectResponseSchema>
+export type ReassignSessionsRequest = z.infer<typeof reassignSessionsRequestSchema>
+export type ReassignSessionsResponse = z.infer<typeof reassignSessionsResponseSchema>
 export type AgentInfo = z.infer<typeof agentInfoSchema>
 export type IngestPayload = z.infer<typeof ingestPayloadSchema>
 

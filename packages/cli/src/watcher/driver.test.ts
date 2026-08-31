@@ -130,8 +130,8 @@ describe("ingest fan-out budget", () => {
 })
 
 describe("flushCause", () => {
-  test("SC44: a 403 tells the user to re-enable and a 401 to log in", () => {
-    expect(flushCause(403)).toContain("samskara enable")
+  test("SC44 (revised): a 403 points at reassign, not enable - a pinned folder is exactly the folder that gets a 403, and `enable` will not move a pin", () => {
+    expect(flushCause(403)).toContain("samskara reassign")
     expect(flushCause(401)).toContain("samskara login")
   })
 })

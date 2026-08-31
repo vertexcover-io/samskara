@@ -98,6 +98,35 @@ export const remove = async (db: Querier, id: string, userId: string): Promise<b
   return deleted.length > 0
 }
 
+export type ReassignScope = "mine" | "all"
+
+export type ReassignInput = {
+  readonly userId: string
+  readonly fromProjectId: string
+  readonly toProjectId: string
+  readonly scope: ReassignScope
+}
+
+/**
+ * Re-parents sessions in one statement. Nothing else needs touching: `projectId` lives only on
+ * `sessions`, and messages, commits, artifacts and pull-request links all hang off `sessionId`.
+ * Who may do this is `reassignSessions`' decision, not this function's.
+ */
+export const reassignProject = async (db: Querier, input: ReassignInput): Promise<number> => {
+  const owned = input.scope === "mine" ? [eq(sessions.userId, input.userId)] : []
+  const moved = await db
+    .update(sessions)
+    // Only the column being moved. Setting `updatedAt` here would be both redundant and on the
+    // wrong clock: the `sessions_set_updated_at` trigger stamps it with the database's `now()` on
+    // every update. Worth knowing that this therefore moves `lastSyncedAt` (`syncStatus.repo`
+    // reads max(updatedAt)) even though a reassign uploads nothing -- that is the trigger's
+    // behaviour for any write, not something this statement can opt out of.
+    .set({ projectId: input.toProjectId })
+    .where(and(eq(sessions.projectId, input.fromProjectId), ...owned))
+    .returning({ id: sessions.id })
+  return moved.length
+}
+
 export type SessionRepo = {
   readonly host: string
   readonly owner: string
