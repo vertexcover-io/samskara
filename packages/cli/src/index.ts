@@ -53,10 +53,12 @@ program
   .description("Choose a server, authenticate, install the SessionStart hook, start the watcher")
   .option("--server <url>", "Samskara API URL (default: http://localhost:3000)")
   .option("--web <url>", "Samskara web URL (default: http://localhost:8000)")
-  .action(async (options: { server?: string; web?: string }) => {
+  .option("--force", "point an already-configured install at a different server")
+  .action(async (options: { server?: string; web?: string; force?: boolean }) => {
     process.exitCode = await initCommand({
       ...(options.server === undefined ? {} : { server: options.server }),
       ...(options.web === undefined ? {} : { web: options.web }),
+      ...(options.force === true ? { force: true } : {}),
     })
   })
 

@@ -1,12 +1,17 @@
+import { copyFile, mkdir, rm } from "node:fs/promises"
+import { basename, join } from "node:path"
 import { DEFAULT_API_URL } from "../config.js"
 import type { Writer } from "../io.js"
-import { readJson } from "./atomic.js"
+import { atomicWriteJson, readJson, withFileLock } from "./atomic.js"
+import { deleteToken } from "./credentials.js"
 import {
   artifactQueuePath,
   artifactStatePath,
+  configHome,
   filterOptionsPath,
   projectsPath,
   statePath,
+  tokenPath,
 } from "./paths.js"
 import { readSettings } from "./settings.js"
 
@@ -88,4 +93,76 @@ export const refuseOnServerChange = async (stderr: Writer): Promise<boolean> => 
   if (mismatch === undefined) return false
   stderr.write(mismatchLine(mismatch, "first."))
   return true
+}
+
+export type ResetDeps = {
+  readonly stopWatcher: () => Promise<boolean>
+}
+
+export type ResetReport = {
+  readonly backupDir: string
+  readonly cleared: ReadonlyArray<string>
+  readonly projects: number
+}
+
+const DERIVED_PATHS = (): ReadonlyArray<string> => [
+  statePath(),
+  artifactStatePath(),
+  artifactQueuePath(),
+  filterOptionsPath(),
+]
+
+/**
+ * Reads and rewrites `projects.json` directly rather than through `projects.ts`'s writers: that
+ * module already imports `persistedApiUrl` from here, and a reset calling back into it would make
+ * the two files import each other. `replay.ts` clears its three files the same direct way for the
+ * same reason. Loose types on purpose -- this only strips one key and flips one flag, on whatever
+ * shape the file already holds.
+ */
+const disableProjects = async (): Promise<number> =>
+  withFileLock(projectsPath(), async () => {
+    const raw = (await readJson(projectsPath())) as
+      | { projects?: Record<string, Record<string, unknown>> }
+      | undefined
+    const projects = raw?.projects ?? {}
+    const cleared = Object.fromEntries(
+      Object.entries(projects).map(([slug, entry]) => {
+        const { projectId: _dropped, ...rest } = entry
+        return [slug, { ...rest, enabled: false }]
+      }),
+    )
+    await atomicWriteJson(projectsPath(), {
+      version: 1,
+      apiBase: persistedApiUrl(),
+      projects: cleared,
+    })
+    return Object.keys(cleared).length
+  })
+
+/**
+ * The only place in the CLI that deletes derived state, and only `init --force` calls it. Order is
+ * not interchangeable: stop, then back up, then delete. A running watcher holds these same files
+ * with no lock and rewrites them after its own upload flush (`driver.ts:322,368`;
+ * `state.ts:7,13`), so backing up before it stops can catch a file mid-rewrite -- `replay.ts` stops
+ * the watcher for the identical reason.
+ */
+export const resetServerScope = async (deps: ResetDeps): Promise<ResetReport> => {
+  await deps.stopWatcher()
+
+  const backupDir = join(configHome(), "backups", new Date().toISOString().replace(/:/g, "-"))
+  await mkdir(backupDir, { recursive: true })
+  for (const file of ALL_SCOPED_PATHS()) {
+    await copyFile(file, join(backupDir, basename(file))).catch(() => {})
+  }
+  await copyFile(tokenPath(), join(backupDir, "token")).catch(() => {})
+
+  const cleared = DERIVED_PATHS()
+  for (const file of cleared) {
+    await rm(file, { force: true })
+  }
+
+  const projects = await disableProjects()
+  await deleteToken()
+
+  return { backupDir, cleared, projects }
 }

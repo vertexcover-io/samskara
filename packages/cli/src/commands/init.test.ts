@@ -1,18 +1,25 @@
-import { mkdtemp } from "node:fs/promises"
+import { existsSync } from "node:fs"
+import { mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
 import { readToken } from "../config/credentials.js"
-import { startWatcherDaemon, watcherPid } from "../config/daemon.js"
+import { startWatcherDaemon, stopWatcherDaemon, watcherPid } from "../config/daemon.js"
 import { readSettings, writeSettings } from "../config/settings.js"
 import { apiBase, webBase } from "../config.js"
 import { login } from "../login.js"
 import { initCommand } from "./init.js"
 import { installHooksCommand, isManagedHookInstalled } from "./install-hooks.js"
 
-vi.mock("../config/credentials.js", () => ({ readToken: vi.fn() }))
+// `deleteToken`/`storeToken` are left real: the reset flow under test deletes an actual token file
+// on disk, and only `readToken` needs to be driven from the in-memory `world` below.
+vi.mock("../config/credentials.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../config/credentials.js")>()
+  return { ...actual, readToken: vi.fn() }
+})
 vi.mock("../config/daemon.js", () => ({
   startWatcherDaemon: vi.fn(() => 444),
+  stopWatcherDaemon: vi.fn(async () => true),
   watcherPid: vi.fn(() => null),
 }))
 vi.mock("../login.js", () => ({ login: vi.fn(async () => 0) }))
@@ -131,19 +138,19 @@ describe("init command", () => {
   })
 })
 
-describe("init server url", () => {
-  const answers = (...replies: ReadonlyArray<string>) => {
-    const asked: string[] = []
-    let next = 0
-    return {
-      asked,
-      prompt: async (question: string, fallback: string) => {
-        asked.push(`${question}|${fallback}`)
-        return replies[next++] ?? ""
-      },
-    }
+const answers = (...replies: ReadonlyArray<string>) => {
+  const asked: string[] = []
+  let next = 0
+  return {
+    asked,
+    prompt: async (question: string, fallback: string) => {
+      asked.push(`${question}|${fallback}`)
+      return replies[next++] ?? ""
+    },
   }
+}
 
+describe("init server url", () => {
   test("asks for both urls and offers localhost as the default", async () => {
     const streams = output()
     const ask = answers("", "")
@@ -176,7 +183,9 @@ describe("init server url", () => {
     await writeSettings({ apiUrl: "http://box:3000", webUrl: "http://box:8000" })
     const ask = answers("", "")
 
-    await initCommand({ ...output().writers, prompt: ask.prompt })
+    // Already configured, so this needs --force to get past the refusal; the answers keep the same
+    // server, which is D13's "resets nothing" case, so it falls through to today's idempotent init.
+    await initCommand({ ...output().writers, prompt: ask.prompt, force: true })
 
     expect(ask.asked[0]).toContain("|http://box:3000")
     expect(readSettings()?.apiUrl).toBe("http://box:3000")
@@ -233,9 +242,142 @@ describe("init server url", () => {
   test("without a prompt it keeps what is saved instead of hanging on a dead stdin", async () => {
     await writeSettings({ apiUrl: "http://box:3000", webUrl: "http://box:8000" })
 
-    const code = await initCommand(output().writers)
+    // Already configured, so this needs --force too; with no prompt available the url resolves to
+    // what's already saved, so nothing actually changes and it falls through to a normal run.
+    const code = await initCommand({ ...output().writers, force: true })
 
     expect(code).toBe(0)
     expect(readSettings()?.apiUrl).toBe("http://box:3000")
+  })
+})
+
+describe("init --force", () => {
+  const enabledAt = "2026-07-25T10:00:00.000Z"
+
+  /** Stamped copies of every derived file, plus a real token, so a reset has something to move. */
+  const seedScopedFiles = async (home: string, apiBase: string): Promise<void> => {
+    await writeFile(
+      join(home, "projects.json"),
+      JSON.stringify({
+        version: 1,
+        apiBase,
+        projects: {
+          "acme-widget": {
+            name: "widget",
+            path: "/work/widget",
+            enabled: true,
+            enabledAt,
+            syncFrom: enabledAt,
+            projectId: "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+          },
+        },
+      }),
+      "utf8",
+    )
+    await writeFile(join(home, "state.json"), JSON.stringify({ apiBase, checkpoints: {} }), "utf8")
+    await writeFile(
+      join(home, "artifacts.json"),
+      JSON.stringify({ version: 1, apiBase, artifacts: {} }),
+      "utf8",
+    )
+    await writeFile(
+      join(home, "artifact-queue.json"),
+      JSON.stringify({ version: 1, apiBase, entries: [] }),
+      "utf8",
+    )
+    await writeFile(join(home, "filter-options.json"), JSON.stringify({ apiBase }), "utf8")
+    await writeFile(join(home, "token"), "sometoken", "utf8")
+  }
+
+  test("SC17: refuses a configured install without prompting or touching config.json", async () => {
+    const home = process.env.SAMSKARA_HOME as string
+    await writeSettings({ apiUrl: "https://one.example", webUrl: "https://one.example" })
+    const before = await readFile(join(home, "config.json"), "utf8")
+    const streams = output()
+    const ask = answers("https://two.example")
+
+    const code = await initCommand({ ...streams.writers, prompt: ask.prompt })
+
+    expect(code).toBe(1)
+    expect(ask.asked).toHaveLength(0)
+    expect(streams.stderr.join("")).toContain("samskara init --force")
+    expect(streams.stderr.join("")).toContain("samskara install-hooks")
+    expect(streams.stderr.join("")).toContain("samskara restart")
+    expect(await readFile(join(home, "config.json"), "utf8")).toBe(before)
+  })
+
+  test("SC19: clears derived state, disables and strips projects, and drops the token", async () => {
+    const home = process.env.SAMSKARA_HOME as string
+    await writeSettings({ apiUrl: "https://one.example", webUrl: "https://one.example" })
+    await seedScopedFiles(home, "https://one.example")
+
+    const code = await initCommand({
+      ...output().writers,
+      force: true,
+      prompt: answers("https://two.example", "https://two.example").prompt,
+    })
+
+    expect(code).toBe(0)
+    expect(existsSync(join(home, "state.json"))).toBe(false)
+    expect(existsSync(join(home, "artifacts.json"))).toBe(false)
+    expect(existsSync(join(home, "artifact-queue.json"))).toBe(false)
+    expect(existsSync(join(home, "filter-options.json"))).toBe(false)
+    expect(existsSync(join(home, "token"))).toBe(false)
+
+    const projects = JSON.parse(await readFile(join(home, "projects.json"), "utf8"))
+    expect(projects.apiBase).toBe("https://two.example")
+    expect(projects.projects["acme-widget"]).toEqual({
+      name: "widget",
+      path: "/work/widget",
+      enabled: false,
+      enabledAt,
+      syncFrom: enabledAt,
+    })
+  })
+
+  test("SC20: stops the watcher before backing anything up, and never restarts it", async () => {
+    const home = process.env.SAMSKARA_HOME as string
+    await writeSettings({ apiUrl: "https://one.example", webUrl: "https://one.example" })
+    await seedScopedFiles(home, "https://one.example")
+    let backupsExistedAtStop: boolean | null = null
+    vi.mocked(stopWatcherDaemon).mockImplementationOnce(async () => {
+      backupsExistedAtStop = existsSync(join(home, "backups"))
+      return true
+    })
+
+    const code = await initCommand({
+      ...output().writers,
+      force: true,
+      prompt: answers("https://two.example", "https://two.example").prompt,
+    })
+
+    expect(code).toBe(0)
+    expect(stopWatcherDaemon).toHaveBeenCalledTimes(1)
+    expect(backupsExistedAtStop).toBe(false)
+    expect(startWatcherDaemon).not.toHaveBeenCalled()
+  })
+
+  test("SC21: the same server resets nothing", async () => {
+    const home = process.env.SAMSKARA_HOME as string
+    await writeSettings({ apiUrl: "https://one.example", webUrl: "https://one.example" })
+    await seedScopedFiles(home, "https://one.example")
+    world.token = "tok"
+    world.hookInstalled = true
+    world.runningPid = 777
+
+    const code = await initCommand({
+      ...output().writers,
+      force: true,
+      prompt: answers("https://one.example", "https://one.example").prompt,
+    })
+
+    expect(code).toBe(0)
+    expect(existsSync(join(home, "backups"))).toBe(false)
+    expect(existsSync(join(home, "state.json"))).toBe(true)
+    expect(existsSync(join(home, "token"))).toBe(true)
+
+    const projects = JSON.parse(await readFile(join(home, "projects.json"), "utf8"))
+    expect(projects.projects["acme-widget"].enabled).toBe(true)
+    expect(projects.projects["acme-widget"].projectId).toBe("3fa85f64-5717-4562-b3fc-2c963f66afa6")
   })
 })
