@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest"
 import { readToken } from "../config/credentials.js"
 import { reviveWatcher, watcherPid } from "../config/daemon.js"
 import { isProjectEnabled } from "../config/projects.js"
+import { scopeMismatch } from "../config/server-scope.js"
 import { checkToken } from "../login.js"
 import { resolveProject } from "../watcher/resolveProject.js"
 import { ensureCommand } from "./ensure.js"
@@ -10,6 +11,10 @@ import { ensureCommand } from "./ensure.js"
 vi.mock("../config/credentials.js", () => ({ readToken: vi.fn() }))
 vi.mock("../config/daemon.js", () => ({ reviveWatcher: vi.fn(), watcherPid: vi.fn() }))
 vi.mock("../config/projects.js", () => ({ isProjectEnabled: vi.fn() }))
+vi.mock("../config/server-scope.js", () => ({
+  scopeMismatch: vi.fn(),
+  TRIPWIRE_PATHS: vi.fn(() => []),
+}))
 vi.mock("../watcher/resolveProject.js", () => ({ resolveProject: vi.fn() }))
 vi.mock("../login.js", () => ({ checkToken: vi.fn() }))
 
@@ -35,6 +40,7 @@ beforeEach(() => {
   vi.mocked(resolveProject).mockResolvedValue(project)
   vi.mocked(isProjectEnabled).mockResolvedValue(true)
   vi.mocked(checkToken).mockResolvedValue("ok")
+  vi.mocked(scopeMismatch).mockResolvedValue([])
 })
 
 describe("ensure command", () => {
@@ -131,5 +137,19 @@ describe("ensure command", () => {
 
     expect(code).toBe(0)
     expect(streams.stderr.join("")).toContain("disk unavailable")
+  })
+
+  test("SC24: a mismatched projects.json is reported as SessionStart context", async () => {
+    const streams = output()
+    vi.mocked(scopeMismatch).mockResolvedValue([
+      { file: "/x/projects.json", recorded: "https://one.example", current: "https://two.example" },
+    ])
+
+    const code = await ensureCommand(streams.writers)
+
+    expect(code).toBe(0)
+    expect(streams.stdout.join("")).toContain("https://one.example")
+    expect(streams.stdout.join("")).toContain("https://two.example")
+    expect(streams.stdout.join("")).toContain("samskara init --force")
   })
 })

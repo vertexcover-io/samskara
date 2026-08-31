@@ -1,7 +1,8 @@
 import { mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { beforeEach, describe, expect, test } from "vitest"
+import { afterEach, beforeEach, describe, expect, test } from "vitest"
+import { writeSettings } from "../config/settings.js"
 import { belongsToSession, type ReplayDeps, replayCommand } from "./replay.js"
 
 const SESSION = "0b9d4c1e-7f3a-4c22-9a6e-1d5f8b2c3e40"
@@ -24,6 +25,7 @@ describe("belongsToSession", () => {
 })
 
 describe("replayCommand", () => {
+  const originalHome = process.env.SAMSKARA_HOME
   let dir: string
   let paths: ReplayDeps["paths"]
   let started: number
@@ -38,6 +40,7 @@ describe("replayCommand", () => {
     await writeFile(
       paths.state,
       JSON.stringify({
+        apiBase: "https://one.example",
         checkpoints: {
           mine: {
             filePath: `/p/${SESSION}.jsonl`,
@@ -71,6 +74,7 @@ describe("replayCommand", () => {
       paths.artifacts,
       JSON.stringify({
         version: 1,
+        apiBase: "https://one.example",
         artifacts: {
           [`${SESSION}:/w/a.md`]: { currentHash: "h1", baseCaptured: false },
           [`${OTHER}:/w/b.md`]: { currentHash: "h2", baseCaptured: false },
@@ -82,6 +86,7 @@ describe("replayCommand", () => {
       paths.queue,
       JSON.stringify({
         version: 1,
+        apiBase: "https://one.example",
         entries: [
           { sessionId: SESSION, path: "/w/a.md" },
           { sessionId: OTHER, path: "/w/b.md" },
@@ -113,6 +118,9 @@ describe("replayCommand", () => {
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "samskara-replay-"))
+    // scopeMismatch() looks up projects.json under SAMSKARA_HOME -- pinned to this run's own temp
+    // dir so the refusal check never reads whatever real state happens to be on the machine.
+    process.env.SAMSKARA_HOME = dir
     paths = {
       state: join(dir, "state.json"),
       artifacts: join(dir, "artifacts.json"),
@@ -124,12 +132,24 @@ describe("replayCommand", () => {
     await seed()
   })
 
+  afterEach(() => {
+    process.env.SAMSKARA_HOME = originalHome
+  })
+
   test("clears only the named session from all three local files, and never a neighbour's", async () => {
     expect(await replayCommand(SESSION, deps())).toBe(0)
 
     expect(Object.keys((await readState()).checkpoints)).toEqual(["theirs"])
     expect(Object.keys((await readArtifacts()).artifacts)).toEqual([`${OTHER}:/w/b.md`])
     expect((await readQueue()).entries).toEqual([{ sessionId: OTHER, path: "/w/b.md" }])
+  })
+
+  test("SC14 (regression): replaying a session leaves every stamp alone", async () => {
+    expect(await replayCommand(SESSION, deps())).toBe(0)
+
+    expect((await readState()).apiBase).toBe("https://one.example")
+    expect((await readArtifacts()).apiBase).toBe("https://one.example")
+    expect((await readQueue()).apiBase).toBe("https://one.example")
   })
 
   test("stops the watcher before touching state and restarts it after", async () => {
@@ -217,5 +237,25 @@ describe("replayCommand", () => {
     expect(stopped).toBe(0)
     expect(started).toBe(0)
     expect(out).toContain("samskara login")
+  })
+
+  test("a mismatched projects.json refuses before stopping the watcher or touching any file", async () => {
+    await writeSettings({ apiUrl: "https://two.example", webUrl: "https://two.example" })
+    await writeFile(
+      join(dir, "projects.json"),
+      JSON.stringify({ version: 1, apiBase: "https://one.example", projects: {} }),
+      "utf8",
+    )
+
+    expect(await replayCommand(SESSION, deps())).toBe(1)
+
+    expect(out).toContain("samskara init --force")
+    expect(stopped).toBe(0)
+    expect(started).toBe(0)
+    expect(Object.keys((await readState()).checkpoints).sort()).toEqual([
+      "branch",
+      "mine",
+      "theirs",
+    ])
   })
 })

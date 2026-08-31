@@ -1,6 +1,7 @@
 import { resolve } from "node:path"
 import type { ProjectIdentity } from "@samskara/core"
 import { setProjectEnabled } from "../config/projects.js"
+import { refuseOnServerChange } from "../config/server-scope.js"
 import { resolveIo, type Writer } from "../io.js"
 import { resolveProject } from "../watcher/resolveProject.js"
 
@@ -13,10 +14,11 @@ export type DisableOptions = {
 }
 
 export const disableCommand = async (options: DisableOptions = {}): Promise<number> => {
+  const { stdout, stderr } = resolveIo(options)
+  if (await refuseOnServerChange(stderr)) return 1
   const cwd = options.cwd ?? process.cwd()
   const path = resolve(cwd, options.path ?? cwd)
   const project = await (options.resolveProject ?? resolveProject)(path)
-  const { stdout, stderr } = resolveIo(options)
   if (project === null) {
     stderr.write(`There is no directory at "${path}", so there is nothing to disable.\n`)
     return 1

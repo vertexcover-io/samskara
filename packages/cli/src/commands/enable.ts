@@ -8,6 +8,7 @@ import { readToken as defaultReadToken } from "../config/credentials.js"
 import { reviveWatcher } from "../config/daemon.js"
 import { watchLogDir } from "../config/paths.js"
 import { getProject, upsertProject } from "../config/projects.js"
+import { refuseOnServerChange } from "../config/server-scope.js"
 import { apiBase as defaultApiBase } from "../config.js"
 import { errorMessage, reportError, resolveIo, type Writer } from "../io.js"
 import { resolveProject } from "../watcher/resolveProject.js"
@@ -84,10 +85,11 @@ const cutoffFor = (options: EnableOptions, enabledAt: string): string | undefine
 }
 
 export const enableCommand = async (options: EnableOptions = {}): Promise<number> => {
+  const { stdout, stderr } = resolveIo(options)
+  if (await refuseOnServerChange(stderr)) return 1
   const cwd = options.cwd ?? process.cwd()
   const path = resolve(cwd, options.path ?? cwd)
   const project = await resolveProject(path)
-  const { stdout, stderr } = resolveIo(options)
   if (project === null) {
     stderr.write(`There is no directory at "${path}", so there is nothing to enable.\n`)
     return 1

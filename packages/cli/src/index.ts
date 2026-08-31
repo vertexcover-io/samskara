@@ -18,6 +18,7 @@ import { watchCommand } from "./commands/watch.js"
 import { readToken } from "./config/credentials.js"
 import { startWatcherDaemon, stopWatcherDaemon } from "./config/daemon.js"
 import { artifactQueuePath, artifactStatePath, statePath } from "./config/paths.js"
+import { warnOnServerChange } from "./config/server-scope.js"
 import { apiBase } from "./config.js"
 import { login } from "./login.js"
 import { cliVersion } from "./version.js"
@@ -42,6 +43,10 @@ program
   .description("Capture and search AI coding-agent session logs")
   .version(cliVersion)
   .option("--verbose", "enable debug logging")
+
+program.hook("preAction", async () => {
+  await warnOnServerChange(process.stderr).catch(() => {})
+})
 
 program
   .command("init")

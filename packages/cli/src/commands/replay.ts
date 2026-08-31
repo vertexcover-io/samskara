@@ -1,6 +1,7 @@
 import { basename, sep } from "node:path"
 import { checkpointStoreSchema } from "@samskara/core"
 import { atomicWriteJson, readJson, withFileLock } from "../config/atomic.js"
+import { refuseOnServerChange, stampOf } from "../config/server-scope.js"
 import { resolveIo, type Writer } from "../io.js"
 
 export type ReplayDeps = {
@@ -35,7 +36,12 @@ const clearCheckpoints = async (path: string, sessionId: string): Promise<number
       ([, checkpoint]) => !belongsToSession(checkpoint.filePath, sessionId),
     )
     const dropped = Object.keys(parsed.data.checkpoints).length - kept.length
-    if (dropped > 0) await atomicWriteJson(path, { checkpoints: Object.fromEntries(kept) })
+    const recorded = await stampOf(path)
+    if (dropped > 0)
+      await atomicWriteJson(path, {
+        ...(recorded === null ? {} : { apiBase: recorded }),
+        checkpoints: Object.fromEntries(kept),
+      })
     return dropped
   })
 
@@ -48,8 +54,13 @@ const clearArtifactState = async (path: string, sessionId: string): Promise<numb
 
     const kept = Object.entries(artifacts).filter(([key]) => !key.startsWith(`${sessionId}:`))
     const dropped = Object.keys(artifacts).length - kept.length
+    const recorded = await stampOf(path)
     if (dropped > 0)
-      await atomicWriteJson(path, { version: 1, artifacts: Object.fromEntries(kept) })
+      await atomicWriteJson(path, {
+        version: 1,
+        ...(recorded === null ? {} : { apiBase: recorded }),
+        artifacts: Object.fromEntries(kept),
+      })
     return dropped
   })
 
@@ -61,7 +72,13 @@ const clearQueue = async (path: string, sessionId: string): Promise<number> =>
 
     const kept = entries.filter((entry) => entry.sessionId !== sessionId)
     const dropped = entries.length - kept.length
-    if (dropped > 0) await atomicWriteJson(path, { version: 1, entries: kept })
+    const recorded = await stampOf(path)
+    if (dropped > 0)
+      await atomicWriteJson(path, {
+        version: 1,
+        ...(recorded === null ? {} : { apiBase: recorded }),
+        entries: kept,
+      })
     return dropped
   })
 
@@ -92,6 +109,7 @@ const deleteRemote = async (deps: ReplayDeps, sessionId: string): Promise<string
  */
 export const replayCommand = async (sessionId: string, deps: ReplayDeps): Promise<number> => {
   const { stdout } = resolveIo(deps)
+  if (await refuseOnServerChange(stdout)) return 1
 
   if (!deps.token) {
     stdout.write("Not logged in. Run `samskara login` first.\n")

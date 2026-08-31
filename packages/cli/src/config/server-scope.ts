@@ -1,4 +1,5 @@
 import { DEFAULT_API_URL } from "../config.js"
+import type { Writer } from "../io.js"
 import { readJson } from "./atomic.js"
 import {
   artifactQueuePath,
@@ -59,3 +60,32 @@ export const ALL_SCOPED_PATHS = (): ReadonlyArray<string> => [
   artifactQueuePath(),
   filterOptionsPath(),
 ]
+
+const mismatchLine = (mismatch: Mismatch, fix: string): string =>
+  `Local state was captured against ${mismatch.recorded}, but this CLI is configured for ` +
+  `${mismatch.current}. Run \`samskara init --force\` ${fix}\n`
+
+/**
+ * Read-only commands call this. The daemon suppresses it: `daemon.ts` spawns the watcher as a child
+ * running the whole CLI again with `SAMSKARA_DAEMON=1`, and that child's stderr is redirected to a
+ * crash log nobody reads -- a warning there is effectively invisible, so `watch()` reports the same
+ * condition its own way instead.
+ */
+export const warnOnServerChange = async (stderr: Writer): Promise<void> => {
+  if (process.env.SAMSKARA_DAEMON === "1") return
+  const [mismatch] = await scopeMismatch(TRIPWIRE_PATHS())
+  if (mismatch === undefined) return
+  stderr.write(mismatchLine(mismatch, "to move it across."))
+}
+
+/**
+ * Commands that write a derived file call this. `enable` rewrites the whole of `projects.json` with
+ * a fresh `apiBase`, so writing anything at all would re-stamp the file to the new server while
+ * other entries still hold the old server's `projectId` -- the mismatch would erase itself.
+ */
+export const refuseOnServerChange = async (stderr: Writer): Promise<boolean> => {
+  const [mismatch] = await scopeMismatch(TRIPWIRE_PATHS())
+  if (mismatch === undefined) return false
+  stderr.write(mismatchLine(mismatch, "first."))
+  return true
+}

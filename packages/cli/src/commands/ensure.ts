@@ -2,6 +2,7 @@ import { readToken } from "../config/credentials.js"
 import { reviveWatcher, watcherPid } from "../config/daemon.js"
 import { watchLogDir } from "../config/paths.js"
 import { isProjectEnabled } from "../config/projects.js"
+import { scopeMismatch, TRIPWIRE_PATHS } from "../config/server-scope.js"
 import { errorMessage, resolveIo, type Writer } from "../io.js"
 import { checkToken } from "../login.js"
 import { resolveProject } from "../watcher/resolveProject.js"
@@ -36,6 +37,13 @@ export const ensureCommand = async (options: EnsureOptions = {}): Promise<number
     }
 
     const context: string[] = []
+    const [mismatch] = await scopeMismatch(TRIPWIRE_PATHS())
+    if (mismatch !== undefined) {
+      context.push(
+        `Samskara capture is OFF: local state was captured against ${mismatch.recorded}, but the CLI ` +
+          `is configured for ${mismatch.current}. Tell the user to run \`samskara init --force\`.`,
+      )
+    }
     if (watcherPid() === null) {
       await reviveWatcher()
       if (watcherPid() === null) {

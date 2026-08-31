@@ -4,11 +4,12 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, test } from "vitest"
 import { projectsPath } from "./paths.js"
 import { listProjects } from "./projects.js"
-import { scopeMismatch, stampOf, TRIPWIRE_PATHS } from "./server-scope.js"
+import { scopeMismatch, stampOf, TRIPWIRE_PATHS, warnOnServerChange } from "./server-scope.js"
 import { writeSettings } from "./settings.js"
 
 const originalHome = process.env.SAMSKARA_HOME
 const originalApiUrlEnv = process.env.SAMSKARA_API_URL
+const originalDaemonEnv = process.env.SAMSKARA_DAEMON
 
 beforeEach(async () => {
   process.env.SAMSKARA_HOME = await mkdtemp(join(tmpdir(), "samskara-server-scope-"))
@@ -18,6 +19,8 @@ afterEach(() => {
   process.env.SAMSKARA_HOME = originalHome
   if (originalApiUrlEnv === undefined) delete process.env.SAMSKARA_API_URL
   else process.env.SAMSKARA_API_URL = originalApiUrlEnv
+  if (originalDaemonEnv === undefined) delete process.env.SAMSKARA_DAEMON
+  else process.env.SAMSKARA_DAEMON = originalDaemonEnv
 })
 
 describe("scopeMismatch", () => {
@@ -60,5 +63,53 @@ describe("scopeMismatch", () => {
     await expect(scopeMismatch(TRIPWIRE_PATHS())).resolves.toEqual([])
     await expect(stampOf(projectsPath())).resolves.toBeNull()
     await expect(listProjects()).resolves.toEqual([])
+  })
+})
+
+describe("warnOnServerChange", () => {
+  test("SC8: a matching stamp prints nothing", async () => {
+    await writeSettings({ apiUrl: "https://one.example", webUrl: "https://one.example" })
+    await writeFile(
+      projectsPath(),
+      JSON.stringify({ version: 1, apiBase: "https://one.example", projects: {} }),
+      "utf8",
+    )
+    const stderr: string[] = []
+
+    await warnOnServerChange({ write: (text) => stderr.push(text) })
+
+    expect(stderr).toEqual([])
+  })
+
+  test("SC9: the daemon does not print the warning even though the stamp disagrees", async () => {
+    await writeSettings({ apiUrl: "https://two.example", webUrl: "https://two.example" })
+    await writeFile(
+      projectsPath(),
+      JSON.stringify({ version: 1, apiBase: "https://one.example", projects: {} }),
+      "utf8",
+    )
+    process.env.SAMSKARA_DAEMON = "1"
+    const stderr: string[] = []
+
+    await warnOnServerChange({ write: (text) => stderr.push(text) })
+
+    expect(stderr).toEqual([])
+  })
+
+  test("a disagreeing stamp prints one line naming both servers and the fix", async () => {
+    await writeSettings({ apiUrl: "https://two.example", webUrl: "https://two.example" })
+    await writeFile(
+      projectsPath(),
+      JSON.stringify({ version: 1, apiBase: "https://one.example", projects: {} }),
+      "utf8",
+    )
+    const stderr: string[] = []
+
+    await warnOnServerChange({ write: (text) => stderr.push(text) })
+
+    expect(stderr).toHaveLength(1)
+    expect(stderr[0]).toContain("https://one.example")
+    expect(stderr[0]).toContain("https://two.example")
+    expect(stderr[0]).toContain("samskara init --force")
   })
 })

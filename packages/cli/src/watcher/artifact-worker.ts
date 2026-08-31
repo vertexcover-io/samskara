@@ -4,6 +4,7 @@ import type pino from "pino"
 import { z } from "zod"
 import { runConcurrent } from "../concurrency.js"
 import { atomicWriteJson, readOrReset, readValidated, withFileLock } from "../config/atomic.js"
+import { persistedApiUrl } from "../config/server-scope.js"
 import { runGitOrNull } from "../git.js"
 import { sleep } from "../io.js"
 import { referencedPaths } from "./artifact-extract.js"
@@ -25,7 +26,11 @@ const artifactRecordSchema = z
   .readonly()
 
 const artifactStateSchema = z
-  .object({ version: z.literal(1), artifacts: z.record(z.string(), artifactRecordSchema) })
+  .object({
+    version: z.literal(1),
+    apiBase: z.string().optional(),
+    artifacts: z.record(z.string(), artifactRecordSchema),
+  })
   .strict()
   .readonly()
 
@@ -64,6 +69,7 @@ export const advanceArtifactState = async (
     const current = await readArtifactStateOrReset(path, log)
     await atomicWriteJson(path, {
       version: 1,
+      apiBase: persistedApiUrl(),
       artifacts: { ...current.artifacts, [key]: next },
     } satisfies ArtifactState)
   })
@@ -102,7 +108,11 @@ const isDue = (entry: ArtifactQueueEntry, now: number): boolean =>
 const backoffMs = (attempts: number): number => BACKOFF_BASE_MS * 2 ** Math.max(0, attempts - 1)
 
 const writeQueue = (path: string, entries: ReadonlyArray<ArtifactQueueEntry>): Promise<void> =>
-  atomicWriteJson(path, { version: 1, entries } satisfies ArtifactQueue)
+  atomicWriteJson(path, {
+    version: 1,
+    apiBase: persistedApiUrl(),
+    entries,
+  } satisfies ArtifactQueue)
 
 /**
  * Marks the entry in-flight without removing it: the queue file is the crash record, so an entry
