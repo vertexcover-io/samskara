@@ -121,14 +121,30 @@ export const enableCommand = async (options: EnableOptions = {}): Promise<number
   // silently drop sessions. A cutoff flag is not accidental, so it wins even when already
   // enabled -- otherwise the only way to widen a cutoff is `disable` then `enable`.
   const askedForCutoff = options.all === true || options.syncFrom !== undefined
+
+  // `registered.id` is re-derived from the folder's slug on every enable, so honouring it would
+  // undo a `samskara reassign` the next time anyone enabled this folder. A pinned entry keeps the
+  // project it was reassigned to; only an explicit reassign moves it again.
+  const pinnedId = existing?.pinned === true ? existing.projectId : undefined
+  const projectId = pinnedId ?? registered.id
+  // `pendingFrom` rides along with the pin: this branch rebuilds the entry from scratch, and
+  // dropping it would strand the sessions of a reassign that has not finished.
+  const keepPin =
+    existing?.pinned === true
+      ? {
+          pinned: true as const,
+          ...(existing.pendingFrom === undefined ? {} : { pendingFrom: existing.pendingFrom }),
+        }
+      : {}
+
   if (existing?.enabled === true && !askedForCutoff) {
-    if (existing.projectId === registered.id) {
+    if (existing.projectId === projectId) {
       stdout.write(
         `Capture is already enabled for "${project.slug}" (since ${existing.enabledAt}). Nothing to change.\n`,
       )
     } else {
       // The owner was decided after this project was already enabled.
-      await upsertProject(project.slug, { ...existing, projectId: registered.id })
+      await upsertProject(project.slug, { ...existing, projectId })
       stdout.write(ownerLine(project, registered))
     }
   } else {
@@ -141,14 +157,19 @@ export const enableCommand = async (options: EnableOptions = {}): Promise<number
       enabled: true,
       enabledAt: since,
       ...(syncFrom === undefined ? {} : { syncFrom }),
-      projectId: registered.id,
+      projectId,
+      ...keepPin,
     })
     stdout.write(
       syncFrom === undefined
         ? `Capture enabled for "${project.slug}" at ${path}, including sessions recorded earlier.\n`
         : `Capture enabled for "${project.slug}" at ${path}, for sessions started after ${syncFrom}.\n`,
     )
-    stdout.write(ownerLine(project, registered))
+    stdout.write(
+      pinnedId === undefined
+        ? ownerLine(project, registered)
+        : `Sessions from this folder still go to the project it was reassigned to. Run \`samskara reassign\` to move it again.\n`,
+    )
   }
 
   // `reviveWatcher` returns the running pid when there is one, so the message says what is true

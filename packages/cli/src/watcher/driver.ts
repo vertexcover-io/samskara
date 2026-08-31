@@ -91,7 +91,7 @@ export const flushCause = (status: number): string => {
   if (status === 401)
     return "the server rejected this CLI's credentials -- run `samskara login` to pair again"
   if (status === 403)
-    return "the server no longer lets this CLI write to that project -- run `samskara enable` in that folder again"
+    return "the server no longer lets this CLI write to that project -- run `samskara reassign` in that folder to point it at one you can write"
   if (status === 409) return "the server has no session to attach these records to yet"
   if (status === 413) return "the chunk was larger than the server accepts"
   if (status === 429) return "the server is rate limiting this CLI; the chunk retries next cycle"

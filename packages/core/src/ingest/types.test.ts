@@ -6,6 +6,8 @@ import {
   ingestPayloadSchema,
   type ParsedRecord,
   projectIdentitySchema,
+  reassignSessionsRequestSchema,
+  reassignSessionsResponseSchema,
 } from "./types.js"
 
 const records: ReadonlyArray<ParsedRecord> = [
@@ -202,4 +204,39 @@ test("the strict upload schema refuses a diff, an excerpt or an edit list the se
   ]) {
     expect(artifactUploadSchema.safeParse({ ...uploadBase, ...extra }).success).toBe(false)
   }
+})
+
+test("a reassign request defaults to the caller's own sessions, so an omitted scope never moves a teammate's history", () => {
+  const parsed = reassignSessionsRequestSchema.safeParse({
+    fromProjectId: "0191d942-3ba5-7dba-9a7d-22d65b30258c",
+  })
+  expect(parsed.success && parsed.data.scope).toBe("mine")
+})
+
+test("a reassign request keeps an explicit scope and rejects one it does not know", () => {
+  const from = "0191d942-3ba5-7dba-9a7d-22d65b30258c"
+  const all = reassignSessionsRequestSchema.safeParse({ fromProjectId: from, scope: "all" })
+  expect(all.success && all.data.scope).toBe("all")
+  expect(
+    reassignSessionsRequestSchema.safeParse({ fromProjectId: from, scope: "some" }).success,
+  ).toBe(false)
+})
+
+test("a reassign request refuses a source that is not a uuid, and refuses fields riding along", () => {
+  expect(reassignSessionsRequestSchema.safeParse({ fromProjectId: "project-one" }).success).toBe(
+    false,
+  )
+  expect(
+    reassignSessionsRequestSchema.safeParse({
+      fromProjectId: "0191d942-3ba5-7dba-9a7d-22d65b30258c",
+      toProjectId: "0191d942-3ba5-7dba-9a7d-22d65b30258c",
+    }).success,
+  ).toBe(false)
+})
+
+test("a reassign response carries a whole non-negative count, never a fraction or a negative", () => {
+  expect(reassignSessionsResponseSchema.safeParse({ moved: 0 }).success).toBe(true)
+  expect(reassignSessionsResponseSchema.safeParse({ moved: 12 }).success).toBe(true)
+  expect(reassignSessionsResponseSchema.safeParse({ moved: -1 }).success).toBe(false)
+  expect(reassignSessionsResponseSchema.safeParse({ moved: 1.5 }).success).toBe(false)
 })

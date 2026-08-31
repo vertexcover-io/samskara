@@ -10,6 +10,14 @@ const projectEntrySchema = z
     enabledAt: z.string().datetime(),
     syncFrom: z.string().datetime().optional(),
     projectId: z.string().uuid().optional(),
+    /** Set by `samskara reassign`. Stops `enable` from re-deriving the project from the folder's
+     * slug and silently dragging the folder back to where it was reassigned from. */
+    pinned: z.boolean().optional(),
+    /** The project a reassign is moving sessions *out of*, held only while that move is in
+     * flight. `projectId` is overwritten before the server is called, so without this the
+     * source is unrecoverable if the process dies mid-move and the stranded sessions cannot
+     * be found again. Cleared once the server confirms. */
+    pendingFrom: z.string().uuid().optional(),
   })
   .strict()
   .readonly()

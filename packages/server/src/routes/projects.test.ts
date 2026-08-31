@@ -259,7 +259,7 @@ describe.skipIf(!dockerAvailable())("GET /api/projects", () => {
     expect((await listAs(db, outsider)).map((p) => p.id)).not.toContain(projectId)
   })
 
-  test("S8: no cookie and a cli-audience token are both 401 unauthorized - a cli token never reads the web API", async () => {
+  test("S8 (revised): no cookie is 401 - the cli-audience case moved to the reassign block, which asserts the body too", async () => {
     const owner = await seedUser(db, 666, "guarded-owner")
     await projectsRepo.upsert(db, {
       identity: { name: "Guarded", slug: "guarded" },
@@ -270,13 +270,6 @@ describe.skipIf(!dockerAvailable())("GET /api/projects", () => {
     const anonymous = await app.request("/api/projects")
     expect(anonymous.status).toBe(401)
     expect(await anonymous.json()).toEqual({ error: "unauthorized" })
-
-    const cliToken = await signToken(env, { sub: owner, aud: "cli" })
-    const cli = await app.request("/api/projects", {
-      headers: { cookie: `session=${cliToken}` },
-    })
-    expect(cli.status).toBe(401)
-    expect(await cli.json()).toEqual({ error: "unauthorized" })
   })
 })
 
@@ -473,5 +466,328 @@ describe.skipIf(!dockerAvailable())("POST /api/projects", () => {
       body: JSON.stringify(body),
     })
     expect(withNothing.status).toBe(401)
+  })
+})
+
+type ReassignBody = { readonly fromProjectId: string; readonly scope?: "mine" | "all" }
+
+const reassignAs = async (
+  db: Db,
+  userId: string,
+  toProjectId: string,
+  body: ReassignBody,
+): Promise<{ status: number; json: Record<string, unknown> }> => {
+  const token = await signToken(env, { sub: userId, aud: "cli" })
+  const res = await buildApp(db, env).request(`/api/projects/${toProjectId}/sessions`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  })
+  return { status: res.status, json: (await res.json()) as Record<string, unknown> }
+}
+
+const projectOf = async (db: Db, sessionId: string): Promise<string | undefined> => {
+  const [row] = await db
+    .select({ projectId: sessions.projectId })
+    .from(sessions)
+    .where(eq(sessions.id, sessionId))
+  return row?.projectId
+}
+
+describe.skipIf(!dockerAvailable())("POST /api/projects/:id/sessions", () => {
+  let container: StartedPostgreSqlContainer
+  let teardown: () => Promise<void>
+  let db: Db
+
+  beforeAll(async () => {
+    container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start()
+    const url = container.getConnectionUri()
+    execFileSync("bun", ["run", "db:migrate"], {
+      cwd: packageDir,
+      env: { ...process.env, DATABASE_URL: url },
+      stdio: "inherit",
+    })
+    const created = createDb(url)
+    db = created.db
+    teardown = async () => {
+      await created.client.end()
+      await container.stop()
+    }
+  }, 120_000)
+
+  afterAll(async () => {
+    await teardown?.()
+  })
+
+  beforeEach(async () => {
+    await db.delete(sessions)
+    await db.delete(userProjectGrant)
+    await db.delete(projects)
+    await db.delete(userOrgs)
+    await db.delete(orgs)
+    await db.delete(users)
+  })
+
+  const seedPair = async (githubId: number, login: string) => {
+    const userId = await seedUser(db, githubId, login)
+    const from = await projectsRepo.upsert(db, {
+      identity: { name: "From", slug: `from-${login}` },
+      ownerId: userId,
+    })
+    const to = await projectsRepo.upsert(db, {
+      identity: { name: "To", slug: `to-${login}` },
+      ownerId: userId,
+    })
+    return { userId, from, to }
+  }
+
+  test("the caller's own sessions land in the destination project and the count says how many moved", async () => {
+    const { userId, from, to } = await seedPair(1001, "mover")
+    for (const id of ["s-1", "s-2"]) {
+      await seedSession(db, { id, userId, projectId: from, title: id, updatedAt: new Date() })
+    }
+
+    const { status, json } = await reassignAs(db, userId, to, { fromProjectId: from })
+
+    expect(status).toBe(200)
+    expect(json).toEqual({ moved: 2 })
+    expect(await projectOf(db, "s-1")).toBe(to)
+    expect(await projectOf(db, "s-2")).toBe(to)
+  })
+
+  test("the default scope leaves a teammate's sessions in the source project - relocating a folder must not move history that is not yours", async () => {
+    const org = await db
+      .insert(orgs)
+      .values({ githubSlug: "acme" })
+      .returning({ id: orgs.id })
+      .then(([row]) => row?.id ?? "")
+    const mine = await seedUser(db, 1002, "mine")
+    const theirs = await seedUser(db, 1003, "theirs")
+    await db.insert(userOrgs).values([
+      { orgId: org, userId: mine },
+      { orgId: org, userId: theirs },
+    ])
+    const from = await projectsRepo.upsertOwned(db, {
+      identity: { name: "Shared", slug: "acme-shared" },
+      owner: { kind: "org", orgId: org },
+    })
+    const to = await projectsRepo.upsert(db, {
+      identity: { name: "Personal", slug: "personal" },
+      ownerId: mine,
+    })
+    await seedSession(db, {
+      id: "s-mine",
+      userId: mine,
+      projectId: from.id,
+      title: "mine",
+      updatedAt: new Date(),
+    })
+    await seedSession(db, {
+      id: "s-theirs",
+      userId: theirs,
+      projectId: from.id,
+      title: "theirs",
+      updatedAt: new Date(),
+    })
+
+    const { status, json } = await reassignAs(db, mine, to, { fromProjectId: from.id })
+
+    expect(status).toBe(200)
+    expect(json).toEqual({ moved: 1 })
+    expect(await projectOf(db, "s-mine")).toBe(to)
+    expect(await projectOf(db, "s-theirs")).toBe(from.id)
+  })
+
+  test("scope 'all' moves a teammate's sessions only for a super admin - project admin on the source does not bound who reads the destination", async () => {
+    const org = await db
+      .insert(orgs)
+      .values({ githubSlug: "beta" })
+      .returning({ id: orgs.id })
+      .then(([row]) => row?.id ?? "")
+    const member = await seedUser(db, 1004, "member")
+    const other = await seedUser(db, 1005, "other")
+    await db.insert(userOrgs).values([
+      { orgId: org, userId: member },
+      { orgId: org, userId: other },
+    ])
+    const from = await projectsRepo.upsertOwned(db, {
+      identity: { name: "Shared", slug: "beta-shared" },
+      owner: { kind: "org", orgId: org },
+    })
+    const to = await projectsRepo.upsert(db, {
+      identity: { name: "Landing", slug: "landing" },
+      ownerId: member,
+    })
+    await seedSession(db, {
+      id: "s-other",
+      userId: other,
+      projectId: from.id,
+      title: "other",
+      updatedAt: new Date(),
+    })
+
+    // Admin on the source is deliberately not enough: it says nothing about who can read the
+    // destination, and moving a row is what grants its readers access.
+    const denied = await reassignAs(db, member, to, { fromProjectId: from.id, scope: "all" })
+    expect(denied.status).toBe(403)
+    expect(denied.json).toEqual({ error: "superAdminRequired" })
+    expect(await projectOf(db, "s-other")).toBe(from.id)
+
+    await projectsRepo.grant(db, member, from.id, "admin")
+    const stillDenied = await reassignAs(db, member, to, { fromProjectId: from.id, scope: "all" })
+    expect(stillDenied.status).toBe(403)
+    expect(stillDenied.json).toEqual({ error: "superAdminRequired" })
+    expect(await projectOf(db, "s-other")).toBe(from.id)
+
+    await db.update(users).set({ isSuperAdmin: true }).where(eq(users.id, member))
+    const allowed = await reassignAs(db, member, to, { fromProjectId: from.id, scope: "all" })
+    expect(allowed.status).toBe(200)
+    expect(allowed.json).toEqual({ moved: 1 })
+    expect(await projectOf(db, "s-other")).toBe(to)
+  })
+
+  test("a destination the caller cannot write is refused without moving anything, and says nothing about whether it exists", async () => {
+    const { userId, from } = await seedPair(1006, "outsider")
+    const strangerId = await seedUser(db, 1007, "stranger")
+    const strangersProject = await projectsRepo.upsert(db, {
+      identity: { name: "Private", slug: "private" },
+      ownerId: strangerId,
+    })
+    await seedSession(db, {
+      id: "s-stay",
+      userId,
+      projectId: from,
+      title: "stay",
+      updatedAt: new Date(),
+    })
+
+    const real = await reassignAs(db, userId, strangersProject, { fromProjectId: from })
+    expect(real.status).toBe(403)
+    expect(real.json).toEqual({ error: "destinationForbidden" })
+
+    const imaginary = await reassignAs(db, userId, crypto.randomUUID(), { fromProjectId: from })
+    expect(imaginary.status).toBe(403)
+    expect(imaginary.json).toEqual(real.json)
+
+    expect(await projectOf(db, "s-stay")).toBe(from)
+  })
+
+  test("a source the caller cannot see moves nothing but is not refused - the userId filter is what stops a sweep, and refusing would strand a folder pinned to a project it has lost", async () => {
+    const { userId, to } = await seedPair(1008, "sweeper")
+    const victimId = await seedUser(db, 1009, "victim")
+    const victimProject = await projectsRepo.upsert(db, {
+      identity: { name: "Victim", slug: "victim" },
+      ownerId: victimId,
+    })
+    await seedSession(db, {
+      id: "s-victim",
+      userId: victimId,
+      projectId: victimProject,
+      title: "victim",
+      updatedAt: new Date(),
+    })
+
+    const { status, json } = await reassignAs(db, userId, to, { fromProjectId: victimProject })
+
+    expect(status).toBe(200)
+    expect(json).toEqual({ moved: 0 })
+    expect(await projectOf(db, "s-victim")).toBe(victimProject)
+  })
+
+  test("a caller pulls their own sessions out of a project they can no longer read, leaving everyone else's behind", async () => {
+    const { userId, to } = await seedPair(1012, "stranded")
+    const strangerId = await seedUser(db, 1013, "keeps-it")
+    const lost = await projectsRepo.upsert(db, {
+      identity: { name: "Lost", slug: "lost" },
+      ownerId: strangerId,
+    })
+    await seedSession(db, {
+      id: "s-stranded",
+      userId,
+      projectId: lost,
+      title: "mine",
+      updatedAt: new Date(),
+    })
+    await seedSession(db, {
+      id: "s-not-mine",
+      userId: strangerId,
+      projectId: lost,
+      title: "theirs",
+      updatedAt: new Date(),
+    })
+
+    const { status, json } = await reassignAs(db, userId, to, { fromProjectId: lost })
+
+    expect(status).toBe(200)
+    expect(json).toEqual({ moved: 1 })
+    expect(await projectOf(db, "s-stranded")).toBe(to)
+    expect(await projectOf(db, "s-not-mine")).toBe(lost)
+  })
+
+  test("the endpoint refuses an unauthenticated caller, so nothing can bulk-rewrite projectId without a token", async () => {
+    const { userId, from, to } = await seedPair(1014, "anon")
+    await seedSession(db, {
+      id: "s-anon",
+      userId,
+      projectId: from,
+      title: "anon",
+      updatedAt: new Date(),
+    })
+
+    const res = await buildApp(db, env).request(`/api/projects/${to}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ fromProjectId: from }),
+    })
+
+    expect(res.status).toBe(401)
+    expect(await res.json()).toEqual({ error: "unauthorized" })
+    expect(await projectOf(db, "s-anon")).toBe(from)
+  })
+
+  test("a destination id that is not a uuid is refused like any other, rather than reaching Postgres and surfacing as a 500", async () => {
+    const { userId, from } = await seedPair(1015, "malformed")
+    await seedSession(db, {
+      id: "s-malformed",
+      userId,
+      projectId: from,
+      title: "malformed",
+      updatedAt: new Date(),
+    })
+
+    const { status, json } = await reassignAs(db, userId, "not-a-uuid", { fromProjectId: from })
+
+    expect(status).toBe(403)
+    expect(json).toEqual({ error: "destinationForbidden" })
+    expect(await projectOf(db, "s-malformed")).toBe(from)
+  })
+
+  test("reassigning a project onto itself moves nothing and still succeeds, so re-running a landed reassign is safe", async () => {
+    const { userId, from } = await seedPair(1010, "idempotent")
+    await seedSession(db, {
+      id: "s-same",
+      userId,
+      projectId: from,
+      title: "same",
+      updatedAt: new Date(),
+    })
+
+    const { status, json } = await reassignAs(db, userId, from, { fromProjectId: from })
+
+    expect(status).toBe(200)
+    expect(json).toEqual({ moved: 0 })
+    expect(await projectOf(db, "s-same")).toBe(from)
+  })
+
+  test("S8 (moved): a cli token may list projects, since the reassign picker has to show the caller where sessions can go", async () => {
+    const { userId, from } = await seedPair(1011, "lister")
+    const token = await signToken(env, { sub: userId, aud: "cli" })
+    const res = await buildApp(db, env).request("/api/projects", {
+      headers: { authorization: `Bearer ${token}` },
+    })
+
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { projects: ReadonlyArray<ProjectSummary> }
+    expect(body.projects.some((p) => p.id === from)).toBe(true)
   })
 })

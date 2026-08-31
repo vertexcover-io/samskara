@@ -9,6 +9,7 @@ import { initCommand } from "./commands/init.js"
 import { installHooksCommand, uninstallHooksCommand } from "./commands/install-hooks.js"
 import { logoutCommand } from "./commands/logout.js"
 import { logsCommand } from "./commands/logs.js"
+import { reassignCommand } from "./commands/reassign.js"
 import { replayCommand } from "./commands/replay.js"
 import { restartCommand } from "./commands/restart.js"
 import { type SearchOptions, searchCommand } from "./commands/search.js"
@@ -109,6 +110,26 @@ program
   .action(async (path?: string) => {
     process.exitCode = await disableCommand(path === undefined ? {} : { path })
   })
+
+program
+  .command("reassign [path]")
+  .description("Move a folder's sessions to a different project on the server (defaults to cwd)")
+  .option("--to <projectId>", "destination project id, instead of picking from a list")
+  .option("--all-sessions", "move everyone's sessions, not only your own (needs admin)")
+  .option("-y, --yes", "skip the confirmation prompt")
+  .action(
+    async (
+      path: string | undefined,
+      flags: { to?: string; allSessions?: boolean; yes?: boolean },
+    ) => {
+      process.exitCode = await reassignCommand({
+        ...(path === undefined ? {} : { path }),
+        ...(flags.to === undefined ? {} : { to: flags.to }),
+        ...(flags.allSessions === true ? { allSessions: true } : {}),
+        ...(flags.yes === true ? { yes: true } : {}),
+      })
+    },
+  )
 
 program
   .command("status")

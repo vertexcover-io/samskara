@@ -167,6 +167,9 @@ from the account menu. A code never expires but works only once. The token it re
 | `samskara enable --all` | Also send sessions recorded *before* you enabled it. |
 | `samskara enable --sync-from 2026-07-01` | Only send sessions started after that date. |
 | `samskara disable [path]` | Stop capturing locally. Sessions already uploaded stay on the server. |
+| `samskara reassign [path]` | Move this folder's sessions to a different project on the server and point future ones there too. Run it with no flags to pick from a list. |
+| `samskara reassign --to PROJECT_ID --yes` | The scripted form: name the destination and confirm up front. Both flags are needed — with no terminal to prompt, `--to` alone stops rather than moving anything. |
+| `samskara reassign --all-sessions` | Move everyone's sessions out of the old project, not only your own. Restricted to a super admin, because session visibility follows the project a session sits in. |
 | `samskara status` | Server and web URLs, projects, capture state, last sync time, watcher PID. Start here when something looks off. |
 | `samskara logs [-f]` | Pretty-print the watcher log. `-f` streams new lines. |
 | `samskara restart` | Stop the watcher and start a fresh one. |
