@@ -70,11 +70,17 @@ const askForUrl = async (ask: UrlAsk, prompt: Prompt | null, io: Io): Promise<st
   throw new Error(`Gave up after ${MAX_ATTEMPTS} tries at ${ask.question.toLowerCase()}.`)
 }
 
+/**
+ * Answers whether the api url actually moved, which a stamp comparison cannot tell you on its own:
+ * a file written before the stamp existed carries none, and an absent stamp is deliberately read as
+ * "belongs here" (D5). Without this, `--force` on an install upgrading into the feature concludes
+ * nothing changed and skips the reset it was invoked for.
+ */
 const configureUrls = async (
   options: InitOptions,
   io: Io,
   prompt: Prompt | null,
-): Promise<void> => {
+): Promise<boolean> => {
   const saved = readSettings()
   const apiUrl = await askForUrl(
     {
@@ -102,6 +108,9 @@ const configureUrls = async (
   )
   const path = await writeSettings({ apiUrl, webUrl })
   io.stdout.write(`Server ${apiBase()} and web ${webBase()} saved to ${path}.\n`)
+  // Both sides are normalized -- `writeSettings` normalized what it saved, and `askForUrl` returns
+  // a normalized answer -- so a plain comparison cannot report a trailing slash as a move.
+  return saved !== null && saved.apiUrl !== apiUrl
 }
 
 export const initCommand = async (options: InitOptions = {}): Promise<number> => {
@@ -121,8 +130,9 @@ export const initCommand = async (options: InitOptions = {}): Promise<number> =>
     return 1
   }
 
+  let movedServer = false
   try {
-    await configureUrls(options, io, prompt)
+    movedServer = await configureUrls(options, io, prompt)
   } catch (error) {
     return reportError(stderr, error)
   }
@@ -132,9 +142,12 @@ export const initCommand = async (options: InitOptions = {}): Promise<number> =>
   // a scoped file's own stamp disagree with the server just confirmed -- not whether this
   // invocation happened to rewrite config.json, which a config.json edited by hand outside `init`
   // would already show as unchanged.
+  // Two independent signals, because each sees a case the other is blind to: the url comparison
+  // catches an install whose files predate the stamp, and the stamp catches a config.json edited by
+  // hand outside `init`, where this invocation changed nothing.
   const changedServer = wasConfigured && options.force === true
   const mismatch = changedServer ? await scopeMismatch(ALL_SCOPED_PATHS()) : []
-  if (changedServer && mismatch.length > 0) {
+  if (changedServer && (movedServer || mismatch.length > 0)) {
     const report = await resetServerScope({ stopWatcher: stopWatcherDaemon })
     stdout.write(
       `Backed up ${report.cleared.length} file(s) to ${report.backupDir}.\n` +

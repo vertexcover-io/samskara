@@ -254,13 +254,17 @@ describe("init server url", () => {
 describe("init --force", () => {
   const enabledAt = "2026-07-25T10:00:00.000Z"
 
-  /** Stamped copies of every derived file, plus a real token, so a reset has something to move. */
-  const seedScopedFiles = async (home: string, apiBase: string): Promise<void> => {
+  /**
+   * Copies of every derived file, plus a real token, so a reset has something to move. A null
+   * `apiBase` writes them the way an install that predates the stamp has them on disk.
+   */
+  const seedScopedFiles = async (home: string, apiBase: string | null): Promise<void> => {
+    const stamp = apiBase === null ? {} : { apiBase }
     await writeFile(
       join(home, "projects.json"),
       JSON.stringify({
         version: 1,
-        apiBase,
+        ...stamp,
         projects: {
           "acme-widget": {
             name: "widget",
@@ -274,18 +278,18 @@ describe("init --force", () => {
       }),
       "utf8",
     )
-    await writeFile(join(home, "state.json"), JSON.stringify({ apiBase, checkpoints: {} }), "utf8")
+    await writeFile(join(home, "state.json"), JSON.stringify({ ...stamp, checkpoints: {} }), "utf8")
     await writeFile(
       join(home, "artifacts.json"),
-      JSON.stringify({ version: 1, apiBase, artifacts: {} }),
+      JSON.stringify({ version: 1, ...stamp, artifacts: {} }),
       "utf8",
     )
     await writeFile(
       join(home, "artifact-queue.json"),
-      JSON.stringify({ version: 1, apiBase, entries: [] }),
+      JSON.stringify({ version: 1, ...stamp, entries: [] }),
       "utf8",
     )
-    await writeFile(join(home, "filter-options.json"), JSON.stringify({ apiBase }), "utf8")
+    await writeFile(join(home, "filter-options.json"), JSON.stringify(stamp), "utf8")
     await writeFile(join(home, "token"), "sometoken", "utf8")
   }
 
@@ -379,5 +383,36 @@ describe("init --force", () => {
     const projects = JSON.parse(await readFile(join(home, "projects.json"), "utf8"))
     expect(projects.projects["acme-widget"].enabled).toBe(true)
     expect(projects.projects["acme-widget"].projectId).toBe("3fa85f64-5717-4562-b3fc-2c963f66afa6")
+  })
+
+  // The install that upgrades into this feature and then moves has no stamp to disagree with, so a
+  // mismatch alone never fires for it -- and it is the population the whole feature exists for.
+  test("SC25: a different server resets an install whose files carry no stamp", async () => {
+    const home = process.env.SAMSKARA_HOME as string
+    await writeSettings({ apiUrl: "https://one.example", webUrl: "https://one.example" })
+    await seedScopedFiles(home, null)
+    world.token = "tok"
+    world.hookInstalled = true
+    // Left with no watcher running on purpose: if the reset is skipped, init falls through to its
+    // ordinary path and starts one, which is what makes the assertion below mean something.
+    world.runningPid = null
+
+    const code = await initCommand({
+      ...output().writers,
+      force: true,
+      prompt: answers("https://two.example", "https://two.example").prompt,
+    })
+
+    expect(code).toBe(0)
+    expect(existsSync(join(home, "backups"))).toBe(true)
+    expect(existsSync(join(home, "state.json"))).toBe(false)
+    expect(existsSync(join(home, "token"))).toBe(false)
+    // D12: the reset hands the user back the two next steps; it does not do them for them.
+    expect(startWatcherDaemon).not.toHaveBeenCalled()
+
+    const projects = JSON.parse(await readFile(join(home, "projects.json"), "utf8"))
+    expect(projects.projects["acme-widget"].enabled).toBe(false)
+    expect(projects.projects["acme-widget"].projectId).toBeUndefined()
+    expect(projects.projects["acme-widget"].enabledAt).toBe(enabledAt)
   })
 })
