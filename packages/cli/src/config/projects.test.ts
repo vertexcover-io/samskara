@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, test } from "vitest"
 import { isProjectEnabled, listProjects, setProjectEnabled, upsertProject } from "./projects.js"
+import { writeSettings } from "./settings.js"
 
 const originalHome = process.env.SAMSKARA_HOME
 
@@ -30,12 +31,68 @@ describe("project registry", () => {
     const raw: unknown = JSON.parse(await readFile(join(home, "projects.json"), "utf8"))
     expect(raw).toEqual({
       version: 1,
+      apiBase: "http://localhost:3000",
       projects: {
         "acme-widget": {
           name: "widget",
           path: "/work/widget",
           enabled: true,
           enabledAt: "2026-07-25T10:00:00.000Z",
+        },
+      },
+    })
+  })
+
+  test("SC1: enabling a project records the server it was registered against", async () => {
+    const home = await useTempHome()
+    await writeSettings({ apiUrl: "https://one.example", webUrl: "https://one.example" })
+
+    await upsertProject("acme-widget", {
+      name: "widget",
+      path: "/work/widget",
+      enabled: true,
+      enabledAt: "2026-07-25T10:00:00.000Z",
+    })
+
+    const raw: unknown = JSON.parse(await readFile(join(home, "projects.json"), "utf8"))
+    expect((raw as { apiBase?: unknown }).apiBase).toBe("https://one.example")
+
+    const [stored] = await listProjects()
+    expect(stored?.entry).toEqual({
+      name: "widget",
+      path: "/work/widget",
+      enabled: true,
+      enabledAt: "2026-07-25T10:00:00.000Z",
+    })
+  })
+
+  test("SC6: disabling a project keeps every other field, and stamps apiBase at the top level", async () => {
+    const home = await useTempHome()
+    await writeSettings({ apiUrl: "https://one.example", webUrl: "https://one.example" })
+
+    await upsertProject("acme-widget", {
+      name: "widget",
+      path: "/work/widget",
+      enabled: true,
+      enabledAt: "2026-07-25T10:00:00.000Z",
+      syncFrom: "2026-07-25T10:00:00.000Z",
+      projectId: "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+    })
+
+    await setProjectEnabled("acme-widget", false)
+
+    const raw: unknown = JSON.parse(await readFile(join(home, "projects.json"), "utf8"))
+    expect(raw).toEqual({
+      version: 1,
+      apiBase: "https://one.example",
+      projects: {
+        "acme-widget": {
+          name: "widget",
+          path: "/work/widget",
+          enabled: false,
+          enabledAt: "2026-07-25T10:00:00.000Z",
+          syncFrom: "2026-07-25T10:00:00.000Z",
+          projectId: "3fa85f64-5717-4562-b3fc-2c963f66afa6",
         },
       },
     })
