@@ -403,6 +403,38 @@ describe.skipIf(!dockerAvailable())("POST /api/projects", () => {
     expect(row).toMatchObject({ ownerUserId: outsider, ownerOrgId: null })
   })
 
+  test("SC22: a super admin's POST is org-owned even without a membership row", async () => {
+    const admin = await seedUser(db, 806, "sc22-admin")
+    await db.update(users).set({ isSuperAdmin: true }).where(eq(users.id, admin))
+    const orgId = await seedOrg("acme")
+
+    const res = await postAs(admin, {
+      name: "widget",
+      slug: "acme-widget",
+      remote: { host: "github.com", owner: "acme", repoName: "widget" },
+    })
+    expect(res.status).toBe(201)
+    expect(res.body.owner).toEqual({ type: "org", slug: "acme" })
+    expect(res.body.reason).toBeUndefined()
+
+    const [row] = await db.select().from(projects).where(eq(projects.slug, "acme-widget"))
+    expect(row).toMatchObject({ ownerOrgId: orgId, ownerUserId: null })
+  })
+
+  test("SC23: a super admin's POST for an unregistered org stays personal", async () => {
+    const admin = await seedUser(db, 807, "sc23-admin")
+    await db.update(users).set({ isSuperAdmin: true }).where(eq(users.id, admin))
+
+    const res = await postAs(admin, {
+      name: "widget",
+      slug: "nosuchorg-widget",
+      remote: { host: "github.com", owner: "nosuchorg", repoName: "widget" },
+    })
+    expect(res.status).toBe(201)
+    expect(res.body.owner).toEqual({ type: "user", slug: "sc23-admin" })
+    expect(res.body.reason).toBeUndefined()
+  })
+
   test("SC20: a repo with no remote or a non-GitHub host is personal", async () => {
     const caller = await seedUser(db, 803, "sc20-caller")
     await seedOrg("acme")

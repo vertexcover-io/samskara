@@ -3,6 +3,7 @@ import type { Querier } from "../db/client.js"
 import * as orgsRepo from "../repositories/orgs.repo.js"
 import * as projectsRepo from "../repositories/projects.repo.js"
 import * as userOrgsRepo from "../repositories/userOrgs.repo.js"
+import * as usersRepo from "../repositories/users.repo.js"
 
 export type FindOrCreateResult = {
   readonly id: string
@@ -10,6 +11,9 @@ export type FindOrCreateResult = {
   readonly owner: { readonly type: "user" } | { readonly type: "org"; readonly slug: string }
   readonly reason?: "notMember"
 }
+
+const mayOwnForOrg = async (db: Querier, userId: string, orgId: string): Promise<boolean> =>
+  (await userOrgsRepo.isMember(db, userId, orgId)) || usersRepo.isSuperAdmin(db, userId)
 
 export const findOrCreateProject = async (
   db: Querier,
@@ -22,7 +26,7 @@ export const findOrCreateProject = async (
       ? await orgsRepo.findBySlug(db, remote.owner.toLowerCase())
       : null
 
-  if (org !== null && remote !== undefined && (await userOrgsRepo.isMember(db, userId, org.id))) {
+  if (org !== null && remote !== undefined && (await mayOwnForOrg(db, userId, org.id))) {
     // Derived from the verified remote, not the client-supplied slug: two clones of the same
     // repo can disagree on remote casing, and a client-trusted slug would give each one its own
     // project row instead of sharing the one org row R11 requires.
