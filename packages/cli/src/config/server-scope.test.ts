@@ -206,8 +206,7 @@ describe("resetServerScope", () => {
     })
   })
 
-  // The count is printed to reassure the user their data is safe, immediately before it is deleted.
-  // A number describing what was attempted rather than what landed is worse than no number.
+  // This count is printed to say the data is safe, immediately before it is deleted.
   test("SC26: reports the files it actually backed up, not the ones it looked for", async () => {
     await writeSettings({ apiUrl: "https://one.example", webUrl: "https://one.example" })
     await writeFile(projectsPath(), JSON.stringify({ version: 1, projects: {} }), "utf8")

@@ -118,8 +118,7 @@ describe("replayCommand", () => {
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "samskara-replay-"))
-    // scopeMismatch() looks up projects.json under SAMSKARA_HOME -- pinned to this run's own temp
-    // dir so the refusal check never reads whatever real state happens to be on the machine.
+    // The refusal check reads projects.json under `SAMSKARA_HOME`, pinned here to a temp dir.
     process.env.SAMSKARA_HOME = dir
     paths = {
       state: join(dir, "state.json"),

@@ -161,9 +161,7 @@ describe("watcher driver", () => {
     repoMocks.resolveRepo.mockReset()
     repoMocks.resolveHead.mockReset()
     dir = await mkdtemp(join(tmpdir(), "samskara-watch-"))
-    // `runCycle` stamps its store with `persistedApiUrl()`, which reads `config.json` under
-    // `SAMSKARA_HOME` -- isolated here so a cycle stamps a temp server rather than whatever this
-    // machine has configured for real.
+    // `runCycle` stamps via `persistedApiUrl()`, which reads `config.json` under `SAMSKARA_HOME`.
     process.env.SAMSKARA_HOME = dir
     projects = join(dir, ".claude", "projects", "bucket")
     await mkdir(projects, { recursive: true })

@@ -70,12 +70,6 @@ const askForUrl = async (ask: UrlAsk, prompt: Prompt | null, io: Io): Promise<st
   throw new Error(`Gave up after ${MAX_ATTEMPTS} tries at ${ask.question.toLowerCase()}.`)
 }
 
-/**
- * Answers whether the api url actually moved, which a stamp comparison cannot tell you on its own:
- * a file written before the stamp existed carries none, and an absent stamp is deliberately read as
- * "belongs here" (D5). Without this, `--force` on an install upgrading into the feature concludes
- * nothing changed and skips the reset it was invoked for.
- */
 const configureUrls = async (
   options: InitOptions,
   io: Io,
@@ -108,8 +102,6 @@ const configureUrls = async (
   )
   const path = await writeSettings({ apiUrl, webUrl })
   io.stdout.write(`Server ${apiBase()} and web ${webBase()} saved to ${path}.\n`)
-  // Both sides are normalized -- `writeSettings` normalized what it saved, and `askForUrl` returns
-  // a normalized answer -- so a plain comparison cannot report a trailing slash as a move.
   return saved !== null && saved.apiUrl !== apiUrl
 }
 
@@ -118,8 +110,6 @@ export const initCommand = async (options: InitOptions = {}): Promise<number> =>
   const io = { stdout, stderr }
   const prompt = options.prompt ?? interactivePrompt()
 
-  // A configured install needs `--force` to go any further: `init` used to re-run silently, which
-  // is exactly what re-pointed a watcher at the wrong server unnoticed.
   const wasConfigured = readSettings() !== null
   if (wasConfigured && options.force !== true) {
     stderr.write(
@@ -137,11 +127,8 @@ export const initCommand = async (options: InitOptions = {}): Promise<number> =>
     return reportError(stderr, error)
   }
 
-  // `--force` is permission to move to a different server, not an instruction to wipe state that
-  // never actually moved (D13). Two signals decide it, because each sees a case the other cannot:
-  // the url comparison catches an install whose files predate the stamp and so disagree with
-  // nothing, and the stamp catches a config.json edited by hand outside `init`, where this
-  // invocation rewrote no url at all.
+  // Two signals, because each sees what the other cannot: the url comparison catches files that
+  // predate the stamp and so disagree with nothing, the stamp catches a hand-edited config.json.
   const changedServer = wasConfigured && options.force === true
   const mismatch = changedServer ? await scopeMismatch(ALL_SCOPED_PATHS()) : []
   if (changedServer && (movedServer || mismatch.length > 0)) {

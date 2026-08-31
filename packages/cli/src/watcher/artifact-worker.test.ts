@@ -108,9 +108,7 @@ describe("artifact workers", () => {
     filePath = join(dir, "notes.md")
     await writeFile(filePath, "current bytes\n", "utf8")
     recorder = spyLogger()
-    // The queue and state writers now stamp `apiBase` via `persistedApiUrl()`, which reads
-    // `config.json` under `SAMSKARA_HOME` -- isolated so a test stamps a temp server rather than
-    // this machine's real one.
+    // The writers stamp via `persistedApiUrl()`, which reads `config.json` under `SAMSKARA_HOME`.
     process.env.SAMSKARA_HOME = dir
   })
 

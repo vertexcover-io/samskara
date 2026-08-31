@@ -385,16 +385,16 @@ describe("init --force", () => {
     expect(projects.projects["acme-widget"].projectId).toBe("3fa85f64-5717-4562-b3fc-2c963f66afa6")
   })
 
-  // The install that upgrades into this feature and then moves has no stamp to disagree with, so a
-  // mismatch alone never fires for it -- and it is the population the whole feature exists for.
+  // An install upgrading into this feature has no stamp to disagree with, so a mismatch alone never
+  // fires for it -- and it is the population the feature exists for.
   test("SC25: a different server resets an install whose files carry no stamp", async () => {
     const home = process.env.SAMSKARA_HOME as string
     await writeSettings({ apiUrl: "https://one.example", webUrl: "https://one.example" })
     await seedScopedFiles(home, null)
     world.token = "tok"
     world.hookInstalled = true
-    // Left with no watcher running on purpose: if the reset is skipped, init falls through to its
-    // ordinary path and starts one, which is what makes the assertion below mean something.
+    // No watcher on purpose: skipping the reset falls through to init's ordinary path, which
+    // starts one. That is what makes the assertion below mean something.
     world.runningPid = null
 
     const code = await initCommand({

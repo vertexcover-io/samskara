@@ -31,8 +31,7 @@ describe("artifact queue", () => {
   beforeEach(async () => {
     const dir = await mkdtemp(join(tmpdir(), "samskara-queue-"))
     queuePath = join(dir, "artifact-queue.json")
-    // `enqueue` stamps `apiBase` via `persistedApiUrl()`, which reads `config.json` under
-    // `SAMSKARA_HOME` -- isolated so a test stamps a temp server rather than this machine's real one.
+    // The writers stamp via `persistedApiUrl()`, which reads `config.json` under `SAMSKARA_HOME`.
     process.env.SAMSKARA_HOME = dir
   })
 

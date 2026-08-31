@@ -27,11 +27,8 @@ export type ReplayDeps = {
 export const belongsToSession = (filePath: string, sessionId: string): boolean =>
   basename(filePath) === `${sessionId}.jsonl` || filePath.includes(`${sep}${sessionId}${sep}`)
 
-/**
- * Carries the stamp already on disk across rather than re-deriving it. A replay removes one
- * session; it is not the moment to decide the file now belongs to a different server, and the
- * value is in the object these callers have already read.
- */
+// Carries across the stamp already on disk: a replay removes one session, and is not the moment to
+// decide the file now belongs to a different server.
 const carried = (value: unknown): { readonly apiBase?: string } => {
   const recorded = stampIn(value)
   return recorded === null ? {} : { apiBase: recorded }

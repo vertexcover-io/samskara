@@ -83,12 +83,10 @@ test("SC7: a command run against a different server warns on stderr, naming both
   expect(stderrLines[0]).toContain("https://one.example")
   expect(stderrLines[0]).toContain("https://two.example")
   expect(stderrLines[0]).toContain("samskara init --force")
-  // The command still did its own job: `status` ran to completion and printed its report.
   expect(result.stdout).toContain("Server")
 })
 
-// The preAction hook warns for every command, and a writing command refuses on its own. Both used
-// to fire, so one mismatch printed two near-identical lines differing only in their last two words.
+// The hook warns for every command and a writing command refuses on its own; both used to fire.
 test.each(["enable", "disable"])(
   "SC27: `%s` reports a mismatch once, not once per guard",
   (command) => {
@@ -111,8 +109,7 @@ test.each(["enable", "disable"])(
     const stderrLines = result.stderr.trim().split("\n").filter(Boolean)
     expect(stderrLines).toHaveLength(1)
     expect(stderrLines[0]).toContain("samskara init --force")
-    // A refusal has to say the command did nothing. The state it reports is true either way, so
-    // without this the user cannot tell whether it went ahead.
+    // The state it reports is true whether or not the command ran, so it has to say which.
     expect(stderrLines[0]).toContain("Nothing was changed")
   },
 )
@@ -189,7 +186,6 @@ test("SC22: a server change is survivable end to end", () => {
     JSON.stringify({ version: 1, apiUrl: "https://one.example", webUrl: "https://one.example" }),
   )
   seedScopedFiles(home, "https://one.example")
-  // Now point config.json at server B, so every scoped file disagrees with it.
   writeFileSync(
     join(home, "config.json"),
     JSON.stringify({ version: 1, apiUrl: "https://two.example", webUrl: "https://two.example" }),
