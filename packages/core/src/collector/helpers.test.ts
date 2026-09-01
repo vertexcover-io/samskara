@@ -72,7 +72,7 @@ describe("checkpoints", () => {
 
     await writeCheckpoints(nodeFs, path, store)
     const roundTripped = await readCheckpoints(nodeFs, path)
-    expect(roundTripped.checkpoints["/a.jsonl"]?.lineProcessed).toBe(5)
+    expect(roundTripped.checkpoints["/a.jsonl"]).toMatchObject({ lineProcessed: 5 })
   })
 
   test("missing state file yields empty", async () => {

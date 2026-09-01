@@ -7,10 +7,13 @@ import type {
   ParsedRecord,
   ProjectIdentity,
   TokenUsage,
+  ToolCallMetadata,
+  ToolResultMetadata,
 } from "../../ingest/types.js"
 import { normalizedMessageSchema } from "../../ingest/types.js"
 import type { FileSystem } from "../fs.js"
-import { compact, completeLines, parseJsonLines } from "../helpers.js"
+import { compact, completeLines, parseJsonLines, uuidV5 } from "../helpers.js"
+import { redactJson } from "../redact.js"
 import type {
   AgentPlugin,
   CheckpointBody,
@@ -24,16 +27,6 @@ const SOURCE = "claude_code" as const
 const SCHEMA_VERSION = 1
 const GLOB = "~/.claude/projects/**/*.jsonl"
 const URL_NAMESPACE = "6ba7b811-9dad-11d1-80b4-00c04fd430c8"
-const SENSITIVE_KEYS = new Set([
-  "token",
-  "authorization",
-  "password",
-  "secret",
-  "accesstoken",
-  "refreshtoken",
-  "apikey",
-  "clientsecret",
-])
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -42,29 +35,6 @@ const stringValue = (value: unknown): string | undefined =>
   typeof value === "string" && value.length > 0 ? value : undefined
 const nonnegativeInteger = (value: unknown): number =>
   typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0
-const normalizedKey = (key: string): string => key.toLowerCase().replaceAll(/[_-]/g, "")
-
-/**
- * Postgres cannot store U+0000 in `jsonb` at all, and a transcript records whatever the agent
- * wrote -- source code containing a NUL escape is ordinary content. Stripping it here, before the
- * line's uuid is derived, keeps the stored row and the hashed object identical.
- */
-const withoutNul = (text: string): string =>
-  text.includes("\u0000") ? text.replaceAll("\u0000", "") : text
-
-export const redactJson = (value: unknown): unknown => {
-  if (typeof value === "string") return withoutNul(value)
-  if (Array.isArray(value)) return value.map(redactJson)
-  if (!isObject(value)) return value
-
-  return Object.fromEntries(
-    Object.entries(value).map(([key, item]) => [
-      withoutNul(key),
-      SENSITIVE_KEYS.has(normalizedKey(key)) ? "[Redacted]" : redactJson(item),
-    ]),
-  )
-}
-
 const stableValue = (value: unknown): unknown => {
   if (Array.isArray(value)) return value.map(stableValue)
   if (!isObject(value)) return value
@@ -76,23 +46,6 @@ const stableValue = (value: unknown): unknown => {
 }
 
 export const stableJson = (value: unknown): string => JSON.stringify(stableValue(value))
-
-const uuidBytes = (uuid: string): Buffer => Buffer.from(uuid.replaceAll("-", ""), "hex")
-const formatUuid = (bytes: Buffer): string => {
-  const hex = bytes.toString("hex")
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
-}
-
-const uuidV5 = (name: string): string => {
-  const digest = createHash("sha1")
-    .update(Buffer.concat([uuidBytes(URL_NAMESPACE), Buffer.from(name, "utf8")]))
-    .digest()
-    .subarray(0, 16)
-  const bytes = Buffer.from(digest)
-  bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x50
-  bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80
-  return formatUuid(bytes)
-}
 
 export type ClaudeLineContext = {
   readonly sessionId: string
@@ -109,6 +62,7 @@ export const lineUuidFor = (
   if (typeof nativeUuid === "string" && UUID_PATTERN.test(nativeUuid))
     return nativeUuid.toLowerCase()
   return uuidV5(
+    URL_NAMESPACE,
     stableJson([SOURCE, context.sessionId, context.trackId, context.lineNumber, redactedObject]),
   )
 }
@@ -734,7 +688,7 @@ const handleConversationMessage = (
     // An empty content array still yields one message, so the line is never dropped.
     const blocks = content.length === 0 ? [undefined] : content
     const messages = blocks.map((block, index) =>
-      handleContentBlock(block, role, common, index, details),
+      handleContentBlock(block, { line: data, role, common, subIndex: index, details }),
     )
     return stampInjection(nonEmpty(withEmbeddedUsage(messages, usage, common)), injection)
   }
@@ -742,13 +696,42 @@ const handleConversationMessage = (
   return [buildMessage(common, { msgType: "custom", subType: fallbackSubtype(data) })]
 }
 
-const handleContentBlock = (
-  block: unknown,
-  role: ReturnType<typeof roleFor>,
-  common: CommonFields,
-  subIndex: number,
-  details: ReturnType<typeof conversationDetailsFor>,
-): NormalizedMessage => {
+const shellMetadataFor = (name: string, input: unknown): ToolCallMetadata | undefined => {
+  const command = name === "Bash" && isObject(input) ? stringValue(input.command) : undefined
+  return command === undefined ? undefined : { type: "shell", command }
+}
+
+/**
+ * What a write did lives beside the `tool_result` block, at line level: Write, Edit, MultiEdit and
+ * NotebookEdit all record the file as a top-level `filePath` (Read nests its own under `file`),
+ * so that key is the discriminator. A failed write records no such object, so absence means
+ * nothing was written.
+ */
+const wroteMetadataFor = (toolUseResult: unknown): ToolResultMetadata | undefined => {
+  if (!isObject(toolUseResult)) return undefined
+  const path = stringValue(toolUseResult.filePath)
+  if (path === undefined) return undefined
+  const base =
+    typeof toolUseResult.originalFile === "string" ? toolUseResult.originalFile : undefined
+  return {
+    type: "wrote",
+    path,
+    created: toolUseResult.type === "create",
+    ...(base === undefined ? {} : { base }),
+  }
+}
+
+/** Carries the real transcript line: a block's siblings at line level (`toolUseResult`) matter. */
+type BlockContext = {
+  readonly line: Record<string, unknown>
+  readonly role: ReturnType<typeof roleFor>
+  readonly common: CommonFields
+  readonly subIndex: number
+  readonly details: ReturnType<typeof conversationDetailsFor>
+}
+
+const handleContentBlock = (block: unknown, ctx: BlockContext): NormalizedMessage => {
+  const { line, role, common, subIndex, details } = ctx
   const shared = { ...common, subIndex }
   if (!isObject(block)) {
     return parsedMessage({ ...shared, msgType: "custom", subType: "message.content" })
@@ -809,7 +792,12 @@ const handleContentBlock = (
         ? parsedMessage({
             ...shared,
             msgType: "toolCall",
-            details: { callId, name, input: block.input },
+            details: {
+              callId,
+              name,
+              input: block.input,
+              metadata: shellMetadataFor(name, block.input),
+            },
           })
         : asCustom()
     }
@@ -830,7 +818,12 @@ const handleContentBlock = (
       return parsedMessage({
         ...shared,
         msgType: "toolResult",
-        details: { callId, output: block.content, status },
+        details: {
+          callId,
+          output: block.content,
+          status,
+          metadata: wroteMetadataFor(line.toolUseResult),
+        },
       })
     }
 
@@ -969,10 +962,13 @@ const isChanged = (
   stat: { readonly mtime: number; readonly size: number },
 ): boolean => {
   const checkpoint = prev.checkpoints[path]
-  return !checkpoint || checkpoint.mtime !== stat.mtime || checkpoint.size !== stat.size
+  if (checkpoint?.source !== SOURCE) return true
+  return checkpoint.mtime !== stat.mtime || checkpoint.size !== stat.size
 }
-const fromLineFor = (prev: CheckpointStore, path: string): number =>
-  prev.checkpoints[path]?.lineProcessed ?? 0
+const fromLineFor = (prev: CheckpointStore, path: string): number => {
+  const checkpoint = prev.checkpoints[path]
+  return checkpoint?.source === SOURCE ? checkpoint.lineProcessed : 0
+}
 
 const firstTimestampIn = async (fs: FileSystem, path: string): Promise<string | undefined> => {
   try {
@@ -1077,6 +1073,7 @@ const collectTrack = async (
 
   const shared = {
     sessionId: location.sessionId,
+    source: SOURCE,
     project,
     sourceRelativePath: location.sourceRelativePath,
     records,

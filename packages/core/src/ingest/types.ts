@@ -16,6 +16,13 @@ export const MSG_TYPES = [
   "custom",
 ] as const
 
+/**
+ * Every harness samskara can capture. Each value is also the `source` of the AgentPlugin that
+ * produced it, and the server rejects a payload naming any other.
+ */
+export const SESSION_SOURCES = ["claude_code", "opencode"] as const
+export type SessionSource = (typeof SESSION_SOURCES)[number]
+
 const nonemptyString = z.string().min(1)
 const nonnegativeInteger = z.number().int().nonnegative()
 const jsonValue = z.unknown()
@@ -63,7 +70,7 @@ export const normalizedContentSchema = z.discriminatedUnion("type", [
 const commonShape = {
   subIndex: nonnegativeInteger,
   sessionId: nonemptyString,
-  source: z.literal("claude_code"),
+  source: z.enum(SESSION_SOURCES),
   sourceSchemaVersion: z.number().int().positive(),
   trackId: nonemptyString,
   timestamp: timestamp.optional(),
@@ -90,14 +97,41 @@ const conversationDetailsSchema = z
   })
   .strict()
 
+/**
+ * What a tool *did*, in samskara's own vocabulary, beside `input`/`output` which is what the tool
+ * *said* in the harness's. Each plugin maps its own tool names into these kinds, so no consumer
+ * needs to know that a shell is `Bash` in one harness and `bash` in another. The union is closed
+ * and every member strict: it grows by kind of effect, never by harness key.
+ */
+export const toolCallMetadataSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("shell"), command: nonemptyString }).strict(),
+])
+export const toolResultMetadataSchema = z.discriminatedUnion("type", [
+  z
+    .object({
+      type: z.literal("wrote"),
+      path: nonemptyString,
+      created: z.boolean(),
+      // The file's content before this session touched it; absent when the harness did not keep it.
+      base: z.string().optional(),
+    })
+    .strict(),
+])
+
 const toolCallDetailsSchema = z
-  .object({ callId: nonemptyString, name: nonemptyString, input: jsonValue })
+  .object({
+    callId: nonemptyString,
+    name: nonemptyString,
+    input: jsonValue,
+    metadata: toolCallMetadataSchema.optional(),
+  })
   .strict()
 const toolResultDetailsSchema = z
   .object({
     callId: nonemptyString,
     output: jsonValue,
     status: z.enum(["success", "failure", "cancelled", "unknown"]),
+    metadata: toolResultMetadataSchema.optional(),
   })
   .strict()
 const progressDetailsSchema = z
@@ -466,6 +500,9 @@ export const gitEventSchema = z.discriminatedUnion("kind", [
 
 const ingestBaseShape = {
   sessionId: nonemptyString,
+  // Optional only for CLIs released before a second source existed; the server reads it as
+  // claude_code when absent.
+  source: z.enum(SESSION_SOURCES).optional(),
   project: projectIdentitySchema,
   sourceRelativePath: nonemptyString,
   title: z.string().optional(),
@@ -564,6 +601,8 @@ export type MsgType = (typeof MSG_TYPES)[number]
 export type TokenUsage = z.infer<typeof tokenUsageSchema>
 export type NormalizedContent = z.infer<typeof normalizedContentSchema>
 export type NormalizedMessage = z.infer<typeof normalizedMessageSchema>
+export type ToolCallMetadata = z.infer<typeof toolCallMetadataSchema>
+export type ToolResultMetadata = z.infer<typeof toolResultMetadataSchema>
 export type ParsedRecord = z.infer<typeof parsedRecordSchema>
 export type ProjectIdentity = z.infer<typeof projectIdentitySchema>
 export type ProjectRemote = z.infer<typeof projectRemoteSchema>

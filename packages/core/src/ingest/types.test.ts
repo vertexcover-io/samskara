@@ -1,9 +1,10 @@
-import { expect, test } from "vitest"
+import { describe, expect, test } from "vitest"
 import {
   artifactUploadSchema,
   createProjectRequestSchema,
   createProjectResponseSchema,
   ingestPayloadSchema,
+  normalizedMessageSchema,
   type ParsedRecord,
   projectIdentitySchema,
   reassignSessionsRequestSchema,
@@ -239,4 +240,61 @@ test("a reassign response carries a whole non-negative count, never a fraction o
   expect(reassignSessionsResponseSchema.safeParse({ moved: 12 }).success).toBe(true)
   expect(reassignSessionsResponseSchema.safeParse({ moved: -1 }).success).toBe(false)
   expect(reassignSessionsResponseSchema.safeParse({ moved: 1.5 }).success).toBe(false)
+})
+
+describe("tool metadata", () => {
+  const base = {
+    subIndex: 0,
+    sessionId: "sess-1",
+    source: "claude_code",
+    sourceSchemaVersion: 1,
+    trackId: "main",
+  }
+  const call = (metadata: unknown) => ({
+    ...base,
+    msgType: "toolCall",
+    details: { callId: "c1", name: "Bash", input: { command: "ls" }, metadata },
+  })
+  const result = (metadata: unknown) => ({
+    ...base,
+    msgType: "toolResult",
+    details: { callId: "c1", output: "ok", status: "success", metadata },
+  })
+
+  test("a shell call and a wrote result carry their effect beside the harness payload", () => {
+    expect(normalizedMessageSchema.safeParse(call({ type: "shell", command: "ls" })).success).toBe(
+      true,
+    )
+    expect(
+      normalizedMessageSchema.safeParse(
+        result({ type: "wrote", path: "src/a.ts", created: false, base: "old" }),
+      ).success,
+    ).toBe(true)
+    expect(
+      normalizedMessageSchema.safeParse(result({ type: "wrote", path: "src/a.ts", created: true }))
+        .success,
+    ).toBe(true)
+  })
+
+  test("metadata is optional, and an unmapped tool simply omits it", () => {
+    expect(normalizedMessageSchema.safeParse(call(undefined)).success).toBe(true)
+    expect(normalizedMessageSchema.safeParse(result(undefined)).success).toBe(true)
+  })
+
+  test("metadata is closed: an unknown kind or a stray harness key is rejected", () => {
+    expect(normalizedMessageSchema.safeParse(call({ type: "wrote", path: "x" })).success).toBe(
+      false,
+    )
+    expect(
+      normalizedMessageSchema.safeParse(call({ type: "shell", command: "ls", cwd: "/x" })).success,
+    ).toBe(false)
+    expect(
+      normalizedMessageSchema.safeParse(
+        result({ type: "wrote", path: "x", created: true, originalFile: "y" }),
+      ).success,
+    ).toBe(false)
+    expect(
+      normalizedMessageSchema.safeParse(result({ type: "shell", command: "ls" })).success,
+    ).toBe(false)
+  })
 })
