@@ -20,8 +20,6 @@ export const mergeArtifact = (a: PotentialArtifact, b: PotentialArtifact): Poten
   }
 }
 
-const blank = (path: string): PotentialArtifact => ({ path, created: false })
-
 const timeOf = (record: ParsedRecord): number => {
   const stamp = record.messages.find((message) => message.timestamp !== undefined)?.timestamp
   return stamp === undefined ? 0 : Date.parse(stamp)
@@ -38,7 +36,7 @@ const artifactOf = (message: NormalizedMessage, cwd: string): PotentialArtifact 
     return { path: absolute(path, cwd), created, ...(base === undefined ? {} : { base }) }
   }
   if (message.msgType === "fileEvent" && message.details.type === "edited") {
-    return blank(absolute(message.details.path, cwd))
+    return { path: absolute(message.details.path, cwd), created: false }
   }
   return undefined
 }
@@ -54,10 +52,8 @@ export const collectArtifacts = (
   for (const message of byTime.flatMap((record) => record.messages)) {
     const artifact = artifactOf(message, cwd)
     if (!artifact) continue
-    byPath.set(
-      artifact.path,
-      mergeArtifact(byPath.get(artifact.path) ?? blank(artifact.path), artifact),
-    )
+    const seen = byPath.get(artifact.path)
+    byPath.set(artifact.path, seen ? mergeArtifact(seen, artifact) : artifact)
   }
   return [...byPath.values()]
 }
