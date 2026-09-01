@@ -4,6 +4,7 @@ import { dirname, join } from "node:path"
 import { describe, expect, test, vi } from "vitest"
 import type { ProjectIdentity } from "../../ingest/types.js"
 import { createLogger } from "../../logging.js"
+import { redactJson } from "../redact.js"
 import type { Checkpoint, CheckpointStore, CollectDeps } from "../types.js"
 import {
   classifyClaudePath,
@@ -11,7 +12,6 @@ import {
   lineUuidFor,
   normalizeClaude,
   readClaudeSidecar,
-  redactJson,
   stableJson,
 } from "./claude.js"
 
@@ -108,6 +108,78 @@ const arrayUserTextLine = {
   timestamp: "2026-07-23T00:00:03.000Z",
   message: { role: "user", content: [{ type: "text", text: "Continue." }] },
 }
+
+describe("tool metadata (claude)", () => {
+  const ctx = { sessionId: "sess-1", trackId: "main", lineNumber: 1 } as const
+  const assistantWith = (block: Record<string, unknown>) =>
+    normalizeClaude({ type: "assistant", message: { role: "assistant", content: [block] } }, ctx)
+  const resultLine = (toolUseResult: unknown) =>
+    normalizeClaude(
+      {
+        type: "user",
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "toolu_w", content: "done" }],
+        },
+        toolUseResult,
+      },
+      ctx,
+    )
+  const callMetadata = (block: Record<string, unknown>) => {
+    const [message] = assistantWith(block)
+    return message?.msgType === "toolCall" ? message.details.metadata : "not a call"
+  }
+  const resultMetadata = (toolUseResult: unknown) => {
+    const [message] = resultLine(toolUseResult)
+    return message?.msgType === "toolResult" ? message.details.metadata : "not a result"
+  }
+
+  test("a Bash call is a shell effect carrying its command", () => {
+    expect(
+      callMetadata({ type: "tool_use", id: "toolu_b", name: "Bash", input: { command: "ls -la" } }),
+    ).toEqual({ type: "shell", command: "ls -la" })
+  })
+
+  test("any other tool, or a Bash call without a command, carries no metadata", () => {
+    expect(
+      callMetadata({ type: "tool_use", id: "toolu_r", name: "Read", input: { path: "x" } }),
+    ).toBeUndefined()
+    expect(
+      callMetadata({ type: "tool_use", id: "toolu_b", name: "Bash", input: {} }),
+    ).toBeUndefined()
+  })
+
+  test("a Write result is a wrote effect, created when the file did not exist", () => {
+    expect(
+      resultMetadata({ type: "create", filePath: "/work/app/src/new.ts", content: "x" }),
+    ).toEqual({ type: "wrote", path: "/work/app/src/new.ts", created: true })
+  })
+
+  test("an Edit result keeps the file's pre-session content as its base", () => {
+    expect(
+      resultMetadata({
+        filePath: "src/a.ts",
+        oldString: "a",
+        newString: "b",
+        originalFile: "const a = 1",
+      }),
+    ).toEqual({ type: "wrote", path: "src/a.ts", created: false, base: "const a = 1" })
+    expect(resultMetadata({ type: "update", filePath: "src/a.ts", originalFile: null })).toEqual({
+      type: "wrote",
+      path: "src/a.ts",
+      created: false,
+    })
+  })
+
+  test("a result that names no file -- a shell result, a read, a failed write -- carries no metadata", () => {
+    expect(resultMetadata({ stdout: "ok", stderr: "", interrupted: false })).toBeUndefined()
+    expect(
+      resultMetadata({ type: "text", file: { filePath: "src/a.ts", content: "" } }),
+    ).toBeUndefined()
+    expect(resultMetadata("Error: file not found")).toBeUndefined()
+    expect(resultMetadata(undefined)).toBeUndefined()
+  })
+})
 
 describe("normalizeClaude", () => {
   test("S1: unknown and structurally invalid objects emit deterministic custom messages", () => {
@@ -900,7 +972,7 @@ describe("collect", () => {
     expect(track?.records[0]?.messages).toHaveLength(3)
     expect(track?.project).toEqual(project)
     expect(track?.checkpointKey).toBe(path)
-    expect(track?.checkpointAt(1).lineProcessed).toBe(1)
+    expect(track?.checkpointAt(1)).toMatchObject({ lineProcessed: 1 })
     expect(track?.checkpointAt(1).source).toBe("claude_code")
   })
 

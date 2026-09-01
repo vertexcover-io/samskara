@@ -440,6 +440,54 @@ describe.skipIf(!dockerAvailable())("ingest repositories", () => {
     expect(calls[0]?.toolInput).toEqual({ path: "b" })
   })
 
+  test("toolRows.callsByIds takes the command from shell metadata, falling back to toolInput only for rows without any", async () => {
+    await seedSession("sess-cmd")
+    const lineUuid = "0191d942-3ba5-7dba-9a7d-22d65b3025c1"
+    const row = (subIndex: number) => ({
+      sessionId: "sess-cmd",
+      lineUuid,
+      subIndex,
+      msgType: "toolCall",
+      lineNumber: 1,
+      sourceSchemaVersion: 1,
+      raw: {},
+    })
+    const { idByKey } = await messagesRepo.insertManyIgnoreConflicts(db, "sess-cmd", [
+      row(0),
+      row(1),
+      row(2),
+    ])
+    const idAt = (subIndex: number): string => {
+      const id = idByKey.get(messagesRepo.keyOf(lineUuid, subIndex))
+      if (!id) throw new Error("no message id")
+      return id
+    }
+
+    await toolRowsRepo.replaceForMessage(db, idAt(0), {
+      call: {
+        callId: "call-shell",
+        name: "bash",
+        input: { command: "ls" },
+        metadata: { type: "shell", command: "git commit -m x" },
+      },
+    })
+    await toolRowsRepo.replaceForMessage(db, idAt(1), {
+      call: { callId: "call-legacy", name: "Bash", input: { command: "git commit -m legacy" } },
+    })
+    await toolRowsRepo.replaceForMessage(db, idAt(2), {
+      call: { callId: "call-bare", name: "Read", input: { path: "a" } },
+    })
+
+    const calls = await toolRowsRepo.callsByIds(db, "sess-cmd", [
+      "call-shell",
+      "call-legacy",
+      "call-bare",
+    ])
+    expect(calls.get("call-shell")?.command).toBe("git commit -m x")
+    expect(calls.get("call-legacy")?.command).toBe("git commit -m legacy")
+    expect(calls.get("call-bare")?.command).toBeNull()
+  })
+
   test("tokenUsage.upsert overwrites the counts for a message rather than adding a row", async () => {
     await seedSession("sess-tokens")
     const { idByKey } = await messagesRepo.insertManyIgnoreConflicts(db, "sess-tokens", [

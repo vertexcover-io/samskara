@@ -39,7 +39,7 @@ export type WatcherDeps = {
   readonly clock: Clock
   readonly sink: { send(payload: IngestPayload): Promise<SinkResult> }
   readonly glob: (pattern: string) => Promise<ReadonlyArray<string>>
-  readonly plugin: AgentPlugin
+  readonly plugins: ReadonlyArray<AgentPlugin>
   readonly resolveProject: (startDir: string) => Promise<ProjectIdentity | null>
   readonly log: pino.Logger
   readonly shouldCapture?: (project: ProjectIdentity) => Promise<boolean>
@@ -167,7 +167,7 @@ const syncTrack = async (
   // Collected once over the whole track, then attached to the chunk holding each event's
   // *result*: the call may sit in an earlier chunk, already persisted by the time the event
   // arrives, and the server resolves the callId from its stored rows.
-  const events = collectGitEvents(records, deps.log)
+  const events = collectGitEvents(records)
   let sentThrough = 0
   let okChunks = 0
   let messagesSent = 0
@@ -343,7 +343,9 @@ export const runCycle = async (
     ...(deps.shouldCapture ? { shouldCapture: deps.shouldCapture } : {}),
     ...(deps.syncFromFor ? { syncFromFor: deps.syncFromFor } : {}),
   }
-  const batches = await deps.plugin.collect(prev, collectDeps)
+  const batches = (
+    await Promise.all(deps.plugins.map((plugin) => plugin.collect(prev, collectDeps)))
+  ).flat()
   const results = await mapWithLimit(batches, config.sessionConcurrency, (batch) =>
     syncSession(batch, prev, deps, config.messageCap),
   )

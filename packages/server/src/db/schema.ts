@@ -331,6 +331,7 @@ export const toolCall = pgTable(
       .references(() => messages.id, { onDelete: "cascade" }),
     toolName: text("toolName").notNull(),
     toolInput: jsonb("toolInput"),
+    metadata: jsonb("metadata"),
     searchVector: searchVector("toolCall"),
   },
   (t) => [
