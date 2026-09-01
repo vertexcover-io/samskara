@@ -81,18 +81,19 @@ const recordsFrom = (items: ReadonlyArray<TestMessage>): ReadonlyArray<ParsedRec
 }
 
 type SessionOrigin = { readonly startCwd?: string; readonly startCommit?: string }
+type MainPayloadOptions = SessionOrigin & { readonly source?: IngestPayload["source"] }
 
 const mainPayload = (
   sessionId: string,
   items: ReadonlyArray<TestMessage>,
-  origin: SessionOrigin = {},
+  options: MainPayloadOptions = {},
 ): IngestPayload => ({
   type: "main",
   sessionId,
   sourceRelativePath: `${sessionId}.jsonl`,
   project,
   records: recordsFrom(items),
-  ...origin,
+  ...options,
 })
 
 const subagentPayload = (
@@ -670,6 +671,86 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
     expect(await db.select().from(commits).where(eq(commits.sessionId, sessionId))).toHaveLength(0)
   })
 
+  test("a call stored without metadata -- a CLI from before it existed -- still verifies its commit from toolInput", async () => {
+    const sessionId = "sess-commit-legacy"
+    const call = customMessage({
+      sessionId,
+      lineUuid: "0191d942-3ba5-7dba-9a7d-0000000000c6",
+      lineNumber: 1,
+    })
+    const result = customMessage({
+      sessionId,
+      lineUuid: "0191d942-3ba5-7dba-9a7d-0000000000c7",
+      lineNumber: 2,
+    })
+    await ingest(ctx, {
+      ...mainPayload(sessionId, [
+        {
+          ...call,
+          message: {
+            ...call.message,
+            msgType: "toolCall",
+            details: {
+              callId: "call-legacy",
+              name: "Bash",
+              input: { command: "git commit -m legacy" },
+            },
+            repo: subRepo,
+          } as NormalizedMessage,
+        },
+        {
+          ...result,
+          message: {
+            ...result.message,
+            msgType: "toolResult",
+            details: {
+              callId: "call-legacy",
+              output: "[main 1e9acy1] legacy\n 1 file changed, 1 insertion(+)",
+              status: "unknown",
+            },
+          } as NormalizedMessage,
+        },
+      ]),
+      gitEvents: [
+        { kind: "commit", sha: "1e9acy1", subject: "legacy", repo: subRepo, callId: "call-legacy" },
+      ],
+    })
+
+    const rows = await db.select().from(commits).where(eq(commits.sessionId, sessionId))
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.sha).toBe("1e9acy1")
+  })
+
+  test("when metadata is present it decides: a non-commit shell metadata drops the event even if toolInput says git commit", async () => {
+    const sessionId = "sess-commit-metadata-wins"
+    const call = customMessage({
+      sessionId,
+      lineUuid: "0191d942-3ba5-7dba-9a7d-0000000000c8",
+      lineNumber: 1,
+    })
+    await ingest(ctx, {
+      ...mainPayload(sessionId, [
+        {
+          ...call,
+          message: {
+            ...call.message,
+            msgType: "toolCall",
+            details: {
+              callId: "call-mismatch",
+              name: "Bash",
+              input: { command: "git commit -m x" },
+              metadata: { type: "shell", command: "ls" },
+            },
+            repo: subRepo,
+          } as NormalizedMessage,
+        },
+      ]),
+      gitEvents: [{ kind: "commit", sha: "abc1234", repo: subRepo, callId: "call-mismatch" }],
+    })
+
+    expect(await db.select().from(commits).where(eq(commits.sessionId, sessionId))).toHaveLength(0)
+  })
+
   test("a candidate event whose call is unknown to the session stores nothing", async () => {
     const sessionId = "sess-commit-ghost"
     await ingest(ctx, {
@@ -880,5 +961,29 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
       .where(eq(messages.sessionId, sessionId))
     // No message carried a repo, so the repo exists only because the PR's URL named it.
     expect(row?.repoId).toBeNull()
+  })
+  test("the session is stored under the payload's source, and as claude_code when a CLI predates the field", async () => {
+    const opencode = "sess-source-opencode"
+    const legacy = "sess-source-legacy"
+    await ingest(
+      ctx,
+      mainPayload(
+        opencode,
+        [customMessage({ sessionId: opencode, lineUuid: "0191d942-3ba5-7dba-9a7d-0000000000d1" })],
+        { source: "opencode" },
+      ),
+    )
+    await ingest(
+      ctx,
+      mainPayload(legacy, [
+        customMessage({ sessionId: legacy, lineUuid: "0191d942-3ba5-7dba-9a7d-0000000000d2" }),
+      ]),
+    )
+
+    const sourceOf = async (id: string) =>
+      (await db.select({ source: sessions.source }).from(sessions).where(eq(sessions.id, id)))[0]
+        ?.source
+    expect(await sourceOf(opencode)).toBe("opencode")
+    expect(await sourceOf(legacy)).toBe("claude_code")
   })
 })

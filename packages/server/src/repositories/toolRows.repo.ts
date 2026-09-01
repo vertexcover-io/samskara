@@ -1,6 +1,7 @@
 import type { ToolCallMetadata } from "@samskara/core"
 import { toolCallMetadataSchema } from "@samskara/core"
 import { and, eq, inArray } from "drizzle-orm"
+import { z } from "zod"
 import type { Querier } from "../db/client.js"
 import { messages, toolCall, toolResult } from "../db/schema.js"
 
@@ -52,8 +53,15 @@ export type StoredCall = {
   readonly repoId: string | null
 }
 
-/** Rows stored before `metadata` existed hold null and resolve to no command; nothing back-fills. */
-const shellCommandOf = (metadata: unknown): string | null => {
+// Only for rows stored before `metadata` existed; delete once none remain.
+const legacyShellInputSchema = z.object({ command: z.string().min(1) })
+const legacyCommandOf = (toolInput: unknown): string | null => {
+  const parsed = legacyShellInputSchema.safeParse(toolInput)
+  return parsed.success ? parsed.data.command : null
+}
+
+const commandOf = (metadata: unknown, toolInput: unknown): string | null => {
+  if (metadata === null) return legacyCommandOf(toolInput)
   const parsed = toolCallMetadataSchema.safeParse(metadata)
   return parsed.success && parsed.data.type === "shell" ? parsed.data.command : null
 }
@@ -74,6 +82,7 @@ export const callsByIds = async (
       messageId: toolCall.messageId,
       toolName: toolCall.toolName,
       metadata: toolCall.metadata,
+      toolInput: toolCall.toolInput,
       repoId: messages.repoId,
     })
     .from(toolCall)
@@ -85,7 +94,7 @@ export const callsByIds = async (
       {
         messageId: row.messageId,
         toolName: row.toolName,
-        command: shellCommandOf(row.metadata),
+        command: commandOf(row.metadata, row.toolInput),
         repoId: row.repoId,
       },
     ]),
