@@ -1,4 +1,7 @@
+import { LocalSecretForm, useAuthMethods } from "../auth/LocalSignIn.js"
 import { BuildStamp } from "../shell/BuildStamp.js"
+
+type Props = { readonly onLocalSignedIn?: (path: string) => void }
 
 type SpineActor = "user" | "assistant" | "aside"
 
@@ -88,32 +91,40 @@ const EvidencePanel = () => (
   </section>
 )
 
-const AccessColumn = () => (
-  <section className="relative flex flex-col justify-center px-6 py-14 sm:px-10 lg:px-14">
-    <div aria-hidden="true" className="ledger-ground pointer-events-none absolute inset-0" />
-    <div className="animate-file-in relative mx-auto w-full max-w-[23rem] border border-rule bg-panel-2 p-8 shadow-card">
-      <h2 className="text-case-title">Sign in</h2>
-      <div aria-hidden="true" className="mt-4 h-[2px] w-10 bg-stamp" />
-      <p className="mt-5 text-lead text-ink-soft">
-        Open your filed sessions — every prompt, tool call and artifact, kept in place.
-      </p>
+const AccessColumn = ({ onLocalSignedIn }: Props) => {
+  const methods = useAuthMethods()
 
-      <a
-        href="/api/auth/github/start"
-        className="mt-8 inline-flex w-full items-center justify-center gap-2.5 rounded-xs border border-ink bg-ink px-4 py-3 font-semibold text-panel-2 transition-colors hover:bg-ink-2"
-      >
-        <GithubMark />
-        Continue with GitHub
-      </a>
-    </div>
+  return (
+    <section className="relative flex flex-col justify-center px-6 py-14 sm:px-10 lg:px-14">
+      <div aria-hidden="true" className="ledger-ground pointer-events-none absolute inset-0" />
+      <div className="animate-file-in relative mx-auto w-full max-w-[23rem] border border-rule bg-panel-2 p-8 shadow-card">
+        <h2 className="text-case-title">Sign in</h2>
+        <div aria-hidden="true" className="mt-4 h-[2px] w-10 bg-stamp" />
+        <p className="mt-5 text-lead text-ink-soft">
+          Open your filed sessions — every prompt, tool call and artifact, kept in place.
+        </p>
 
-    <BuildStamp className="relative mx-auto mt-6 w-full max-w-[23rem] justify-end" />
-  </section>
-)
+        {methods.github ? (
+          <a
+            href="/api/auth/github/start"
+            className="mt-8 inline-flex w-full items-center justify-center gap-2.5 rounded-xs border border-ink bg-ink px-4 py-3 font-semibold text-panel-2 transition-colors hover:bg-ink-2"
+          >
+            <GithubMark />
+            Continue with GitHub
+          </a>
+        ) : null}
 
-export const Login = () => (
+        {methods.local ? <LocalSecretForm onSignedIn={onLocalSignedIn} /> : null}
+      </div>
+
+      <BuildStamp className="relative mx-auto mt-6 w-full max-w-[23rem] justify-end" />
+    </section>
+  )
+}
+
+export const Login = ({ onLocalSignedIn }: Props) => (
   <main className="grid min-h-dvh grid-cols-1 lg:grid-cols-[1.05fr_1fr]">
     <EvidencePanel />
-    <AccessColumn />
+    <AccessColumn onLocalSignedIn={onLocalSignedIn} />
   </main>
 )
