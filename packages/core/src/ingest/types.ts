@@ -392,6 +392,21 @@ export const reassignSessionsRequestSchema = z
 
 export const reassignSessionsResponseSchema = z.object({ moved: nonnegativeInteger }).strict()
 
+export const updateOrgRequestSchema = z
+  .object({
+    autoAddMembers: z.boolean().optional(),
+    name: z.string().trim().min(1).max(100).nullable().optional(),
+  })
+  .strict()
+  .refine((body) => Object.keys(body).length > 0, { message: "no fields to update" })
+
+export const registerOrgRequestSchema = z
+  .object({
+    githubSlug: z.string().regex(/^[a-z\d](?:[a-z\d]|-(?=[a-z\d])){0,38}$/i),
+    autoAddMembers: z.boolean().default(true),
+  })
+  .strict()
+
 export const createProjectResponseSchema = z
   .object({
     id: z.string().uuid(),
@@ -557,6 +572,9 @@ export type ProjectOwner = z.infer<typeof projectOwnerSchema>
 export type CreateProjectResponse = z.infer<typeof createProjectResponseSchema>
 export type ReassignSessionsRequest = z.infer<typeof reassignSessionsRequestSchema>
 export type ReassignSessionsResponse = z.infer<typeof reassignSessionsResponseSchema>
+
+export type UpdateOrgRequest = z.infer<typeof updateOrgRequestSchema>
+export type RegisterOrgRequest = z.infer<typeof registerOrgRequestSchema>
 export type AgentInfo = z.infer<typeof agentInfoSchema>
 export type IngestPayload = z.infer<typeof ingestPayloadSchema>
 

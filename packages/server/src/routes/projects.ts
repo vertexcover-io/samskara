@@ -4,7 +4,13 @@ import type { Db } from "../db/client.js"
 import type { Env } from "../lib/env.js"
 import { type AuthVariables, requireAuth } from "../lib/require-auth.js"
 import { validate } from "../lib/validate.js"
-import { listAccessibleSummaries, type ProjectSummaryRow } from "../repositories/projects.repo.js"
+import {
+  canDelete,
+  findVisibleSummaryById,
+  listAccessibleSummaries,
+  type ProjectSummaryRow,
+  remove,
+} from "../repositories/projects.repo.js"
 import { findOrCreateProject, reassignSessions } from "../services/projects.js"
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -28,6 +34,27 @@ export const projectsRoutes = ({ db, env }: Deps) =>
     .get("/", requireAuth({ db, env }, ["web", "cli"]), async (c) => {
       const rows = await listAccessibleSummaries(db, c.get("user").id)
       return c.json({ projects: rows.map(serialize) }, 200)
+    })
+    .get("/:id", requireAuth({ db, env }, ["web"]), async (c) => {
+      const projectId = c.req.param("id")
+      if (!UUID.test(projectId)) return c.json({ error: "projectNotFound" }, 404)
+      const userId = c.get("user").id
+      const [row, deletable] = await Promise.all([
+        findVisibleSummaryById(db, userId, projectId),
+        canDelete(db, userId, projectId),
+      ])
+      if (row === null) return c.json({ error: "projectNotFound" }, 404)
+      return c.json({ project: serialize(row), viewerCanDelete: deletable }, 200)
+    })
+    .delete("/:id", requireAuth({ db, env }, ["web"]), async (c) => {
+      const projectId = c.req.param("id")
+      const userId = c.get("user").id
+      if (!UUID.test(projectId) || (await findVisibleSummaryById(db, userId, projectId)) === null) {
+        return c.json({ error: "projectNotFound" }, 404)
+      }
+      if (!(await canDelete(db, userId, projectId))) return c.json({ error: "forbidden" }, 403)
+      await remove(db, projectId)
+      return c.body(null, 204)
     })
     .post(
       "/",

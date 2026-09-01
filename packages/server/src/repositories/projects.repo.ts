@@ -40,8 +40,7 @@ export const memberOfProject = (db: Querier, userId: string | AnyColumn): SQL | 
 /** Aliased so the EXISTS still resolves in queries that already have `users` in scope. */
 const superUsers = aliasedTable(users, "superUsers")
 
-/** Never fold into `memberOfProject` -- that asks about the row's user, not the viewer. */
-const isSuperAdmin = (db: Querier, userId: string | AnyColumn): SQL | undefined =>
+export const isSuperAdmin = (db: Querier, userId: string | AnyColumn): SQL | undefined =>
   exists(
     db
       .select({ one: sql`1` })
@@ -184,28 +183,69 @@ export type ProjectSummaryRow = {
 
 const ownSessions = sql`"sessions" where "sessions"."projectId" = "projects"."id"`
 
-const sessionCount = sql<number>`(select count(*)::int from ${ownSessions})`
+export const sessionCount = sql<number>`(select count(*)::int from ${ownSessions})`
 
 const lastActiveAt = sql<string | null>`(select max(${sessionActivityAt}) from ${ownSessions})`
+
+const summaryColumns = {
+  id: projects.id,
+  name: projects.name,
+  slug: projects.slug,
+  ownerType: sql<
+    "user" | "org"
+  >`case when ${projects.ownerOrgId} is null then 'user' else 'org' end`,
+  ownerSlug: sql<string>`coalesce(${orgs.githubSlug}, ${users.githubLogin})`,
+  sessionCount,
+  lastActiveAt,
+}
 
 export const listAccessibleSummaries = (
   db: Querier,
   userId: string,
 ): Promise<ReadonlyArray<ProjectSummaryRow>> =>
   db
-    .select({
-      id: projects.id,
-      name: projects.name,
-      slug: projects.slug,
-      ownerType: sql<
-        "user" | "org"
-      >`case when ${projects.ownerOrgId} is null then 'user' else 'org' end`,
-      ownerSlug: sql<string>`coalesce(${orgs.githubSlug}, ${users.githubLogin})`,
-      sessionCount,
-      lastActiveAt,
-    })
+    .select(summaryColumns)
     .from(projects)
     .leftJoin(users, eq(users.id, projects.ownerUserId))
     .leftJoin(orgs, eq(orgs.id, projects.ownerOrgId))
     .where(visibleToUser(db, userId))
     .orderBy(sql`${lastActiveAt} desc nulls last`, desc(projects.createdAt))
+
+export const findVisibleSummaryById = async (
+  db: Querier,
+  userId: string,
+  projectId: string,
+): Promise<ProjectSummaryRow | null> => {
+  const [row] = await db
+    .select(summaryColumns)
+    .from(projects)
+    .leftJoin(users, eq(users.id, projects.ownerUserId))
+    .leftJoin(orgs, eq(orgs.id, projects.ownerOrgId))
+    .where(and(eq(projects.id, projectId), visibleToUser(db, userId)))
+  return row ?? null
+}
+
+export const canDelete = async (
+  db: Querier,
+  userId: string,
+  projectId: string,
+): Promise<boolean> => {
+  const [row] = await db
+    .select({ id: projects.id })
+    .from(projects)
+    .where(
+      and(
+        eq(projects.id, projectId),
+        or(eq(projects.ownerUserId, userId), isSuperAdmin(db, userId)),
+      ),
+    )
+  return row !== undefined
+}
+
+export const remove = async (db: Querier, projectId: string): Promise<boolean> => {
+  const deleted = await db
+    .delete(projects)
+    .where(eq(projects.id, projectId))
+    .returning({ id: projects.id })
+  return deleted.length > 0
+}
