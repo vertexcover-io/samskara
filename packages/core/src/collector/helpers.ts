@@ -38,7 +38,6 @@ const formatUuid = (bytes: Buffer): string => {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 
-/** RFC 4122 name-based uuid: the same namespace and name always yield the same id. */
 export const uuidV5 = (namespace: string, name: string): string => {
   const digest = createHash("sha1")
     .update(Buffer.concat([uuidBytes(namespace), Buffer.from(name, "utf8")]))

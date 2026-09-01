@@ -721,7 +721,6 @@ const wroteMetadataFor = (toolUseResult: unknown): ToolResultMetadata | undefine
   }
 }
 
-/** Carries the real transcript line: a block's siblings at line level (`toolUseResult`) matter. */
 type BlockContext = {
   readonly line: Record<string, unknown>
   readonly role: ReturnType<typeof roleFor>

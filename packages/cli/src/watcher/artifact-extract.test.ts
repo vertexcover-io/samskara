@@ -34,7 +34,6 @@ type WriteOptions = {
   readonly timestamp?: string
 }
 
-/** A toolResult carrying a `wrote` effect -- what either plugin emits for a completed write. */
 const wrote = (path: string, over: WriteOptions = {}): NormalizedMessage => ({
   ...base,
   subIndex: 0,

@@ -16,10 +16,6 @@ export const MSG_TYPES = [
   "custom",
 ] as const
 
-/**
- * Every harness samskara can capture. Each value is also the `source` of the AgentPlugin that
- * produced it, and the server rejects a payload naming any other.
- */
 export const SESSION_SOURCES = ["claude_code", "opencode"] as const
 export type SessionSource = (typeof SESSION_SOURCES)[number]
 

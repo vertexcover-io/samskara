@@ -21,7 +21,6 @@ const normalizedKey = (key: string): string => key.toLowerCase().replaceAll(/[_-
 const withoutNul = (text: string): string =>
   text.includes("\u0000") ? text.replaceAll("\u0000", "") : text
 
-/** Every plugin runs its raw data through this before normalizing, so no consumer sees a secret. */
 export const redactJson = (value: unknown): unknown => {
   if (typeof value === "string") return withoutNul(value)
   if (Array.isArray(value)) return value.map(redactJson)

@@ -25,11 +25,6 @@ const timeOf = (record: ParsedRecord): number => {
   return stamp === undefined ? 0 : Date.parse(stamp)
 }
 
-/**
- * Only the normalized messages are read: a `wrote` effect is what any harness's write tool did,
- * and an `edited` fileEvent is a file the human changed outside the agent. Neither needs the
- * harness's own payload shape.
- */
 const artifactOf = (message: NormalizedMessage, cwd: string): PotentialArtifact | undefined => {
   if (message.msgType === "toolResult" && message.details.metadata?.type === "wrote") {
     const { path, created, base } = message.details.metadata

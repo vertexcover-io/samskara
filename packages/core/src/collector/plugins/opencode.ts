@@ -33,7 +33,6 @@ export interface OpencodeStatement {
   all(...params: ReadonlyArray<unknown>): ReadonlyArray<Record<string, unknown>>
 }
 
-/** The plugin only ever reads; OpenCode owns the file. */
 export interface OpencodeDatabase {
   readonly dbPath: string
   prepare(sql: string): OpencodeStatement
@@ -85,7 +84,6 @@ const defaultExec: Exec = async (file, args) => {
   return stdout
 }
 
-/** Asks the OpenCode CLI where its database lives; the platform default covers a missing binary. */
 export const resolveDbPath = async (
   exec: Exec = defaultExec,
   home: string = homedir(),
@@ -261,7 +259,6 @@ const toolMessages = (
         callId,
         output: part.state?.output ?? null,
         status,
-        // A write that did not complete wrote nothing.
         metadata: status === "success" ? wroteMetadataFor(tool, input) : undefined,
       },
     }),
@@ -327,10 +324,6 @@ const partMessages = ({
   }
 }
 
-/**
- * One OpenCode message is one record; its parts fan out into messages. A user message collapses to
- * its text; an assistant message emits per part, each part owning subIndexes `2i` and `2i + 1`.
- */
 export const normalizeOpencode = (
   message: OpencodeRow,
   parts: ReadonlyArray<OpencodeRow>,

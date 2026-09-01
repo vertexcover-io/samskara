@@ -39,7 +39,6 @@ export type WatcherDeps = {
   readonly clock: Clock
   readonly sink: { send(payload: IngestPayload): Promise<SinkResult> }
   readonly glob: (pattern: string) => Promise<ReadonlyArray<string>>
-  /** Every plugin runs each cycle; checkpoints stay apart through each track's `checkpointKey`. */
   readonly plugins: ReadonlyArray<AgentPlugin>
   readonly resolveProject: (startDir: string) => Promise<ProjectIdentity | null>
   readonly log: pino.Logger

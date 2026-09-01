@@ -53,7 +53,6 @@ export type ClaudeCheckpoint = z.infer<typeof claudeCheckpointSchema>
 export type OpencodeCheckpoint = z.infer<typeof opencodeCheckpointSchema>
 export type Checkpoint = z.infer<typeof checkpointSchema>
 export type CheckpointStore = z.infer<typeof checkpointStoreSchema>
-/** A plugin returns the part it knows; the driver fills in the base fields. */
 export type CheckpointBody =
   | Omit<ClaudeCheckpoint, keyof CheckpointBase>
   | Omit<OpencodeCheckpoint, keyof CheckpointBase>
