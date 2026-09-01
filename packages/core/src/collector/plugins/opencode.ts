@@ -1,8 +1,6 @@
-import { execFile } from "node:child_process"
 import { createRequire } from "node:module"
 import { homedir } from "node:os"
 import { join } from "node:path"
-import { promisify } from "node:util"
 import { z } from "zod"
 import type {
   NormalizedMessage,
@@ -75,27 +73,6 @@ export const openDatabase = (dbPath: string): OpencodeDatabase => {
 
 export const defaultDbPath = (home: string = homedir()): string =>
   join(home, ".local", "share", "opencode", "opencode.db")
-
-export type Exec = (file: string, args: ReadonlyArray<string>) => Promise<string>
-
-const execFileAsync = promisify(execFile)
-const defaultExec: Exec = async (file, args) => {
-  const { stdout } = await execFileAsync(file, [...args], { timeout: 5_000 })
-  return stdout
-}
-
-export const resolveDbPath = async (
-  exec: Exec = defaultExec,
-  home: string = homedir(),
-): Promise<string> => {
-  try {
-    const path = (await exec("opencode", ["db", "path"])).trim()
-    if (path !== "") return path
-  } catch {
-    // Binary missing, subcommand unknown, or timed out -- the default is the only path shipped.
-  }
-  return defaultDbPath(home)
-}
 
 const optionalString = z.string().min(1).optional().catch(undefined)
 const nonnegativeInt = z.number().int().nonnegative().catch(0)
@@ -493,14 +470,18 @@ const familyBatch = async ({
   deps,
   resolve,
 }: FamilyInput): Promise<SessionBatch | null> => {
+  // Watermarks first: they are in memory, while the project and config checks each read a file,
+  // and nearly every family is quiet on any given cycle.
+  const stale = [main, ...children].filter((session) => !isUpToDate(store, session))
+  if (stale.length === 0) return null
+
   const project = (await resolve(main.directory)) ?? store.projects?.[main.directory]
   if (!project) return null
   if (deps.shouldCapture && !(await deps.shouldCapture(project))) return null
   const cutoff = await deps.syncFromFor?.(project)
   if (cutoff !== undefined && main.time_created < Date.parse(cutoff)) return null
 
-  const tracks = [main, ...children]
-    .filter((session) => !isUpToDate(store, session))
+  const tracks = stale
     .map((session) => buildTrack({ db, session, project, sessionId: main.id }))
     .filter((track) => track.records.length > 0)
   return tracks.length === 0 ? null : { sessionId: main.id, tracks }

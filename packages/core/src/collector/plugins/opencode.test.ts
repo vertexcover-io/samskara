@@ -586,6 +586,39 @@ describe("createOpencodePlugin", () => {
     expect(tracks[0]?.type === "subagent" ? tracks[0].agent.agentId : undefined).toBe("ses_m_b")
   })
 
+  test("a family that has not moved costs no project lookup or config read", async () => {
+    const db = newDatabase()
+    insertSession(db, { id: "ses_quiet", timeUpdated: 1_000 })
+    insertSession(db, { id: "ses_quiet_sub", parentId: "ses_quiet", timeUpdated: 1_000 })
+    userTurn(db, "ses_quiet")
+    let lookups = 0
+    const plugin = createOpencodePlugin({ db: wrap(db) })
+    const batches = await plugin.collect(
+      {
+        checkpoints: {
+          ...opencodeCheckpoint("ses_quiet", 1_000),
+          ...opencodeCheckpoint("ses_quiet_sub", 1_000),
+        },
+      },
+      collectDeps({
+        resolveProject: async () => {
+          lookups++
+          return project
+        },
+        shouldCapture: async () => {
+          lookups++
+          return true
+        },
+        syncFromFor: async () => {
+          lookups++
+          return undefined
+        },
+      }),
+    )
+    expect(batches).toHaveLength(0)
+    expect(lookups).toBe(0)
+  })
+
   test("a session with no messages is not a batch", async () => {
     const db = newDatabase()
     insertSession(db, { id: "ses_empty" })
