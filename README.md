@@ -67,7 +67,10 @@ you have. It is safe to re-run: it never rotates a secret that is already set, a
 database that already has projects alone.
 
 Only members of a registered org can log in. Leave the slug off and setup tells you how to add one
-later with `bun run seed:org YOUR_GITHUB_ORG_SLUG`. Every login re-checks the user's current GitHub
+later with `bun run seed:org YOUR_GITHUB_ORG_SLUG`. Once someone is signed in as a super admin, they
+can register further orgs from the web UI at `/orgs` instead — `seed:org` stays the only way to
+register the first one, before anybody can sign in, and the only one that rewrites an existing org's
+auto-add setting. Every login re-checks the user's current GitHub
 orgs, so leaving an org on GitHub revokes access on the next login.
 
 The variables setup writes:
@@ -218,6 +221,9 @@ profile you are looking at.
 | Route | What you get |
 |---|---|
 | `/projects` | Every project you can read — session count, last activity, last session title |
+| `/projects/:id` | One project's name, slug, owner, and session count, with a typed-slug-confirmed delete for the owner or a super admin |
+| `/orgs` | Every org you belong to (every registered org for a super admin), with a registration form for super admins |
+| `/orgs/:slug` | One org's members, projects, and total session count, with an editable display name and auto-add-members toggle |
 | `/sessions` | Session index with search and filters |
 | `/sessions/:id` | One session: Conversation, Timeline, Tool Calls, and Artifacts tabs, with subagent branches you can expand |
 | `/sync-status` | Each project you can read, paired with every user who belongs to it and when they last synced it |
