@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { nextVersion, readVersion, setVersion } from "./version.ts"
+import { agreedVersion, nextVersion, readVersion, setVersion } from "./version.ts"
 
 describe("nextVersion", () => {
   test("bumps a segment and zeroes the ones below it", () => {
@@ -19,6 +19,36 @@ describe("nextVersion", () => {
 
   test("rejects a current version it cannot parse", () => {
     expect(() => nextVersion("nightly", "patch")).toThrow()
+  })
+
+  test("rejects an explicit version carrying characters that would corrupt JSON", () => {
+    expect(() => nextVersion("1.2.3", '1.3.0-"rc"')).toThrow()
+    expect(() => nextVersion("1.2.3", "1.3.0-rc\\")).toThrow()
+    expect(() => nextVersion("1.2.3", "1.3.0-rc 1")).toThrow()
+  })
+
+  test("still takes a well-formed prerelease and build tag", () => {
+    expect(nextVersion("1.2.3", "1.3.0-rc.1")).toBe("1.3.0-rc.1")
+    expect(nextVersion("1.2.3", "1.3.0+build.5")).toBe("1.3.0+build.5")
+    expect(nextVersion("1.2.3", "1.3.0-rc.1+build.5")).toBe("1.3.0-rc.1+build.5")
+  })
+})
+
+describe("agreedVersion", () => {
+  test("returns the version every manifest shares", () => {
+    expect(agreedVersion(['{"version": "0.3.0"}', '{"version": "0.3.0"}'])).toBe("0.3.0")
+  })
+
+  test("refuses to bump manifests that have already drifted", () => {
+    expect(() => agreedVersion(['{"version": "0.3.0"}', '{"version": "0.4.0"}'])).toThrow(/drifted/)
+  })
+
+  test("lets a manifest with no version field be filled in from the others", () => {
+    expect(agreedVersion(['{"version": "0.3.0"}', '{"name": "@samskara/web"}'])).toBe("0.3.0")
+  })
+
+  test("starts at 0.0.0 when no manifest declares a version", () => {
+    expect(agreedVersion(['{"name": "@samskara/web"}'])).toBe("0.0.0")
   })
 })
 
