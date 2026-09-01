@@ -384,8 +384,8 @@ const groupBy = <T>(
 
 const checkpointKeyOf = (session: SessionRow): string => `${SOURCE}:${session.id}`
 
-const isUpToDate = (prev: CheckpointStore, session: SessionRow): boolean => {
-  const checkpoint = prev.checkpoints[checkpointKeyOf(session)]
+const isUpToDate = (store: CheckpointStore, session: SessionRow): boolean => {
+  const checkpoint = store.checkpoints[checkpointKeyOf(session)]
   return checkpoint?.source === SOURCE && checkpoint.timeUpdated >= session.time_updated
 }
 
@@ -475,7 +475,7 @@ type FamilyInput = {
   readonly db: OpencodeDatabase
   readonly main: SessionRow
   readonly children: ReadonlyArray<SessionRow>
-  readonly prev: CheckpointStore
+  readonly store: CheckpointStore
   readonly deps: CollectDeps
   readonly resolve: (dir: string) => Promise<ProjectIdentity | null>
 }
@@ -489,18 +489,18 @@ const familyBatch = async ({
   db,
   main,
   children,
-  prev,
+  store,
   deps,
   resolve,
 }: FamilyInput): Promise<SessionBatch | null> => {
-  const project = (await resolve(main.directory)) ?? prev.projects?.[main.directory]
+  const project = (await resolve(main.directory)) ?? store.projects?.[main.directory]
   if (!project) return null
   if (deps.shouldCapture && !(await deps.shouldCapture(project))) return null
   const cutoff = await deps.syncFromFor?.(project)
   if (cutoff !== undefined && main.time_created < Date.parse(cutoff)) return null
 
   const tracks = [main, ...children]
-    .filter((session) => !isUpToDate(prev, session))
+    .filter((session) => !isUpToDate(store, session))
     .map((session) => buildTrack({ db, session, project, sessionId: main.id }))
     .filter((track) => track.records.length > 0)
   return tracks.length === 0 ? null : { sessionId: main.id, tracks }
@@ -555,11 +555,11 @@ export const createOpencodePlugin = (deps: { readonly db: OpencodeDatabase }): A
 
   return {
     source: SOURCE,
-    collect: async (prev, collectDeps) => {
+    collect: async (store, collectDeps) => {
       const resolve = cachedResolver(projectByDir, collectDeps)
       const batches = await Promise.all(
         loadFamilies(deps.db).map(({ main, children }) =>
-          collectFamily({ db: deps.db, main, children, prev, deps: collectDeps, resolve }),
+          collectFamily({ db: deps.db, main, children, store, deps: collectDeps, resolve }),
         ),
       )
       return compact(batches)

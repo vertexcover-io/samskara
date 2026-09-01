@@ -89,5 +89,5 @@ export type SessionBatch = {
 
 export interface AgentPlugin {
   readonly source: SessionSource
-  collect(prev: CheckpointStore, deps: CollectDeps): Promise<ReadonlyArray<SessionBatch>>
+  collect(store: CheckpointStore, deps: CollectDeps): Promise<ReadonlyArray<SessionBatch>>
 }
