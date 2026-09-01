@@ -1,8 +1,10 @@
 import { z } from "zod"
 
-const EnvSchema = z.object({
-  GITHUB_CLIENT_ID: z.string().min(1),
-  GITHUB_CLIENT_SECRET: z.string().min(1),
+export const DEFAULT_LOCAL_LOGIN = "samskara-dev"
+
+const BaseEnvSchema = z.object({
+  GITHUB_CLIENT_ID: z.string().default(""),
+  GITHUB_CLIENT_SECRET: z.string().default(""),
   PUBLIC_BASE_URL: z.string().min(1),
   WEB_BASE_URL: z.string().url().optional(),
   COOKIE_SECURE: z.enum(["true", "false"]).transform((value) => value === "true"),
@@ -18,7 +20,23 @@ const EnvSchema = z.object({
         .map((login) => login.trim().toLowerCase())
         .filter((login) => login.length > 0),
     ),
+  LOCAL_LOGIN_SECRET: z.string().default(""),
+  LOCAL_LOGIN_LOGIN: z.string().min(1).default(DEFAULT_LOCAL_LOGIN),
 })
+
+const requireSignInMethod = (data: z.infer<typeof BaseEnvSchema>, ctx: z.RefinementCtx): void => {
+  if (data.LOCAL_LOGIN_SECRET.length > 0) return
+  for (const key of ["GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET"] as const) {
+    if (data[key].length > 0) continue
+    ctx.addIssue({
+      code: "custom",
+      path: [key],
+      message: `${key} is required unless LOCAL_LOGIN_SECRET is set`,
+    })
+  }
+}
+
+const EnvSchema = BaseEnvSchema.superRefine(requireSignInMethod)
 
 export type Env = {
   readonly githubClientId: string
@@ -30,6 +48,8 @@ export type Env = {
   readonly jwtExpiresIn: string
   readonly superAdminLogins: ReadonlyArray<string>
   readonly webDist?: string | undefined
+  readonly localLoginSecret?: string | undefined
+  readonly localLoginLogin?: string | undefined
 }
 
 type Source = Record<string, string | undefined>
@@ -53,5 +73,7 @@ export const loadEnv = (source: Source = process.env): Env => {
     jwtExpiresIn: parsed.data.JWT_EXPIRES_IN,
     superAdminLogins: parsed.data.SUPER_ADMIN_LOGINS,
     webDist: parsed.data.WEB_DIST,
+    localLoginSecret: parsed.data.LOCAL_LOGIN_SECRET,
+    localLoginLogin: parsed.data.LOCAL_LOGIN_LOGIN,
   }
 }

@@ -16,6 +16,21 @@ describe("missingCredentials", () => {
   test("treats an absent line the same as a blank one", () => {
     expect(missingCredentials("GITHUB_CLIENT_ID=abc\n")).toEqual(["GITHUB_CLIENT_SECRET"])
   })
+
+  test("a set LOCAL_LOGIN_SECRET is a way in of its own, so neither GitHub key is missing", () => {
+    expect(
+      missingCredentials(
+        "GITHUB_CLIENT_ID=\nGITHUB_CLIENT_SECRET=\nLOCAL_LOGIN_SECRET=open sesame\n",
+      ),
+    ).toEqual([])
+  })
+
+  test("a blank LOCAL_LOGIN_SECRET does not excuse the GitHub keys", () => {
+    expect(missingCredentials("GITHUB_CLIENT_ID=\nLOCAL_LOGIN_SECRET=\n")).toEqual([
+      "GITHUB_CLIENT_ID",
+      "GITHUB_CLIENT_SECRET",
+    ])
+  })
 })
 
 describe("fillGeneratedSecrets", () => {

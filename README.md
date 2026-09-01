@@ -94,6 +94,15 @@ bun run dev               # API on :3000, web on :8000
 
 Open http://localhost:8000 and sign in with GitHub.
 
+For local development without a GitHub OAuth app, set `LOCAL_LOGIN_SECRET` in `.env`. The sign-in
+page then offers a local-secret sign-in as the seeded `samskara-dev` user, and `LOCAL_LOGIN_LOGIN`
+can point at any other seeded login (run `bun run seed` first). With that secret set,
+`GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` may be left blank — `bun run setup` stops asking for
+them and the sign-in page drops the GitHub button rather than linking to an error page.
+
+Leave `LOCAL_LOGIN_SECRET` unset in any real deployment: it mints a full session for anyone who
+guesses it.
+
 ## Install the CLI
 
 The CLI is not on npm. Every release attaches an installable tarball to its

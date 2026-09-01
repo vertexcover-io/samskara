@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto"
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto"
 import { type PublicUser, publicUserSchema } from "@samskara/core"
 import { Hono } from "hono"
 import { z } from "zod"
@@ -10,10 +10,11 @@ import {
   setSessionCookie,
   setStateCookie,
 } from "../lib/cookies.js"
-import type { Env } from "../lib/env.js"
+import { DEFAULT_LOCAL_LOGIN, type Env } from "../lib/env.js"
 import { signToken } from "../lib/jwt.js"
 import { type AuthVariables, requireAuth } from "../lib/require-auth.js"
 import { validate } from "../lib/validate.js"
+import { findByGithubLogin } from "../repositories/users.repo.js"
 import {
   gateOrgs,
   isSuperAdminLogin,
@@ -53,6 +54,16 @@ const callbackQuerySchema = z.object({
 
 const cliExchangeSchema = z.object({ code: z.string().min(1) })
 
+const localLoginSchema = z.object({ secret: z.string().min(1) })
+
+const localSecret = (env: Env): string => env.localLoginSecret ?? ""
+
+/** Both sides are hashed to equal-length digests so timingSafeEqual never leaks by length. */
+const secretsMatch = (configured: string, presented: string): boolean => {
+  const digest = (value: string) => createHash("sha256").update(value).digest()
+  return timingSafeEqual(digest(configured), digest(presented))
+}
+
 const publicUser = (user: User): PublicUser =>
   publicUserSchema.parse({
     id: user.id,
@@ -66,6 +77,8 @@ const publicUser = (user: User): PublicUser =>
 export const authRoutes = ({ db, env, githubClient, pairingStore }: Deps) =>
   new Hono<{ Variables: AuthVariables }>()
     .get("/github/start", (c) => {
+      if (env.githubClientId.length === 0) return c.json({ error: "not_found" }, 404)
+
       const state = randomBytes(16).toString("hex")
       setStateCookie(c, state, env)
       return c.redirect(authorizeUrl(env, state))
@@ -132,4 +145,23 @@ export const authRoutes = ({ db, env, githubClient, pairingStore }: Deps) =>
 
       const token = await signToken(env, { sub: userId, aud: "cli" })
       return c.json({ token }, 200)
+    })
+    .get("/methods", (c) =>
+      c.json({ github: env.githubClientId.length > 0, local: localSecret(env).length > 0 }, 200),
+    )
+    .post("/local", validate("json", localLoginSchema), async (c) => {
+      const configured = localSecret(env)
+      if (configured.length === 0) return c.json({ error: "not_found" }, 404)
+
+      const { secret } = c.req.valid("json")
+      if (!secretsMatch(configured, secret)) return c.json({ error: "unauthorized" }, 401)
+
+      const user = await findByGithubLogin(db, env.localLoginLogin ?? DEFAULT_LOCAL_LOGIN)
+      if (!user) {
+        return c.json({ error: "unknown_user", message: "run `bun run seed` first" }, 404)
+      }
+
+      const token = await signToken(env, { sub: user.id, aud: "web" })
+      setSessionCookie(c, token, env)
+      return c.json(publicUser(user), 200)
     })

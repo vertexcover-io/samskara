@@ -22,7 +22,43 @@ describe("loadEnv", () => {
       jwtSecret: "jwt",
       jwtExpiresIn: "7d",
       superAdminLogins: [],
+      localLoginSecret: "",
+      localLoginLogin: "samskara-dev",
     })
+  })
+
+  test("defaults the local login to off: empty LOCAL_LOGIN_SECRET, LOCAL_LOGIN_LOGIN samskara-dev", () => {
+    const env = loadEnv(complete)
+    expect(env.localLoginSecret).toBe("")
+    expect(env.localLoginLogin).toBe("samskara-dev")
+  })
+
+  test("reads LOCAL_LOGIN_SECRET and LOCAL_LOGIN_LOGIN overrides verbatim", () => {
+    const env = loadEnv({
+      ...complete,
+      LOCAL_LOGIN_SECRET: "open sesame",
+      LOCAL_LOGIN_LOGIN: "teammate",
+    })
+    expect(env.localLoginSecret).toBe("open sesame")
+    expect(env.localLoginLogin).toBe("teammate")
+  })
+
+  test("a set LOCAL_LOGIN_SECRET makes the GitHub app optional - both keys may be blank", () => {
+    const env = loadEnv({
+      ...complete,
+      GITHUB_CLIENT_ID: "",
+      GITHUB_CLIENT_SECRET: "",
+      LOCAL_LOGIN_SECRET: "open sesame",
+    })
+    expect(env.githubClientId).toBe("")
+    expect(env.githubClientSecret).toBe("")
+    expect(env.localLoginSecret).toBe("open sesame")
+  })
+
+  test("without LOCAL_LOGIN_SECRET both GitHub keys are still required, and each is named", () => {
+    const bare = { ...complete, GITHUB_CLIENT_ID: "", GITHUB_CLIENT_SECRET: "" }
+    expect(() => loadEnv(bare)).toThrow(/GITHUB_CLIENT_ID/)
+    expect(() => loadEnv(bare)).toThrow(/GITHUB_CLIENT_SECRET/)
   })
 
   test("parses SUPER_ADMIN_LOGINS into a trimmed, lowercased list", () => {

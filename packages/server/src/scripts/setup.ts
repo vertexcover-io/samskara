@@ -9,8 +9,10 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..
 
 export const REQUIRED_CREDENTIALS = ["GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET"] as const
 
-export const missingCredentials = (text: string): ReadonlyArray<string> =>
-  REQUIRED_CREDENTIALS.filter((key) => (readEnvValue(text, key) ?? "").length === 0)
+export const missingCredentials = (text: string): ReadonlyArray<string> => {
+  if ((readEnvValue(text, "LOCAL_LOGIN_SECRET") ?? "").length > 0) return []
+  return REQUIRED_CREDENTIALS.filter((key) => (readEnvValue(text, key) ?? "").length === 0)
+}
 
 /** Only fills blanks: re-running setup must never rotate a secret that already signs live cookies. */
 export const fillGeneratedSecrets = (

@@ -10,6 +10,7 @@ export type ProjectDetail = Ok<Client["api"]["projects"][":id"]["$get"]>["projec
 export type OrgDetail = Ok<Client["api"]["orgs"][":slug"]["$get"]>["org"]
 export type OrgSummary = Ok<Client["api"]["orgs"]["$get"]>["orgs"][number]
 export type CurrentUser = Ok<Client["api"]["auth"]["me"]["$get"]>
+export type AuthMethods = Ok<Client["api"]["auth"]["methods"]["$get"]>
 export type PairingCode = Ok<Client["api"]["auth"]["cli-code"]["$post"]>
 export type LogoutAck = Ok<Client["api"]["auth"]["logout"]["$post"]>
 

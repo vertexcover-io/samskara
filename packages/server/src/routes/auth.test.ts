@@ -765,3 +765,192 @@ describe.skipIf(!dockerAvailable())("auth routes (cli pairing)", () => {
     expect(res.status).toBe(401)
   })
 })
+
+describe.skipIf(!dockerAvailable())("auth routes (methods + local login)", () => {
+  let container: StartedPostgreSqlContainer
+  let teardown: () => Promise<void>
+  let db: Db
+
+  beforeAll(async () => {
+    container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start()
+    const url = container.getConnectionUri()
+    execFileSync("bun", ["run", "db:migrate"], {
+      cwd: packageDir,
+      env: { ...process.env, DATABASE_URL: url },
+      stdio: "inherit",
+    })
+    const created = createDb(url)
+    db = created.db
+    teardown = async () => {
+      await created.client.end()
+      await container.stop()
+    }
+  }, 120_000)
+
+  afterAll(async () => {
+    await teardown?.()
+  })
+
+  beforeEach(async () => {
+    await db.delete(userOrgs)
+    await db.delete(users)
+    await db.delete(orgs)
+  })
+
+  const insertUserWithLogin = async (githubId: number, githubLogin: string) => {
+    const [user] = await db
+      .insert(users)
+      .values({ githubId, githubLogin, email: null, name: githubLogin, avatarUrl: null })
+      .returning()
+    if (!user) throw new Error("no inserted user")
+    return user
+  }
+
+  const localEnabled: Env = { ...env, localLoginSecret: "open sesame" }
+
+  test("L1: /methods reports github true and local false while LOCAL_LOGIN_SECRET is unset", async () => {
+    const app = buildApp(db, env, { githubClient: noopClient })
+
+    const res = await app.request("/api/auth/methods")
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ github: true, local: false })
+  })
+
+  test("L2: /methods reports local true once LOCAL_LOGIN_SECRET is set", async () => {
+    const app = buildApp(db, localEnabled, { githubClient: noopClient })
+
+    const res = await app.request("/api/auth/methods")
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ github: true, local: true })
+  })
+
+  test("L3: /api/auth/local is 404 not_found while the feature is off - invisible, no session cookie", async () => {
+    const app = buildApp(db, env, { githubClient: noopClient })
+
+    const res = await app.request("/api/auth/local", jsonPost({ secret: "open sesame" }))
+
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: "not_found" })
+    expect(sessionFrom(res.headers.get("set-cookie"))).toBeUndefined()
+  })
+
+  test("L4: a wrong secret is 401 with no session cookie", async () => {
+    await insertUserWithLogin(9101, "samskara-dev")
+    const app = buildApp(db, localEnabled, { githubClient: noopClient })
+
+    const res = await app.request("/api/auth/local", jsonPost({ secret: "not-the-secret" }))
+
+    expect(res.status).toBe(401)
+    expect(await res.json()).toEqual({ error: "unauthorized" })
+    expect(sessionFrom(res.headers.get("set-cookie"))).toBeUndefined()
+  })
+
+  test("L5: the right secret signs the configured login in - public user body, Set-Cookie, /me, then logout", async () => {
+    const user = await insertUserWithLogin(9102, "samskara-dev")
+    const app = buildApp(db, localEnabled, { githubClient: noopClient })
+
+    const res = await app.request("/api/auth/local", jsonPost({ secret: "open sesame" }))
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      id: user.id,
+      githubLogin: "samskara-dev",
+      email: null,
+      name: "samskara-dev",
+      avatarUrl: null,
+      isSuperAdmin: false,
+    })
+
+    const token = sessionFrom(res.headers.get("set-cookie"))
+    expect(token).toBeTruthy()
+
+    const me = await app.request("/api/auth/me", { headers: { cookie: `session=${token}` } })
+    expect(me.status).toBe(200)
+    expect(await me.json()).toMatchObject({ id: user.id, githubLogin: "samskara-dev" })
+
+    const logout = await app.request("/api/auth/logout", {
+      method: "POST",
+      headers: { cookie: `session=${token}` },
+    })
+    expect(logout.status).toBe(200)
+    const after = await app.request("/api/auth/me", { headers: { cookie: "session=" } })
+    expect(after.status).toBe(401)
+  })
+
+  test("L6: the right secret but no matching user is 404 unknown_user with the seed hint, no cookie", async () => {
+    const app = buildApp(db, localEnabled, { githubClient: noopClient })
+
+    const res = await app.request("/api/auth/local", jsonPost({ secret: "open sesame" }))
+
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({
+      error: "unknown_user",
+      message: "run `bun run seed` first",
+    })
+    expect(sessionFrom(res.headers.get("set-cookie"))).toBeUndefined()
+  })
+
+  test("L7: LOCAL_LOGIN_LOGIN can point at any other seeded user - the session is that user, not a super admin", async () => {
+    const user = await insertUserWithLogin(9103, "teammate")
+    const app = buildApp(
+      db,
+      { ...localEnabled, localLoginLogin: "teammate" },
+      {
+        githubClient: noopClient,
+      },
+    )
+
+    const res = await app.request("/api/auth/local", jsonPost({ secret: "open sesame" }))
+
+    expect(res.status).toBe(200)
+    const token = sessionFrom(res.headers.get("set-cookie"))
+    expect(token).toBeTruthy()
+
+    const me = await app.request("/api/auth/me", { headers: { cookie: `session=${token}` } })
+    expect(me.status).toBe(200)
+    expect(await me.json()).toMatchObject({
+      id: user.id,
+      githubLogin: "teammate",
+      isSuperAdmin: false,
+    })
+  })
+
+  test("L8: /methods reports github false once the OAuth app is unconfigured - no dead button", async () => {
+    const app = buildApp(
+      db,
+      { ...localEnabled, githubClientId: "", githubClientSecret: "" },
+      { githubClient: noopClient },
+    )
+
+    const res = await app.request("/api/auth/methods")
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ github: false, local: true })
+  })
+
+  test("L9: two rows sharing a login resolve to the lower githubId, not to whichever row came back first", async () => {
+    const renamed = await insertUserWithLogin(4001, "samskara-dev")
+    await insertUserWithLogin(9002, "samskara-dev")
+    const app = buildApp(db, localEnabled, { githubClient: noopClient })
+
+    for (const _attempt of [1, 2, 3]) {
+      const res = await app.request("/api/auth/local", jsonPost({ secret: "open sesame" }))
+      expect(res.status).toBe(200)
+      expect(await res.json()).toMatchObject({ id: renamed.id })
+    }
+  })
+
+  test("L10: /github/start is 404 with no OAuth app configured - never a redirect to a broken authorize page", async () => {
+    const app = buildApp(
+      db,
+      { ...localEnabled, githubClientId: "", githubClientSecret: "" },
+      { githubClient: noopClient },
+    )
+
+    const res = await app.request("/api/auth/github/start")
+
+    expect(res.status).toBe(404)
+  })
+})
