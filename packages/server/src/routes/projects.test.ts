@@ -791,3 +791,291 @@ describe.skipIf(!dockerAvailable())("POST /api/projects/:id/sessions", () => {
     expect(body.projects.some((p) => p.id === from)).toBe(true)
   })
 })
+
+describe.skipIf(!dockerAvailable())("GET /api/projects/:id", () => {
+  let container: StartedPostgreSqlContainer
+  let teardown: () => Promise<void>
+  let db: Db
+
+  beforeAll(async () => {
+    container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start()
+    const url = container.getConnectionUri()
+    execFileSync("bun", ["run", "db:migrate"], {
+      cwd: packageDir,
+      env: { ...process.env, DATABASE_URL: url },
+      stdio: "inherit",
+    })
+    const created = createDb(url)
+    db = created.db
+    teardown = async () => {
+      await created.client.end()
+      await container.stop()
+    }
+  }, 120_000)
+
+  afterAll(async () => {
+    await teardown?.()
+  })
+
+  beforeEach(async () => {
+    await db.delete(sessions)
+    await db.delete(userProjectGrant)
+    await db.delete(projects)
+    await db.delete(userOrgs)
+    await db.delete(orgs)
+    await db.delete(users)
+  })
+
+  const getAs = async (
+    userId: string,
+    projectId: string,
+  ): Promise<{ status: number; body: unknown }> => {
+    const token = await signToken(env, { sub: userId, aud: "web" })
+    const res = await buildApp(db, env).request(`/api/projects/${projectId}`, {
+      headers: { cookie: `session=${token}` },
+    })
+    return { status: res.status, body: await res.json() }
+  }
+
+  test("SC3: a member reads a project and its session count", async () => {
+    const owner = await seedUser(db, 900, "sc3-detail-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Detail", slug: "detail" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "detail-s1",
+      userId: owner,
+      projectId,
+      title: "s1",
+      updatedAt: new Date("2026-01-01T00:00:00Z"),
+    })
+    await seedSession(db, {
+      id: "detail-s2",
+      userId: owner,
+      projectId,
+      title: "s2",
+      updatedAt: new Date("2026-01-02T00:00:00Z"),
+    })
+    await seedSession(db, {
+      id: "detail-s3",
+      userId: owner,
+      projectId,
+      title: "s3",
+      updatedAt: new Date("2026-01-03T00:00:00Z"),
+    })
+
+    const { status, body } = await getAs(owner, projectId)
+
+    expect(status).toBe(200)
+    expect(body).toMatchObject({
+      project: {
+        id: projectId,
+        name: "Detail",
+        slug: "detail",
+        owner: { type: "user", slug: "sc3-detail-owner" },
+        sessionCount: 3,
+      },
+    })
+  })
+
+  test("SC4: a project the caller cannot see is reported as missing", async () => {
+    const owner = await seedUser(db, 901, "sc4-owner")
+    const outsider = await seedUser(db, 902, "sc4-outsider")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Hidden", slug: "hidden" },
+      ownerId: owner,
+    })
+
+    const { status, body } = await getAs(outsider, projectId)
+
+    expect(status).toBe(404)
+    expect(body).toEqual({ error: "projectNotFound" })
+  })
+
+  test("SC5: a super admin reads a project they have no membership in", async () => {
+    const owner = await seedUser(db, 903, "sc5-owner")
+    const admin = await seedUser(db, 904, "sc5-admin")
+    await db.update(users).set({ isSuperAdmin: true }).where(eq(users.id, admin))
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Admin View", slug: "admin-view" },
+      ownerId: owner,
+    })
+
+    const { status, body } = await getAs(admin, projectId)
+
+    expect(status).toBe(200)
+    expect(body).toMatchObject({
+      project: { id: projectId, name: "Admin View", slug: "admin-view" },
+    })
+  })
+
+  test("SC6: a malformed project id is reported as missing, not as a server error", async () => {
+    const caller = await seedUser(db, 905, "sc6-caller")
+
+    const { status, body } = await getAs(caller, "not-a-uuid")
+
+    expect(status).toBe(404)
+    expect(body).toEqual({ error: "projectNotFound" })
+  })
+
+  test("the detail payload's viewerCanDelete follows canDelete: true for the owner, false for a viewer-only grant", async () => {
+    const owner = await seedUser(db, 906, "vcd-owner")
+    const grantee = await seedUser(db, 907, "vcd-grantee")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "VCD", slug: "vcd" },
+      ownerId: owner,
+    })
+    await projectsRepo.grant(db, grantee, projectId, "viewer")
+
+    expect((await getAs(owner, projectId)).body).toMatchObject({ viewerCanDelete: true })
+    expect((await getAs(grantee, projectId)).body).toMatchObject({ viewerCanDelete: false })
+  })
+})
+
+describe.skipIf(!dockerAvailable())("DELETE /api/projects/:id", () => {
+  let container: StartedPostgreSqlContainer
+  let teardown: () => Promise<void>
+  let db: Db
+
+  beforeAll(async () => {
+    container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start()
+    const url = container.getConnectionUri()
+    execFileSync("bun", ["run", "db:migrate"], {
+      cwd: packageDir,
+      env: { ...process.env, DATABASE_URL: url },
+      stdio: "inherit",
+    })
+    const created = createDb(url)
+    db = created.db
+    teardown = async () => {
+      await created.client.end()
+      await container.stop()
+    }
+  }, 120_000)
+
+  afterAll(async () => {
+    await teardown?.()
+  })
+
+  beforeEach(async () => {
+    await db.delete(sessions)
+    await db.delete(userProjectGrant)
+    await db.delete(projects)
+    await db.delete(userOrgs)
+    await db.delete(orgs)
+    await db.delete(users)
+  })
+
+  const deleteAs = async (
+    userId: string,
+    projectId: string,
+  ): Promise<{ status: number; body: unknown }> => {
+    const token = await signToken(env, { sub: userId, aud: "web" })
+    const res = await buildApp(db, env).request(`/api/projects/${projectId}`, {
+      method: "DELETE",
+      headers: { cookie: `session=${token}` },
+    })
+    return { status: res.status, body: res.status === 204 ? null : await res.json() }
+  }
+
+  const seedOrgRow = async (slug: string): Promise<string> => {
+    const [org] = await db
+      .insert(orgs)
+      .values({ githubSlug: slug, name: slug })
+      .returning({ id: orgs.id })
+    if (!org) throw new Error("seed org failed")
+    return org.id
+  }
+
+  test("SC12: the owner deletes their own project and its sessions go with it", async () => {
+    const owner = await seedUser(db, 1000, "sc12-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Deletable", slug: "deletable" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "sc12-s1",
+      userId: owner,
+      projectId,
+      title: "s1",
+      updatedAt: new Date("2026-01-01T00:00:00Z"),
+    })
+    await seedSession(db, {
+      id: "sc12-s2",
+      userId: owner,
+      projectId,
+      title: "s2",
+      updatedAt: new Date("2026-01-02T00:00:00Z"),
+    })
+
+    const { status } = await deleteAs(owner, projectId)
+
+    expect(status).toBe(204)
+    expect(await db.select().from(projects).where(eq(projects.id, projectId))).toHaveLength(0)
+    expect(await db.select().from(sessions).where(eq(sessions.id, "sc12-s1"))).toHaveLength(0)
+    expect(await db.select().from(sessions).where(eq(sessions.id, "sc12-s2"))).toHaveLength(0)
+  })
+
+  test("SC13: a member who is not the owner cannot delete the project", async () => {
+    const owner = await seedUser(db, 1001, "sc13-owner")
+    const grantee = await seedUser(db, 1002, "sc13-grantee")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Granted", slug: "granted" },
+      ownerId: owner,
+    })
+    await projectsRepo.grant(db, grantee, projectId, "viewer")
+
+    const { status, body } = await deleteAs(grantee, projectId)
+
+    expect(status).toBe(403)
+    expect(body).toEqual({ error: "forbidden" })
+    expect(await db.select().from(projects).where(eq(projects.id, projectId))).toHaveLength(1)
+  })
+
+  test("SC14: an org member cannot delete their org's project", async () => {
+    const member = await seedUser(db, 1003, "sc14-member")
+    const orgId = await seedOrgRow("sc14-org")
+    await db.insert(userOrgs).values({ userId: member, orgId })
+    const { id: projectId } = await projectsRepo.upsertOwned(db, {
+      identity: { name: "org-project", slug: "org-project" },
+      owner: { kind: "org", orgId },
+    })
+
+    const { status, body } = await deleteAs(member, projectId)
+
+    expect(status).toBe(403)
+    expect(body).toEqual({ error: "forbidden" })
+    expect(await db.select().from(projects).where(eq(projects.id, projectId))).toHaveLength(1)
+  })
+
+  test("SC15: a super admin deletes an org-owned project", async () => {
+    const admin = await seedUser(db, 1004, "sc15-admin")
+    await db.update(users).set({ isSuperAdmin: true }).where(eq(users.id, admin))
+    const orgId = await seedOrgRow("sc15-org")
+    const { id: projectId } = await projectsRepo.upsertOwned(db, {
+      identity: { name: "admin-org-project", slug: "admin-org-project" },
+      owner: { kind: "org", orgId },
+    })
+
+    const { status } = await deleteAs(admin, projectId)
+
+    expect(status).toBe(204)
+    expect(await db.select().from(projects).where(eq(projects.id, projectId))).toHaveLength(0)
+  })
+
+  test("SC16: deleting a project the caller cannot see is reported as missing", async () => {
+    const owner = await seedUser(db, 1005, "sc16-owner")
+    const stranger = await seedUser(db, 1006, "sc16-stranger")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Stranger's", slug: "strangers" },
+      ownerId: owner,
+    })
+
+    const { status, body } = await deleteAs(stranger, projectId)
+
+    expect(status).toBe(404)
+    expect(body).toEqual({ error: "projectNotFound" })
+    expect(await db.select().from(projects).where(eq(projects.id, projectId))).toHaveLength(1)
+  })
+})

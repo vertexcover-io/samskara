@@ -56,6 +56,10 @@ export const request = async <R extends Response>(
     return { ok: false, error: networkFailure(error) }
   }
 
+  // A 204 has no body by definition -- reading it as JSON always throws, which would otherwise
+  // be mistaken for a malformed response rather than the success it is.
+  if (response.status === 204) return { ok: true, data: undefined as unknown as OkBody<R> }
+
   const body: unknown = await response.json().catch(() => MALFORMED)
   if (!response.ok) return { ok: false, error: errorForStatus(response.status, errorCode(body)) }
   if (body === MALFORMED) {

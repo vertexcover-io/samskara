@@ -90,7 +90,12 @@ Main checkout uses `samskara`; a worktree uses `samskara_BRANCH_SLUG`.
 - `bun run db:verify` — read-only check that every step is already converged
 - `bun run seed` — idempotent dev fixture: dev user, org, project, 3 sessions, then restores `.seed/identity.json` if it is there. `--from FILE` reads a different snapshot; `--if-empty` makes it a no-op when the database already has projects, which is how `setup` stays safe to re-run
 - `bun run seed:capture` — write `.seed/identity.json` from the current database. `--to FILE` writes elsewhere. Writes nothing when no real user has signed in yet
-- `bun run seed:org ORG_SLUG` — register a real GitHub org
+- `bun run seed:org ORG_SLUG` — register a real GitHub org, and the only path that works before
+  anyone has signed in. Re-running it writes `autoAddMembers` from the flag you passed, so it is
+  also how you change that setting from a shell
+- A signed-in super admin registers further orgs from the web UI at `/orgs`. That path deliberately
+  does **not** touch an org that already exists: re-registering a slug to fix a typo must not reopen
+  automatic membership for everyone in that GitHub org
 
 **Post-migrate steps.** Some database work cannot live in a migration: `create index
 concurrently` is rejected inside a migration's transaction, so the full-text search indexes are

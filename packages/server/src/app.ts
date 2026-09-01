@@ -8,6 +8,7 @@ import { loggingMiddleware } from "./lib/logging-middleware.js"
 import { artifactRoutes } from "./routes/artifacts.js"
 import { authRoutes } from "./routes/auth.js"
 import { ingestRoutes } from "./routes/ingest.js"
+import { orgsRoutes } from "./routes/orgs.js"
 import { projectsRoutes } from "./routes/projects.js"
 import { sessionsRoutes } from "./routes/sessions.js"
 import { syncStatusRoutes } from "./routes/sync-status.js"
@@ -34,6 +35,7 @@ export const buildApp = (db: Db, env: Env, deps: Deps = {}) => {
     .route("/api/auth", authRoutes({ db, env, githubClient, pairingStore }))
     .route("/api/ingest", ingestRoutes({ db, env }))
     .route("/api/artifacts", artifactRoutes({ db, env }))
+    .route("/api/orgs", orgsRoutes({ db, env }))
     .route("/api/projects", projectsRoutes({ db, env }))
     .route("/api/sessions", sessionsRoutes({ db, env }))
     .route("/api/sync-status", syncStatusRoutes({ db, env }))

@@ -147,7 +147,9 @@ export const sessionsRoutes = ({ db, env }: Deps) =>
     })
     /**
      * Scoped to `cli` rather than `web`: this exists so a local replay can re-ingest a session
-     * from its transcript, and nothing in the web app should be able to destroy captured history.
+     * from its transcript. Deleting one session is a maintenance action with no confirmation, so
+     * it stays off the web app -- the boundary is about stray clicks, not about deliberate,
+     * typed-slug-confirmed deletes, which is exactly what project delete requires of the web app.
      */
     .delete("/:id", requireAuth({ db, env }, ["cli"]), async (c) => {
       const removed = await remove(db, c.req.param("id"), c.get("user").id)

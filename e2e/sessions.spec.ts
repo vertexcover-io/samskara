@@ -413,6 +413,9 @@ test("SC35: project links use accessible link semantics, filters restore through
   await page.goto("/projects")
   await page.getByRole("link", { name: /Samskara/ }).click()
 
+  // A project card opens the project page; the session list is one link further on.
+  await expect(page).toHaveURL(new RegExp(`/projects/${projectId("samskara")}$`))
+  await page.getByRole("link", { name: /all \d+ sessions/i }).click()
   await expect(page).toHaveURL(new RegExp(`/sessions\\?project=${projectId("samskara")}$`))
   await expect(page.getByRole("link", { name: /Pagination ledger 51/ })).toBeVisible()
   await page.getByRole("combobox", { name: "User" }).selectOption(E2E_OTHER_USER_LOGIN)
@@ -429,15 +432,18 @@ test("SC35: project links use accessible link semantics, filters restore through
   expect(overflow).toBeLessThanOrEqual(0)
 })
 
-test("SC34: clicking an org project card opens its sessions by id and the card shows the org", async ({
+test("SC34: clicking an org project card opens its project page, and the card shows the org", async ({
   authedPage: page,
 }) => {
   await page.goto("/projects")
 
-  const acmeWidgetCard = page.locator(`a[href="/sessions?project=${projectId("acme-widget")}"]`)
+  const acmeWidgetCard = page.locator(`a[href="/projects/${projectId("acme-widget")}"]`)
   await expect(acmeWidgetCard).toContainText("acme")
 
   await acmeWidgetCard.click()
+  await expect(page).toHaveURL(new RegExp(`/projects/${projectId("acme-widget")}$`))
+
+  await page.getByRole("link", { name: /all \d+ sessions/i }).click()
   await expect(page).toHaveURL(new RegExp(`/sessions\\?project=${projectId("acme-widget")}$`))
   await expect(page.getByRole("link", { name: /Acme widget session/i })).toBeVisible()
 })
@@ -448,7 +454,7 @@ test("SC8: a member sees the org's project card; a non-member does not", async (
 }) => {
   // Matched by href rather than accessible name: a dev database can carry an unrelated
   // "acme-widgets" project whose name would also satisfy a substring/regex name match.
-  const acmeWidgetCard = page.locator(`a[href="/sessions?project=${projectId("acme-widget")}"]`)
+  const acmeWidgetCard = page.locator(`a[href="/projects/${projectId("acme-widget")}"]`)
 
   await page.goto("/projects")
   await expect(acmeWidgetCard).toBeVisible()

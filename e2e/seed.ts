@@ -87,6 +87,10 @@ export type SeedSpec = {
   readonly projects: ReadonlyArray<SeedProject>
   /** Org membership for a project's org, keyed by org slug. Defaults to `["primary"]`. */
   readonly orgMembers?: Record<string, ReadonlyArray<"primary" | "other">>
+  /** `autoAddMembers` for a seeded org, keyed by org slug. Defaults to `true`. */
+  readonly orgAutoAdd?: Record<string, boolean>
+  /** Which seeded users get `isSuperAdmin`. Defaults to neither. */
+  readonly superAdmins?: ReadonlyArray<"primary" | "other">
 }
 
 // Forces the version (4) and variant (8-b) nibbles so the result satisfies zod's `.uuid()`
@@ -243,19 +247,20 @@ export const seedDatabase = async (spec: SeedSpec): Promise<void> => {
     await truncateAll(sql)
 
     await sql`
-      insert into users (id, "githubId", "githubLogin", email, name)
-      values (${E2E_USER_ID}, 999001, ${E2E_USER_LOGIN}, 'e2e@example.com', 'E2E User')
+      insert into users (id, "githubId", "githubLogin", email, name, "isSuperAdmin")
+      values (${E2E_USER_ID}, 999001, ${E2E_USER_LOGIN}, 'e2e@example.com', 'E2E User', ${spec.superAdmins?.includes("primary") ?? false})
     `
 
     await sql`
-      insert into users (id, "githubId", "githubLogin", email, name)
-      values (${E2E_OTHER_USER_ID}, 999002, ${E2E_OTHER_USER_LOGIN}, 'maya@example.com', 'Maya')
+      insert into users (id, "githubId", "githubLogin", email, name, "isSuperAdmin")
+      values (${E2E_OTHER_USER_ID}, 999002, ${E2E_OTHER_USER_LOGIN}, 'maya@example.com', 'Maya', ${spec.superAdmins?.includes("other") ?? false})
     `
 
     for (const slug of orgSlugs) {
+      const autoAddMembers = spec.orgAutoAdd?.[slug] ?? true
       await sql`
         insert into orgs (id, "githubSlug", "autoAddMembers")
-        values (${orgId(slug)}, ${slug}, true)
+        values (${orgId(slug)}, ${slug}, ${autoAddMembers})
         on conflict ("githubSlug") do update set "autoAddMembers" = excluded."autoAddMembers"
       `
       for (const member of spec.orgMembers?.[slug] ?? ["primary"]) {
