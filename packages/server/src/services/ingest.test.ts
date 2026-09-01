@@ -493,7 +493,12 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
           message: {
             ...call.message,
             msgType: "toolCall",
-            details: { callId: "call-commit", name: "Bash", input: { command: "git commit" } },
+            details: {
+              callId: "call-commit",
+              name: "Bash",
+              input: { command: "git commit" },
+              metadata: { type: "shell", command: "git commit" },
+            },
             repo: subRepo,
           } as NormalizedMessage,
         },
@@ -595,6 +600,7 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
               callId: "call-late",
               name: "Bash",
               input: { command: "git commit -m late" },
+              metadata: { type: "shell", command: "git commit -m late" },
             },
             repo: subRepo,
           } as NormalizedMessage,
@@ -644,6 +650,7 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
               callId: "call-grep",
               name: "Bash",
               input: { command: "grep -rn 'git commit' docs/" },
+              metadata: { type: "shell", command: "grep -rn 'git commit' docs/" },
             },
             repo: subRepo,
           } as NormalizedMessage,
@@ -691,7 +698,12 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
           message: {
             ...call.message,
             msgType: "toolCall",
-            details: { callId: "call-pr", name: "Bash", input: { command: "gh pr create" } },
+            details: {
+              callId: "call-pr",
+              name: "Bash",
+              input: { command: "gh pr create" },
+              metadata: { type: "shell", command: "gh pr create" },
+            },
           } as NormalizedMessage,
         },
       ]),
@@ -792,7 +804,12 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
         message: {
           ...base.message,
           msgType: "toolCall",
-          details: { callId, name: "Bash", input: { command: "git commit" } },
+          details: {
+            callId,
+            name: "Bash",
+            input: { command: "git commit" },
+            metadata: { type: "shell", command: "git commit" },
+          },
           repo,
         } as NormalizedMessage,
       }

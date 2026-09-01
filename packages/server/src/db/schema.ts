@@ -331,6 +331,9 @@ export const toolCall = pgTable(
       .references(() => messages.id, { onDelete: "cascade" }),
     toolName: text("toolName").notNull(),
     toolInput: jsonb("toolInput"),
+    // The call's normalized effect (`toolCallMetadataSchema` in core); null for rows stored
+    // before it existed and for tools no plugin maps.
+    metadata: jsonb("metadata"),
     searchVector: searchVector("toolCall"),
   },
   (t) => [

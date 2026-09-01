@@ -440,6 +440,49 @@ describe.skipIf(!dockerAvailable())("ingest repositories", () => {
     expect(calls[0]?.toolInput).toEqual({ path: "b" })
   })
 
+  test("toolRows.callsByIds reads the command from the call's shell metadata, never from its input", async () => {
+    await seedSession("sess-cmd")
+    const { idByKey } = await messagesRepo.insertManyIgnoreConflicts(db, "sess-cmd", [
+      {
+        sessionId: "sess-cmd",
+        lineUuid: "0191d942-3ba5-7dba-9a7d-22d65b3025c1",
+        subIndex: 0,
+        msgType: "toolCall",
+        lineNumber: 1,
+        sourceSchemaVersion: 1,
+        raw: {},
+      },
+      {
+        sessionId: "sess-cmd",
+        lineUuid: "0191d942-3ba5-7dba-9a7d-22d65b3025c1",
+        subIndex: 1,
+        msgType: "toolCall",
+        lineNumber: 1,
+        sourceSchemaVersion: 1,
+        raw: {},
+      },
+    ])
+    const shellId = idByKey.get(messagesRepo.keyOf("0191d942-3ba5-7dba-9a7d-22d65b3025c1", 0))
+    const otherId = idByKey.get(messagesRepo.keyOf("0191d942-3ba5-7dba-9a7d-22d65b3025c1", 1))
+    if (!shellId || !otherId) throw new Error("no message id")
+
+    await toolRowsRepo.replaceForMessage(db, shellId, {
+      call: {
+        callId: "call-shell",
+        name: "bash",
+        input: { command: "git commit -m x" },
+        metadata: { type: "shell", command: "git commit -m x" },
+      },
+    })
+    await toolRowsRepo.replaceForMessage(db, otherId, {
+      call: { callId: "call-other", name: "Read", input: { command: "git commit -m x" } },
+    })
+
+    const calls = await toolRowsRepo.callsByIds(db, "sess-cmd", ["call-shell", "call-other"])
+    expect(calls.get("call-shell")?.command).toBe("git commit -m x")
+    expect(calls.get("call-other")?.command).toBeNull()
+  })
+
   test("tokenUsage.upsert overwrites the counts for a message rather than adding a row", async () => {
     await seedSession("sess-tokens")
     const { idByKey } = await messagesRepo.insertManyIgnoreConflicts(db, "sess-tokens", [

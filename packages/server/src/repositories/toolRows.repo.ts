@@ -1,9 +1,16 @@
+import type { ToolCallMetadata } from "@samskara/core"
+import { toolCallMetadataSchema } from "@samskara/core"
 import { and, eq, inArray } from "drizzle-orm"
 import type { Querier } from "../db/client.js"
 import { messages, toolCall, toolResult } from "../db/schema.js"
 
 type ToolProjection = {
-  readonly call?: { readonly callId: string; readonly name: string; readonly input: unknown }
+  readonly call?: {
+    readonly callId: string
+    readonly name: string
+    readonly input: unknown
+    readonly metadata?: ToolCallMetadata
+  }
   readonly result?: {
     readonly callId: string
     readonly output: unknown
@@ -25,6 +32,7 @@ export const replaceForMessage = async (
       messageId,
       toolName: tool.call.name,
       toolInput: tool.call.input,
+      metadata: tool.call.metadata ?? null,
     })
   }
   if (tool.result) {
@@ -44,10 +52,10 @@ export type StoredCall = {
   readonly repoId: string | null
 }
 
-const commandOf = (input: unknown): string | null => {
-  if (typeof input !== "object" || input === null) return null
-  const command = (input as Record<string, unknown>).command
-  return typeof command === "string" && command.length > 0 ? command : null
+/** Rows stored before `metadata` existed hold null and resolve to no command; nothing back-fills. */
+const shellCommandOf = (metadata: unknown): string | null => {
+  const parsed = toolCallMetadataSchema.safeParse(metadata)
+  return parsed.success && parsed.data.type === "shell" ? parsed.data.command : null
 }
 
 /**
@@ -65,7 +73,7 @@ export const callsByIds = async (
       toolId: toolCall.toolId,
       messageId: toolCall.messageId,
       toolName: toolCall.toolName,
-      toolInput: toolCall.toolInput,
+      metadata: toolCall.metadata,
       repoId: messages.repoId,
     })
     .from(toolCall)
@@ -77,7 +85,7 @@ export const callsByIds = async (
       {
         messageId: row.messageId,
         toolName: row.toolName,
-        command: commandOf(row.toolInput),
+        command: shellCommandOf(row.metadata),
         repoId: row.repoId,
       },
     ]),
