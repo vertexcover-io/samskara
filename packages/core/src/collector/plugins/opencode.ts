@@ -485,7 +485,7 @@ type FamilyInput = {
  * a quiet parent must not hide a child that moved. Sessions without messages yet are left for a
  * later cycle rather than sent as an empty track.
  */
-const collectFamily = async ({
+const familyBatch = async ({
   db,
   main,
   children,
@@ -506,56 +506,61 @@ const collectFamily = async ({
   return tracks.length === 0 ? null : { sessionId: main.id, tracks }
 }
 
+const collectFamily = async (input: FamilyInput): Promise<SessionBatch | null> => {
+  try {
+    return await familyBatch(input)
+  } catch (error) {
+    input.deps.log.error(
+      { sessionId: input.main.id, err: error },
+      "OpenCode session skipped: unreadable rows",
+    )
+    return null
+  }
+}
+
+const SESSIONS_SQL =
+  "SELECT id, parent_id, slug, directory, title, time_created, time_updated, agent FROM session ORDER BY time_updated DESC, id"
+
+/** Every main session, paired with the subagent sessions it spawned. */
+const loadFamilies = (
+  db: OpencodeDatabase,
+): ReadonlyArray<{ readonly main: SessionRow; readonly children: ReadonlyArray<SessionRow> }> => {
+  const sessions = db
+    .prepare(SESSIONS_SQL)
+    .all()
+    .map((row) => sessionRowSchema.parse(row))
+  const childrenOf = groupBy(
+    sessions.filter((session) => session.parent_id !== null),
+    (session) => session.parent_id ?? "",
+  )
+  return sessions
+    .filter((session) => session.parent_id === null)
+    .map((main) => ({ main, children: childrenOf.get(main.id) ?? [] }))
+}
+
+/** A resolved directory is cached for the daemon's lifetime; an unresolved one stays retryable. */
+const cachedResolver =
+  (cache: Map<string, Promise<ProjectIdentity | null>>, deps: CollectDeps) =>
+  async (dir: string): Promise<ProjectIdentity | null> => {
+    const pending = cache.get(dir) ?? deps.resolveProject(dir)
+    cache.set(dir, pending)
+    const project = await pending
+    if (!project) cache.delete(dir)
+    else deps.rememberProject?.(dir, project)
+    return project
+  }
+
 export const createOpencodePlugin = (deps: { readonly db: OpencodeDatabase }): AgentPlugin => {
-  // A resolved identity is cached for the daemon's lifetime; an unresolved one stays retryable.
   const projectByDir = new Map<string, Promise<ProjectIdentity | null>>()
-  const resolveWith =
-    (collectDeps: CollectDeps) =>
-    async (dir: string): Promise<ProjectIdentity | null> => {
-      const pending = projectByDir.get(dir) ?? collectDeps.resolveProject(dir)
-      projectByDir.set(dir, pending)
-      const project = await pending
-      if (!project) projectByDir.delete(dir)
-      else collectDeps.rememberProject?.(dir, project)
-      return project
-    }
 
   return {
     source: SOURCE,
     collect: async (prev, collectDeps) => {
-      const sessions = deps.db
-        .prepare(
-          "SELECT id, parent_id, slug, directory, title, time_created, time_updated, agent FROM session ORDER BY time_updated DESC, id",
-        )
-        .all()
-        .map((row) => sessionRowSchema.parse(row))
-      const childrenOf = groupBy(
-        sessions.filter((session) => session.parent_id !== null),
-        (session) => session.parent_id ?? "",
-      )
-      const resolve = resolveWith(collectDeps)
-
+      const resolve = cachedResolver(projectByDir, collectDeps)
       const batches = await Promise.all(
-        sessions
-          .filter((session) => session.parent_id === null)
-          .map(async (main) => {
-            try {
-              return await collectFamily({
-                db: deps.db,
-                main,
-                children: childrenOf.get(main.id) ?? [],
-                prev,
-                deps: collectDeps,
-                resolve,
-              })
-            } catch (error) {
-              collectDeps.log.error(
-                { sessionId: main.id, err: error },
-                "OpenCode session skipped: unreadable rows",
-              )
-              return null
-            }
-          }),
+        loadFamilies(deps.db).map(({ main, children }) =>
+          collectFamily({ db: deps.db, main, children, prev, deps: collectDeps, resolve }),
+        ),
       )
       return compact(batches)
     },
