@@ -13,69 +13,58 @@ const fullProject: ProjectSummary = {
   lastActiveAt: "2026-02-01T09:30:00.000Z",
 }
 
-test("S2: a fully-populated card renders name, slug, session count, and last-active time - all four, inside the card itself", () => {
+const renderCard = (project: ProjectSummary = fullProject) =>
   render(
     <TestRouter initialEntries={["/projects"]}>
-      <ProjectCard project={fullProject} to="/sessions?project=samskara" />
+      <ProjectCard project={project} to={`/projects/${project.id}`} />
     </TestRouter>,
   )
 
-  const card = within(screen.getByRole("link"))
+test("S2: a fully-populated card renders name, slug, session count, and last-active time - all four, inside the card itself", () => {
+  renderCard()
+
+  const card = within(screen.getByRole("article"))
   expect(card.getByText("Samskara")).toBeInTheDocument()
   expect(card.getByText(/samskara/)).toBeInTheDocument()
-  expect(card.getByText(/12/)).toBeInTheDocument()
+  expect(card.getByText("12")).toBeInTheDocument()
   expect(card.getByText(/2026/)).toBeInTheDocument()
 })
 
-test("S2: the whole card is one link, so a project opens in a new tab the way any other link does", () => {
-  render(
-    <TestRouter initialEntries={["/projects"]}>
-      <ProjectCard project={fullProject} to="/sessions?project=samskara" />
-    </TestRouter>,
-  )
+test("S2: the card offers the project and its sessions as separate destinations", () => {
+  renderCard()
 
-  expect(screen.getByRole("link")).toHaveAttribute("href", "/sessions?project=samskara")
+  expect(screen.getByRole("link", { name: "Samskara" })).toHaveAttribute("href", "/projects/p-1")
+  expect(screen.getByRole("link", { name: /view 12 sessions/i })).toHaveAttribute(
+    "href",
+    "/sessions?project=p-1",
+  )
+})
+
+test("S3: a project with nothing captured says so instead of offering an empty session list", () => {
+  renderCard({ ...fullProject, sessionCount: 0, lastActiveAt: null })
+
+  const status = screen.getByRole("status")
+  expect(status).toHaveTextContent(/no sessions captured yet/i)
+  expect(screen.queryByRole("link", { name: /view .* sessions/i })).not.toBeInTheDocument()
 })
 
 test("S3: an unavailable last-active field renders the word 'unavailable' rather than an empty cell coloured differently", () => {
-  render(
-    <TestRouter initialEntries={["/projects"]}>
-      <ProjectCard
-        project={{ ...fullProject, sessionCount: 0, lastActiveAt: null }}
-        to="/sessions?project=samskara"
-      />
-    </TestRouter>,
-  )
+  renderCard({ ...fullProject, lastActiveAt: null })
 
-  const status = screen.getByRole("status")
-  expect(status).toHaveTextContent(/no sessions captured/i)
-  expect(status.textContent?.trim()).not.toBe("")
+  expect(screen.getByText("unavailable")).toBeInTheDocument()
 })
 
-test("SC31: an org-owned project's card shows the owning org's slug", () => {
-  render(
-    <TestRouter initialEntries={["/projects"]}>
-      <ProjectCard
-        project={{ ...fullProject, owner: { type: "org", slug: "acme" } }}
-        to="/sessions?project=p-1"
-      />
-    </TestRouter>,
-  )
+test("SC31: an org-owned project's card links to the owning org", () => {
+  renderCard({ ...fullProject, owner: { type: "org", slug: "acme" } })
 
-  const card = within(screen.getByRole("link"))
-  expect(card.getByText(/acme/)).toBeInTheDocument()
+  expect(screen.getByRole("link", { name: /org · acme/i })).toHaveAttribute("href", "/orgs/acme")
 })
 
-test("SC31: a personal project's card shows no owner line and not the owner's own slug", () => {
-  render(
-    <TestRouter initialEntries={["/projects"]}>
-      <ProjectCard
-        project={{ ...fullProject, owner: { type: "user", slug: "ritesh" } }}
-        to="/sessions?project=p-1"
-      />
-    </TestRouter>,
-  )
+test("SC31: a personal project's card says the project is yours, without naming you", () => {
+  renderCard({ ...fullProject, owner: { type: "user", slug: "ritesh" } })
 
-  const card = within(screen.getByRole("link"))
+  const card = within(screen.getByRole("article"))
+  expect(card.getByText("yours")).toBeInTheDocument()
   expect(card.queryByText(/ritesh/)).not.toBeInTheDocument()
+  expect(screen.queryByRole("link", { name: /^org · /i })).not.toBeInTheDocument()
 })

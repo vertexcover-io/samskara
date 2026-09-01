@@ -68,10 +68,7 @@ export const Projects = () => {
       <ul className="mt-4 grid grid-cols-1 gap-4 min-[560px]:grid-cols-2 min-[840px]:grid-cols-3">
         {state.projects.map((project) => (
           <li key={project.id}>
-            <ProjectCard
-              project={project}
-              to={`/sessions?project=${encodeURIComponent(project.id)}`}
-            />
+            <ProjectCard project={project} to={`/projects/${encodeURIComponent(project.id)}`} />
           </li>
         ))}
       </ul>

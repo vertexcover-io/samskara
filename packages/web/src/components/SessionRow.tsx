@@ -39,9 +39,11 @@ const SOURCE_LABEL: Readonly<Record<SearchSourceKind, string>> = {
 type Props = {
   readonly session: SessionSummary
   readonly to: string
+  /** Off on a surface that already names the project, where the cell repeats its own heading. */
+  readonly showProject?: boolean
 }
 
-export const SessionRow = ({ session, to }: Props) => {
+export const SessionRow = ({ session, to, showProject = true }: Props) => {
   const { title, projectName, userLogin, repo, durationMs, tokensTotal, lastActiveAt } = session
   const match = session.match ?? null
 
@@ -67,7 +69,7 @@ export const SessionRow = ({ session, to }: Props) => {
       </span>
 
       <span className="col-start-2 truncate font-mono text-[0.72rem] text-faded min-[900px]:col-start-3 min-[900px]:self-center">
-        {projectName}
+        {showProject ? projectName : null}
       </span>
 
       <time
