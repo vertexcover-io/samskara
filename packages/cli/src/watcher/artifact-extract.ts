@@ -1,6 +1,5 @@
 import { isAbsolute, resolve } from "node:path"
-import type { ParsedRecord } from "@samskara/core"
-import { z } from "zod"
+import type { NormalizedMessage, ParsedRecord } from "@samskara/core"
 
 export type PotentialArtifact = {
   readonly path: string
@@ -21,62 +20,45 @@ export const mergeArtifact = (a: PotentialArtifact, b: PotentialArtifact): Poten
   }
 }
 
-const agentWrite = z.object({
-  timestamp: z.string().datetime({ offset: true }),
-  toolUseResult: z.object({
-    filePath: z.string().min(1),
-    type: z.enum(["create", "update"]).optional(),
-    originalFile: z.string().nullish(),
-  }),
-})
-
-const humanEdit = z.object({
-  attachment: z.object({
-    type: z.literal("edited_text_file"),
-    filename: z.string().min(1),
-  }),
-})
-
 const blank = (path: string): PotentialArtifact => ({ path, created: false })
 
 const timeOf = (record: ParsedRecord): number => {
-  const stamp = (record.raw as { timestamp?: unknown }).timestamp
-  return typeof stamp === "string" ? Date.parse(stamp) : 0
+  const stamp = record.messages.find((message) => message.timestamp !== undefined)?.timestamp
+  return stamp === undefined ? 0 : Date.parse(stamp)
+}
+
+/**
+ * Only the normalized messages are read: a `wrote` effect is what any harness's write tool did,
+ * and an `edited` fileEvent is a file the human changed outside the agent. Neither needs the
+ * harness's own payload shape.
+ */
+const artifactOf = (message: NormalizedMessage, cwd: string): PotentialArtifact | undefined => {
+  if (message.msgType === "toolResult" && message.details.metadata?.type === "wrote") {
+    const { path, created, base } = message.details.metadata
+    return { path: absolute(path, cwd), created, ...(base === undefined ? {} : { base }) }
+  }
+  if (message.msgType === "fileEvent" && message.details.type === "edited") {
+    return blank(absolute(message.details.path, cwd))
+  }
+  return undefined
 }
 
 export const collectArtifacts = (
   records: ReadonlyArray<ParsedRecord>,
   cwd: string,
 ): ReadonlyArray<PotentialArtifact> => {
-  const byPath = new Map<string, PotentialArtifact>()
-
   // Several transcripts are flattened in, and only the earliest write for a path holds its base.
   const byTime = [...records].sort((a, b) => timeOf(a) - timeOf(b))
 
-  for (const record of byTime) {
-    const human = humanEdit.safeParse(record.raw)
-    if (human.success) {
-      const path = absolute(human.data.attachment.filename, cwd)
-      byPath.set(path, byPath.get(path) ?? blank(path))
-      continue
-    }
-
-    const agent = agentWrite.safeParse(record.raw)
-    if (!agent.success) continue
-
-    const { filePath, type, originalFile } = agent.data.toolUseResult
-    const path = absolute(filePath, cwd)
-
+  const byPath = new Map<string, PotentialArtifact>()
+  for (const message of byTime.flatMap((record) => record.messages)) {
+    const artifact = artifactOf(message, cwd)
+    if (!artifact) continue
     byPath.set(
-      path,
-      mergeArtifact(byPath.get(path) ?? blank(path), {
-        path,
-        created: type === "create",
-        base: originalFile ?? undefined,
-      }),
+      artifact.path,
+      mergeArtifact(byPath.get(artifact.path) ?? blank(artifact.path), artifact),
     )
   }
-
   return [...byPath.values()]
 }
 

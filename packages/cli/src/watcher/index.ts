@@ -1,7 +1,15 @@
 import { glob as nodeGlob, readdir, readFile, rename, stat, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
-import { createClaudePlugin, type FileSystem, type ProjectIdentity } from "@samskara/core"
+import {
+  type AgentPlugin,
+  createClaudePlugin,
+  createOpencodePlugin,
+  defaultDbPath,
+  type FileSystem,
+  openDatabase,
+  type ProjectIdentity,
+} from "@samskara/core"
 import type pino from "pino"
 import { readToken } from "../config/credentials.js"
 import { artifactQueuePath, artifactStatePath, statePath } from "../config/paths.js"
@@ -16,6 +24,21 @@ import { createArtifactSink, createHttpSink } from "./sink.js"
 
 const CYCLE_MS = 10_000
 const SHUTDOWN_GRACE_MS = 5_000
+
+/**
+ * Claude Code is always watched. OpenCode is watched only when its database opens: an absent
+ * install is normal, and the daemon must not refuse to start over it.
+ */
+const activePlugins = (log: pino.Logger): ReadonlyArray<AgentPlugin> => {
+  const claude = createClaudePlugin(nodeFs)
+  const dbPath = defaultDbPath()
+  try {
+    return [claude, createOpencodePlugin({ db: openDatabase(dbPath) })]
+  } catch (err) {
+    log.debug({ dbPath, err }, "OpenCode capture off: database did not open")
+    return [claude]
+  }
+}
 
 const expandHome = (pattern: string): string =>
   pattern.startsWith("~/") ? join(homedir(), pattern.slice(2)) : pattern
@@ -119,7 +142,7 @@ export const watch = async (options: WatchOptions): Promise<void> => {
     clock: { now: () => Date.now() },
     sink: createHttpSink({ apiBase: resolved.apiUrl, readToken, fetch: globalThis.fetch }),
     glob: (pattern) => globAll(pattern, log),
-    plugin: createClaudePlugin(nodeFs),
+    plugins: activePlugins(log),
     resolveProject: async (dir) => {
       const identity = await resolveProject(dir)
       return identity === null ? null : withStoredProjectId(identity)

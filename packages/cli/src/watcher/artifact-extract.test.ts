@@ -1,5 +1,10 @@
 import { join } from "node:path"
-import type { NormalizedMessage, ParsedRecord } from "@samskara/core"
+import {
+  type NormalizedMessage,
+  normalizeClaude,
+  normalizeOpencode,
+  type ParsedRecord,
+} from "@samskara/core"
 import { describe, expect, test } from "vitest"
 import {
   collectArtifacts,
@@ -10,76 +15,74 @@ import {
 
 const CWD = "/work/app"
 
-// `collectArtifacts` reads `record.raw` alone, so this only exists to satisfy the type.
-const placeholderMessage: NormalizedMessage = {
-  subIndex: 0,
+const base = {
   sessionId: "sess-1",
-  source: "claude_code",
+  source: "claude_code" as const,
   sourceSchemaVersion: 1,
   trackId: "main",
-  msgType: "custom",
-  subType: "fixture",
 }
 
-const recordOf = (raw: unknown, lineUuid = "call-1", lineNumber = 1): ParsedRecord => ({
-  lineUuid,
-  lineNumber,
-  raw,
-  messages: [placeholderMessage],
-})
+const recordOf = (
+  messages: readonly [NormalizedMessage, ...NormalizedMessage[]],
+  lineUuid = "call-1",
+  lineNumber = 1,
+): ParsedRecord => ({ lineUuid, lineNumber, raw: {}, messages })
 
-type WriteLineOptions = {
-  readonly type?: "create" | "update"
-  readonly originalFile?: string | null
+type WriteOptions = {
+  readonly created?: boolean
+  readonly base?: string
   readonly timestamp?: string
 }
 
-const writeLine = (filePath: string, over: WriteLineOptions = {}) => ({
+/** A toolResult carrying a `wrote` effect -- what either plugin emits for a completed write. */
+const wrote = (path: string, over: WriteOptions = {}): NormalizedMessage => ({
+  ...base,
+  subIndex: 0,
   timestamp: over.timestamp ?? "2026-07-28T12:00:00.000Z",
-  toolUseResult: {
-    filePath,
-    ...(over.type === undefined ? {} : { type: over.type }),
-    ...(over.originalFile === undefined ? {} : { originalFile: over.originalFile }),
+  msgType: "toolResult",
+  details: {
+    callId: "c1",
+    output: "ok",
+    status: "success",
+    metadata: {
+      type: "wrote",
+      path,
+      created: over.created ?? false,
+      ...(over.base === undefined ? {} : { base: over.base }),
+    },
   },
 })
 
-const humanEditLine = (filename: string, timestamp = "2026-07-28T12:01:00.000Z") => ({
+const humanEdit = (path: string, timestamp = "2026-07-28T12:01:00.000Z"): NormalizedMessage => ({
+  ...base,
+  subIndex: 0,
   timestamp,
-  attachment: { type: "edited_text_file", filename },
+  msgType: "fileEvent",
+  details: { type: "edited", path },
 })
+
+const writeLine = (path: string, over: WriteOptions = {}) => recordOf([wrote(path, over)])
+const LATER = "2026-07-28T12:01:00.000Z"
 
 describe("collectArtifacts", () => {
   test("SC1: a written file is captured by its absolute path", () => {
-    const record = recordOf(writeLine("src/a.ts", { type: "update" }), "call-1")
-    const [artifact] = collectArtifacts([record], CWD)
+    const [artifact] = collectArtifacts([writeLine("src/a.ts")], CWD)
 
     expect(artifact?.path).toBe("/work/app/src/a.ts")
     expect(artifact?.created).toBe(false)
   })
 
   test("SC2: a file written twice is one artifact, not two", () => {
-    const first = recordOf(writeLine("src/a.ts", { type: "update" }), "call-1", 1)
-    const second = recordOf(
-      writeLine("src/a.ts", { type: "update", timestamp: "2026-07-28T12:01:00.000Z" }),
-      "call-2",
-      2,
-    )
+    const first = recordOf([wrote("src/a.ts")], "call-1", 1)
+    const second = recordOf([wrote("src/a.ts", { timestamp: LATER })], "call-2", 2)
 
     expect(collectArtifacts([first, second], CWD)).toHaveLength(1)
   })
 
   test("SC3: the first pre-session content seen becomes the base", () => {
-    const first = recordOf(
-      writeLine("src/a.ts", { type: "update", originalFile: "first content" }),
-      "call-1",
-      1,
-    )
+    const first = recordOf([wrote("src/a.ts", { base: "first content" })], "call-1", 1)
     const second = recordOf(
-      writeLine("src/a.ts", {
-        type: "update",
-        originalFile: "second content",
-        timestamp: "2026-07-28T12:01:00.000Z",
-      }),
+      [wrote("src/a.ts", { base: "second content", timestamp: LATER })],
       "call-2",
       2,
     )
@@ -90,17 +93,9 @@ describe("collectArtifacts", () => {
   })
 
   test("SC3b: writes from two transcripts of one session settle the base by time, not by line", () => {
-    const main = recordOf(
-      writeLine("src/a.ts", { type: "update", originalFile: "earliest content" }),
-      "main-call",
-      500,
-    )
+    const main = recordOf([wrote("src/a.ts", { base: "earliest content" })], "main-call", 500)
     const subagent = recordOf(
-      writeLine("src/a.ts", {
-        type: "update",
-        originalFile: "later content",
-        timestamp: "2026-07-28T12:01:00.000Z",
-      }),
+      [wrote("src/a.ts", { base: "later content", timestamp: LATER })],
       "sub-call",
       3,
     )
@@ -111,21 +106,15 @@ describe("collectArtifacts", () => {
   })
 
   test("SC4: a write recorded without pre-session content yields no base", () => {
-    const record = recordOf(writeLine("src/a.ts", { type: "update", originalFile: null }))
-
-    const [artifact] = collectArtifacts([record], CWD)
+    const [artifact] = collectArtifacts([writeLine("src/a.ts")], CWD)
     expect(artifact?.base).toBeUndefined()
     expect(artifact?.created).toBe(false)
   })
 
   test("SC5: a file the session created never takes a base", () => {
-    const create = recordOf(writeLine("src/a.ts", { type: "create" }), "call-1", 1)
+    const create = recordOf([wrote("src/a.ts", { created: true })], "call-1", 1)
     const edit = recordOf(
-      writeLine("src/a.ts", {
-        type: "update",
-        originalFile: "pre-session content",
-        timestamp: "2026-07-28T12:01:00.000Z",
-      }),
+      [wrote("src/a.ts", { base: "pre-session content", timestamp: LATER })],
       "call-2",
       2,
     )
@@ -136,42 +125,88 @@ describe("collectArtifacts", () => {
   })
 
   test("SC6: overwriting an existing file is not creating it", () => {
-    const record = recordOf(
-      writeLine("src/a.ts", { type: "update", originalFile: "existing content" }),
-    )
-
-    const [artifact] = collectArtifacts([record], CWD)
+    const [artifact] = collectArtifacts([writeLine("src/a.ts", { base: "existing content" })], CWD)
     expect(artifact?.created).toBe(false)
     expect(artifact?.base).toBe("existing content")
   })
 
   test("SC7: a file the human edited is captured with nothing but its path", () => {
-    const record = recordOf(humanEditLine("docs/a.md"))
-
-    const [artifact] = collectArtifacts([record], CWD)
+    const [artifact] = collectArtifacts([recordOf([humanEdit("docs/a.md")])], CWD)
     expect(artifact?.path).toBe("/work/app/docs/a.md")
     expect(artifact?.base).toBeUndefined()
     expect(artifact?.created).toBe(false)
   })
 
   test("SC8: a human edit never erases the base a write recorded", () => {
-    const write = recordOf(
-      writeLine("docs/a.md", { type: "update", originalFile: "base content" }),
-      "call-1",
-      1,
-    )
-    const human = recordOf(humanEditLine("docs/a.md"), "call-2", 2)
+    const write = recordOf([wrote("docs/a.md", { base: "base content" })], "call-1", 1)
+    const human = recordOf([humanEdit("docs/a.md")], "call-2", 2)
 
     const [artifact] = collectArtifacts([write, human], CWD)
     expect(artifact?.base).toBe("base content")
   })
 
-  test("SC10: lines that are not writes are ignored", () => {
-    const userMessage = recordOf({ type: "user", message: { role: "user", content: "hi" } })
-    const bashResult = recordOf({ type: "user", toolUseResult: "plain string output" })
-    const hook = recordOf({ type: "hook_success", hookEvent: "PostToolUse" })
+  test("SC10: messages that are not write effects are ignored, whatever the raw line held", () => {
+    const shellResult: NormalizedMessage = {
+      ...base,
+      subIndex: 0,
+      msgType: "toolResult",
+      details: { callId: "c2", output: "plain string output", status: "success" },
+    }
+    const call: NormalizedMessage = {
+      ...base,
+      subIndex: 0,
+      msgType: "toolCall",
+      details: { callId: "c3", name: "Bash", input: { command: "ls" } },
+    }
+    const records = [
+      recordOf([shellResult], "r1", 1),
+      recordOf([call], "r2", 2),
+      { ...recordOf([call], "r3", 3), raw: { toolUseResult: { filePath: "src/x.ts" } } },
+    ]
 
-    expect(collectArtifacts([userMessage, bashResult, hook], CWD)).toEqual([])
+    expect(collectArtifacts(records, CWD)).toEqual([])
+  })
+
+  test("an OpenCode write and a Claude Write yield the same artifact", () => {
+    const claude = normalizeClaude(
+      {
+        type: "user",
+        timestamp: "2026-07-28T12:00:00.000Z",
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "ok" }],
+        },
+        toolUseResult: { type: "create", filePath: "src/new.ts", content: "x" },
+      },
+      { sessionId: "sess-1", trackId: "main", lineNumber: 1 },
+    )
+    const opencode = normalizeOpencode(
+      {
+        id: "msg_1",
+        timeCreated: Date.parse("2026-07-28T12:00:00.000Z"),
+        data: { role: "assistant" },
+      },
+      [
+        {
+          id: "part_1",
+          timeCreated: Date.parse("2026-07-28T12:00:00.000Z"),
+          data: {
+            type: "tool",
+            tool: "write",
+            callID: "c1",
+            state: { status: "completed", input: { filePath: "src/new.ts", content: "x" } },
+          },
+        },
+      ],
+      { sessionId: "sess-1", trackId: "main" },
+    )
+    const [first, ...rest] = opencode
+    if (!first) throw new Error("opencode produced no messages")
+
+    const fromClaude = collectArtifacts([recordOf(claude)], CWD)
+    const fromOpencode = collectArtifacts([recordOf([first, ...rest])], CWD)
+    expect(fromClaude).toEqual([{ path: "/work/app/src/new.ts", created: true }])
+    expect(fromOpencode).toEqual(fromClaude)
   })
 })
 

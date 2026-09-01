@@ -6,11 +6,8 @@ import type {
   PullRequestEvent,
   RepoIdentity,
 } from "@samskara/core"
-import { createLogger } from "@samskara/core"
 import { describe, expect, test } from "vitest"
 import { collectGitEvents } from "./gitEvents.js"
-
-const log = createLogger({ service: "samskara-cli-test" }, { level: "silent" })
 
 const message = (over: Partial<NormalizedMessage> & { readonly subIndex: number }) =>
   ({
@@ -30,7 +27,12 @@ const bashCall = (
   message({
     subIndex,
     msgType: "toolCall",
-    details: { callId, name: "Bash", input: { command } },
+    details: {
+      callId,
+      name: "Bash",
+      input: { command },
+      metadata: { type: "shell", command },
+    },
     ...(repo ? { repo } : {}),
   })
 
@@ -57,10 +59,7 @@ const recordOf = (messages: ReadonlyArray<NormalizedMessage>): ParsedRecord => {
 
 /** Each message lands on its own record, as a real transcript writes call and result apart. */
 const collect = (messages: ReadonlyArray<NormalizedMessage>): ReadonlyArray<GitEvent> =>
-  collectGitEvents(
-    messages.map((each) => recordOf([each])),
-    log,
-  )
+  collectGitEvents(messages.map((each) => recordOf([each])))
 
 const commitsIn = (events: ReadonlyArray<GitEvent>): ReadonlyArray<CommitEvent> =>
   events.flatMap((event) => (event.kind === "commit" ? [event] : []))
@@ -314,6 +313,37 @@ describe("collectGitEvents", () => {
     expect(collect([bashResult(0, "orphan", "[main abc1234] stray output")])).toEqual([
       { kind: "commit", sha: "abc1234", branch: "main", subject: "stray output", callId: "orphan" },
     ])
+  })
+
+  test("a shell call is recognised by its metadata, whatever the harness named the tool", () => {
+    expect(
+      collect([
+        message({
+          subIndex: 0,
+          msgType: "toolCall",
+          details: {
+            callId: "c1",
+            name: "bash",
+            input: { command: "git commit -m x" },
+            metadata: { type: "shell", command: "git commit -m x" },
+          },
+        }),
+        bashResult(1, "c1", "[main abc1234] x"),
+      ]),
+    ).toEqual([{ kind: "commit", sha: "abc1234", branch: "main", subject: "x", callId: "c1" }])
+  })
+
+  test("a call whose input looks like a shell command but carries no shell metadata is not one", () => {
+    expect(
+      collect([
+        message({
+          subIndex: 0,
+          msgType: "toolCall",
+          details: { callId: "c1", name: "Bash", input: { command: "git commit -m x" } },
+        }),
+        bashResult(1, "c1", "[main abc1234] x"),
+      ]),
+    ).toEqual([])
   })
 
   test("a result whose call is a known non-Bash tool records nothing", () => {
