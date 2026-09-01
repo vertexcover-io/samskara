@@ -36,6 +36,7 @@
       "name": "@samskara/core",
       "version": "0.3.0",
       "dependencies": {
+        "better-sqlite3": "^11",
         "pino": "^9",
         "zod": "^4.4.3",
       },

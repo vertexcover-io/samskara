@@ -452,7 +452,13 @@ describe("createOpencodePlugin", () => {
     expect(track.source).toBe("opencode")
     expect(track.title).toBe("Build the thing")
     expect(track.checkpointKey).toBe("opencode:ses_main")
+    // A flush that stopped short must leave the session stale, or the unsent tail is never sent.
     expect(track.checkpointAt(1)).toEqual({
+      source: "opencode",
+      timeUpdated: 0,
+      lastMessageId: "msg_ses_main_u",
+    })
+    expect(track.checkpointAt(2)).toEqual({
       source: "opencode",
       timeUpdated: 1_000,
       lastMessageId: "msg_a",
@@ -522,8 +528,12 @@ describe("createOpencodePlugin", () => {
     expect(tracks.map((t) => t.type)).toEqual(["main", "subagent"])
     const sub = tracks[1]
     if (sub?.type !== "subagent") throw new Error("expected subagent")
+    // The server attaches a subagent to its parent's session; the child id lives in the agent.
+    expect(sub.sessionId).toBe("ses_main")
+    expect(sub.checkpointKey).toBe("opencode:ses_sub")
     expect(sub.agent).toEqual({ agentId: "ses_sub", agentType: "explore" })
     expect(sub.records[0]?.messages[0]).toMatchObject({
+      sessionId: "ses_main",
       role: "assistant",
       agentId: "ses_sub",
       trackId: "agent:ses_sub",

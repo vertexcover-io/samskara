@@ -396,11 +396,15 @@ const isUpToDate = (prev: CheckpointStore, session: SessionRow): boolean => {
   return checkpoint?.source === SOURCE && checkpoint.timeUpdated >= session.time_updated
 }
 
-const buildTrack = (
-  db: OpencodeDatabase,
-  session: SessionRow,
-  project: ProjectIdentity,
-): SessionTrack => {
+type TrackInput = {
+  readonly db: OpencodeDatabase
+  readonly session: SessionRow
+  readonly project: ProjectIdentity
+  /** The batch's main session: a subagent's rows attach to it, never to the child's own id. */
+  readonly sessionId: string
+}
+
+const buildTrack = ({ db, session, project, sessionId }: TrackInput): SessionTrack => {
   const messages = db
     .prepare(
       "SELECT id, time_created, data FROM message WHERE session_id = ? ORDER BY time_created, id",
@@ -418,7 +422,7 @@ const buildTrack = (
   )
   const isSubagent = session.parent_id !== null
   const context: OpencodeContext = {
-    sessionId: session.id,
+    sessionId,
     trackId: isSubagent ? `agent:${session.id}` : "main",
     ...(isSubagent ? { agentId: session.id } : {}),
   }
@@ -444,20 +448,22 @@ const buildTrack = (
     ]
   })
 
-  const checkpoint: CheckpointBody = {
+  // A flush that stopped before the last line must leave the session stale, so the next cycle
+  // re-collects it; the full watermark is earned only by the line that closes the session.
+  const checkpointAt = (lineNumber: number): CheckpointBody => ({
     source: SOURCE,
-    timeUpdated: session.time_updated,
-    lastMessageId: messages.at(-1)?.id ?? "",
-  }
+    timeUpdated: lineNumber >= messages.length ? session.time_updated : 0,
+    lastMessageId: messages[lineNumber - 1]?.id ?? "",
+  })
   const shared = {
-    sessionId: session.id,
+    sessionId,
     source: SOURCE,
     project,
     sourceRelativePath: `${session.slug}/${session.id}`,
     records,
     checkpointKey: checkpointKeyOf(session),
     lastLineProcessed: messages.length,
-    checkpointAt: () => checkpoint,
+    checkpointAt,
   }
   if (isSubagent) {
     return {
@@ -502,7 +508,7 @@ const collectFamily = async ({
 
   const tracks = [main, ...children]
     .filter((session) => !isUpToDate(prev, session))
-    .map((session) => buildTrack(db, session, project))
+    .map((session) => buildTrack({ db, session, project, sessionId: main.id }))
     .filter((track) => track.records.length > 0)
   return tracks.length === 0 ? null : { sessionId: main.id, tracks }
 }
