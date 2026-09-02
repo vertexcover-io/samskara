@@ -1,13 +1,27 @@
 import { createHash } from "node:crypto"
-import { readFile } from "node:fs/promises"
+import { readFile, stat } from "node:fs/promises"
 import { extname } from "node:path"
 import { MAX_BINARY_BYTES, MAX_TEXT_BYTES } from "@samskara/core"
 import type pino from "pino"
-import type { ArtifactQueueEntry } from "./artifact-queue.js"
 
 export type ArtifactUploadDeps = {
   readonly log: pino.Logger
 }
+
+/** The six fields `prepareUpload` reads. `ArtifactQueueEntry` carries more and satisfies this
+ * structurally, so the watcher passes its entry unchanged and no other caller fabricates the rest. */
+export type ArtifactSource = {
+  readonly sessionId: string
+  readonly path: string
+  readonly relativePath: string
+  readonly created: boolean
+  readonly base?: string
+  readonly observedAt: string
+}
+
+export type PrepareResult =
+  | { readonly ok: true; readonly upload: ArtifactUpload }
+  | { readonly ok: false; readonly reason: "vanished" | "tooLarge" }
 
 export type ArtifactUpload = {
   readonly sessionId: string
@@ -83,43 +97,38 @@ export const classifyContentType = (
 const exceedsCap = (size: number, isBinary: boolean): boolean =>
   size > (isBinary ? MAX_BINARY_BYTES : MAX_TEXT_BYTES)
 
-export const prepareUpload = async (
-  deps: ArtifactUploadDeps,
-  entry: ArtifactQueueEntry,
-): Promise<ArtifactUpload | null> => {
-  const current = await readFile(entry.path).catch((error: unknown) => {
-    deps.log.debug({ path: entry.path, err: error }, "artifact vanished before upload; skipping")
-    return null
-  })
-  if (!current) return null
+export const prepareUpload = async (source: ArtifactSource): Promise<PrepareResult> => {
+  // Which cap applies needs the bytes, but nothing above the larger cap can pass either, so
+  // `stat` settles those without a read.
+  const info = await stat(source.path).catch(() => null)
+  if (info !== null && info.size > MAX_BINARY_BYTES) return { ok: false, reason: "tooLarge" }
 
-  const { isBinary, mimeType } = classifyContentType(current, entry.relativePath)
+  const current = await readFile(source.path).catch(() => null)
+  if (!current) return { ok: false, reason: "vanished" }
 
-  if (exceedsCap(current.byteLength, isBinary)) {
-    deps.log.warn(
-      { path: entry.path, size: current.byteLength, isBinary },
-      "artifact exceeds the size cap; skipping rather than truncating",
-    )
-    return null
-  }
+  const { isBinary, mimeType } = classifyContentType(current, source.relativePath)
+  if (exceedsCap(current.byteLength, isBinary)) return { ok: false, reason: "tooLarge" }
 
   // Presence, not truthiness: a file that was empty before the session has a known, empty base.
-  const changeKind = entry.created
+  const changeKind = source.created
     ? "created"
-    : entry.base !== undefined
+    : source.base !== undefined
       ? "edited"
       : "editedUnknownBase"
 
   return {
-    sessionId: entry.sessionId,
-    path: entry.path,
-    relativePath: entry.relativePath,
-    mimeType,
-    changeKind,
-    encoding: isBinary ? "base64" : "utf8",
-    currentContent: current.toString(isBinary ? "base64" : "utf8"),
-    currentHash: sha256(current),
-    ...(entry.base === undefined ? {} : { baseContent: entry.base }),
-    observedAt: entry.observedAt,
+    ok: true,
+    upload: {
+      sessionId: source.sessionId,
+      path: source.path,
+      relativePath: source.relativePath,
+      mimeType,
+      changeKind,
+      encoding: isBinary ? "base64" : "utf8",
+      currentContent: current.toString(isBinary ? "base64" : "utf8"),
+      currentHash: sha256(current),
+      ...(source.base === undefined ? {} : { baseContent: source.base }),
+      observedAt: source.observedAt,
+    },
   }
 }
