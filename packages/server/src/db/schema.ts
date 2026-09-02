@@ -42,7 +42,7 @@ const jsonText = (column: string): string =>
  * because drizzle-kit's loader cannot follow an import out of this file.
  */
 export const SEARCH_DOCUMENT_TEXT = {
-  sessions: `((coalesce("sessions"."title", '') || ' ') || "sessions"."id")`,
+  sessions: `((((((coalesce("sessions"."name", '') || ' ') || coalesce("sessions"."description", '')) || ' ') || coalesce("sessions"."title", '')) || ' ') || "sessions"."id")`,
   messages: `(((("messages"."id"::text || ' ') || ${jsonText('"messages"."content"')}) || ' ') || ${jsonText('"messages"."details"')})`,
   pullRequests: `coalesce("pullRequests"."title", '')`,
   toolCall: `(("toolCall"."toolId" || ' ') || ${jsonText('"toolCall"."toolInput"')})`,
@@ -188,6 +188,8 @@ export const sessions = pgTable(
     model: text("model"),
     provider: text("provider"),
     title: text("title"),
+    name: text("name"),
+    description: text("description"),
     cwd: text("cwd"),
     startCommit: text("startCommit"),
     cliVersion: text("cliVersion"),

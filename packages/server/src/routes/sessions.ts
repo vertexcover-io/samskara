@@ -1,17 +1,21 @@
+import { updateSessionRequestSchema } from "@samskara/core"
 import { Hono } from "hono"
 import { ZodError } from "zod"
 import type { Db } from "../db/client.js"
 import type { Env } from "../lib/env.js"
 import { type AuthVariables, requireAuth } from "../lib/require-auth.js"
+import { validate } from "../lib/validate.js"
 import { listForSession } from "../repositories/artifacts.repo.js"
 import {
   AmbiguousCommitError,
   findVisibleProjectById,
+  findVisibleSession,
   getDetail,
   listAccessible,
   remove,
   type SessionDetailRow,
   type SessionSummaryRow,
+  updateHumanFields,
 } from "../repositories/sessions.repo.js"
 import {
   dateWindowFor,
@@ -45,13 +49,15 @@ const serialize = (row: SessionSummaryRow) => ({
 const isoOrNull = (value: string | null): string | null =>
   value === null ? null : new Date(value).toISOString()
 
+const serializeFacts = (facts: SessionDetailRow["session"]) => ({
+  ...facts,
+  durationMs: facts.durationMs === null ? null : Number(facts.durationMs),
+  lastActiveAt: new Date(facts.lastActiveAt).toISOString(),
+  startedAt: isoOrNull(facts.startedAt),
+})
+
 const serializeDetail = (detail: SessionDetailRow) => ({
-  session: {
-    ...detail.session,
-    durationMs: detail.session.durationMs === null ? null : Number(detail.session.durationMs),
-    lastActiveAt: new Date(detail.session.lastActiveAt).toISOString(),
-    startedAt: isoOrNull(detail.session.startedAt),
-  },
+  session: serializeFacts(detail.session),
   messages: detail.messages.map((message) => ({
     ...message,
     timestamp: isoOrNull(message.timestamp),
@@ -140,6 +146,21 @@ export const sessionsRoutes = ({ db, env }: Deps) =>
       if (detail === null) return c.json({ error: "sessionNotFound" }, 404)
       return c.json(serializeDetail(detail), 200)
     })
+    .patch(
+      "/:id",
+      requireAuth({ db, env }, ["web"]),
+      validate("json", updateSessionRequestSchema),
+      async (c) => {
+        const userId = c.get("user").id
+        const id = c.req.param("id")
+        const outcome = await updateHumanFields(db, id, userId, c.req.valid("json"))
+        if (outcome === "notFound") return c.json({ error: "sessionNotFound" }, 404)
+        if (outcome === "forbidden") return c.json({ error: "forbidden" }, 403)
+        const facts = await findVisibleSession(db, userId, id)
+        if (facts === undefined) return c.json({ error: "sessionNotFound" }, 404)
+        return c.json({ session: serializeFacts(facts) }, 200)
+      },
+    )
     .get("/:id/artifacts", requireAuth({ db, env }, ["web"]), async (c) => {
       const rows = await listForSession(db, c.get("user").id, c.req.param("id"))
       if (rows === null) return c.json({ error: "sessionNotFound" }, 404)

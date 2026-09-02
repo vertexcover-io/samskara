@@ -400,6 +400,14 @@ export const updateOrgRequestSchema = z
   .strict()
   .refine((body) => Object.keys(body).length > 0, { message: "no fields to update" })
 
+export const updateSessionRequestSchema = z
+  .object({
+    name: z.string().trim().min(1).max(200).nullable().optional(),
+    description: z.string().trim().min(1).max(2000).nullable().optional(),
+  })
+  .strict()
+  .refine((body) => Object.keys(body).length > 0, { message: "no fields to update" })
+
 export const registerOrgRequestSchema = z
   .object({
     githubSlug: z.string().regex(/^[a-z\d](?:[a-z\d]|-(?=[a-z\d])){0,38}$/i),
@@ -574,6 +582,7 @@ export type ReassignSessionsRequest = z.infer<typeof reassignSessionsRequestSche
 export type ReassignSessionsResponse = z.infer<typeof reassignSessionsResponseSchema>
 
 export type UpdateOrgRequest = z.infer<typeof updateOrgRequestSchema>
+export type UpdateSessionRequest = z.infer<typeof updateSessionRequestSchema>
 export type RegisterOrgRequest = z.infer<typeof registerOrgRequestSchema>
 export type AgentInfo = z.infer<typeof agentInfoSchema>
 export type IngestPayload = z.infer<typeof ingestPayloadSchema>
