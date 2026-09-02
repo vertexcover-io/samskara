@@ -16,29 +16,18 @@ export type ResolveError =
   | { readonly kind: "outsideBase"; readonly path: string }
   | { readonly kind: "collision"; readonly relativePath: string; readonly paths: readonly string[] }
 
-/**
- * Measured on the computed relative path, not by comparing prefixes of the two absolute paths:
- * `/a/b` and `/a/bc` share a string prefix but neither contains the other.
- *
- * A bare `startsWith("..")` would reject `..report.html`, a file sitting directly under the base
- * whose name merely opens with two dots. Only a `..` that is a whole segment walks upwards.
- */
+/** Compares the computed relative path, not prefixes of the two absolute paths -- `/a/b` and
+ * `/a/bc` share a prefix but neither contains the other. `..` must be a whole segment: a bare
+ * `startsWith("..")` would reject `..report.html`, which sits directly under the base. */
 const relativeUnder = (baseDir: string, absolutePath: string): string | null => {
   const rel = relative(baseDir, absolutePath)
   const escapes = rel === ".." || rel.startsWith(`..${sep}`)
   return rel === "" || escapes || isAbsolute(rel) ? null : rel
 }
 
-/**
- * Resolve symlinks before anything compares paths. A symlink sitting inside the base directory
- * and pointing outside it satisfies a lexical containment check on its own name, while the
- * `readFile` that follows walks the link to the real target -- which is how a base-directory
- * refusal turns into an upload of whatever the link pointed at.
- *
- * A path that does not resolve keeps its cwd-anchored form rather than being rejected: a file
- * that simply is not there is reported as vanished by the upload, which says more than an escape
- * error would.
- */
+/** A symlink inside the base directory pointing outside it passes a lexical containment check on
+ * its own name, while the `readFile` that follows walks it to the real target. A path that does
+ * not resolve keeps its cwd-anchored form, so a missing file reports as vanished, not as escape. */
 const canonical = async (path: string): Promise<string> => realpath(path).catch(() => resolve(path))
 
 /** `paths` are absolute and already symlink-resolved. `baseDir` only labels them: resolving an
@@ -73,8 +62,7 @@ export const resolveInputs = (
   return resolved
 }
 
-/** Skips a directory entry by name without descending into it, so a walked `.cache/` never even
- * reaches `readdir`. Sorted by name so a run's output, and its tests, are not order-dependent. */
+/** Sorted by name so a run's output, and its tests, are not order-dependent. */
 const walk = async (dir: string): Promise<readonly string[]> => {
   const entries = (await readdir(dir, { withFileTypes: true })).sort((a, b) =>
     a.name.localeCompare(b.name),
@@ -99,17 +87,14 @@ export const expandPaths = async (paths: readonly string[]): Promise<readonly st
     paths.map(async (path): Promise<readonly string[]> => {
       const info = await stat(path).catch(() => null)
       if (info === null || info.isFile()) return [path]
-      // Walk the directory's real location, not the name it was reached by. `stat` follows a
-      // symlink, so `base/public` pointing at `base/.ssh` would otherwise be walked as
-      // `base/public/...` -- a path with no dot segment and no `.ssh` in it, which is exactly what
-      // the dot-directory rule and `isSecret` look for. Every file under it would pass both.
+      // The real location, not the name it was reached by: `stat` follows a symlink, so
+      // `base/public` -> `base/.ssh` would be walked as `base/public/...`, which carries neither
+      // the dot segment nor the `.ssh` the filters look for.
       if (info.isDirectory()) return walk(await canonical(path))
       return []
     }),
   )
-  // Canonicalised here rather than in `resolveInputs`, which stays synchronous and pure: every
-  // path leaving this function is absolute and symlink-free, so the containment check downstream
-  // measures the file that will actually be read.
+  // Here rather than in `resolveInputs`, which stays synchronous and pure.
   return await Promise.all(expanded.flat().map(canonical))
 }
 
@@ -140,21 +125,15 @@ type FileOutcome = {
   readonly reason?: string
 }
 
-/**
- * The route's own response contract, rather than a shape declared here: a new variant or a renamed
- * field reaches this code as a type error instead of silently falling through to a status code.
- * `null` covers a body that never arrived or did not parse.
- */
+/** The route's own contract rather than a shape declared here, so a renamed field is a type error
+ * instead of a silent fall-through to the status code. `null` is a body that did not parse. */
 const readResponse = async (res: Response): Promise<ArtifactUploadResponse | null> =>
   (await res.json().catch(() => null)) as ArtifactUploadResponse | null
 
-/** `aborted` carries no outcome: the file was either never posted, or answered with the 409 that
- * ends the run. Either way there is nothing to report for it. */
 type FileResult =
   | { readonly kind: "done"; readonly outcome: FileOutcome }
   | { readonly kind: "aborted" }
 
-/** Everything a run fixes once, so the per-file function takes only the file. */
 type Uploader = {
   readonly deps: Pick<UploadDeps, "apiBase" | "fetch">
   readonly token: string
@@ -216,8 +195,7 @@ const uploadOne = async (
     }
   }
 
-  // The server names its own refusals, so the status code is only the fallback for a body that
-  // did not arrive or did not parse.
+  // The server names its own refusals; the status code is only the fallback.
   const reason = body !== null && "error" in body ? body.error : String(res.status)
   return { kind: "done", outcome: { relativePath: file.relativePath, status: "failed", reason } }
 }

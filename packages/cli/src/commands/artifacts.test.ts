@@ -113,9 +113,8 @@ const tempFile = async (relativePath: string, content: string | Buffer): Promise
   return path
 }
 
-/** Polls rather than counting event-loop ticks: `uploadArtifactsCommand` does its own real disk
- * I/O (`warnOnServerChange`) before the first upload is even dispatched, so a fixed number of
- * `setImmediate`/microtask hops is not a reliable way to know a stub has been reached yet. */
+/** Polls rather than counting ticks: the command does real disk I/O before the first upload, so
+ * no fixed number of microtask hops says a stub has been reached. */
 const waitUntil = async (check: () => boolean, timeoutMs = 2000): Promise<void> => {
   const deadline = Date.now() + timeoutMs
   while (!check()) {
@@ -140,10 +139,8 @@ describe("resolveInputs", () => {
   })
 
   test("SC20 (regression): a path is resolved against the cwd, never against the base dir", () => {
-    // The bug this pins: `resolve(baseDir, path)` re-anchored an input to the base directory, so
-    // the command read a file nothing had looked for. It also made this very refusal unreachable
-    // -- a path resolved against the base dir is under it by construction, so no input could ever
-    // be reported as outside.
+    // Pins two bugs at once: `resolve(baseDir, path)` re-anchored the input to a directory
+    // nothing had looked in, and made this refusal unreachable for every relative path.
     const resolved = resolveInputs(["out.html"], "/work")
 
     expect(resolved).toEqual({ kind: "outsideBase", path: resolve("out.html") })
@@ -208,9 +205,8 @@ describe("expandPaths", () => {
   })
 
   test("SC22 (regression): a directory reached by symlink is walked at its real location", async () => {
-    // The alias has no dot segment and no `.ssh` in it, so filtering the path the walk was
-    // reached by -- rather than the one it actually reads -- let every file under a hidden
-    // directory through.
+    // The alias has no dot segment and no `.ssh`, so filtering the path the walk was reached by
+    // let every file under a hidden directory through.
     const base = join(home, "base")
     await mkdir(join(base, ".ssh"), { recursive: true })
     await writeFile(join(base, ".ssh", "config"), "Host *")

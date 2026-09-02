@@ -8,9 +8,8 @@ export type ArtifactUploadDeps = {
   readonly log: pino.Logger
 }
 
-/** The six fields `prepareUpload` reads. `ArtifactQueueEntry` carries more (`projectRoot`,
- * `attempts`, `nextAttemptAt`) and satisfies this structurally, so the watcher passes its entry
- * unchanged; a hand-invoked upload builds one of these directly rather than fabricating the rest. */
+/** The six fields `prepareUpload` reads. `ArtifactQueueEntry` carries more and satisfies this
+ * structurally, so the watcher passes its entry unchanged and no other caller fabricates the rest. */
 export type ArtifactSource = {
   readonly sessionId: string
   readonly path: string
@@ -99,9 +98,8 @@ const exceedsCap = (size: number, isBinary: boolean): boolean =>
   size > (isBinary ? MAX_BINARY_BYTES : MAX_TEXT_BYTES)
 
 export const prepareUpload = async (source: ArtifactSource): Promise<PrepareResult> => {
-  // Whether a file is text or binary decides which cap applies, and that needs its bytes -- but
-  // nothing above the larger cap can pass either one, so `stat` settles those without a read. A
-  // directory walk pointed at build output is mostly files of exactly that size.
+  // Which cap applies needs the bytes, but nothing above the larger cap can pass either, so
+  // `stat` settles those without a read.
   const info = await stat(source.path).catch(() => null)
   if (info !== null && info.size > MAX_BINARY_BYTES) return { ok: false, reason: "tooLarge" }
 

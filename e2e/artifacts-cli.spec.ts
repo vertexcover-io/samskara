@@ -8,11 +8,9 @@ import { expect, mintCliToken, mintSessionToken, test } from "./fixtures/auth.js
 import { API_BASE, WEB_BASE } from "./playwright.config.js"
 import { seedDatabase } from "./seed.js"
 
-// Functional-verify evidence for `samskara artifacts upload` (design:
-// .harness/cli-upload-session-artifacts/design.md). Its whole surface is CLI stdout/exit code
-// plus the artifact routes it feeds, so this drives the real CLI binary against the live stack
-// `bun run e2e` provisions, and reads the uploaded files back through the same path-shaped route
-// the web UI uses to render them.
+// The command's whole surface is CLI stdout and exit code plus the artifact routes it feeds, so
+// these drive the real binary against the live stack and read the files back through the
+// path-shaped route the web UI renders them with.
 
 const execFileAsync = promisify(execFile)
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..")
