@@ -24,7 +24,10 @@ import {
   searchText,
 } from "../db/searchSql.js"
 import { compileSessionQuery, type SessionQuery } from "../search/sessionQuery.js"
-import { visibleToUser } from "./projects.repo.js"
+import { isSuperAdmin, visibleToUser } from "./projects.repo.js"
+
+export const canEditSession = (db: Querier, userId: string): SQL<boolean> =>
+  sql<boolean>`(${eq(sessions.userId, userId)} or ${isSuperAdmin(db, userId)})`
 
 export type SessionFields = {
   readonly title?: string
@@ -125,6 +128,32 @@ export const reassignProject = async (db: Querier, input: ReassignInput): Promis
     .where(and(eq(sessions.projectId, input.fromProjectId), ...owned))
     .returning({ id: sessions.id })
   return moved.length
+}
+
+export type UpdateSessionFields = {
+  readonly name?: string | null
+  readonly description?: string | null
+}
+
+/** Human-field updates do not advance `updatedAt`; migration 0022 excludes them from its trigger. */
+export const updateHumanFields = async (
+  db: Querier,
+  sessionId: string,
+  userId: string,
+  changes: UpdateSessionFields,
+): Promise<"updated" | "forbidden" | "notFound"> => {
+  const [row] = await db
+    .select({
+      canEdit: canEditSession(db, userId),
+    })
+    .from(sessions)
+    // visibleToUser correlates against projects, so projects must remain in the query scope.
+    .innerJoin(projects, eq(projects.id, sessions.projectId))
+    .where(and(eq(sessions.id, sessionId), visibleToUser(db, userId)))
+  if (row === undefined) return "notFound"
+  if (!row.canEdit) return "forbidden"
+  await db.update(sessions).set(changes).where(eq(sessions.id, sessionId))
+  return "updated"
 }
 
 export type SessionRepo = {
@@ -250,7 +279,7 @@ const withRepo = <T extends RepoColumns>({
       : null,
 })
 
-const derivedTitle = sql<string | null>`coalesce(${sessions.title}, (
+const derivedTitle = sql<string | null>`coalesce(${sessions.name}, ${sessions.title}, (
   select left(btrim(split_part(coalesce(m."content"->>'value', m."content"->>'text', m."content"->>'body'), chr(10), 1)), 120)
   from "messages" m
   where m."sessionId" = ${sessions.id} and m."msgType" = 'message' and m."role" = 'user'
@@ -603,6 +632,10 @@ export const findVisibleProjectById = async (
 export type SessionFactsRow = {
   readonly id: string
   readonly title: string | null
+  readonly name: string | null
+  readonly description: string | null
+  readonly aiTitle: string | null
+  readonly canRename: boolean
   readonly projectId: string
   readonly projectName: string
   readonly projectSlug: string
@@ -703,7 +736,7 @@ const subagentCount = sql<number>`(
   where "subagents"."sessionId" = "sessions"."id"
 )`
 
-const findVisibleSession = async (
+export const findVisibleSession = async (
   db: Querier,
   userId: string,
   sessionId: string,
@@ -712,6 +745,10 @@ const findVisibleSession = async (
     .select({
       id: sessions.id,
       title: derivedTitle,
+      name: sessions.name,
+      description: sessions.description,
+      aiTitle: sessions.title,
+      canRename: canEditSession(db, userId),
       projectId: projects.id,
       projectName: projects.name,
       projectSlug: projects.slug,
