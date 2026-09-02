@@ -9,6 +9,7 @@ import { createDb, type Db } from "../db/client.js"
 import {
   commits,
   messages,
+  orgs,
   projects,
   pullRequests,
   repos,
@@ -18,6 +19,7 @@ import {
   tokenUsage,
   toolCall,
   toolResult,
+  userOrgs,
   users,
 } from "../db/schema.js"
 import { type Ctx, ingest } from "./ingest.js"
@@ -86,11 +88,12 @@ const mainPayload = (
   sessionId: string,
   items: ReadonlyArray<TestMessage>,
   origin: SessionOrigin = {},
+  payloadProject: IngestPayload["project"] = project,
 ): IngestPayload => ({
   type: "main",
   sessionId,
   sourceRelativePath: `${sessionId}.jsonl`,
-  project,
+  project: payloadProject,
   records: recordsFrom(items),
   ...origin,
 })
@@ -114,6 +117,7 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
   let db: Db
   let userId: string
   let ctx: Ctx
+  let orgMemberCounter = 0
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start()
@@ -333,7 +337,6 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
     const serana: RepoIdentity = {
       host: "github.com",
       owner: "refrens",
-      ownerType: "org",
       repoName: "serana",
     }
     const andromeda: RepoIdentity = { ...serana, repoName: "andromeda" }
@@ -372,6 +375,143 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
       .where(inArray(repos.repoName, ["serana", "andromeda"]))
     expect(new Set(repoRows.map((r) => r.repoName))).toEqual(new Set(["serana", "andromeda"]))
     expect(new Set(repoRows.map((r) => r.id))).toEqual(new Set([first?.repoId, second?.repoId]))
+  })
+
+  const seedUser = async (githubLogin: string) => {
+    orgMemberCounter += 1
+    const [user] = await db
+      .insert(users)
+      .values({ githubId: 9100 + orgMemberCounter, githubLogin })
+      .returning()
+    if (!user) throw new Error("seed user failed")
+    return user
+  }
+
+  const seedOrgMember = async (githubSlug: string) => {
+    const [org] = await db.insert(orgs).values({ githubSlug }).returning()
+    if (!org) throw new Error("seed org failed")
+    const member = await seedUser(`${githubSlug}-member`)
+    await db.insert(userOrgs).values({ userId: member.id, orgId: org.id })
+    return { org, member }
+  }
+
+  const repoIdOfMessage = async (sessionId: string, lineUuid: string) => {
+    const [row] = await db
+      .select({ repoId: messages.repoId })
+      .from(messages)
+      .where(and(eq(messages.sessionId, sessionId), eq(messages.lineUuid, lineUuid)))
+    return row?.repoId ?? null
+  }
+
+  test("SC1: a repo captured under an org project is org-owned", async () => {
+    const { org, member } = await seedOrgMember("sc1-org")
+    const memberCtx: Ctx = { db, log: testLog(), userId: member.id }
+    const sessionId = "sess-sc1-org-owned"
+    const lineUuid = "0191d942-3ba5-7dba-9a7d-00000000ac01"
+    const orgProject = {
+      name: "sc1-repo",
+      slug: "sc1-repo",
+      remote: { host: "github.com", owner: "sc1-org", repoName: "sc1-repo" },
+    } as const
+    const repo = customMessage({ sessionId, lineUuid })
+    const items: ReadonlyArray<TestMessage> = [
+      { ...repo, message: { ...repo.message, repo: orgProject.remote } },
+    ]
+
+    expect(await ingest(memberCtx, mainPayload(sessionId, items, {}, orgProject))).toEqual({
+      ingested: 1,
+      deduped: 0,
+    })
+
+    const repoId = await repoIdOfMessage(sessionId, lineUuid)
+    expect(repoId).toBeTruthy()
+    const [repoRow] = await db
+      .select()
+      .from(repos)
+      .where(eq(repos.id, repoId as string))
+    expect(repoRow).toMatchObject({ ownerOrgId: org.id, ownerUserId: null })
+  })
+
+  test("SC2: a repo captured under a user project is user-owned", async () => {
+    const sessionId = "sess-sc2-user-owned"
+    const lineUuid = "0191d942-3ba5-7dba-9a7d-00000000ac02"
+    const repoIdentity: RepoIdentity = {
+      host: "github.com",
+      owner: "sc2-owner",
+      repoName: "sc2-repo",
+    }
+    const base = customMessage({ sessionId, lineUuid })
+    const items: ReadonlyArray<TestMessage> = [
+      { ...base, message: { ...base.message, repo: repoIdentity } },
+    ]
+
+    expect(await ingest(ctx, mainPayload(sessionId, items))).toEqual({ ingested: 1, deduped: 0 })
+
+    const repoId = await repoIdOfMessage(sessionId, lineUuid)
+    expect(repoId).toBeTruthy()
+    const [repoRow] = await db
+      .select()
+      .from(repos)
+      .where(eq(repos.id, repoId as string))
+    expect(repoRow).toMatchObject({ ownerUserId: userId, ownerOrgId: null })
+  })
+
+  test("SC3: two org members capturing one repo into the org's project make one repo row, and both sessions' messages point at it", async () => {
+    const { org, member: memberA } = await seedOrgMember("sc3-org")
+    const memberB = await seedUser("sc3-org-member-b")
+    await db.insert(userOrgs).values({ userId: memberB.id, orgId: org.id })
+
+    const orgProject = {
+      name: "sc3-repo",
+      slug: "sc3-repo",
+      remote: { host: "github.com", owner: "sc3-org", repoName: "sc3-repo" },
+    } as const
+
+    const sessionA = "sess-sc3-member-a"
+    const lineUuidA = "0191d942-3ba5-7dba-9a7d-00000000ac03"
+    const itemA = customMessage({ sessionId: sessionA, lineUuid: lineUuidA })
+    const sessionB = "sess-sc3-member-b"
+    const lineUuidB = "0191d942-3ba5-7dba-9a7d-00000000ac04"
+    const itemB = customMessage({ sessionId: sessionB, lineUuid: lineUuidB })
+
+    const ctxA: Ctx = { db, log: testLog(), userId: memberA.id }
+    const ctxB: Ctx = { db, log: testLog(), userId: memberB.id }
+
+    await ingest(
+      ctxA,
+      mainPayload(
+        sessionA,
+        [{ ...itemA, message: { ...itemA.message, repo: orgProject.remote } }],
+        {},
+        orgProject,
+      ),
+    )
+    await ingest(
+      ctxB,
+      mainPayload(
+        sessionB,
+        [{ ...itemB, message: { ...itemB.message, repo: orgProject.remote } }],
+        {},
+        orgProject,
+      ),
+    )
+
+    const repoRows = await db
+      .select({ id: repos.id })
+      .from(repos)
+      .where(
+        and(
+          eq(repos.host, "github.com"),
+          eq(repos.owner, "sc3-org"),
+          eq(repos.repoName, "sc3-repo"),
+        ),
+      )
+    expect(repoRows).toHaveLength(1)
+
+    const repoIdA = await repoIdOfMessage(sessionA, lineUuidA)
+    const repoIdB = await repoIdOfMessage(sessionB, lineUuidB)
+    expect(repoIdA).toBe(repoRows[0]?.id)
+    expect(repoIdB).toBe(repoRows[0]?.id)
   })
 
   test("S7: a payload whose messages carry no repo ingests with the same counts as before, and still stores gitBranch", async () => {
@@ -469,7 +609,6 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
   const subRepo: RepoIdentity = {
     host: "github.com",
     owner: "refrens",
-    ownerType: "org",
     repoName: "serana",
   }
   const projectRepo: RepoIdentity = { ...subRepo, repoName: "andromeda" }
@@ -775,7 +914,6 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
     const birds: RepoIdentity = {
       host: "github.com",
       owner: "refrens",
-      ownerType: "org",
       repoName: "birds",
     }
     const talos: RepoIdentity = { ...birds, repoName: "talos" }

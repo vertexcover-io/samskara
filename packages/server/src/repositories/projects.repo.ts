@@ -4,11 +4,13 @@ import type { Querier } from "../db/client.js"
 import {
   orgs,
   projects,
+  repos,
   sessionActivityAt,
   userOrgs,
   userProjectGrant,
   users,
 } from "../db/schema.js"
+import { type OwnerRef, ownerColumns } from "./ownerRef.js"
 
 export const orgMemberOfProject = (db: Querier, userId: string | AnyColumn) =>
   exists(
@@ -62,9 +64,7 @@ export type UpsertProjectInput = {
   readonly ownerId: string
 }
 
-export type ProjectOwnerRef =
-  | { readonly kind: "user"; readonly userId: string }
-  | { readonly kind: "org"; readonly orgId: string }
+export type ProjectOwnerRef = OwnerRef
 
 export type UpsertOwnedInput = {
   readonly identity: Pick<ProjectIdentity, "name" | "slug">
@@ -82,8 +82,7 @@ export const upsertOwned = async (
   db: Querier,
   { identity, owner }: UpsertOwnedInput,
 ): Promise<{ readonly id: string; readonly created: boolean }> => {
-  const columns =
-    owner.kind === "user" ? { ownerUserId: owner.userId } : { ownerOrgId: owner.orgId }
+  const columns = ownerColumns(owner)
   const conflict =
     owner.kind === "user"
       ? {
@@ -101,6 +100,27 @@ export const upsertOwned = async (
     .returning({ id: projects.id, created: sql<boolean>`(xmax = 0)` })
   if (!row) throw new Error("project upsert resolved no row")
   return row
+}
+
+/** Exactly one of the pair is set -- guaranteed by `projects_one_owner_check`. */
+export const ownerRefOf = async (
+  db: Querier,
+  projectId: string,
+): Promise<ProjectOwnerRef | null> => {
+  const [row] = await db
+    .select({ ownerUserId: projects.ownerUserId, ownerOrgId: projects.ownerOrgId })
+    .from(projects)
+    .where(eq(projects.id, projectId))
+  if (!row) return null
+  return row.ownerOrgId !== null
+    ? { kind: "org", orgId: row.ownerOrgId }
+    : { kind: "user", userId: row.ownerUserId as string }
+}
+
+/** Sets the project's primary repo -- called once, from `findOrCreateProject`, after the repo
+ * matching the project's own remote has been upserted with the project's own owner. */
+export const setRepoId = async (db: Querier, projectId: string, repoId: string): Promise<void> => {
+  await db.update(projects).set({ repoId }).where(eq(projects.id, projectId))
 }
 
 export const upsert = async (db: Querier, input: UpsertProjectInput): Promise<string> =>
@@ -179,6 +199,9 @@ export type ProjectSummaryRow = {
   readonly ownerSlug: string
   readonly sessionCount: number
   readonly lastActiveAt: string | null
+  readonly repoHost: string | null
+  readonly repoOwner: string | null
+  readonly repoName: string | null
 }
 
 const ownSessions = sql`"sessions" where "sessions"."projectId" = "projects"."id"`
@@ -197,6 +220,9 @@ const summaryColumns = {
   ownerSlug: sql<string>`coalesce(${orgs.githubSlug}, ${users.githubLogin})`,
   sessionCount,
   lastActiveAt,
+  repoHost: repos.host,
+  repoOwner: repos.owner,
+  repoName: repos.repoName,
 }
 
 export const listAccessibleSummaries = (
@@ -208,6 +234,7 @@ export const listAccessibleSummaries = (
     .from(projects)
     .leftJoin(users, eq(users.id, projects.ownerUserId))
     .leftJoin(orgs, eq(orgs.id, projects.ownerOrgId))
+    .leftJoin(repos, eq(repos.id, projects.repoId))
     .where(visibleToUser(db, userId))
     .orderBy(sql`${lastActiveAt} desc nulls last`, desc(projects.createdAt))
 
@@ -221,6 +248,7 @@ export const findVisibleSummaryById = async (
     .from(projects)
     .leftJoin(users, eq(users.id, projects.ownerUserId))
     .leftJoin(orgs, eq(orgs.id, projects.ownerOrgId))
+    .leftJoin(repos, eq(repos.id, projects.repoId))
     .where(and(eq(projects.id, projectId), visibleToUser(db, userId)))
   return row ?? null
 }

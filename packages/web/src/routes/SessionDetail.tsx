@@ -2,15 +2,14 @@ import { type Ref, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import { fetchSessionArtifacts } from "../api/artifacts.js"
 import { type ApiError, client, request } from "../api/client.js"
-import { repoLabel, repoUrl } from "../api/repo.js"
 import type {
   CapturedArtifact,
   SessionDetailPayload,
   SessionFacts,
-  SessionRepo,
   TokenTotals,
 } from "../api/types.js"
 import { SessionExpired } from "../auth/SessionExpired.js"
+import { RepoLink } from "../components/RepoLink.js"
 import { AgentRail, agentEntries } from "../session/AgentRail.js"
 import { ArtifactsView } from "../session/ArtifactsView.js"
 import { CommitsView, PullRequestsView } from "../session/ChangesView.js"
@@ -57,17 +56,6 @@ const Fact = ({ label, value }: { label: string; value: React.ReactNode }) => (
     <dd className="font-mono text-[0.875rem] tabular-nums">{value}</dd>
   </div>
 )
-
-/** Opens in a new tab: this is the only link on the page that leaves the app entirely. */
-const RepoName = ({ repo }: { repo: SessionRepo }) => {
-  const url = repoUrl(repo)
-  if (url === null) return <span>{repoLabel(repo)}</span>
-  return (
-    <a href={url} target="_blank" rel="noreferrer" className="text-custody hover:underline">
-      {repoLabel(repo)}
-    </a>
-  )
-}
 
 /**
  * Pinned to the top: in a transcript thousands of messages long, which session you are reading
@@ -124,7 +112,7 @@ const Masthead = ({ session, tokens }: { session: SessionFacts; tokens: TokenTot
           <span aria-hidden="true" className="text-rule">
             ·
           </span>
-          <RepoName repo={session.repo} />
+          <RepoLink repo={session.repo} />
         </>
       )}
     </p>

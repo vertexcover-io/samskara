@@ -9,6 +9,7 @@ import {
   orgs,
   projects,
   pullRequests,
+  repos,
   sessionPullRequests,
   sessions,
   subagents,
@@ -295,35 +296,111 @@ describe.skipIf(!dockerAvailable())("ingest repositories", () => {
     expect(await userOrgsRepo.isMember(db, user.id, org.id)).toBe(true)
   })
 
-  test("repos.upsertByIdentity keys on (host, owner, repoName, userId): same path on two hosts is two repos, two users is two repos, ssh and https are one", async () => {
+  test("SC4 (regression): repos.upsertByIdentity keys on (host, owner, repoName, owner ref) -- two hosts is two repos, two owners is two repos, the same identity re-upserted (ssh and https resolve to it) is one", async () => {
     const owner = await seedUser()
     const other = await seedUser()
 
     const gh = await reposRepo.upsertByIdentity(
       db,
       { host: "github.com", owner: "acme", repoName: "serana" },
-      owner.id,
+      { kind: "user", userId: owner.id },
     )
     const gl = await reposRepo.upsertByIdentity(
       db,
       { host: "gitlab.com", owner: "acme", repoName: "serana" },
-      owner.id,
+      { kind: "user", userId: owner.id },
     )
     expect(gl).not.toBe(gh)
 
     const theirs = await reposRepo.upsertByIdentity(
       db,
       { host: "github.com", owner: "acme", repoName: "serana" },
-      other.id,
+      { kind: "user", userId: other.id },
     )
     expect(theirs).not.toBe(gh)
 
+    // ssh and https collapse onto the same (host, owner, repoName) upstream in `parseRemote`, so
+    // re-upserting the identity github.com/acme/serana is what proves both forms resolve to one row.
     const again = await reposRepo.upsertByIdentity(
       db,
       { host: "github.com", owner: "acme", repoName: "serana" },
-      owner.id,
+      { kind: "user", userId: owner.id },
     )
     expect(again).toBe(gh)
+  })
+
+  test("R3 (verification bug): a forge repo's identity ignores remote casing, so two clones that spell the owner differently are one row", async () => {
+    const owner = await seedUser()
+
+    const lower = await reposRepo.upsertByIdentity(
+      db,
+      { host: "github.com", owner: "acme", repoName: "serana-cased" },
+      { kind: "user", userId: owner.id },
+    )
+    const upper = await reposRepo.upsertByIdentity(
+      db,
+      { host: "GitHub.com", owner: "ACME", repoName: "Serana-Cased" },
+      { kind: "user", userId: owner.id },
+    )
+
+    expect(upper).toBe(lower)
+    const [row] = await db.select().from(repos).where(eq(repos.id, lower))
+    expect(row).toMatchObject({ host: "github.com", owner: "acme", repoName: "serana-cased" })
+  })
+
+  test("R3: a local repo's owner is a filesystem path, so two roots differing only in case stay two rows", async () => {
+    const owner = await seedUser()
+
+    const lower = await reposRepo.upsertByIdentity(
+      db,
+      { host: "local", owner: "/Users/maya/projects/app", repoName: "app" },
+      { kind: "user", userId: owner.id },
+    )
+    const upper = await reposRepo.upsertByIdentity(
+      db,
+      { host: "local", owner: "/Users/Maya/Projects/app", repoName: "app" },
+      { kind: "user", userId: owner.id },
+    )
+
+    expect(upper).not.toBe(lower)
+    const [row] = await db.select().from(repos).where(eq(repos.id, upper))
+    expect(row?.owner).toBe("/Users/Maya/Projects/app")
+  })
+
+  test("SC5: a repo row with both owners or neither is rejected by the database", async () => {
+    const owner = await seedUser()
+    const org = await seedOrg()
+
+    await expect(
+      db.insert(repos).values({ host: "github.com", owner: "acme", repoName: "sc5-neither" }),
+    ).rejects.toThrow()
+
+    await expect(
+      db.insert(repos).values({
+        host: "github.com",
+        owner: "acme",
+        repoName: "sc5-both",
+        ownerUserId: owner.id,
+        ownerOrgId: org.id,
+      }),
+    ).rejects.toThrow()
+
+    const [userOwned] = await db
+      .insert(repos)
+      .values({
+        host: "github.com",
+        owner: "acme",
+        repoName: "sc5-user",
+        ownerUserId: owner.id,
+      })
+      .returning()
+    expect(userOwned).toBeDefined()
+
+    const [orgOwned] = await db
+      .insert(repos)
+      .values({ host: "github.com", owner: "acme", repoName: "sc5-org", ownerOrgId: org.id })
+      .returning()
+    expect(orgOwned).toBeDefined()
   })
 
   test("authorization is owner-or-grant with ordered scopes", async () => {
@@ -508,8 +585,8 @@ describe.skipIf(!dockerAvailable())("ingest repositories", () => {
       const owner = await seedUser()
       return reposRepo.upsertByIdentity(
         db,
-        { host: "github.com", owner: "acme", ownerType: "org", repoName },
-        owner.id,
+        { host: "github.com", owner: "acme", repoName },
+        { kind: "user", userId: owner.id },
       )
     }
 

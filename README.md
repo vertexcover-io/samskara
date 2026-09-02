@@ -230,7 +230,7 @@ profile you are looking at.
 | Route | What you get |
 |---|---|
 | `/projects` | Every project you can read — session count, last activity, last session title |
-| `/projects/:id` | One project's name, slug, owner, and session count, with a typed-slug-confirmed delete for the owner or a super admin |
+| `/projects/:id` | One project's name, slug, owner, session count, and linked GitHub repo (when it has one), with a typed-slug-confirmed delete for the owner or a super admin |
 | `/orgs` | Every org you belong to (every registered org for a super admin), with a registration form for super admins |
 | `/orgs/:slug` | One org's members, projects, and total session count, with an editable display name and auto-add-members toggle |
 | `/sessions` | Session index with search and filters |
@@ -287,8 +287,10 @@ bun run db:verify                      # read-only: assert it already is
 ```
 
 `db:migrate` is the only supported way to change a database's shape — it runs drizzle-kit's
-migrations and then the post-migrate steps in `packages/server/src/db/steps.ts` (today, the
-full-text search indexes, which cannot be built inside a migration's transaction).
+migrations and then the post-migrate steps in `packages/server/src/db/steps.ts`: the full-text
+search indexes, which cannot be built inside a migration's transaction, and a backfill that
+re-owns and deduplicates `repos` rows written before org ownership existed, folding the casing
+of the ones written before their identity was case-folded.
 
 See [CLAUDE.md](CLAUDE.md) for the contributor detail: working on several branches at once, the
 database naming rule, the seed/identity snapshot, and the logging conventions.

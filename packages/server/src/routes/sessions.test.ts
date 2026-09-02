@@ -502,7 +502,7 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     const repoId = await reposRepo.upsertByIdentity(
       db,
       { host: "github.com", owner: "acme", repoName: "five" },
-      owner,
+      { kind: "user", userId: owner },
     )
     const now = new Date("2026-02-01T00:00:00Z")
     for (const [id, title] of [
@@ -639,12 +639,12 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     const main = await reposRepo.upsertByIdentity(
       db,
       { host: "github.com", owner: "acme", repoName: "samskara" },
-      owner,
+      { kind: "user", userId: owner },
     )
     const vendored = await reposRepo.upsertByIdentity(
       db,
       { host: "github.com", owner: "acme", repoName: "vendor" },
-      owner,
+      { kind: "user", userId: owner },
     )
     await seedSession(db, {
       id: "repo-session",
@@ -1139,7 +1139,7 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions/:id", () => {
     const repoId = await reposRepo.upsertByIdentity(
       db,
       { host: "local", owner: "/Users/maya/Projects/samskara", repoName: "samskara" },
-      owner,
+      { kind: "user", userId: owner },
     )
     for (const [id, attributed] of [
       ["with-repo", true],

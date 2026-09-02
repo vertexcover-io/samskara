@@ -107,7 +107,17 @@ query, which looks like a hang rather than a missing step.
 
 A step is a module beside `steps.ts` exporting `{ name, run, verify }`. `run` converges and must be
 idempotent, because it runs on every migrate including ones with no new migrations; `verify` only
-reads, and backs `db:verify`.
+reads, and backs `db:verify`. Because `run` pays its cost on every migrate, a step that scans a
+large table should check whether it has anything to do before doing it — `repoOwnershipBackfill.ts`
+returns early on three `exists` clauses, and `searchIndexes.ts` reads `pg_index` first.
+
+**Repo identity is case-folded.** A repo row is keyed by `(host, owner, repoName)` and those
+columns are plain text, so two clones of one repo whose remotes disagree on casing —
+`ACME/Serana` against `acme/serana` — would otherwise be two rows, and one org's members would
+stop sharing a repo. `reposRepo.upsertByIdentity` folds case for every caller, which is why no
+caller should normalise on its own. The exception is `host: "local"`: a remoteless repo is keyed
+by its absolute root path, and a path is case-sensitive on the filesystems this runs on. Rows
+written before the fold are collapsed by the repo-ownership backfill.
 
 `drizzle.config.ts` has no default `DATABASE_URL`. If it is unset the migration fails loudly rather
 than quietly migrating the main checkout's database.

@@ -54,8 +54,8 @@ type RepoIdKey = string
 // collapse onto one key.
 const KEY_SEPARATOR = "\n"
 
-// Mirrors the (host, owner, repoName) part of repos' identity -- `userId` is constant across one
-// ingest.
+// The (host, owner, repoName) part of repos' identity; the owner ref is constant across one
+// ingest, so it is not part of the key.
 const repoKeyOf = (repo: RepoIdentity): RepoIdKey =>
   [repo.host, repo.owner, repo.repoName].join(KEY_SEPARATOR)
 
@@ -74,13 +74,14 @@ const repoOf = (event: GitEvent): RepoIdentity | undefined =>
 
 /**
  * Upserts each distinct repo once before the rows are mapped, so `toMessageRow` stays pure and
- * synchronous -- mirroring how the project is upserted once rather than per row.
+ * synchronous. A repo is owned by the project's owner rather than by whoever uploaded it, so two
+ * org members capturing the same repo into that org's project share one row.
  */
 const resolveRepoIds = async (
   tx: Querier,
   flatMessages: ReadonlyArray<FlatMessage>,
   gitEvents: ReadonlyArray<GitEvent>,
-  userId: string,
+  owner: reposRepo.RepoOwnerRef,
 ): Promise<ReadonlyMap<RepoIdKey, string>> => {
   const distinct = new Map<RepoIdKey, RepoIdentity>()
   for (const { message } of flatMessages) {
@@ -92,7 +93,7 @@ const resolveRepoIds = async (
   }
   const resolved = new Map<RepoIdKey, string>()
   for (const [key, identity] of distinct) {
-    resolved.set(key, await reposRepo.upsertByIdentity(tx, identity, userId))
+    resolved.set(key, await reposRepo.upsertByIdentity(tx, identity, owner))
   }
   return resolved
 }
@@ -270,7 +271,16 @@ export const ingest = async (ctx: Ctx, payload: IngestPayload): Promise<IngestRe
       if (claimed !== undefined && !(await projectsRepo.canWrite(tx, userId, claimed))) {
         throw PROJECT_FORBIDDEN
       }
-      const projectId = claimed ?? (await findOrCreateProject(tx, userId, payload.project)).id
+      // `findOrCreateProject` returns the owner it filed the project under; only a caller-supplied
+      // id leaves it still to be read.
+      const project: {
+        readonly id: string
+        readonly ownerRef: reposRepo.RepoOwnerRef | null
+      } =
+        claimed !== undefined
+          ? { id: claimed, ownerRef: null }
+          : await findOrCreateProject(tx, userId, payload.project)
+      const projectId = project.id
       log.info({ projectId, slug: payload.project.slug }, "Project resolved")
 
       if (payload.type === "main") {
@@ -297,7 +307,9 @@ export const ingest = async (ctx: Ctx, payload: IngestPayload): Promise<IngestRe
       }
 
       const gitEvents = payload.gitEvents ?? []
-      const repoIdByKey = await resolveRepoIds(tx, flat, gitEvents, userId)
+      const projectOwner = project.ownerRef ?? (await projectsRepo.ownerRefOf(tx, projectId))
+      if (!projectOwner) throw new Error("project resolved with no owner")
+      const repoIdByKey = await resolveRepoIds(tx, flat, gitEvents, projectOwner)
       const rows = flat.map((message) => toMessageRow(message, repoIdByKey))
       const { ingested, deduped, idByKey } = await messagesRepo.insertManyIgnoreConflicts(
         tx,

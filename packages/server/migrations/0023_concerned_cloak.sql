@@ -1,0 +1,2 @@
+ALTER TABLE "projects" ADD COLUMN "repoId" uuid;--> statement-breakpoint
+ALTER TABLE "projects" ADD CONSTRAINT "projects_repoId_repos_id_fk" FOREIGN KEY ("repoId") REFERENCES "public"."repos"("id") ON DELETE set null ON UPDATE no action;

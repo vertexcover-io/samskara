@@ -1,4 +1,5 @@
 import type { Sql } from "postgres"
+import { repoOwnershipBackfillStep } from "./repoOwnershipBackfill.js"
 import { searchIndexStep } from "./searchIndexes.js"
 
 /**
@@ -23,7 +24,10 @@ export type MigrationStep = {
 }
 
 /** Registration order is execution order. */
-export const MIGRATION_STEPS: ReadonlyArray<MigrationStep> = [searchIndexStep]
+export const MIGRATION_STEPS: ReadonlyArray<MigrationStep> = [
+  searchIndexStep,
+  repoOwnershipBackfillStep,
+]
 
 export const runSteps = async (
   steps: ReadonlyArray<MigrationStep>,
