@@ -150,6 +150,16 @@ describe("resolveInputs", () => {
     expect(resolve("out.html").startsWith("/work/")).toBe(false)
   })
 
+  test("SC23 (regression): a name that merely opens with two dots is under the base dir", () => {
+    // `relative()` answers `..report.html`, which a bare `startsWith("..")` reads as an escape.
+    // Only a whole `..` segment walks upwards.
+    const resolved = resolveInputs(["/work/..report.html"], "/work")
+
+    expect(resolved).toEqual([
+      { absolutePath: "/work/..report.html", relativePath: "..report.html" },
+    ])
+  })
+
   test("SC3: two inputs resolving to the same file under the base dir collide", () => {
     // Different strings, same real target once resolved -- exactly what a caller who typed a
     // redundant path segment would produce.
@@ -195,6 +205,18 @@ describe("expandPaths", () => {
     await writeFile(join(dir, "server.pem"), "cert")
 
     expect(await expandPaths([dir])).toEqual([join(dir, "report.html")])
+  })
+
+  test("SC22 (regression): a directory reached by symlink is walked at its real location", async () => {
+    // The alias has no dot segment and no `.ssh` in it, so filtering the path the walk was
+    // reached by -- rather than the one it actually reads -- let every file under a hidden
+    // directory through.
+    const base = join(home, "base")
+    await mkdir(join(base, ".ssh"), { recursive: true })
+    await writeFile(join(base, ".ssh", "config"), "Host *")
+    await symlink(join(base, ".ssh"), join(base, "public"))
+
+    expect(await expandPaths([join(base, "public")])).toEqual([])
   })
 
   test("SC16: an explicitly named file is uploaded even when the walk would skip it", async () => {

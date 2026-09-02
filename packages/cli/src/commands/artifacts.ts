@@ -1,5 +1,5 @@
 import { readdir, realpath, stat } from "node:fs/promises"
-import { isAbsolute, join, relative, resolve } from "node:path"
+import { isAbsolute, join, relative, resolve, sep } from "node:path"
 import type { ArtifactUploadResponse } from "@samskara/core"
 import { mapWithLimit } from "../concurrency.js"
 import { warnOnServerChange } from "../config/server-scope.js"
@@ -16,11 +16,17 @@ export type ResolveError =
   | { readonly kind: "outsideBase"; readonly path: string }
   | { readonly kind: "collision"; readonly relativePath: string; readonly paths: readonly string[] }
 
-/** `startsWith("..")` on the computed relative path, not a prefix compare of the two absolute
- * paths: `/a/b` and `/a/bc` share a string prefix but neither contains the other. */
+/**
+ * Measured on the computed relative path, not by comparing prefixes of the two absolute paths:
+ * `/a/b` and `/a/bc` share a string prefix but neither contains the other.
+ *
+ * A bare `startsWith("..")` would reject `..report.html`, a file sitting directly under the base
+ * whose name merely opens with two dots. Only a `..` that is a whole segment walks upwards.
+ */
 const relativeUnder = (baseDir: string, absolutePath: string): string | null => {
   const rel = relative(baseDir, absolutePath)
-  return rel === "" || rel.startsWith("..") || isAbsolute(rel) ? null : rel
+  const escapes = rel === ".." || rel.startsWith(`..${sep}`)
+  return rel === "" || escapes || isAbsolute(rel) ? null : rel
 }
 
 /**
@@ -91,7 +97,11 @@ export const expandPaths = async (paths: readonly string[]): Promise<readonly st
     paths.map(async (path): Promise<readonly string[]> => {
       const info = await stat(path).catch(() => null)
       if (info === null || info.isFile()) return [path]
-      if (info.isDirectory()) return walk(path)
+      // Walk the directory's real location, not the name it was reached by. `stat` follows a
+      // symlink, so `base/public` pointing at `base/.ssh` would otherwise be walked as
+      // `base/public/...` -- a path with no dot segment and no `.ssh` in it, which is exactly what
+      // the dot-directory rule and `isSecret` look for. Every file under it would pass both.
+      if (info.isDirectory()) return walk(await canonical(path))
       return []
     }),
   )
