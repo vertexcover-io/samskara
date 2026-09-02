@@ -280,12 +280,21 @@ const processOne = async (
   if (!entry) return false
 
   try {
-    const upload = await prepareUpload(deps, entry)
+    const prepared = await prepareUpload(entry)
     // A vanished or oversize file: not an error, and no state to advance.
-    if (!upload) {
+    if (!prepared.ok) {
+      if (prepared.reason === "vanished") {
+        deps.log.debug({ path: entry.path }, "artifact vanished before upload; skipping")
+      } else {
+        deps.log.warn(
+          { path: entry.path },
+          "artifact exceeds the size cap; skipping rather than truncating",
+        )
+      }
       await settle(config, entry, null, deps.log)
       return true
     }
+    const upload = prepared.upload
 
     // The authoritative churn layer: the cycle's mtime+size check is cheap but lies when a file
     // is rewritten with identical bytes.
