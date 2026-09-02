@@ -10,6 +10,7 @@ import {
   messages,
   orgs,
   projects,
+  repos,
   sessions,
   userOrgs,
   userProjectGrant,
@@ -48,6 +49,7 @@ type ProjectSummary = {
   readonly owner: { readonly type: "user" | "org"; readonly slug: string }
   readonly sessionCount: number
   readonly lastActiveAt: string | null
+  readonly repo: { readonly host: string; readonly owner: string; readonly repoName: string } | null
 }
 
 const seedUser = (db: Db, githubId: number, login: string): Promise<string> =>
@@ -182,6 +184,7 @@ describe.skipIf(!dockerAvailable())("GET /api/projects", () => {
       owner: { type: "user", slug: "summary-owner" },
       sessionCount: 2,
       lastActiveAt: new Date("2026-02-01T00:00:00Z").toISOString(),
+      repo: null,
     })
   })
 
@@ -201,6 +204,7 @@ describe.skipIf(!dockerAvailable())("GET /api/projects", () => {
       owner: { type: "user", slug: "empty-owner" },
       sessionCount: 0,
       lastActiveAt: null,
+      repo: null,
     })
   })
 
@@ -836,6 +840,147 @@ describe.skipIf(!dockerAvailable())("GET /api/projects/:id", () => {
     })
     return { status: res.status, body: await res.json() }
   }
+
+  const postAs = async (
+    userId: string,
+    body: unknown,
+  ): Promise<{ status: number; body: CreateProjectResponse }> => {
+    const token = await signToken(env, { sub: userId, aud: "cli" })
+    const res = await buildApp(db, env).request("/api/projects", {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    })
+    return { status: res.status, body: (await res.json()) as CreateProjectResponse }
+  }
+
+  const seedOrgRow = async (slug: string): Promise<string> => {
+    const [org] = await db
+      .insert(orgs)
+      .values({ githubSlug: slug, name: slug })
+      .returning({ id: orgs.id })
+    if (!org) throw new Error("seed org failed")
+    return org.id
+  }
+
+  test("SC7: an org-remote project exposes an org-owned repo", async () => {
+    const member = await seedUser(db, 950, "sc7-member")
+    const orgId = await seedOrgRow("sc7-org")
+    await db.insert(userOrgs).values({ userId: member, orgId })
+
+    const created = await postAs(member, {
+      name: "widget",
+      slug: "sc7-widget",
+      remote: { host: "github.com", owner: "sc7-org", repoName: "widget" },
+    })
+    expect(created.status).toBe(201)
+
+    const { status, body } = await getAs(member, created.body.id)
+
+    expect(status).toBe(200)
+    expect(body).toMatchObject({
+      project: { repo: { host: "github.com", owner: "sc7-org", repoName: "widget" } },
+    })
+    const [repoRow] = await db.select().from(repos).where(eq(repos.repoName, "widget"))
+    expect(repoRow).toMatchObject({ ownerOrgId: orgId, ownerUserId: null })
+  })
+
+  test("R6 (verification bug): two clones of one org repo disagreeing on remote casing share a single repo row", async () => {
+    const member = await seedUser(db, 954, "sc21-member")
+    const orgId = await seedOrgRow("sc21-org")
+    await db.insert(userOrgs).values({ userId: member, orgId })
+
+    const first = await postAs(member, {
+      name: "gadget",
+      slug: "sc21-gadget",
+      remote: { host: "github.com", owner: "sc21-org", repoName: "gadget" },
+    })
+    const second = await postAs(member, {
+      name: "gadget",
+      slug: "sc21-gadget",
+      remote: { host: "github.com", owner: "SC21-Org", repoName: "gadget" },
+    })
+    expect(first.status).toBe(201)
+    expect(second.body.id).toBe(first.body.id)
+
+    const rows = await db.select().from(repos).where(eq(repos.repoName, "gadget"))
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ owner: "sc21-org", ownerOrgId: orgId })
+
+    const { body } = await getAs(member, first.body.id)
+    expect(body).toMatchObject({
+      project: { repo: { host: "github.com", owner: "sc21-org", repoName: "gadget" } },
+    })
+  })
+
+  test("SC8: a personal-remote project exposes a user-owned repo", async () => {
+    const caller = await seedUser(db, 951, "sc8-caller")
+
+    const created = await postAs(caller, {
+      name: "solo",
+      slug: "sc8-solo",
+      remote: { host: "github.com", owner: "sc8-caller", repoName: "solo" },
+    })
+    expect(created.status).toBe(201)
+
+    const { status, body } = await getAs(caller, created.body.id)
+
+    expect(status).toBe(200)
+    expect(body).toMatchObject({
+      project: { repo: { host: "github.com", owner: "sc8-caller", repoName: "solo" } },
+    })
+    const [repoRow] = await db.select().from(repos).where(eq(repos.repoName, "solo"))
+    expect(repoRow).toMatchObject({ ownerUserId: caller, ownerOrgId: null })
+  })
+
+  test("SC9: a remoteless project exposes no repo", async () => {
+    const owner = await seedUser(db, 952, "sc9-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Remoteless", slug: "sc9-remoteless" },
+      ownerId: owner,
+    })
+
+    const { status, body } = await getAs(owner, projectId)
+
+    expect(status).toBe(200)
+    expect(body).toMatchObject({ project: { repo: null } })
+    const [row] = await db
+      .select({ repoId: projects.repoId })
+      .from(projects)
+      .where(eq(projects.id, projectId))
+    expect(row?.repoId).toBeNull()
+  })
+
+  test("SC11 (regression): the project API still returns owner and sessionCount after the repo field is added", async () => {
+    const owner = await seedUser(db, 953, "sc11-owner")
+    const created = await postAs(owner, {
+      name: "regression",
+      slug: "sc11-regression",
+      remote: { host: "github.com", owner: "sc11-owner", repoName: "regression" },
+    })
+    await seedSession(db, {
+      id: "sc11-session",
+      userId: owner,
+      projectId: created.body.id,
+      title: "s1",
+      updatedAt: new Date(),
+    })
+
+    const { body } = await getAs(owner, created.body.id)
+    expect(body).toMatchObject({
+      project: {
+        owner: { type: "user", slug: "sc11-owner" },
+        sessionCount: 1,
+        repo: { host: "github.com", owner: "sc11-owner", repoName: "regression" },
+      },
+    })
+
+    const list = await listAs(db, owner)
+    expect(list.find((p) => p.id === created.body.id)).toMatchObject({
+      owner: { type: "user", slug: "sc11-owner" },
+      sessionCount: 1,
+    })
+  })
 
   test("SC3: a member reads a project and its session count", async () => {
     const owner = await seedUser(db, 900, "sc3-detail-owner")

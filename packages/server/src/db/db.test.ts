@@ -156,7 +156,7 @@ describe.skipIf(!dockerAvailable())("session data model", () => {
   const seedRepo = async (userId: string, repoName: string) => {
     const [repo] = await db
       .insert(repos)
-      .values({ host: "github.com", owner: "acme", repoName, userId })
+      .values({ host: "github.com", owner: "acme", repoName, ownerUserId: userId })
       .returning()
     if (!repo) throw new Error("repo insert returned no row")
     return repo
@@ -187,7 +187,7 @@ describe.skipIf(!dockerAvailable())("session data model", () => {
     expect(filterOptions.authors.map((option) => option.value)).toContain(row?.userLogin)
   })
 
-  test("deleting a repo keeps its messages and clears their repo pointer", async () => {
+  test("SC6: deleting a repo keeps its messages and clears their repo pointer", async () => {
     const session = await seedSession("sess-repo-delete")
     const repo = await seedRepo(session.userId, "widget")
     const message = await seedMessage(session.id, repo.id)

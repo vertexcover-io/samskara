@@ -27,6 +27,10 @@ const serialize = (row: ProjectSummaryRow) => ({
   owner: { type: row.ownerType, slug: row.ownerSlug },
   sessionCount: row.sessionCount,
   lastActiveAt: row.lastActiveAt === null ? null : new Date(row.lastActiveAt).toISOString(),
+  repo:
+    row.repoHost !== null && row.repoOwner !== null && row.repoName !== null
+      ? { host: row.repoHost, owner: row.repoOwner, repoName: row.repoName }
+      : null,
 })
 
 export const projectsRoutes = ({ db, env }: Deps) =>

@@ -251,6 +251,14 @@ test.describe("commit capture", () => {
       repoName: SUB_REPO_NAME,
     })
 
+    // This project is owned by E2E_USER_ID, not by any org, so the repo the commit landed
+    // against must be owned by that same user.
+    const [subRepoOwner] = await sql<{ ownerUserId: string | null; ownerOrgId: string | null }[]>`
+      select "userId" as "ownerUserId", "ownerOrgId" from repos
+      where host = 'github.com' and owner = 'refrens' and "repoName" = ${SUB_REPO_NAME}
+    `
+    expect(subRepoOwner).toMatchObject({ ownerUserId: E2E_USER_ID, ownerOrgId: null })
+
     const [full] = await sql<
       {
         subject: string | null

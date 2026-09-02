@@ -1,7 +1,8 @@
-import type { CreateProjectRequest, ReassignSessionsRequest } from "@samskara/core"
+import type { CreateProjectRequest, ProjectRemote, ReassignSessionsRequest } from "@samskara/core"
 import type { Querier } from "../db/client.js"
 import * as orgsRepo from "../repositories/orgs.repo.js"
 import * as projectsRepo from "../repositories/projects.repo.js"
+import * as reposRepo from "../repositories/repos.repo.js"
 import * as sessionsRepo from "../repositories/sessions.repo.js"
 import * as userOrgsRepo from "../repositories/userOrgs.repo.js"
 import * as usersRepo from "../repositories/users.repo.js"
@@ -10,11 +11,24 @@ export type FindOrCreateResult = {
   readonly id: string
   readonly created: boolean
   readonly owner: { readonly type: "user" } | { readonly type: "org"; readonly slug: string }
+  /** The owner this call resolved, so a caller in the same transaction need not re-read it. */
+  readonly ownerRef: reposRepo.RepoOwnerRef
   readonly reason?: "notMember"
 }
 
 const mayOwnForOrg = async (db: Querier, userId: string, orgId: string): Promise<boolean> =>
   (await userOrgsRepo.isMember(db, userId, orgId)) || usersRepo.isSuperAdmin(db, userId)
+
+/** The repo takes the project's own owner, so the two can never disagree about who owns it. */
+const linkRepo = async (
+  db: Querier,
+  projectId: string,
+  remote: ProjectRemote,
+  owner: reposRepo.RepoOwnerRef,
+): Promise<void> => {
+  const repoId = await reposRepo.upsertByIdentity(db, remote, owner)
+  await projectsRepo.setRepoId(db, projectId, repoId)
+}
 
 export const findOrCreateProject = async (
   db: Querier,
@@ -28,6 +42,7 @@ export const findOrCreateProject = async (
       : null
 
   if (org !== null && remote !== undefined && (await mayOwnForOrg(db, userId, org.id))) {
+    const owner: reposRepo.RepoOwnerRef = { kind: "org", orgId: org.id }
     // Derived from the verified remote, not the client-supplied slug: two clones of the same
     // repo can disagree on remote casing, and a client-trusted slug would give each one its own
     // project row instead of sharing the one org row R11 requires.
@@ -36,16 +51,20 @@ export const findOrCreateProject = async (
         name: remote.repoName,
         slug: `${org.githubSlug}-${remote.repoName.toLowerCase()}`,
       },
-      owner: { kind: "org", orgId: org.id },
+      owner,
     })
-    return { ...row, owner: { type: "org", slug: org.githubSlug } }
+    await linkRepo(db, row.id, remote, owner)
+    return { ...row, owner: { type: "org", slug: org.githubSlug }, ownerRef: owner }
   }
 
-  const row = await projectsRepo.upsertOwned(db, { identity, owner: { kind: "user", userId } })
+  const owner: reposRepo.RepoOwnerRef = { kind: "user", userId }
+  const row = await projectsRepo.upsertOwned(db, { identity, owner })
+  if (remote !== undefined) await linkRepo(db, row.id, remote, owner)
   // Reaching here with a registered org means the caller is not one of its members.
   return {
     ...row,
     owner: { type: "user" },
+    ownerRef: owner,
     ...(org === null ? {} : { reason: "notMember" as const }),
   }
 }

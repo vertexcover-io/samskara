@@ -25,9 +25,6 @@ export const repoIdentitySchema = z
   .object({
     host: nonemptyString,
     owner: nonemptyString,
-    // Optional, never guessed: a URL cannot settle user-vs-org. Not part of the repo's identity
-    // either, so an absent value can never split one repo into two rows.
-    ownerType: z.enum(["user", "org"]).optional(),
     repoName: nonemptyString,
   })
   .strict()

@@ -21,6 +21,7 @@ const samskara: ProjectSummary = {
   owner: { type: "user", slug: "e2e-user" },
   sessionCount: 3,
   lastActiveAt: "2026-02-01T09:30:00.000Z",
+  repo: null,
 }
 
 const jsonResponse = (status: number, body: unknown): Response =>
@@ -108,6 +109,7 @@ test("SC10: the projects page renders one card for each project the API returns"
     owner: { type: "user", slug: "e2e-user" },
     sessionCount: 0,
     lastActiveAt: null,
+    repo: null,
   }
   stubFetch({
     me: () => Promise.resolve(jsonResponse(200, user)),

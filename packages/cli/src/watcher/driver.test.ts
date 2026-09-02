@@ -466,7 +466,6 @@ describe("watcher driver", () => {
     const serana = {
       host: "github.com",
       owner: "refrens",
-      ownerType: "org",
       repoName: "serana",
       root: "/work/serana",
     } as const
@@ -512,7 +511,6 @@ describe("watcher driver", () => {
       expect(sent[0]?.repo).toEqual({
         host: "github.com",
         owner: "refrens",
-        ownerType: "org",
         repoName: "serana",
       })
     })
@@ -634,7 +632,6 @@ describe("watcher driver", () => {
           repo: {
             host: "github.com",
             owner: "refrens",
-            ownerType: "org",
             repoName: "serana",
           },
           callId: "toolu_commit",
