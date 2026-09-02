@@ -200,6 +200,7 @@ turns capture off for every project, and signs you out. It stops there — run `
 | `samskara restart` | Stop the watcher and start a fresh one. |
 | `samskara upgrade [--check]` | Install the newest GitHub release over this one; `--check` only reports whether one exists. |
 | `samskara replay SESSION_ID` | Delete a session server-side and locally, then re-capture it from scratch. |
+| `samskara artifacts upload SESSION_ID PATH... [--base-dir DIR] [--no-created] [--dry-run]` | Upload files, or directories walked recursively, as artifacts of that session. Prints `ok`, `updated` or `failed` per file and exits 1 if any failed. `--base-dir` stores each path relative to `DIR` rather than the current directory, `--no-created` records the files as edited rather than created, and `--dry-run` prints what would upload without sending it. |
 | `samskara search [QUERY]` | Search captured sessions from the terminal and print each hit's URL. |
 | `samskara install-hooks` / `uninstall-hooks` | Install or remove the `SessionStart` hook by hand. |
 | `samskara watch [--foreground]` | Start the watcher daemon directly; `--foreground` runs the loop in this terminal. |
@@ -209,6 +210,14 @@ turns capture off for every project, and signs you out. It stops there — run `
 `enable` registers the folder with the server, so it needs a stored login and a reachable server —
 with either missing it exits 1 and writes nothing. By default it starts the clock now, so turning
 capture on for an old project does not retroactively upload years of history.
+
+`samskara artifacts upload` walks a directory argument recursively, skipping dotfiles, dot-directories,
+and files that look like credentials (`.env`, `id_rsa`, `*.pem`, and similar) — name one of those
+files directly and it uploads anyway. A path that resolves outside `--base-dir`, or two paths that
+would collide on the same stored location, stop the whole run before anything uploads. Re-running the
+same upload from the same directory updates the existing files; running it again from a *different*
+directory (or a different `--base-dir`) stores a second copy, because each file is keyed by its
+absolute path on disk.
 
 `samskara search` takes the same filters as the web UI's `/sessions` page and the same query grammar
 (see [Using the web UI](#using-the-web-ui)): `--project`, `--user`, `--repo`, `--branch`, `--pr`,
