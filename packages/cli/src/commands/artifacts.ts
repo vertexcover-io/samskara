@@ -59,13 +59,15 @@ export const resolveInputs = (
     (candidate): candidate is ResolvedFile => candidate.relativePath !== null,
   )
 
-  const byRelativePath = new Map<string, string[]>()
-  for (const candidate of resolved) {
-    const group = byRelativePath.get(candidate.relativePath) ?? []
-    group.push(candidate.absolutePath)
-    byRelativePath.set(candidate.relativePath, group)
-  }
-  const collision = [...byRelativePath.entries()].find(([, group]) => group.length > 1)
+  const byRelativePath = resolved.reduce(
+    (groups, candidate) =>
+      groups.set(candidate.relativePath, [
+        ...(groups.get(candidate.relativePath) ?? []),
+        candidate.absolutePath,
+      ]),
+    new Map<string, readonly string[]>(),
+  )
+  const collision = [...byRelativePath].find(([, group]) => group.length > 1)
   if (collision) return { kind: "collision", relativePath: collision[0], paths: collision[1] }
 
   return resolved
@@ -152,20 +154,26 @@ type FileResult =
   | { readonly kind: "done"; readonly outcome: FileOutcome }
   | { readonly kind: "aborted" }
 
+/** Everything a run fixes once, so the per-file function takes only the file. */
+type Uploader = {
+  readonly deps: Pick<UploadDeps, "apiBase" | "fetch">
+  readonly token: string
+  readonly sessionId: string
+  readonly created: boolean
+  readonly isAborted: () => boolean
+}
+
 const uploadOne = async (
-  deps: Pick<UploadDeps, "apiBase" | "fetch">,
-  token: string,
-  args: UploadArgs,
+  { deps, token, sessionId, created, isAborted }: Uploader,
   file: ResolvedFile,
-  isAborted: () => boolean,
 ): Promise<FileResult> => {
   if (isAborted()) return { kind: "aborted" }
 
   const prepared = await prepareUpload({
-    sessionId: args.sessionId,
+    sessionId,
     path: file.absolutePath,
     relativePath: file.relativePath,
-    created: args.created,
+    created,
     observedAt: new Date().toISOString(),
   })
   if (!prepared.ok) {
@@ -263,8 +271,15 @@ export const uploadArtifactsCommand = async (
   // A 409 has to keep them -- the files that landed before it did still landed -- so the stop is a
   // flag `uploadOne` reads, and every file after it returns `aborted` rather than an outcome.
   let sessionGone = false
+  const uploader: Uploader = {
+    deps,
+    token,
+    sessionId: args.sessionId,
+    created: args.created,
+    isAborted: () => sessionGone,
+  }
   const results = await mapWithLimit(resolved, UPLOAD_CONCURRENCY, async (file) => {
-    const result = await uploadOne(deps, token, args, file, () => sessionGone)
+    const result = await uploadOne(uploader, file)
     if (result.kind === "aborted") sessionGone = true
     return result
   })
