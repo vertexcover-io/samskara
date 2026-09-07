@@ -25,20 +25,16 @@ export const parseRemote = (url: string): ParsedRemote | null => {
   return null
 }
 
-/** `certain` is false when ssh config had the last word on the host and could not be asked. */
-export type ResolvedRemote = { readonly remote: ParsedRemote; readonly certain: boolean }
-
 /**
  * The host an ssh url names is whatever `~/.ssh/config` says it is, so it is asked -- see
- * `canonicalSshHost`. An https url already carries a real host and is left alone: ssh config
- * has no say over it, and resolving one would let a stray `Host` entry rewrite it.
+ * `canonicalSshHost`, which rejects rather than guess when ssh cannot answer. An https url already
+ * carries a real host and is left alone: ssh config has no say over it, and resolving one would
+ * let a stray `Host` entry rewrite it.
  */
-export const resolveRemote = async (url: string): Promise<ResolvedRemote | null> => {
+export const resolveRemote = async (url: string): Promise<ParsedRemote | null> => {
   const parsed = parseRemote(url)
-  if (parsed === null) return null
-  if (!SSH_REMOTE.test(clean(url))) return { remote: parsed, certain: true }
-  const { host, certain } = await canonicalSshHost(parsed.host)
-  return { remote: { ...parsed, host }, certain }
+  if (parsed === null || !SSH_REMOTE.test(clean(url))) return parsed
+  return { ...parsed, host: await canonicalSshHost(parsed.host) }
 }
 
 // Blanket-replace both `/` and `\` so the slug is stable cross-platform.
@@ -82,9 +78,12 @@ export const resolveProject = async (startDir: string): Promise<ProjectIdentity 
   const declared = (await gitRootOf(startDir)) ?? resolve(startDir)
   const root = await realpath(declared).catch(() => declared)
   const remote = await runGitOrNull(["config", "--get", "remote.origin.url"], root)
-  const resolved = remote ? await resolveRemote(remote) : null
-  if (resolved) {
-    const { host, owner, repoName } = resolved.remote
+  // An unresolved alias is kept rather than dropped: the slug below is `owner-repoName` and carries
+  // no host, so the project is still filed correctly, where falling back to a path slug would file
+  // it somewhere new. `resolveRepo` makes the opposite call, because a repo identity is its host.
+  const parsed = remote ? await resolveRemote(remote).catch(() => parseRemote(remote)) : null
+  if (parsed) {
+    const { host, owner, repoName } = parsed
     return { name: repoName, slug: `${owner}-${repoName}`, root, remote: { host, owner, repoName } }
   }
 

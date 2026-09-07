@@ -10,7 +10,7 @@ const git = vi.mocked(runGitOrNull)
 const ssh = vi.mocked(canonicalSshHost)
 
 beforeEach(() => {
-  ssh.mockImplementation(async (host: string) => ({ host, certain: true }))
+  ssh.mockImplementation(async (host: string) => host)
 })
 
 const gitReturning = (byArgs: Record<string, string | null>) => {
@@ -18,17 +18,27 @@ const gitReturning = (byArgs: Record<string, string | null>) => {
 }
 
 describe("resolveRepoIdentity", () => {
-  test("an alias ssh could not resolve is not cached, so one lost lookup does not pin the repo under its alias host for the life of the daemon", async () => {
+  test("an alias ssh could not resolve rejects rather than answering under the alias host, which would split the repo from its org server-side and for good", async () => {
     gitReturning({
       "rev-parse --path-format=absolute --git-common-dir": "/work/andromeda/.git",
       "config --get remote.origin.url": "git@github-refrens:refrens/andromeda.git",
     })
-    ssh.mockImplementationOnce(async (host) => ({ host, certain: false }))
+    ssh.mockRejectedValue(new Error("spawn ssh ENOENT"))
+
+    await expect(createRepoResolver()("/work/andromeda")).rejects.toThrow("ENOENT")
+  })
+
+  test("that rejection is not cached, so one lost lookup does not pin the checkout until the daemon restarts", async () => {
+    gitReturning({
+      "rev-parse --path-format=absolute --git-common-dir": "/work/andromeda/.git",
+      "config --get remote.origin.url": "git@github-refrens:refrens/andromeda.git",
+    })
+    ssh.mockRejectedValueOnce(new Error("spawn ssh ENOENT"))
     const resolve = createRepoResolver()
 
-    expect(await resolve("/work/andromeda")).toMatchObject({ host: "github-refrens" })
+    await expect(resolve("/work/andromeda")).rejects.toThrow()
 
-    ssh.mockImplementation(async () => ({ host: "github.com", certain: true }))
+    ssh.mockImplementation(async () => "github.com")
     expect(await resolve("/work/andromeda")).toMatchObject({ host: "github.com" })
   })
 
@@ -46,10 +56,7 @@ describe("resolveRepoIdentity", () => {
   })
 
   test("an ssh config alias resolves to the host it really points at, so the repo is not split from every other clone and its web links are not dead", async () => {
-    ssh.mockImplementation(async (host) => ({
-      host: host === "github-refrens" ? "github.com" : host,
-      certain: true,
-    }))
+    ssh.mockImplementation(async (host) => (host === "github-refrens" ? "github.com" : host))
     gitReturning({
       "rev-parse --path-format=absolute --git-common-dir": "/work/andromeda/.git",
       "config --get remote.origin.url": "git@github-refrens:refrens/andromeda.git",

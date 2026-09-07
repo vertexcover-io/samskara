@@ -10,17 +10,16 @@ export type ResolvedRepo = RepoIdentity & { readonly root: string }
  */
 const LOCAL_HOST = "local"
 
-type Attempt = { readonly repo: ResolvedRepo | null; readonly certain: boolean }
-
-const identityFor = async (cwd: string): Promise<Attempt> => {
+/** Rejects, via `resolveRemote`, when an ssh alias could not be resolved — see the resolver below. */
+const identityFor = async (cwd: string): Promise<ResolvedRepo | null> => {
   const root = await gitRootOf(cwd)
-  if (root === null) return { repo: null, certain: true }
+  if (root === null) return null
   const remote = await runGitOrNull(["config", "--get", "remote.origin.url"], root)
-  const resolved = remote ? await resolveRemote(remote) : null
+  const parsed = remote ? await resolveRemote(remote) : null
   // `ownerType` is deliberately absent: a remote URL cannot tell a user repo from an org one, and
   // it is not part of the repo's identity, so leaving it unknown never splits one repo in two.
-  if (resolved) return { repo: { ...resolved.remote, root }, certain: resolved.certain }
-  return { repo: { host: LOCAL_HOST, owner: root, repoName: basename(root), root }, certain: true }
+  if (parsed) return { ...parsed, root }
+  return { host: LOCAL_HOST, owner: root, repoName: basename(root), root }
 }
 
 /**
@@ -36,26 +35,20 @@ export const resolveHeadSha = (cwd: string): Promise<string | null> =>
  * does not change under us, and a scratch directory must not re-shell on every message it
  * appears on. HEAD deliberately has no place here — see `resolveHeadSha`.
  *
- * An identity whose ssh alias went unresolved is the exception. It is returned but not kept, so a
- * lookup that lost once to a timeout or a half-installed ssh does not pin the repo under its alias
- * host — and split from its org — for every later message from that checkout.
+ * An unresolved ssh alias is the exception, and it rejects rather than answering with the alias
+ * host: that host is most of a repo's identity, so recording it would split the repo from its org
+ * exactly as before this fix, permanently and server-side. The rejection is not cached either, so
+ * the next message retries instead of being pinned until the daemon restarts.
  */
 export const createRepoResolver = (): ((cwd: string) => Promise<ResolvedRepo | null>) => {
   const byCwd = new Map<string, Promise<ResolvedRepo | null>>()
   return (cwd) => {
     const hit = byCwd.get(cwd)
     if (hit) return hit
-    const attempt = identityFor(cwd)
-    const pending = attempt.then((a) => a.repo)
+    const pending = identityFor(cwd)
     byCwd.set(cwd, pending)
-    // The rejection, if there is one, belongs to `pending` and its caller; this branch only
-    // decides whether to keep the entry.
-    attempt.then(
-      (a) => {
-        if (!a.certain) byCwd.delete(cwd)
-      },
-      () => byCwd.delete(cwd),
-    )
+    // The rejection belongs to the caller; this only drops the entry so the next call retries.
+    pending.catch(() => byCwd.delete(cwd))
     return pending
   }
 }

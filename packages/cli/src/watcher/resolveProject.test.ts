@@ -24,15 +24,12 @@ beforeEach(() => {
   vi.mocked(stat).mockResolvedValue({ isDirectory: () => true } as unknown as Awaited<
     ReturnType<typeof stat>
   >)
-  ssh.mockImplementation(async (host: string) => ({ host, certain: true }))
+  ssh.mockImplementation(async (host: string) => host)
 })
 
 describe("resolveProject", () => {
   test("an ssh config alias resolves to the host it really points at, so a clone using a per-account Host entry lands in the same org project as every other clone", async () => {
-    ssh.mockImplementation(async (host) => ({
-      host: host === "github-refrens" ? "github.com" : host,
-      certain: true,
-    }))
+    ssh.mockImplementation(async (host) => (host === "github-refrens" ? "github.com" : host))
     gitReturning({
       "config --get remote.origin.url": "git@github-refrens:refrens/andromeda.git",
     })
@@ -42,6 +39,20 @@ describe("resolveProject", () => {
       slug: "refrens-andromeda",
       root: "/work/andromeda",
       remote: { host: "github.com", owner: "refrens", repoName: "andromeda" },
+    })
+  })
+
+  test("an alias ssh could not resolve keeps the host git recorded rather than throwing, because the slug is owner-repoName and files the project correctly either way", async () => {
+    ssh.mockRejectedValue(new Error("spawn ssh ENOENT"))
+    gitReturning({
+      "config --get remote.origin.url": "git@github-refrens:refrens/andromeda.git",
+    })
+
+    expect(await resolveProject("/work/andromeda")).toEqual({
+      name: "andromeda",
+      slug: "refrens-andromeda",
+      root: "/work/andromeda",
+      remote: { host: "github-refrens", owner: "refrens", repoName: "andromeda" },
     })
   })
 

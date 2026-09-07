@@ -142,7 +142,10 @@ const attributeRepos = async (
       const messages = await Promise.all(
         record.messages.map(async (message) => {
           const cwd = message.cwd ?? fallbackCwd
-          const resolved = cwd ? await resolveRepo(cwd) : null
+          // An ssh alias the resolver could not settle rejects rather than answer with the alias
+          // host. Leaving the message unattributed is the safe half of that: it costs one link,
+          // and the next message retries, where a wrong host is written to the server for good.
+          const resolved = cwd ? await resolveRepo(cwd).catch(() => null) : null
           if (!resolved) return message
           const { root: _root, ...repo } = resolved
           return { ...message, repo }
