@@ -882,6 +882,27 @@ describe("artifact workers", () => {
     expect(new Set(sent).size).toBe(sent.length)
   })
 
+  test("SC9 (regression): a vanished file settles at debug and an oversize file settles at warn", async () => {
+    const sink = scriptedSink([200])
+
+    const vanished = entry({ path: join(dir, "gone.md") })
+    await enqueue(queuePath, [vanished])
+    await runArtifactWorkers({ queuePath, statePath, workers: 1, drainOnce: true }, deps(sink))
+    expect(sink.sent).toHaveLength(0)
+    expect((await readQueue(queuePath)).entries).toHaveLength(0)
+    expect(recorder.debug.some((call) => call.details.path === vanished.path)).toBe(true)
+    expect(recorder.warn).toHaveLength(0)
+
+    const bigPath = join(dir, "big.md")
+    await writeFile(bigPath, "a".repeat(5 * 1024 * 1024 + 1), "utf8")
+    const oversize = entry({ path: bigPath, relativePath: "big.md", sessionId: "sess-big" })
+    await enqueue(queuePath, [oversize])
+    await runArtifactWorkers({ queuePath, statePath, workers: 1, drainOnce: true }, deps(sink))
+    expect(sink.sent).toHaveLength(0)
+    expect((await readQueue(queuePath)).entries).toHaveLength(0)
+    expect(recorder.warn.some((call) => call.details.path === bigPath)).toBe(true)
+  })
+
   test("S13 (regression): an artifact with no references uploads exactly as before", async () => {
     const target = entry()
     await enqueue(queuePath, [target])
