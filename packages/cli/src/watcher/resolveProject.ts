@@ -78,9 +78,6 @@ export const resolveProject = async (startDir: string): Promise<ProjectIdentity 
   const declared = (await gitRootOf(startDir)) ?? resolve(startDir)
   const root = await realpath(declared).catch(() => declared)
   const remote = await runGitOrNull(["config", "--get", "remote.origin.url"], root)
-  // An unresolved alias is kept rather than dropped: the slug below is `owner-repoName` and carries
-  // no host, so the project is still filed correctly, where falling back to a path slug would file
-  // it somewhere new. `resolveRepo` makes the opposite call, because a repo identity is its host.
   const parsed = remote ? await resolveRemote(remote).catch(() => parseRemote(remote)) : null
   if (parsed) {
     const { host, owner, repoName } = parsed
