@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react"
+import { render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, test, vi } from "vitest"
 import { AppRoutes } from "../App.js"
@@ -79,25 +79,54 @@ const renderAt = (path: string) =>
     </TestRouter>,
   )
 
+// Two kinds of control share the combobox role now, and each helper insists on its own kind:
+// a loose helper serving both would stop catching a control silently becoming the wrong element.
 const control = (name: RegExp): HTMLSelectElement => {
   const element = screen.getByRole("combobox", { name })
   if (!(element instanceof HTMLSelectElement)) throw new Error(`${name} is not a select`)
   return element
 }
 
+const filterBox = (label: string): HTMLInputElement => {
+  const element = screen.getByRole("combobox", { name: label })
+  if (!(element instanceof HTMLInputElement)) throw new Error(`${label} is not a typeahead`)
+  return element
+}
+
+const chooseFilter = async (label: string, option: string): Promise<void> => {
+  await userEvent.type(filterBox(label), option)
+  await userEvent.click(await screen.findByRole("option", { name: option }))
+}
+
+const clearFilter = async (label: string): Promise<void> => {
+  await userEvent.click(screen.getByRole("button", { name: `Clear ${label}` }))
+}
+
+const openMenu = (label: string): Promise<void> =>
+  userEvent.click(screen.getByRole("button", { name: `Show ${label} suggestions` }))
+
+// A closed menu renders no items, so only the open one contributes -- and the two remaining
+// native selects are comboboxes, never listboxes, so their <option> children stay out of this.
+const offered = (): ReadonlyArray<string> =>
+  screen.getAllByRole("listbox").flatMap((menu) =>
+    within(menu)
+      .queryAllByRole("option")
+      .map((item) => item.textContent ?? ""),
+  )
+
 afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-test("S23: loading /sessions?project=p&user=u&range=week shows all three controls set from the query string - not reset to defaults", async () => {
+test("SC66 (S23): loading /sessions?project=p&user=u&range=week seeds every control from the query string - each typeahead showing its label, not reset to defaults", async () => {
   stubFetch(okWith([session]))
 
   renderAt("/sessions?project=samskara&user=maya&range=week")
 
   await screen.findByRole("link", { name: /port the session detail surface/i })
 
-  expect(control(/project/i).value).toBe("samskara")
-  expect(control(/user/i).value).toBe("maya")
+  expect(filterBox("Project").value).toBe("Samskara")
+  expect(filterBox("User").value).toBe("maya")
   expect(control(/last active/i).value).toBe("week")
 })
 
@@ -114,13 +143,13 @@ test("S23: the request sent to the server carries the same filters the URL decla
   ])
 })
 
-test("S24: changing User to maya writes user=maya into the URL and refetches without a full page load", async () => {
+test("SC67 (S24): changing User to maya writes user=maya into the URL and refetches without a full page load", async () => {
   const calls = stubFetch(okWith([session]))
 
   renderAt("/sessions?project=samskara")
 
   await screen.findByRole("link", { name: /port the session detail surface/i })
-  await userEvent.selectOptions(control(/user/i), "maya")
+  await chooseFilter("User", "maya")
 
   await waitFor(() =>
     expect(screen.getByTestId("location")).toHaveTextContent("project=samskara&user=maya"),
@@ -128,13 +157,13 @@ test("S24: changing User to maya writes user=maya into the URL and refetches wit
   expect(calls.at(-1)).toBe("/api/sessions?project=samskara&user=maya")
 })
 
-test("S24: clearing the Project filter removes project= from the URL rather than leaving project=", async () => {
+test("SC68 (S24): clearing the Project filter removes project= from the URL rather than leaving project=", async () => {
   stubFetch(okWith([session]))
 
   renderAt("/sessions?project=samskara")
 
   await screen.findByRole("link", { name: /port the session detail surface/i })
-  await userEvent.selectOptions(control(/project/i), "")
+  await clearFilter("Project")
 
   await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("/sessions"))
   expect(screen.getByTestId("location")).not.toHaveTextContent("project=")
@@ -146,8 +175,8 @@ test("S25: an empty result keeps the filter values and offers a clear-filters ac
   renderAt("/sessions?project=samskara&user=maya&range=week")
 
   expect(await screen.findByText(/no sessions match/i)).toBeInTheDocument()
-  expect(control(/project/i).value).toBe("samskara")
-  expect(control(/user/i).value).toBe("maya")
+  expect(filterBox("Project").value).toBe("Samskara")
+  expect(filterBox("User").value).toBe("maya")
   expect(control(/last active/i).value).toBe("week")
 
   await userEvent.click(screen.getByRole("button", { name: /clear filters/i }))
@@ -227,8 +256,8 @@ test("stale sessions responses cannot replace newer filter results", async () =>
   renderAt("/sessions")
 
   expect(await screen.findByRole("link", { name: /latest result/i })).toBeInTheDocument()
-  await userEvent.selectOptions(control(/user/i), "maya")
-  await userEvent.selectOptions(control(/user/i), "")
+  await chooseFilter("User", "maya")
+  await clearFilter("User")
   expect(await screen.findByRole("link", { name: /latest result/i })).toBeInTheDocument()
   settleMaya?.(jsonResponse(200, payload([{ ...session, title: "Stale result" }])))
   await waitFor(() =>
@@ -305,17 +334,14 @@ test("S25: when the vocabulary request fails, the controls still offer the value
 
   await screen.findByRole("link", { name: /port the session detail surface/i })
 
-  await waitFor(() => {
-    const users = Array.from(control(/user/i).options).map((option) => option.value)
-    expect(users).toEqual(["", "maya", "ravi"])
-  })
-  expect(Array.from(control(/project/i).options).map((option) => option.value)).toEqual([
-    "",
-    "samskara",
-  ])
+  await openMenu("User")
+  await waitFor(() => expect(offered()).toEqual(["maya", "ravi"]))
+
+  await openMenu("Project")
+  await waitFor(() => expect(offered()).toEqual(["Samskara"]))
 })
 
-test("S25: with user=maya applied, ravi is still offered - options come from the unfiltered vocabulary, not the filtered rows", async () => {
+test("SC69 (S25, regression): with user=maya applied, ravi is still offered - options come from the unfiltered vocabulary, not the filtered rows", async () => {
   const ravi = { ...session, id: "s-2", title: "Trim the ingest pipeline", userLogin: "ravi" }
   const all = [session, ravi]
 
@@ -340,11 +366,9 @@ test("S25: with user=maya applied, ravi is still offered - options come from the
 
   await screen.findByRole("link", { name: /port the session detail surface/i })
 
-  await waitFor(() => {
-    const users = Array.from(control(/user/i).options).map((option) => option.value)
-    expect(users).toContain("ravi")
-  })
-  expect(control(/user/i).value).toBe("maya")
+  await openMenu("User")
+  await waitFor(() => expect(offered()).toContain("ravi"))
+  expect(filterBox("User").value).toBe("maya")
   expect(screen.queryByRole("link", { name: /trim the ingest pipeline/i })).not.toBeInTheDocument()
 })
 
@@ -397,6 +421,77 @@ test("SC16: a search match decorates its row, and a row without one still render
   expect(unmatchedRow.querySelector("mark")).toBeNull()
 })
 
+test("the active-filter summary names the project by label when the option list carries it", async () => {
+  vi.stubGlobal("fetch", (input: RequestInfo | URL) => {
+    const path = typeof input === "string" ? input : input.toString()
+    if (path.endsWith("/api/auth/me")) return Promise.resolve(jsonResponse(200, user))
+    if (isSessionsList(path)) {
+      return Promise.resolve(
+        jsonResponse(200, {
+          ...payload([session]),
+          filterOptions: { ...filterOptions, projects: [{ value: "p-uuid", label: "Samskara" }] },
+        }),
+      )
+    }
+    return Promise.reject(new Error(`unstubbed fetch: ${path}`))
+  })
+
+  renderAt("/sessions?project=p-uuid")
+
+  await screen.findByRole("link", { name: /port the session detail surface/i })
+
+  expect(screen.getByText(/within samskara/i)).toHaveTextContent("Within Samskara")
+})
+
+test("the active-filter summary names each filter from its own option list", async () => {
+  vi.stubGlobal("fetch", (input: RequestInfo | URL) => {
+    const path = typeof input === "string" ? input : input.toString()
+    if (path.endsWith("/api/auth/me")) return Promise.resolve(jsonResponse(200, user))
+    if (isSessionsList(path)) {
+      return Promise.resolve(
+        jsonResponse(200, {
+          ...payload([session]),
+          filterOptions: {
+            projects: [{ value: "p-uuid", label: "Samskara" }],
+            authors: [{ value: "u-uuid", label: "maya" }],
+            repositories: [{ value: "r-uuid", label: "acme/samskara" }],
+            branches: ["release/search"],
+          },
+        }),
+      )
+    }
+    return Promise.reject(new Error(`unstubbed fetch: ${path}`))
+  })
+
+  renderAt("/sessions?project=p-uuid&user=u-uuid&repo=r-uuid&branch=release/search")
+
+  await screen.findByRole("link", { name: /port the session detail surface/i })
+
+  // Four lists, so a crossed pair surfaces here as a uuid.
+  const summary = screen.getByText(/^Within /)
+  expect(summary).toHaveTextContent(
+    "Within Samskara \u00b7 maya \u00b7 acme/samskara \u00b7 release/search",
+  )
+  expect(summary.textContent).not.toMatch(/uuid/)
+})
+
+test("the active-filter summary falls back to the raw value when the option list cannot name it", async () => {
+  vi.stubGlobal("fetch", (input: RequestInfo | URL) => {
+    const path = typeof input === "string" ? input : input.toString()
+    if (path.endsWith("/api/auth/me")) return Promise.resolve(jsonResponse(200, user))
+    if (isSessionsList(path)) {
+      return Promise.resolve(jsonResponse(200, payload([session])))
+    }
+    return Promise.reject(new Error(`unstubbed fetch: ${path}`))
+  })
+
+  renderAt("/sessions?project=orphan-uuid")
+
+  await screen.findByRole("link", { name: /port the session detail surface/i })
+
+  expect(screen.getByText(/within orphan-uuid/i)).toBeInTheDocument()
+})
+
 test("SC19 (regression): changing a filter refetches and keeps the previous rows visible until the new ones arrive", async () => {
   let settleSecond: ((response: Response) => void) | undefined
   const calls = stubFetch((url) => {
@@ -410,7 +505,7 @@ test("SC19 (regression): changing a filter refetches and keeps the previous rows
   renderAt("/sessions")
 
   await screen.findByRole("link", { name: /port the session detail surface/i })
-  await userEvent.selectOptions(control(/user/i), "maya")
+  await chooseFilter("User", "maya")
 
   expect(calls).toHaveLength(2)
   expect(screen.getByRole("link", { name: /port the session detail surface/i })).toBeInTheDocument()

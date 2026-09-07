@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react"
 import { useSearchParams } from "react-router-dom"
 import { type ApiError, client, request } from "../api/client.js"
-import type { SessionListPayload } from "../api/types.js"
+import type { FilterOption, SessionListPayload } from "../api/types.js"
 import { SessionExpired } from "../auth/SessionExpired.js"
+import { optionFor } from "../components/combobox.js"
 import { FilterBar } from "../components/FilterBar.js"
 import { SessionRow } from "../components/SessionRow.js"
 import {
@@ -100,6 +101,9 @@ const ErrorState = ({ error }: { readonly error: ApiError }) => {
   )
 }
 
+const labelFor = (value: string | null, options: ReadonlyArray<FilterOption>): string | null =>
+  value === null ? null : (optionFor(options, value)?.label ?? value)
+
 const ResultSummary = ({
   payload,
   filters,
@@ -108,9 +112,9 @@ const ResultSummary = ({
   readonly filters: SessionFilters
 }) => {
   const scope = [
-    filters.project,
-    filters.user,
-    filters.repo,
+    labelFor(filters.project, payload.filterOptions.projects),
+    labelFor(filters.user, payload.filterOptions.authors),
+    labelFor(filters.repo, payload.filterOptions.repositories),
     filters.branch,
     filters.pr === null ? null : `PR #${filters.pr}`,
     filters.commit === null ? null : filters.commit,
