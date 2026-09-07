@@ -239,7 +239,7 @@ profile you are looking at.
 | Route | What you get |
 |---|---|
 | `/projects` | Every project you can read — session count, last activity, last session title |
-| `/projects/:id` | One project's name, slug, owner, and session count, with a typed-slug-confirmed delete for the owner or a super admin |
+| `/projects/:id` | One project's name, slug, owner, session count, and linked GitHub repo (when it has one), with a typed-slug-confirmed delete for the owner or a super admin |
 | `/orgs` | Every org you belong to (every registered org for a super admin), with a registration form for super admins |
 | `/orgs/:slug` | One org's members, projects, and total session count, with an editable display name and auto-add-members toggle |
 | `/sessions` | Session index with search and filters |

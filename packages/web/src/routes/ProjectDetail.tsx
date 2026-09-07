@@ -5,6 +5,7 @@ import { type ApiError, client, request } from "../api/client.js"
 import type { ProjectDetail as ProjectDetailPayload, SessionSummary } from "../api/types.js"
 import { SessionExpired } from "../auth/SessionExpired.js"
 import { DeleteProjectDialog } from "../components/DeleteProjectDialog.js"
+import { RepoLink } from "../components/RepoLink.js"
 import { SessionRow } from "../components/SessionRow.js"
 import { LoadingShell } from "../shell/LoadingShell.js"
 
@@ -104,6 +105,11 @@ export const ProjectDetail = () => {
         <Field label="Owner">
           <OwnerValue owner={project.owner} />
         </Field>
+        {project.repo === null ? null : (
+          <Field label="Repository">
+            <RepoLink repo={project.repo} />
+          </Field>
+        )}
         <Field label="Sessions">{project.sessionCount}</Field>
       </div>
       <div className="mt-6 flex items-baseline justify-between gap-4">

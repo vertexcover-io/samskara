@@ -496,6 +496,12 @@ test.describe("capture pipeline", () => {
     expect(project.id).toBe(storedProjectId)
     expect(project.ownerOrgId).toBe(orgId("acme"))
 
+    const [repo] = await sql<{ ownerOrgId: string | null; ownerUserId: string | null }[]>`
+      select "ownerOrgId", "userId" as "ownerUserId" from repos
+      where host = 'github.com' and owner = 'acme' and "repoName" = 'widgets'
+    `
+    expect(repo).toMatchObject({ ownerOrgId: orgId("acme"), ownerUserId: null })
+
     const [session] = await sql<{ projectId: string }[]>`
       select "projectId" from sessions where id = ${SESSION_ID}
     `
