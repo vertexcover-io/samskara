@@ -1,4 +1,4 @@
-import { type Ref, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { type Ref, useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import { fetchSessionArtifacts } from "../api/artifacts.js"
 import { type ApiError, client, request } from "../api/client.js"
@@ -11,6 +11,7 @@ import type {
   TokenTotals,
 } from "../api/types.js"
 import { SessionExpired } from "../auth/SessionExpired.js"
+import { controlClass, labelClass } from "../components/TextField.js"
 import { AgentRail, agentEntries } from "../session/AgentRail.js"
 import { ArtifactsView } from "../session/ArtifactsView.js"
 import { CommitsView, PullRequestsView } from "../session/ChangesView.js"
@@ -69,47 +70,211 @@ const RepoName = ({ repo }: { repo: SessionRepo }) => {
   )
 }
 
-/**
- * Pinned to the top: in a transcript thousands of messages long, which session you are reading
- * and the way back out are the two things you otherwise lose on the first scroll. A single line
- * of title keeps the bar's height fixed, which is what the tab bar below measures itself against.
- */
+const requestSessionPatch = (
+  id: string,
+  json: { name?: string | null; description?: string | null },
+) => request(() => client.api.sessions[":id"].$patch({ param: { id }, json }))
+
+type EditDraft = {
+  readonly name: string
+  readonly description: string
+}
+
+type EditState = {
+  readonly draft: EditDraft
+  readonly pending: boolean
+  readonly error: string | null
+}
+
+const draftOf = (session: SessionFacts): EditDraft => ({
+  name: session.name ?? "",
+  description: session.description ?? "",
+})
+
+const orNull = (value: string): string | null => (value === "" ? null : value)
+
+const EditField = ({
+  id,
+  label,
+  value,
+  disabled,
+  onChange,
+}: {
+  id: string
+  label: string
+  value: string
+  disabled: boolean
+  onChange: (value: string) => void
+}) => (
+  <div>
+    <label htmlFor={id} className={labelClass}>
+      {label}
+    </label>
+    <input
+      id={id}
+      type="text"
+      value={value}
+      disabled={disabled}
+      autoComplete="off"
+      onChange={(event) => onChange(event.target.value)}
+      className={`${controlClass} disabled:opacity-60`}
+    />
+  </div>
+)
+
+const SessionEditForm = ({
+  edit,
+  onChange,
+  onSave,
+  onCancel,
+}: {
+  edit: EditState
+  onChange: (next: EditState) => void
+  onSave: () => void
+  onCancel: () => void
+}) => {
+  const nameId = useId()
+  const descriptionId = useId()
+
+  return (
+    <form
+      onSubmit={(event) => {
+        event.preventDefault()
+        onSave()
+      }}
+      className="mt-2 flex max-w-[62ch] flex-col gap-2 border border-rule bg-panel-2 p-3"
+    >
+      <EditField
+        id={nameId}
+        label="Name"
+        value={edit.draft.name}
+        disabled={edit.pending}
+        onChange={(name) => onChange({ ...edit, draft: { ...edit.draft, name } })}
+      />
+      <EditField
+        id={descriptionId}
+        label="Description"
+        value={edit.draft.description}
+        disabled={edit.pending}
+        onChange={(description) => onChange({ ...edit, draft: { ...edit.draft, description } })}
+      />
+      <div className="flex items-center gap-3">
+        <button
+          type="submit"
+          disabled={edit.pending}
+          className="border border-rule bg-panel px-3 py-1.5 text-[0.72rem] font-semibold disabled:opacity-60"
+        >
+          {edit.pending ? "Saving…" : "Save"}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={edit.pending}
+          className="px-1 py-1.5 text-[0.72rem] font-semibold text-ink-soft hover:underline"
+        >
+          Cancel
+        </button>
+      </div>
+      {edit.error === null ? null : (
+        <p role="alert" className="text-[0.78rem] text-err">
+          {edit.error}
+        </p>
+      )}
+    </form>
+  )
+}
+
+/** Its height is measured because the edit form expands it above the sticky tab bar. */
 const SessionHead = ({
   session,
   measure,
+  onSaved,
 }: {
   session: SessionFacts
   measure: Ref<HTMLElement>
-}) => (
-  <header ref={measure} className="sticky top-0 z-30 bg-paper pb-2 pt-2">
-    <nav aria-label="Breadcrumb" className="mb-1 font-mono text-[0.72rem] text-ink-soft">
-      <Link to="/projects" className="text-custody hover:underline">
-        Projects
-      </Link>
-      <span aria-hidden="true" className="px-2 text-rule">
-        /
-      </span>
-      <Link
-        to={`/sessions?project=${encodeURIComponent(session.projectId)}`}
-        className="text-custody hover:underline"
-      >
-        {session.projectName}
-      </Link>
-      <span aria-hidden="true" className="px-2 text-rule">
-        /
-      </span>
-      <Link to="/sessions" className="text-custody hover:underline">
-        All sessions
-      </Link>
-    </nav>
-    <h1
-      title={session.title ?? undefined}
-      className="max-w-[62ch] truncate text-[1.375rem] font-semibold leading-tight"
-    >
-      {session.title ?? <span className="text-faded italic">untitled session</span>}
-    </h1>
-  </header>
-)
+  onSaved: (session: SessionFacts) => void
+}) => {
+  const [edit, setEdit] = useState<EditState | null>(null)
+
+  const save = (current: EditState): void => {
+    setEdit({ ...current, pending: true, error: null })
+    requestSessionPatch(session.id, {
+      name: orNull(current.draft.name.trim()),
+      description: orNull(current.draft.description.trim()),
+    }).then((result) => {
+      if (!result.ok) {
+        setEdit({ ...current, pending: false, error: result.error.message })
+        return
+      }
+      onSaved(result.data.session)
+      setEdit(null)
+    })
+  }
+
+  const showAiTitle =
+    edit === null &&
+    session.name !== null &&
+    session.aiTitle !== null &&
+    session.aiTitle !== session.name
+
+  return (
+    <header ref={measure} className="sticky top-0 z-30 bg-paper pb-2 pt-2">
+      <nav aria-label="Breadcrumb" className="mb-1 font-mono text-[0.72rem] text-ink-soft">
+        <Link to="/projects" className="text-custody hover:underline">
+          Projects
+        </Link>
+        <span aria-hidden="true" className="px-2 text-rule">
+          /
+        </span>
+        <Link
+          to={`/sessions?project=${encodeURIComponent(session.projectId)}`}
+          className="text-custody hover:underline"
+        >
+          {session.projectName}
+        </Link>
+        <span aria-hidden="true" className="px-2 text-rule">
+          /
+        </span>
+        <Link to="/sessions" className="text-custody hover:underline">
+          All sessions
+        </Link>
+      </nav>
+      <div className="flex items-start gap-2">
+        <h1
+          title={session.title ?? undefined}
+          className="max-w-[62ch] truncate text-[1.375rem] font-semibold leading-tight"
+        >
+          {session.title ?? <span className="text-faded italic">untitled session</span>}
+        </h1>
+        {edit === null && session.canRename ? (
+          <button
+            type="button"
+            onClick={() => setEdit({ draft: draftOf(session), pending: false, error: null })}
+            className="mt-1 shrink-0 text-[0.72rem] font-semibold text-custody hover:underline"
+          >
+            [edit]
+          </button>
+        ) : null}
+      </div>
+      {showAiTitle ? (
+        <p className="mt-0.5 max-w-[62ch] truncate font-mono text-[0.72rem] text-ink-soft">
+          AI title: {session.aiTitle}
+        </p>
+      ) : null}
+      {edit !== null || session.description === null ? null : (
+        <p className="mt-1 max-w-[62ch] text-[0.82rem] text-ink-soft">{session.description}</p>
+      )}
+      {edit === null ? null : (
+        <SessionEditForm
+          edit={edit}
+          onChange={setEdit}
+          onSave={() => save(edit)}
+          onCancel={() => setEdit(null)}
+        />
+      )}
+    </header>
+  )
+}
 
 const Masthead = ({ session, tokens }: { session: SessionFacts; tokens: TokenTotals }) => (
   <div className="border-b-2 border-ink pb-4">
@@ -448,7 +613,13 @@ const useMeasuredHeight = <T extends HTMLElement>() => {
   return { ref, height }
 }
 
-const Ready = ({ payload }: { payload: SessionDetailPayload }) => {
+const Ready = ({
+  payload,
+  onSessionSaved,
+}: {
+  payload: SessionDetailPayload
+  onSessionSaved: (session: SessionFacts) => void
+}) => {
   // Tab and tool visibility live in the URL so back/forward restore the view.
   const [params, setParams] = useSearchParams()
   const raw = params.get("tab")
@@ -496,7 +667,7 @@ const Ready = ({ payload }: { payload: SessionDetailPayload }) => {
     // Everything the pinned bars cover reads `--sticky-head` to clear them: the agent rail parks
     // below it, and a permalinked message scrolls to just under it rather than behind it.
     <section style={{ "--sticky-head": `${headHeight + tabsHeight}px` } as React.CSSProperties}>
-      <SessionHead session={detail.session} measure={headRef} />
+      <SessionHead session={detail.session} measure={headRef} onSaved={onSessionSaved} />
       <Masthead session={detail.session} tokens={detail.tokenUsage} />
 
       {/* Measured rather than a fixed offset: the head's height moves with the reader's font size. */}
@@ -560,5 +731,13 @@ export const SessionDetail = () => {
     return <ErrorState error={state.error} />
   }
 
-  return <Ready payload={state.payload} />
+  // Ignore stale PATCH responses after navigation so one session cannot replace another's payload.
+  const onSessionSaved = (session: SessionFacts): void =>
+    setState((current) =>
+      current.phase === "ready" && current.payload.session.id === session.id
+        ? { phase: "ready", payload: { ...current.payload, session } }
+        : current,
+    )
+
+  return <Ready payload={state.payload} onSessionSaved={onSessionSaved} />
 }

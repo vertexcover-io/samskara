@@ -8,6 +8,7 @@ import {
   projectIdentitySchema,
   reassignSessionsRequestSchema,
   reassignSessionsResponseSchema,
+  updateSessionRequestSchema,
 } from "./types.js"
 
 const records: ReadonlyArray<ParsedRecord> = [
@@ -239,4 +240,21 @@ test("a reassign response carries a whole non-negative count, never a fraction o
   expect(reassignSessionsResponseSchema.safeParse({ moved: 12 }).success).toBe(true)
   expect(reassignSessionsResponseSchema.safeParse({ moved: -1 }).success).toBe(false)
   expect(reassignSessionsResponseSchema.safeParse({ moved: 1.5 }).success).toBe(false)
+})
+
+test("SC7: the update request schema rejects an over-long name and description, an empty body, and an unknown key - but accepts a null name", () => {
+  expect(updateSessionRequestSchema.safeParse({ name: "n".repeat(201) }).success).toBe(false)
+  expect(updateSessionRequestSchema.safeParse({ description: "d".repeat(2001) }).success).toBe(
+    false,
+  )
+  expect(updateSessionRequestSchema.safeParse({}).success).toBe(false)
+  expect(updateSessionRequestSchema.safeParse({ name: "ok", extra: "field" }).success).toBe(false)
+  expect(updateSessionRequestSchema.safeParse({ name: null }).success).toBe(true)
+})
+
+test("SC29: the update request schema rejects an empty or whitespace-only name and description", () => {
+  expect(updateSessionRequestSchema.safeParse({ name: "" }).success).toBe(false)
+  expect(updateSessionRequestSchema.safeParse({ name: "   " }).success).toBe(false)
+  expect(updateSessionRequestSchema.safeParse({ description: "" }).success).toBe(false)
+  expect(updateSessionRequestSchema.safeParse({ description: "\t\n " }).success).toBe(false)
 })

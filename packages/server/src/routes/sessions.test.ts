@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql"
+import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import { buildApp } from "../app.js"
 import { createDb, type Db } from "../db/client.js"
@@ -25,6 +26,7 @@ import type { Env } from "../lib/env.js"
 import { signToken } from "../lib/jwt.js"
 import * as projectsRepo from "../repositories/projects.repo.js"
 import * as reposRepo from "../repositories/repos.repo.js"
+import * as sessionsRepo from "../repositories/sessions.repo.js"
 
 const dockerAvailable = () => {
   try {
@@ -880,6 +882,10 @@ type SessionDetailBody = {
   readonly session: {
     readonly id: string
     readonly title: string | null
+    readonly name: string | null
+    readonly description: string | null
+    readonly aiTitle: string | null
+    readonly canRename: boolean
     readonly projectName: string
     readonly projectSlug: string
     readonly userLogin: string
@@ -1399,5 +1405,339 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions/:id", () => {
 
     expect((await listAs(db, outsider)).map((s) => s.id)).not.toContain("sc2-org-session")
     expect((await detailRequest(db, outsider, "sc2-org-session")).status).toBe(404)
+  })
+})
+
+const patchRequest = async (
+  db: Db,
+  userId: string,
+  sessionId: string,
+  json: unknown,
+): Promise<{ readonly status: number; readonly body: unknown }> => {
+  const token = await signToken(env, { sub: userId, aud: "web" })
+  const res = await buildApp(db, env).request(`/api/sessions/${sessionId}`, {
+    method: "PATCH",
+    headers: { cookie: `session=${token}`, "content-type": "application/json" },
+    body: JSON.stringify(json),
+  })
+  return { status: res.status, body: await res.json() }
+}
+
+const storedRow = async (
+  db: Db,
+  sessionId: string,
+): Promise<{ readonly name: string | null; readonly updatedAt: Date }> => {
+  const [row] = await db
+    .select({ name: sessions.name, updatedAt: sessions.updatedAt })
+    .from(sessions)
+    .where(eq(sessions.id, sessionId))
+  if (!row) throw new Error("session row vanished")
+  return row
+}
+
+describe.skipIf(!dockerAvailable())("PATCH /api/sessions/:id", () => {
+  let container: StartedPostgreSqlContainer
+  let teardown: () => Promise<void>
+  let db: Db
+
+  beforeAll(async () => {
+    container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start()
+    const url = container.getConnectionUri()
+    execFileSync("bun", ["run", "db:migrate"], {
+      cwd: packageDir,
+      env: { ...process.env, DATABASE_URL: url },
+      stdio: "inherit",
+    })
+    const created = createDb(url)
+    db = created.db
+    teardown = async () => {
+      await created.client.end()
+      await container.stop()
+    }
+  }, 120_000)
+
+  afterAll(async () => {
+    await teardown?.()
+  })
+
+  beforeEach(async () => {
+    await db.delete(sessions)
+    await db.delete(userProjectGrant)
+    await db.delete(projects)
+    await db.delete(userOrgs)
+    await db.delete(orgs)
+    await db.delete(users)
+  })
+
+  test("SC1: the owner sets a name and description, and a later read returns them", async () => {
+    const owner = await seedUser(db, 3001, "sc1-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "SC1", slug: "sc1" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "sc1-session",
+      userId: owner,
+      projectId,
+      title: "SC1",
+      updatedAt: new Date(),
+    })
+
+    const patched = await patchRequest(db, owner, "sc1-session", {
+      name: "Renamed session",
+      description: "A useful description",
+    })
+    expect(patched.status).toBe(200)
+
+    const read = await detailRequest(db, owner, "sc1-session")
+    const body = (await read.json()) as SessionDetailBody
+    expect(body.session.name).toBe("Renamed session")
+    expect(body.session.description).toBe("A useful description")
+  })
+
+  test("SC2: clearing the name restores the derived title", async () => {
+    const owner = await seedUser(db, 3002, "sc2-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "SC2", slug: "sc2" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "sc2-session",
+      userId: owner,
+      projectId,
+      title: "Captured title",
+      updatedAt: new Date(),
+    })
+    await patchRequest(db, owner, "sc2-session", { name: "Human name" })
+
+    const cleared = await patchRequest(db, owner, "sc2-session", { name: null })
+
+    expect(cleared.status).toBe(200)
+    expect((cleared.body as { session: { title: string | null } }).session.title).toBe(
+      "Captured title",
+    )
+  })
+
+  test("SC3: the captured title is returned beside the human name", async () => {
+    const owner = await seedUser(db, 3003, "sc3-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "SC3", slug: "sc3" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "sc3-session",
+      userId: owner,
+      projectId,
+      title: "Captured title",
+      updatedAt: new Date(),
+    })
+    await patchRequest(db, owner, "sc3-session", { name: "Human name" })
+
+    const body = (await (await detailRequest(db, owner, "sc3-session")).json()) as SessionDetailBody
+
+    expect(body.session.title).toBe("Human name")
+    expect(body.session.aiTitle).toBe("Captured title")
+  })
+
+  test("SC4: a caller who cannot see the session is told it does not exist", async () => {
+    const owner = await seedUser(db, 3004, "sc4-owner")
+    const stranger = await seedUser(db, 3005, "sc4-stranger")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "SC4", slug: "sc4" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "sc4-session",
+      userId: owner,
+      projectId,
+      title: "SC4",
+      updatedAt: new Date(),
+    })
+
+    const denied = await patchRequest(db, stranger, "sc4-session", { name: "Hijacked" })
+
+    expect(denied.status).toBe(404)
+    expect(denied.body).toEqual({ error: "sessionNotFound" })
+    expect((await storedRow(db, "sc4-session")).name).toBeNull()
+  })
+
+  test("SC5: a project member who does not own the session is refused", async () => {
+    const owner = await seedUser(db, 3006, "sc5-owner")
+    const member = await seedUser(db, 3007, "sc5-member")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "SC5", slug: "sc5" },
+      ownerId: owner,
+    })
+    await projectsRepo.grant(db, member, projectId, "viewer")
+    await seedSession(db, {
+      id: "sc5-session",
+      userId: owner,
+      projectId,
+      title: "SC5",
+      updatedAt: new Date(),
+    })
+
+    const denied = await patchRequest(db, member, "sc5-session", { name: "Hijacked" })
+
+    expect(denied.status).toBe(403)
+    expect(denied.body).toEqual({ error: "forbidden" })
+    expect((await storedRow(db, "sc5-session")).name).toBeNull()
+  })
+
+  test("SC6: a super admin edits a session belonging to someone else", async () => {
+    const owner = await seedUser(db, 3008, "sc6-owner")
+    const admin = await seedUser(db, 3009, "sc6-admin", true)
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "SC6", slug: "sc6" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "sc6-session",
+      userId: owner,
+      projectId,
+      title: "SC6",
+      updatedAt: new Date(),
+    })
+
+    const patched = await patchRequest(db, admin, "sc6-session", { name: "Admin renamed" })
+    expect(patched.status).toBe(200)
+
+    const body = (await (await detailRequest(db, owner, "sc6-session")).json()) as SessionDetailBody
+    expect(body.session.name).toBe("Admin renamed")
+  })
+
+  test("SC8: a body the schema rejects is answered 400", async () => {
+    const owner = await seedUser(db, 3010, "sc8-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "SC8", slug: "sc8" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "sc8-session",
+      userId: owner,
+      projectId,
+      title: "SC8",
+      updatedAt: new Date(),
+    })
+
+    const rejected = await patchRequest(db, owner, "sc8-session", {})
+
+    expect(rejected.status).toBe(400)
+    expect((await storedRow(db, "sc8-session")).name).toBeNull()
+  })
+
+  test("SC9: a session is found by a word that appears only in its name", async () => {
+    const owner = await seedUser(db, 3011, "sc9-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "SC9", slug: "sc9" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "sc9-session",
+      userId: owner,
+      projectId,
+      title: "Ordinary",
+      updatedAt: new Date(),
+    })
+    await patchRequest(db, owner, "sc9-session", { name: "Zylophonic marker" })
+
+    expect(idsOf(await listAs(db, owner, "?q=zylophonic"))).toEqual(["sc9-session"])
+  })
+
+  test("SC10: a session is found by a word that appears only in its description", async () => {
+    const owner = await seedUser(db, 3012, "sc10-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "SC10", slug: "sc10" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "sc10-session",
+      userId: owner,
+      projectId,
+      title: "Ordinary",
+      updatedAt: new Date(),
+    })
+    await patchRequest(db, owner, "sc10-session", { description: "Quinjectory outlier note" })
+
+    expect(idsOf(await listAs(db, owner, "?q=quinjectory"))).toEqual(["sc10-session"])
+  })
+
+  test("SC11: editing the name leaves the session's updated time alone", async () => {
+    const owner = await seedUser(db, 3013, "sc11-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "SC11", slug: "sc11" },
+      ownerId: owner,
+    })
+    const originalUpdatedAt = new Date("2026-01-01T00:00:00Z")
+    await seedSession(db, {
+      id: "sc11-session",
+      userId: owner,
+      projectId,
+      title: "SC11",
+      updatedAt: originalUpdatedAt,
+    })
+
+    const patched = await patchRequest(db, owner, "sc11-session", { name: "Renamed" })
+
+    expect(patched.status).toBe(200)
+    expect((await storedRow(db, "sc11-session")).updatedAt).toEqual(originalUpdatedAt)
+  })
+
+  test("SC12: canRename answers true for the owner and false for another member", async () => {
+    const owner = await seedUser(db, 3014, "sc12-owner")
+    const member = await seedUser(db, 3015, "sc12-member")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "SC12", slug: "sc12" },
+      ownerId: owner,
+    })
+    await projectsRepo.grant(db, member, projectId, "viewer")
+    await seedSession(db, {
+      id: "sc12-session",
+      userId: owner,
+      projectId,
+      title: "SC12",
+      updatedAt: new Date(),
+    })
+
+    const ownerBody = (await (
+      await detailRequest(db, owner, "sc12-session")
+    ).json()) as SessionDetailBody
+    const memberBody = (await (
+      await detailRequest(db, member, "sc12-session")
+    ).json()) as SessionDetailBody
+
+    expect(ownerBody.session.canRename).toBe(true)
+    expect(memberBody.session.canRename).toBe(false)
+  })
+
+  test("SC13 (regression): ingest still sets the captured title and leaves the human name alone", async () => {
+    const owner = await seedUser(db, 3016, "sc13-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "SC13", slug: "sc13" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "sc13-session",
+      userId: owner,
+      projectId,
+      title: "Original captured title",
+      updatedAt: new Date(),
+    })
+    await patchRequest(db, owner, "sc13-session", { name: "Human name" })
+
+    await sessionsRepo.upsert(db, {
+      id: "sc13-session",
+      source: "claude_code",
+      userId: owner,
+      projectId,
+      fields: { title: "Batch captured title" },
+    })
+
+    const body = (await (
+      await detailRequest(db, owner, "sc13-session")
+    ).json()) as SessionDetailBody
+    expect(body.session.aiTitle).toBe("Batch captured title")
+    expect(body.session.name).toBe("Human name")
+    expect(body.session.title).toBe("Human name")
   })
 })

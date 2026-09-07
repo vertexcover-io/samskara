@@ -174,20 +174,34 @@ export const classifyClaudePath = (
   return null
 }
 
-/**
- * Claude Code names the session on an `ai-title` line and rewrites it as the subject becomes
- * clearer, so the last one in the batch wins. A batch with none returns undefined rather than an
- * empty string: the session upsert coalesces, so only a real title may replace a stored one.
- */
-const titleFrom = (records: ReadonlyArray<ParsedRecord>): string | undefined => {
-  for (let index = records.length - 1; index >= 0; index -= 1) {
-    const raw = records[index]?.raw
-    if (!isObject(raw) || raw.type !== "ai-title") continue
-    const title = stringValue(raw.aiTitle)?.trim()
+const lastTitleIn = (
+  lines: ReadonlyArray<unknown>,
+  type: "ai-title" | "custom-title",
+  field: "aiTitle" | "customTitle",
+): string | undefined => {
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const raw = lines[index]
+    if (!isObject(raw) || raw.type !== type) continue
+    const title = stringValue(raw[field])?.trim()
     if (title) return title
   }
   return undefined
 }
+
+/**
+ * Custom titles scan the full transcript so a later AI title cannot overwrite a user's rename.
+ * AI titles scan only the latest batch to avoid replaying stale model titles.
+ */
+export const titleFrom = (
+  batch: ReadonlyArray<ParsedRecord>,
+  transcript: ReadonlyArray<unknown>,
+): string | undefined =>
+  lastTitleIn(transcript, "custom-title", "customTitle") ??
+  lastTitleIn(
+    batch.map((record) => record.raw),
+    "ai-title",
+    "aiTitle",
+  )
 
 const roleFor = (role: unknown): "user" | "assistant" | "system" | "developer" | "unknown" => {
   if (role === "user" || role === "assistant" || role === "system" || role === "developer")
@@ -1085,7 +1099,10 @@ const collectTrack = async (
     checkpointAt: checkpointAtFor({ mtime: stat.mtimeMs, size: stat.size }),
   }
   if (!location.agentId) {
-    const title = titleFrom(records)
+    const title = titleFrom(
+      records,
+      allLines.map(({ data }) => data),
+    )
     return { ...shared, type: "main", ...(title === undefined ? {} : { title }) }
   }
 

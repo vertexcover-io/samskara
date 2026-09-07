@@ -225,3 +225,13 @@ export const createTranscriptWriter = (options: {
     },
   }
 }
+
+export const customTitleLine = (title: string): TranscriptLine => ({
+  type: "custom-title",
+  customTitle: title,
+})
+
+export const aiTitleLine = (title: string): TranscriptLine => ({
+  type: "ai-title",
+  aiTitle: title,
+})
