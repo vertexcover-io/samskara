@@ -11,6 +11,7 @@ const fullProject: ProjectSummary = {
   owner: { type: "user", slug: "ritesh" },
   sessionCount: 12,
   lastActiveAt: "2026-02-01T09:30:00.000Z",
+  repo: null,
 }
 
 const renderCard = (project: ProjectSummary = fullProject) =>
