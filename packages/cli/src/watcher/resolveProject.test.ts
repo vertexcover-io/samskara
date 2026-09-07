@@ -24,12 +24,15 @@ beforeEach(() => {
   vi.mocked(stat).mockResolvedValue({ isDirectory: () => true } as unknown as Awaited<
     ReturnType<typeof stat>
   >)
-  ssh.mockImplementation(async (alias: string) => alias)
+  ssh.mockImplementation(async (host: string) => ({ host, certain: true }))
 })
 
 describe("resolveProject", () => {
   test("an ssh config alias resolves to the host it really points at, so a clone using a per-account Host entry lands in the same org project as every other clone", async () => {
-    ssh.mockImplementation(async (alias) => (alias === "github-refrens" ? "github.com" : alias))
+    ssh.mockImplementation(async (host) => ({
+      host: host === "github-refrens" ? "github.com" : host,
+      certain: true,
+    }))
     gitReturning({
       "config --get remote.origin.url": "git@github-refrens:refrens/andromeda.git",
     })

@@ -10,7 +10,7 @@ const git = vi.mocked(runGitOrNull)
 const ssh = vi.mocked(canonicalSshHost)
 
 beforeEach(() => {
-  ssh.mockImplementation(async (alias: string) => alias)
+  ssh.mockImplementation(async (host: string) => ({ host, certain: true }))
 })
 
 const gitReturning = (byArgs: Record<string, string | null>) => {
@@ -18,8 +18,38 @@ const gitReturning = (byArgs: Record<string, string | null>) => {
 }
 
 describe("resolveRepoIdentity", () => {
+  test("an alias ssh could not resolve is not cached, so one lost lookup does not pin the repo under its alias host for the life of the daemon", async () => {
+    gitReturning({
+      "rev-parse --path-format=absolute --git-common-dir": "/work/andromeda/.git",
+      "config --get remote.origin.url": "git@github-refrens:refrens/andromeda.git",
+    })
+    ssh.mockImplementationOnce(async (host) => ({ host, certain: false }))
+    const resolve = createRepoResolver()
+
+    expect(await resolve("/work/andromeda")).toMatchObject({ host: "github-refrens" })
+
+    ssh.mockImplementation(async () => ({ host: "github.com", certain: true }))
+    expect(await resolve("/work/andromeda")).toMatchObject({ host: "github.com" })
+  })
+
+  test("a resolved identity is still cached, so a settled alias is not re-shelled on every message", async () => {
+    gitReturning({
+      "rev-parse --path-format=absolute --git-common-dir": "/work/andromeda/.git",
+      "config --get remote.origin.url": "git@github-refrens:refrens/andromeda.git",
+    })
+    const resolve = createRepoResolver()
+
+    await resolve("/work/andromeda")
+    await resolve("/work/andromeda")
+
+    expect(ssh).toHaveBeenCalledTimes(1)
+  })
+
   test("an ssh config alias resolves to the host it really points at, so the repo is not split from every other clone and its web links are not dead", async () => {
-    ssh.mockImplementation(async (alias) => (alias === "github-refrens" ? "github.com" : alias))
+    ssh.mockImplementation(async (host) => ({
+      host: host === "github-refrens" ? "github.com" : host,
+      certain: true,
+    }))
     gitReturning({
       "rev-parse --path-format=absolute --git-common-dir": "/work/andromeda/.git",
       "config --get remote.origin.url": "git@github-refrens:refrens/andromeda.git",
