@@ -2,9 +2,11 @@ import { stat } from "node:fs/promises"
 import { resolve } from "node:path"
 import { beforeEach, describe, expect, test, vi } from "vitest"
 import { runGitOrNull } from "../git.js"
+import { canonicalSshHost } from "../ssh.js"
 import { resolveProject } from "./resolveProject.js"
 
 vi.mock("../git.js", () => ({ runGitOrNull: vi.fn(async () => null) }))
+vi.mock("../ssh.js", () => ({ canonicalSshHost: vi.fn() }))
 // The identities under test are pure path arithmetic, so the directories stay imaginary.
 vi.mock("node:fs/promises", () => ({
   realpath: vi.fn(async (path: string) => path),
@@ -12,6 +14,7 @@ vi.mock("node:fs/promises", () => ({
 }))
 
 const git = vi.mocked(runGitOrNull)
+const ssh = vi.mocked(canonicalSshHost)
 
 const gitReturning = (byArgs: Record<string, string | null>) => {
   git.mockImplementation(async (args) => byArgs[args.join(" ")] ?? null)
@@ -21,9 +24,32 @@ beforeEach(() => {
   vi.mocked(stat).mockResolvedValue({ isDirectory: () => true } as unknown as Awaited<
     ReturnType<typeof stat>
   >)
+  ssh.mockImplementation(async (alias: string) => alias)
 })
 
 describe("resolveProject", () => {
+  test("an ssh config alias resolves to the host it really points at, so a clone using a per-account Host entry lands in the same org project as every other clone", async () => {
+    ssh.mockImplementation(async (alias) => (alias === "github-refrens" ? "github.com" : alias))
+    gitReturning({
+      "config --get remote.origin.url": "git@github-refrens:refrens/andromeda.git",
+    })
+
+    expect(await resolveProject("/work/andromeda")).toEqual({
+      name: "andromeda",
+      slug: "refrens-andromeda",
+      root: "/work/andromeda",
+      remote: { host: "github.com", owner: "refrens", repoName: "andromeda" },
+    })
+  })
+
+  test("an https remote is never put through ssh config, whose Host entries have no say over a url that already names a real host", async () => {
+    gitReturning({ "config --get remote.origin.url": "https://github.com/acme/widget.git" })
+
+    await resolveProject("/work/app")
+
+    expect(ssh).not.toHaveBeenCalled()
+  })
+
   test("resolves remote identity from the canonical root of a linked worktree", async () => {
     gitReturning({
       "rev-parse --path-format=absolute --git-common-dir": "/work/app/.git",

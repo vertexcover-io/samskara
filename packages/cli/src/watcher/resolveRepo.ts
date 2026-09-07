@@ -1,6 +1,6 @@
 import type { RepoIdentity } from "@samskara/core"
 import { runGitOrNull } from "../git.js"
-import { basename, gitRootOf, parseRemote } from "./resolveProject.js"
+import { basename, gitRootOf, resolveRemote } from "./resolveProject.js"
 
 export type ResolvedRepo = RepoIdentity & { readonly root: string }
 
@@ -14,7 +14,7 @@ const identityFor = async (cwd: string): Promise<ResolvedRepo | null> => {
   const root = await gitRootOf(cwd)
   if (root === null) return null
   const remote = await runGitOrNull(["config", "--get", "remote.origin.url"], root)
-  const parsed = remote ? parseRemote(remote) : null
+  const parsed = remote ? await resolveRemote(remote) : null
   // `ownerType` is deliberately absent: a remote URL cannot tell a user repo from an org one, and
   // it is not part of the repo's identity, so leaving it unknown never splits one repo in two.
   if (parsed) return { ...parsed, root }

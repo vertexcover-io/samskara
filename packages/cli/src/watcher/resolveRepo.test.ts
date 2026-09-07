@@ -1,16 +1,38 @@
-import { describe, expect, test, vi } from "vitest"
+import { beforeEach, describe, expect, test, vi } from "vitest"
 import { runGitOrNull } from "../git.js"
+import { canonicalSshHost } from "../ssh.js"
 import { createRepoResolver, resolveHeadSha } from "./resolveRepo.js"
 
 vi.mock("../git.js", () => ({ runGitOrNull: vi.fn(async () => null) }))
+vi.mock("../ssh.js", () => ({ canonicalSshHost: vi.fn() }))
 
 const git = vi.mocked(runGitOrNull)
+const ssh = vi.mocked(canonicalSshHost)
+
+beforeEach(() => {
+  ssh.mockImplementation(async (alias: string) => alias)
+})
 
 const gitReturning = (byArgs: Record<string, string | null>) => {
   git.mockImplementation(async (args) => byArgs[args.join(" ")] ?? null)
 }
 
 describe("resolveRepoIdentity", () => {
+  test("an ssh config alias resolves to the host it really points at, so the repo is not split from every other clone and its web links are not dead", async () => {
+    ssh.mockImplementation(async (alias) => (alias === "github-refrens" ? "github.com" : alias))
+    gitReturning({
+      "rev-parse --path-format=absolute --git-common-dir": "/work/andromeda/.git",
+      "config --get remote.origin.url": "git@github-refrens:refrens/andromeda.git",
+    })
+
+    expect(await createRepoResolver()("/work/andromeda")).toEqual({
+      host: "github.com",
+      owner: "refrens",
+      repoName: "andromeda",
+      root: "/work/andromeda",
+    })
+  })
+
   test("S1: an ssh remote of refrens/serana resolves to host github.com, owner refrens, repoName serana, without the .git suffix", async () => {
     gitReturning({
       "rev-parse --path-format=absolute --git-common-dir": "/work/serana/.git",

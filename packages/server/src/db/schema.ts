@@ -102,7 +102,8 @@ export const repos = pgTable(
     updatedAt,
   },
   // `host` is in the key because github.com/acme/x and gitlab.com/acme/x are different repos. It
-  // does not split ssh from https: `parseRemote` yields the same host string for both forms.
+  // does not split ssh from https: the CLI's `resolveRemote` resolves an ssh config alias to the
+  // host it really names before reporting, so both forms arrive here as the same string.
   (t) => [
     check("repos_one_owner_check", sql`(${t.ownerUserId} is null) <> (${t.ownerOrgId} is null)`),
     uniqueIndex("repos_identity_owner_user_unique")
