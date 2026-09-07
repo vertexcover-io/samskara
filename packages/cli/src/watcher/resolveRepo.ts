@@ -10,7 +10,6 @@ export type ResolvedRepo = RepoIdentity & { readonly root: string }
  */
 const LOCAL_HOST = "local"
 
-/** Rejects, via `resolveRemote`, when an ssh alias could not be resolved — see the resolver below. */
 const identityFor = async (cwd: string): Promise<ResolvedRepo | null> => {
   const root = await gitRootOf(cwd)
   if (root === null) return null
@@ -34,11 +33,6 @@ export const resolveHeadSha = (cwd: string): Promise<string | null> =>
  * Caches by cwd for the daemon's lifetime, negative results included: a repo's remote identity
  * does not change under us, and a scratch directory must not re-shell on every message it
  * appears on. HEAD deliberately has no place here — see `resolveHeadSha`.
- *
- * An unresolved ssh alias is the exception, and it rejects rather than answering with the alias
- * host: that host is most of a repo's identity, so recording it would split the repo from its org
- * exactly as before this fix, permanently and server-side. The rejection is not cached either, so
- * the next message retries instead of being pinned until the daemon restarts.
  */
 export const createRepoResolver = (): ((cwd: string) => Promise<ResolvedRepo | null>) => {
   const byCwd = new Map<string, Promise<ResolvedRepo | null>>()
@@ -47,7 +41,6 @@ export const createRepoResolver = (): ((cwd: string) => Promise<ResolvedRepo | n
     if (hit) return hit
     const pending = identityFor(cwd)
     byCwd.set(cwd, pending)
-    // The rejection belongs to the caller; this only drops the entry so the next call retries.
     pending.catch(() => byCwd.delete(cwd))
     return pending
   }

@@ -25,12 +25,6 @@ export const parseRemote = (url: string): ParsedRemote | null => {
   return null
 }
 
-/**
- * The host an ssh url names is whatever `~/.ssh/config` says it is, so it is asked -- see
- * `canonicalSshHost`, which rejects rather than guess when ssh cannot answer. An https url already
- * carries a real host and is left alone: ssh config has no say over it, and resolving one would
- * let a stray `Host` entry rewrite it.
- */
 export const resolveRemote = async (url: string): Promise<ParsedRemote | null> => {
   const parsed = parseRemote(url)
   if (parsed === null || !SSH_REMOTE.test(clean(url))) return parsed
