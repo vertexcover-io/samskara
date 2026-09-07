@@ -142,7 +142,7 @@ const attributeRepos = async (
       const messages = await Promise.all(
         record.messages.map(async (message) => {
           const cwd = message.cwd ?? fallbackCwd
-          const resolved = cwd ? await resolveRepo(cwd) : null
+          const resolved = cwd ? await resolveRepo(cwd).catch(() => null) : null
           if (!resolved) return message
           const { root: _root, ...repo } = resolved
           return { ...message, repo }

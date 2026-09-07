@@ -1,16 +1,75 @@
-import { describe, expect, test, vi } from "vitest"
+import { beforeEach, describe, expect, test, vi } from "vitest"
 import { runGitOrNull } from "../git.js"
+import { canonicalSshHost } from "../ssh.js"
 import { createRepoResolver, resolveHeadSha } from "./resolveRepo.js"
 
 vi.mock("../git.js", () => ({ runGitOrNull: vi.fn(async () => null) }))
+vi.mock("../ssh.js", () => ({ canonicalSshHost: vi.fn() }))
 
 const git = vi.mocked(runGitOrNull)
+const ssh = vi.mocked(canonicalSshHost)
+
+beforeEach(() => {
+  ssh.mockImplementation(async (host: string) => host)
+})
 
 const gitReturning = (byArgs: Record<string, string | null>) => {
   git.mockImplementation(async (args) => byArgs[args.join(" ")] ?? null)
 }
 
 describe("resolveRepoIdentity", () => {
+  test("an alias ssh could not resolve rejects rather than answering under the alias host, which would split the repo from its org server-side and for good", async () => {
+    gitReturning({
+      "rev-parse --path-format=absolute --git-common-dir": "/work/andromeda/.git",
+      "config --get remote.origin.url": "git@github-refrens:refrens/andromeda.git",
+    })
+    ssh.mockRejectedValue(new Error("spawn ssh ENOENT"))
+
+    await expect(createRepoResolver()("/work/andromeda")).rejects.toThrow("ENOENT")
+  })
+
+  test("that rejection is not cached, so one lost lookup does not pin the checkout until the daemon restarts", async () => {
+    gitReturning({
+      "rev-parse --path-format=absolute --git-common-dir": "/work/andromeda/.git",
+      "config --get remote.origin.url": "git@github-refrens:refrens/andromeda.git",
+    })
+    ssh.mockRejectedValueOnce(new Error("spawn ssh ENOENT"))
+    const resolve = createRepoResolver()
+
+    await expect(resolve("/work/andromeda")).rejects.toThrow()
+
+    ssh.mockImplementation(async () => "github.com")
+    expect(await resolve("/work/andromeda")).toMatchObject({ host: "github.com" })
+  })
+
+  test("a resolved identity is still cached, so a settled alias is not re-shelled on every message", async () => {
+    gitReturning({
+      "rev-parse --path-format=absolute --git-common-dir": "/work/andromeda/.git",
+      "config --get remote.origin.url": "git@github-refrens:refrens/andromeda.git",
+    })
+    const resolve = createRepoResolver()
+
+    await resolve("/work/andromeda")
+    await resolve("/work/andromeda")
+
+    expect(ssh).toHaveBeenCalledTimes(1)
+  })
+
+  test("an ssh config alias resolves to the host it really points at, so the repo is not split from every other clone and its web links are not dead", async () => {
+    ssh.mockImplementation(async (host) => (host === "github-refrens" ? "github.com" : host))
+    gitReturning({
+      "rev-parse --path-format=absolute --git-common-dir": "/work/andromeda/.git",
+      "config --get remote.origin.url": "git@github-refrens:refrens/andromeda.git",
+    })
+
+    expect(await createRepoResolver()("/work/andromeda")).toEqual({
+      host: "github.com",
+      owner: "refrens",
+      repoName: "andromeda",
+      root: "/work/andromeda",
+    })
+  })
+
   test("S1: an ssh remote of refrens/serana resolves to host github.com, owner refrens, repoName serana, without the .git suffix", async () => {
     gitReturning({
       "rev-parse --path-format=absolute --git-common-dir": "/work/serana/.git",
