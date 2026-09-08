@@ -18,6 +18,7 @@
       "stack_urls": "echo web=http://localhost:8100 api=http://localhost:3100 db=postgres://samskara:samskara@localhost:5433/samskara"
     }
   },
+  "notifier": { "enabled": true, "provider": "slack" },
   "commands": {
     "bootstrap": "bun install",
     "typecheck": "bun run typecheck",
