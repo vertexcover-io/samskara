@@ -1,6 +1,3 @@
-import { execFileSync } from "node:child_process"
-import { fileURLToPath } from "node:url"
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
 import { createDb } from "./client.js"
 import {
@@ -10,36 +7,16 @@ import {
   SEARCH_FILTER_INDEXES,
   searchIndexDefinition,
 } from "./searchSql.js"
-
-const dockerAvailable = (): boolean => {
-  try {
-    execFileSync("docker", ["info"], { stdio: "ignore" })
-    return true
-  } catch {
-    return false
-  }
-}
-
-const packageDir = fileURLToPath(new URL("../..", import.meta.url))
+import { dockerAvailable, runDbScript, startTestDb } from "./testDb.js"
 
 describe.skipIf(!dockerAvailable())("session search database foundation", () => {
-  let container: StartedPostgreSqlContainer
   let teardown: () => Promise<void>
   let url: string
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start()
-    url = container.getConnectionUri()
-    execFileSync("bun", ["run", "db:migrate"], {
-      cwd: packageDir,
-      env: { ...process.env, DATABASE_URL: url },
-      stdio: "inherit",
-    })
-    const created = createDb(url)
-    teardown = async () => {
-      await created.client.end()
-      await container.stop()
-    }
+    const started = await startTestDb()
+    url = started.url
+    teardown = started.teardown
   }, 120_000)
 
   afterAll(async () => {
@@ -134,11 +111,7 @@ describe.skipIf(!dockerAvailable())("session search database foundation", () => 
       await stale.client.end()
     }
 
-    execFileSync("bun", ["run", "db:migrate"], {
-      cwd: packageDir,
-      env: { ...process.env, DATABASE_URL: url },
-      stdio: "inherit",
-    })
+    runDbScript("db:migrate", url)
 
     const db = createDb(url)
     try {
@@ -244,11 +217,7 @@ describe.skipIf(!dockerAvailable())("session search database foundation", () => 
   }, 120_000)
 
   test("drops stale V2 indexes only after verified V3 creation when requested", async () => {
-    execFileSync("bun", ["run", "db:migrate", "--drop-stale"], {
-      cwd: packageDir,
-      env: { ...process.env, DATABASE_URL: url },
-      stdio: "inherit",
-    })
+    runDbScript("db:migrate", url, ["--drop-stale"])
     const db = createDb(url)
     try {
       const names = SEARCH_DOCUMENTS.map((document) =>
@@ -301,12 +270,7 @@ describe.skipIf(!dockerAvailable())("session search database foundation", () => 
   test("db:verify rejects a searchVector column whose expression drifted from the canonical one", async () => {
     const document = SEARCH_DOCUMENTS.find((candidate) => candidate.table === "pullRequests")
     if (document === undefined) throw new Error("missing pullRequests search document")
-    const run = (script: string) =>
-      execFileSync("bun", ["run", script], {
-        cwd: packageDir,
-        env: { ...process.env, DATABASE_URL: url },
-        stdio: "pipe",
-      })
+    const run = (script: string) => runDbScript(script, url, [], "pipe")
     const db = createDb(url)
     try {
       await db.client.unsafe(`alter table "pullRequests" drop column "searchVector"`)

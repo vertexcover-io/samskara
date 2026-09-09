@@ -29,6 +29,7 @@ export type SeedMessage = {
   readonly isSubagent?: boolean
   readonly content?: unknown
   readonly details?: unknown
+  readonly raw?: unknown
   readonly repository?: string
   readonly gitBranch?: string
   readonly tool?: {
@@ -146,7 +147,7 @@ const seedMessages = async (
       values (
         ${entry.id ?? seededMessageId(session.id, line)}, ${session.id}, gen_random_uuid(), 0, ${entry.msgType}, ${entry.subType ?? null},
         ${entry.role ?? null}, ${timestamp}, ${line + 1}, ${entry.agentId ?? null}, ${entry.isSubagent ?? false},
-        ${jsonOrNull(entry.content)}, ${jsonOrNull(entry.details)}, '{}'::jsonb, 1, ${repositoryId(repositories, entry.repository)}, ${entry.gitBranch ?? null}
+        ${jsonOrNull(entry.content)}, ${jsonOrNull(entry.details)}, ${sql.json((entry.raw ?? {}) as postgres.JSONValue)}, 1, ${repositoryId(repositories, entry.repository)}, ${entry.gitBranch ?? null}
       )
       returning id
     `

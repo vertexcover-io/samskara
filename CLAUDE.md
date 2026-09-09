@@ -121,6 +121,25 @@ source of truth and generate migrations from it.
 The server's test suite starts a real `pgvector/pgvector:pg16` container via testcontainers and runs
 the migrations against it. Those tests skip themselves when Docker is not available.
 
+## Message transformers
+
+A client can be wrong about what it uploads — an older CLI missing a field a newer one sets. Fixing
+only the reader leaves every already-installed client still uploading the old shape, so the
+correction also runs server-side, in `MESSAGE_TRANSFORMERS`
+(`packages/server/src/services/messageTransformers.ts`). `ingest()`
+(`packages/server/src/services/ingest.ts`) runs the list on every arriving message before a row is
+built, and logs how many messages each entry changed in the `transformed` field of the "Ingestion
+completed" line — that count is how you tell whether a transformer still fires.
+
+A transformer may only fill in a value the client left unset, never overwrite one it sent, and
+returns its input unchanged when it doesn't apply — so leaving one registered after it stops being
+needed costs nothing but a reference comparison. Each entry's own docblock says the condition for
+deleting it (typically: this count reads zero across a full release, meaning every client now sets
+the value itself); retiring one is removing its entry from the list and nothing else.
+
+Rows already stored before a fix ships need a separate migration — a transformer only ever sees a
+message once, on the way in.
+
 ## Logging
 
 Every package logs NDJSON through `createLogger` from `@samskara/core` (pino underneath). Level

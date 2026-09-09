@@ -1,11 +1,8 @@
-import { execFileSync } from "node:child_process"
-import { fileURLToPath } from "node:url"
 import type { IngestPayload, NormalizedMessage, ParsedRecord, RepoIdentity } from "@samskara/core"
 import { createLogger } from "@samskara/core"
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql"
 import { and, eq, inArray } from "drizzle-orm"
-import { afterAll, beforeAll, describe, expect, test } from "vitest"
-import { createDb, type Db } from "../db/client.js"
+import { afterAll, beforeAll, describe, expect, test, vi } from "vitest"
+import type { Db } from "../db/client.js"
 import {
   commits,
   messages,
@@ -22,18 +19,9 @@ import {
   userOrgs,
   users,
 } from "../db/schema.js"
+import { dockerAvailable, startTestDb } from "../db/testDb.js"
 import { type Ctx, ingest } from "./ingest.js"
 
-const dockerAvailable = () => {
-  try {
-    execFileSync("docker", ["info"], { stdio: "ignore" })
-    return true
-  } catch {
-    return false
-  }
-}
-
-const packageDir = fileURLToPath(new URL("../..", import.meta.url))
 const project = { name: "widget", slug: "acme-widget" } as const
 const testLog = () => createLogger({ service: "test" }, { level: "silent" })
 
@@ -112,7 +100,6 @@ const subagentPayload = (
 })
 
 describe.skipIf(!dockerAvailable())("ingest service", () => {
-  let container: StartedPostgreSqlContainer
   let teardown: () => Promise<void>
   let db: Db
   let userId: string
@@ -120,15 +107,8 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
   let orgMemberCounter = 0
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start()
-    const url = container.getConnectionUri()
-    execFileSync("bun", ["run", "db:migrate"], {
-      cwd: packageDir,
-      env: { ...process.env, DATABASE_URL: url },
-      stdio: "inherit",
-    })
-    const created = createDb(url)
-    db = created.db
+    const started = await startTestDb()
+    db = started.db
     const [user] = await db
       .insert(users)
       .values({ githubId: 9001, githubLogin: "ingest-user" })
@@ -136,10 +116,7 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
     if (!user) throw new Error("seed user failed")
     userId = user.id
     ctx = { db, log: testLog(), userId }
-    teardown = async () => {
-      await created.client.end()
-      await container.stop()
-    }
+    teardown = started.teardown
   }, 120_000)
 
   afterAll(async () => {
@@ -275,6 +252,139 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
       .orderBy(messages.lineNumber)
 
     expect(rows.map((row) => row.subType)).toEqual(["toolInjection", null])
+  })
+
+  test("SC6: a session uploaded by an older CLI lands in the database already corrected", async () => {
+    const sessionId = "sess-old-cli-task-notification"
+    const notificationLineUuid = "0191d942-3ba5-7dba-9a7d-00000000f001"
+    const promptLineUuid = "0191d942-3ba5-7dba-9a7d-00000000f002"
+    const base = {
+      sessionId,
+      source: "claude_code" as const,
+      sourceSchemaVersion: 1,
+      trackId: "main",
+    }
+
+    const records: ReadonlyArray<ParsedRecord> = [
+      {
+        lineUuid: notificationLineUuid,
+        lineNumber: 1,
+        raw: {
+          type: "attachment",
+          attachment: { type: "queued_command", commandMode: "task-notification" },
+        },
+        messages: [
+          {
+            ...base,
+            subIndex: 0,
+            msgType: "message",
+            role: "user",
+            content: {
+              type: "text",
+              value: "<task-notification>go check the build</task-notification>",
+            },
+          },
+        ],
+      },
+      {
+        lineUuid: promptLineUuid,
+        lineNumber: 2,
+        raw: { type: "text" },
+        messages: [
+          {
+            ...base,
+            subIndex: 0,
+            msgType: "message",
+            role: "user",
+            content: { type: "text", value: "actually typed" },
+          },
+        ],
+      },
+    ]
+
+    expect(
+      await ingest(ctx, {
+        type: "main",
+        sessionId,
+        sourceRelativePath: `${sessionId}.jsonl`,
+        project,
+        records,
+      }),
+    ).toEqual({ ingested: 2, deduped: 0 })
+
+    const rows = await db
+      .select({
+        lineUuid: messages.lineUuid,
+        subType: messages.subType,
+        raw: messages.raw,
+      })
+      .from(messages)
+      .where(eq(messages.sessionId, sessionId))
+      .orderBy(messages.lineNumber)
+
+    const notificationRow = rows.find((row) => row.lineUuid === notificationLineUuid)
+    const promptRow = rows.find((row) => row.lineUuid === promptLineUuid)
+
+    expect(notificationRow?.subType).toBe("taskNotification")
+    expect(notificationRow?.raw).toEqual(records[0]?.raw)
+    expect(promptRow?.subType).toBeNull()
+    expect(promptRow?.raw).toEqual(records[1]?.raw)
+  })
+
+  test("SC4: the ingest reports how many messages each transformer changed", async () => {
+    const sessionId = "sess-transformer-counts"
+    const base = {
+      sessionId,
+      source: "claude_code" as const,
+      sourceSchemaVersion: 1,
+      trackId: "main",
+    }
+    const records: ReadonlyArray<ParsedRecord> = [
+      {
+        lineUuid: "0191d942-3ba5-7dba-9a7d-00000000f101",
+        lineNumber: 1,
+        raw: {
+          type: "attachment",
+          attachment: { type: "queued_command", commandMode: "task-notification" },
+        },
+        messages: [
+          {
+            ...base,
+            subIndex: 0,
+            msgType: "message",
+            role: "user",
+            content: { type: "text", value: "<task-notification>done</task-notification>" },
+          },
+        ],
+      },
+      {
+        lineUuid: "0191d942-3ba5-7dba-9a7d-00000000f102",
+        lineNumber: 2,
+        raw: { type: "text" },
+        messages: [
+          {
+            ...base,
+            subIndex: 0,
+            msgType: "message",
+            role: "user",
+            content: { type: "text", value: "actually typed" },
+          },
+        ],
+      },
+    ]
+
+    const log = testLog()
+    const info = vi.spyOn(log, "info")
+
+    await ingest(
+      { db, log, userId: ctx.userId },
+      { type: "main", sessionId, sourceRelativePath: `${sessionId}.jsonl`, project, records },
+    )
+
+    const completion = info.mock.calls.find((call) => call[1] === "Ingestion completed")
+    expect(completion?.[0]).toMatchObject({
+      transformed: { "task-notification-subtype": 1 },
+    })
   })
 
   test("a subagent payload naming another user's session is refused, not attached to, and leaves its activity window untouched (SC8)", async () => {

@@ -21,16 +21,8 @@ import * as sessionsRepo from "../repositories/sessions.repo.js"
 import * as subagentsRepo from "../repositories/subagents.repo.js"
 import * as tokenUsageRepo from "../repositories/tokenUsage.repo.js"
 import * as toolRowsRepo from "../repositories/toolRows.repo.js"
+import { applyTransformers, type FlatMessage } from "./messageTransformers.js"
 import { findOrCreateProject } from "./projects.js"
-
-type FlatMessage = {
-  readonly message: NormalizedMessage
-  readonly lineUuid: string
-  readonly lineNumber: number
-  readonly raw: unknown
-  readonly sourceRelativePath: string
-  readonly isSubagent: boolean
-}
 
 const flatten = (
   records: ReadonlyArray<ParsedRecord>,
@@ -257,7 +249,9 @@ export type Ctx = { readonly db: Db; readonly log: pino.Logger; readonly userId:
 
 export const ingest = async (ctx: Ctx, payload: IngestPayload): Promise<IngestResponse> => {
   const { db, log, userId } = ctx
-  const flat = flatten(payload.records, payload.sourceRelativePath, payload.type === "subagent")
+  const { messages: flat, changed } = applyTransformers(
+    flatten(payload.records, payload.sourceRelativePath, payload.type === "subagent"),
+  )
 
   try {
     return await db.transaction(async (tx) => {
@@ -315,7 +309,12 @@ export const ingest = async (ctx: Ctx, payload: IngestPayload): Promise<IngestRe
       await storeTokens(tx, flat, idByKey)
       await subagentsRepo.resolveParentAgentIds(tx, payload.sessionId)
       log.info(
-        { sessionId: payload.sessionId, accepted: ingested, duplicates: deduped },
+        {
+          sessionId: payload.sessionId,
+          accepted: ingested,
+          duplicates: deduped,
+          transformed: Object.fromEntries(changed),
+        },
         "Ingestion completed",
       )
       return { ingested, deduped }
