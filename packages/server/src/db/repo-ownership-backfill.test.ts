@@ -1,12 +1,9 @@
-import { execFileSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { readFileSync } from "node:fs"
-import { fileURLToPath } from "node:url"
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql"
 import { and, eq, sql } from "drizzle-orm"
 import type { Sql } from "postgres"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
-import { createDb, type Db } from "./client.js"
+import type { Db } from "./client.js"
 import {
   commits,
   messages,
@@ -19,39 +16,18 @@ import {
   userOrgs,
   users,
 } from "./schema.js"
-
-const dockerAvailable = (): boolean => {
-  try {
-    execFileSync("docker", ["info"], { stdio: "ignore" })
-    return true
-  } catch {
-    return false
-  }
-}
-
-const packageDir = fileURLToPath(new URL("../..", import.meta.url))
+import { dockerAvailable, startTestDb } from "./testDb.js"
 
 describe.skipIf(!dockerAvailable())("repo ownership backfill", () => {
-  let container: StartedPostgreSqlContainer
   let teardown: () => Promise<void>
   let db: Db
   let client: Sql
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start()
-    const url = container.getConnectionUri()
-    execFileSync("bun", ["run", "db:migrate"], {
-      cwd: packageDir,
-      env: { ...process.env, DATABASE_URL: url },
-      stdio: "inherit",
-    })
-    const created = createDb(url)
-    db = created.db
-    client = created.client
-    teardown = async () => {
-      await created.client.end()
-      await container.stop()
-    }
+    const started = await startTestDb()
+    db = started.db
+    client = started.client
+    teardown = started.teardown
   }, 120_000)
 
   afterAll(async () => {

@@ -467,6 +467,22 @@ const budgetSchema = z.object({
 })
 const selectedLinesSchema = z.object({ lineStart: nonnegativeInt, lineEnd: nonnegativeInt })
 
+/**
+ * The shape a Claude Code before 2.1.23x wrote a task notification as. Newer versions put
+ * `origin.kind` on the `user` line itself, which `injectionSubType` reads. Both the reader below
+ * and the server's ingest transformer match on this, so the rule lives here rather than in each.
+ */
+export const isTaskNotificationAttachment = (attachment: unknown): boolean =>
+  isObject(attachment) &&
+  stringValue(attachment.type) === "queued_command" &&
+  stringValue(attachment.commandMode) === "task-notification"
+
+/** The same rule against a whole transcript line, which is what a stored `raw` holds. */
+export const isTaskNotificationLine = (line: unknown): boolean =>
+  isObject(line) &&
+  stringValue(line.type) === "attachment" &&
+  isTaskNotificationAttachment(line.attachment)
+
 const handleAttachmentMessage = (
   attachment: Record<string, unknown>,
   common: CommonFields,
@@ -483,6 +499,7 @@ const handleAttachmentMessage = (
         ? buildMessage(common, {
             msgType: "message",
             role: "user",
+            ...(isTaskNotificationAttachment(attachment) ? { subType: "taskNotification" } : {}),
             content: { type: "text", value: attachment.prompt },
             details: {
               ...conversationDetailsFor(attachment, "activeTurn"),

@@ -619,6 +619,54 @@ describe("normalizeClaude", () => {
     })
   })
 
+  test("SC7: a task notification captured by an older CLI is marked as an injection", () => {
+    expect(
+      normalizeClaude({
+        type: "attachment",
+        attachment: {
+          type: "queued_command",
+          commandMode: "task-notification",
+          prompt: "<task-notification>done</task-notification>",
+        },
+      })[0],
+    ).toMatchObject({
+      msgType: "message",
+      role: "user",
+      subType: "taskNotification",
+      content: { type: "text", value: "<task-notification>done</task-notification>" },
+      details: { promptSource: "queued" },
+    })
+  })
+
+  test("SC8 (regression): a prompt the user queued is still a prompt", () => {
+    const message = normalizeClaude({
+      type: "attachment",
+      attachment: { type: "queued_command", commandMode: "prompt", prompt: "next" },
+    })[0]
+
+    expect(message).toMatchObject({ msgType: "message", role: "user" })
+    expect(message?.msgType === "message" ? message.subType : "unset").toBeUndefined()
+  })
+
+  test("SC9 (regression): a queued command with no prompt text is still a custom row", () => {
+    expect(
+      normalizeClaude({
+        type: "attachment",
+        attachment: { type: "queued_command", commandMode: "task-notification" },
+      })[0],
+    ).toMatchObject({ msgType: "custom", subType: "queued_command" })
+  })
+
+  test("SC10 (regression): the shape newer CLIs write is unchanged", () => {
+    expect(
+      normalizeClaude({
+        type: "user",
+        message: { role: "user", content: "body" },
+        origin: { kind: "task-notification" },
+      })[0],
+    ).toMatchObject({ subType: "taskNotification" })
+  })
+
   test("S14: turns, compaction, and local commands use only explicit evidence", () => {
     expect(
       normalizeClaude({

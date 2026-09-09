@@ -14,6 +14,7 @@ import {
   assistantLine,
   createTranscriptWriter,
   customTitleLine,
+  oldCliTaskNotificationLine,
   secretBearingLine,
   summaryLine,
   toolCallLine,
@@ -255,6 +256,28 @@ test.afterEach(harnessTeardown)
 
 test.describe("capture pipeline", () => {
   test.describe.configure({ timeout: 90_000 })
+
+  test("SC15: the real CLI reads an old-format task notification and it is not shown as the user's words", async () => {
+    const { writer, sql } = await useHarness()
+
+    await writer.append([
+      userLine("Kick off the bootstrap and tell me when it lands.", 0),
+      oldCliTaskNotificationLine('Background command "Bootstrap" completed (exit code 0)', 1),
+    ])
+
+    const rows = await pollUntil(
+      () => sql<{ subType: string | null; role: string | null }[]>`
+        select "subType", role from messages
+        where "sessionId" = ${SESSION_ID} and "msgType" = 'message'
+        order by "lineNumber"
+      `,
+      (r) => r.length >= 2,
+      (r) => `${r.length} message rows [${r.map((m) => m.subType ?? "null").join(", ")}]`,
+    )
+
+    expect(rows.map((r) => r.subType)).toEqual([null, "taskNotification"])
+    expect(rows.every((r) => r.role === "user")).toBe(true)
+  })
 
   test("P1: a transcript appearing on disk flows through the real watcher into Postgres, and the CLI's own state file records the project it synced", async () => {
     const { writer, sql, samskaraHome } = await useHarness()
