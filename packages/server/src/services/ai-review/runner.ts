@@ -234,6 +234,14 @@ export const createClaudeRunner = (opts: {
   log: pino.Logger
   /** Overridable command path; tests point this at a fake script instead of real claude. */
   command?: string
+  /**
+   * Default true. False hands the reviewer the server's own HOME, which is the only way it
+   * can reach a macOS Keychain login — `claude setup-token` is the sandbox-safe alternative.
+   * The cost is real: the reviewer can then read ~/.claude/projects, including the session
+   * under review, so a citation may name a message the export never gave it. The grounding
+   * gate still rejects those, but the run wastes a harness call to find out.
+   */
+  sandboxHome?: boolean
 }): HarnessRunner => ({
   run: ({ prompt, workspaceDir, model }) =>
     spawnCollect({
@@ -248,7 +256,7 @@ export const createClaudeRunner = (opts: {
         "--dangerously-skip-permissions",
       ],
       cwd: workspaceDir,
-      env: claudeSandboxEnv(workspaceDir),
+      env: opts.sandboxHome === false ? process.env : claudeSandboxEnv(workspaceDir),
       timeoutMs: opts.timeoutMs,
       log: opts.log,
     }).then(({ stdout, firstByteMs }) => ({

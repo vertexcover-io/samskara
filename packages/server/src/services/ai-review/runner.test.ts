@@ -134,6 +134,37 @@ describe("createClaudeRunner", () => {
     expect(captured.CLAUDE_CONFIG_DIR).toBe(join(workspaceDir, "claude-config"))
   })
 
+  test("R3b: sandboxHome false leaves HOME and CLAUDE_CONFIG_DIR as the server process has them", async () => {
+    const workspaceDir = mkdtempSync(join(tmpdir(), "samskara-claude-test-"))
+    const capturePath = join(workspaceDir, "captured.json")
+    const script = join(workspaceDir, "fake-claude.sh")
+    writeFileSync(
+      script,
+      [
+        "#!/usr/bin/env bash",
+        `node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({HOME: process.env.HOME, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR ?? null}, null, 2))' "${capturePath}" "$@"`,
+        "exit 0",
+      ].join("\n"),
+    )
+    chmodSync(script, 0o755)
+
+    const runner = createClaudeRunner({
+      model: "sonnet",
+      timeoutMs: 30_000,
+      log: log(),
+      command: script,
+      sandboxHome: false,
+    })
+    await runner.run({ prompt: "p", workspaceDir })
+
+    const captured = JSON.parse(readFileSync(capturePath, "utf8")) as {
+      HOME: string
+      CLAUDE_CONFIG_DIR: string | null
+    }
+    expect(captured.HOME).toBe(process.env.HOME)
+    expect(captured.CLAUDE_CONFIG_DIR).toBe(process.env.CLAUDE_CONFIG_DIR ?? null)
+  })
+
   test("R4: a non-zero claude exit rejects as HarnessRunnerError carrying stderr", async () => {
     const workspaceDir = mkdtempSync(join(tmpdir(), "samskara-claude-test-"))
     const script = join(workspaceDir, "failing-claude.sh")

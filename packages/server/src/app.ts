@@ -46,13 +46,17 @@ type Variables = { log: pino.Logger }
  * - `claude` always uses the in-process runner (Claude Code reads its credentials from
  *   CLAUDE_CONFIG_DIR, which the runner redirects into the workspace — the msb bootstrap
  *   only knows how to npm-install opencode, so a claude-in-microVM image is separate
- *   future work).
+ *   future work). `AI_REVIEW_CLAUDE_SANDBOX=0` drops that redirect and runs the reviewer
+ *   under the server's own HOME, the only way it can reach a macOS Keychain login; it also
+ *   lets the reviewer read the session under review directly, so prefer `claude
+ *   setup-token` + `CLAUDE_CODE_OAUTH_TOKEN` and keep the sandbox.
  */
 const defaultAiReviewRunner = (env: Env, log: pino.Logger): HarnessRunner => {
   const claude = createClaudeRunner({
     model: env.aiReviewModel,
     timeoutMs: env.aiReviewTimeoutMs,
     log: log.child({ component: "ai-review", harness: "claude" }),
+    ...(process.env.AI_REVIEW_CLAUDE_SANDBOX === "0" ? { sandboxHome: false } : {}),
   })
   const opencode: HarnessRunner =
     process.env.AI_REVIEW_HARDEN === "0"
