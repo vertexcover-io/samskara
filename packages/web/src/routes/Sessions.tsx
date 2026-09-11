@@ -5,6 +5,7 @@ import type { FilterOption, SessionListPayload } from "../api/types.js"
 import { SessionExpired } from "../auth/SessionExpired.js"
 import { optionFor } from "../components/combobox.js"
 import { FilterBar } from "../components/FilterBar.js"
+import { SessionListSkeleton } from "../components/SessionListSkeleton.js"
 import { SessionRow } from "../components/SessionRow.js"
 import {
   EMPTY_FILTERS,
@@ -246,8 +247,8 @@ export const Sessions = () => {
 
   if (state.phase === "failed" && state.error.kind === "unauthorized") return <SessionExpired />
 
-  const payload =
-    state.phase === "ready" ? state.payload : state.phase === "loading" ? state.previous : null
+  const payload = state.phase === "ready" ? state.payload : null
+  const previous = state.phase === "loading" ? state.previous : null
   const loading = state.phase === "loading"
   const hasFilters = serializeFilters({ ...filters, page: 1 }).toString() !== ""
 
@@ -258,14 +259,25 @@ export const Sessions = () => {
         <FilterBar
           filters={filters}
           options={
-            payload?.filterOptions ?? { projects: [], authors: [], repositories: [], branches: [] }
+            (payload ?? previous)?.filterOptions ?? {
+              projects: [],
+              authors: [],
+              repositories: [],
+              branches: [],
+            }
           }
           onChange={applyFilters}
           onClear={resetFilters}
         />
       </div>
       <div className="mt-4" aria-busy={loading}>
-        {loading && payload === null ? <LoadingShell label="Retrieving sessions" /> : null}
+        {loading ? (
+          previous === null ? (
+            <LoadingShell label="Retrieving sessions" />
+          ) : (
+            <SessionListSkeleton rows={Math.max(previous.sessions.length, 1)} />
+          )
+        ) : null}
         {state.phase === "failed" ? (
           state.error.kind === "notFound" ? (
             <Denied onReset={resetFilters} />
