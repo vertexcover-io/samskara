@@ -243,7 +243,7 @@ test("today initializes the URL before its only sessions request so the request 
   )
 })
 
-test("stale sessions responses cannot replace newer filter results", async () => {
+test("SC8 (regression): a superseded response never replaces a newer one", async () => {
   let settleMaya: ((response: Response) => void) | undefined
   const calls = stubFetch((url) => {
     if (url.searchParams.get("user") === "maya") {
@@ -263,6 +263,7 @@ test("stale sessions responses cannot replace newer filter results", async () =>
   await waitFor(() =>
     expect(screen.queryByRole("link", { name: /stale result/i })).not.toBeInTheDocument(),
   )
+  expect(screen.getByRole("link", { name: /latest result/i })).toBeInTheDocument()
   expect(calls).toHaveLength(3)
 })
 

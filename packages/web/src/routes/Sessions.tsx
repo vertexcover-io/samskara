@@ -102,6 +102,13 @@ const ErrorState = ({ error }: { readonly error: ApiError }) => {
   )
 }
 
+// A first load has nothing to hold the page's height, so it keeps the full-page message the other
+// routes use. Every later request sizes its placeholder from the list it is replacing.
+const Loading = ({ previous }: { readonly previous: SessionListPayload | null }) => {
+  if (previous === null) return <LoadingShell label="Retrieving sessions" />
+  return <SessionListSkeleton rows={Math.max(previous.sessions.length, 1)} />
+}
+
 const labelFor = (value: string | null, options: ReadonlyArray<FilterOption>): string | null =>
   value === null ? null : (optionFor(options, value)?.label ?? value)
 
@@ -271,13 +278,7 @@ export const Sessions = () => {
         />
       </div>
       <div className="mt-4" aria-busy={loading}>
-        {loading ? (
-          previous === null ? (
-            <LoadingShell label="Retrieving sessions" />
-          ) : (
-            <SessionListSkeleton rows={Math.max(previous.sessions.length, 1)} />
-          )
-        ) : null}
+        {loading ? <Loading previous={previous} /> : null}
         {state.phase === "failed" ? (
           state.error.kind === "notFound" ? (
             <Denied onReset={resetFilters} />

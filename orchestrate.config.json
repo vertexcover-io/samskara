@@ -30,57 +30,57 @@
   },
   "packages": {
     "core": {
-      "path": ".",
+      "path": "packages/core",
       "runner": "vitest",
       "commands": {
         "bootstrap": "bun install",
-        "typecheck": "bun run --cwd packages/core typecheck",
-        "lint": "bunx biome check packages/core",
+        "typecheck": "bun run typecheck",
+        "lint": "bunx biome check .",
         "lint_file": "bunx biome check {FILE}",
-        "build": "bun run --cwd packages/core build",
-        "test_all": "bun run --cwd packages/core test",
-        "test_file": "bun run --cwd packages/core test {FILE}"
+        "build": "bun run build",
+        "test_all": "bun run test",
+        "test_file": "bun run test {FILE}"
       }
     },
     "server": {
-      "path": ".",
+      "path": "packages/server",
       "runner": "vitest",
       "commands": {
         "bootstrap": "bun install",
-        "typecheck": "bun run --cwd packages/server typecheck",
-        "lint": "bunx biome check packages/server",
+        "typecheck": "bun run typecheck",
+        "lint": "bunx biome check .",
         "lint_file": "bunx biome check {FILE}",
-        "build": "bun run --cwd packages/server build",
-        "test_all": "bun run --cwd packages/server test",
-        "test_file": "bun run --cwd packages/server test {FILE}",
-        "migrate": "bun run --cwd packages/server db:migrate",
-        "generate_migration": "bun run --cwd packages/server db:generate"
+        "build": "bun run build",
+        "test_all": "bun run test",
+        "test_file": "bun run test {FILE}",
+        "migrate": "bun run db:migrate",
+        "generate_migration": "bun run db:generate"
       }
     },
     "web": {
-      "path": ".",
+      "path": "packages/web",
       "runner": "vitest",
       "commands": {
         "bootstrap": "bun install",
-        "typecheck": "bun run --cwd packages/web typecheck",
-        "lint": "bunx biome check packages/web",
+        "typecheck": "bun run typecheck",
+        "lint": "bunx biome check .",
         "lint_file": "bunx biome check {FILE}",
-        "build": "bun run --cwd packages/web build",
-        "test_all": "bun run --cwd packages/web test",
-        "test_file": "bun run --cwd packages/web test {FILE}"
+        "build": "bun run build",
+        "test_all": "bun run test",
+        "test_file": "bun run test {FILE}"
       }
     },
     "cli": {
-      "path": ".",
+      "path": "packages/cli",
       "runner": "vitest",
       "commands": {
         "bootstrap": "bun install",
-        "typecheck": "bun run --cwd packages/cli typecheck",
-        "lint": "bunx biome check packages/cli",
+        "typecheck": "bun run typecheck",
+        "lint": "bunx biome check .",
         "lint_file": "bunx biome check {FILE}",
-        "build": "bun run --cwd packages/cli build",
-        "test_all": "bun run --cwd packages/cli test",
-        "test_file": "bun run --cwd packages/cli test {FILE}"
+        "build": "bun run build",
+        "test_all": "bun run test",
+        "test_file": "bun run test {FILE}"
       }
     }
   }
