@@ -1,0 +1,1 @@
+ALTER TABLE "toolCall" ADD COLUMN "metadata" jsonb;
