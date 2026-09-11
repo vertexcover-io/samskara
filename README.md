@@ -201,9 +201,16 @@ turns capture off for every project, and signs you out. It stops there — run `
 | `samskara upgrade [--check]` | Install the newest GitHub release over this one; `--check` only reports whether one exists. |
 | `samskara replay SESSION_ID` | Delete a session server-side and locally, then re-capture it from scratch. |
 | `samskara artifacts upload SESSION_ID PATH... [--base-dir DIR] [--no-created] [--dry-run]` | Upload files, or directories walked recursively, as artifacts of that session. Prints `ok`, `updated` or `failed` per file and exits 1 if any failed. `--base-dir` stores each path relative to `DIR` rather than the current directory, `--no-created` records the files as edited rather than created, and `--dry-run` prints what would upload without sending it. |
-| `samskara search [QUERY]` | Search captured sessions from the terminal and print each hit's URL. |
+| `samskara tags add\|rm\|ls [TAG...] [--session-id ID]` | Read and change a session's tags, printing the resulting set. Without `--session-id` the session is `$CLAUDE_CODE_SESSION_ID`, which Claude Code exports into every command it runs; a plain terminal exports nothing, so name the session there. Tags are lowercased and may not contain spaces or commas. |
+| `samskara search [QUERY]` | Search captured sessions from the terminal and print each hit's URL. Add `--tags a,b` to keep only sessions carrying at least one of them. |
 | `samskara install-hooks` / `uninstall-hooks` | Install or remove the `SessionStart` hook by hand. |
 | `samskara watch [--foreground]` | Start the watcher daemon directly; `--foreground` runs the loop in this terminal. |
+
+`samskara tags` needs the session to have reached the server. A session started moments ago may not
+have been uploaded yet, so a `404` is retried for about thirty seconds before it is reported; a
+refusal the server will not change its mind about, such as a session belonging to someone else, is
+reported at once. Tagging never advances a session's activity time, so labelling an old session does
+not move it to the top of the list.
 
 `--verbose` on any command turns on debug logging.
 
