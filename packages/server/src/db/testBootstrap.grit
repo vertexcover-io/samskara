@@ -1,0 +1,12 @@
+// The server suite starts exactly one Postgres container per run, in src/db/globalSetup.ts. A test
+// file gets its own database from startTestDb()/startEmptyTestDb() in src/db/testDb.ts, so neither
+// a container start nor a private dockerAvailable copy belongs in a *.test.ts file. Scoped to
+// **/packages/server/src/**/*.test.ts in biome.json, which is why the helpers themselves are
+// exempt without being named.
+or {
+  `new PostgreSqlContainer($_)` as $found,
+  `new GenericContainer($_)` as $found,
+  `const dockerAvailable = $_` as $found
+} where {
+  register_diagnostic(span=$found, message="Test files do not start their own Postgres container. Take a database from startTestDb() -- or startEmptyTestDb() for an unmigrated one -- in src/db/testDb.ts, and import dockerAvailable from there too.")
+}

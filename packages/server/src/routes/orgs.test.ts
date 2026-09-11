@@ -1,26 +1,13 @@
-import { execFileSync } from "node:child_process"
-import { fileURLToPath } from "node:url"
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql"
 import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import { buildApp } from "../app.js"
-import { createDb, type Db } from "../db/client.js"
+import type { Db } from "../db/client.js"
 import { orgs, projects, sessions, userOrgs, userProjectGrant, users } from "../db/schema.js"
+import { dockerAvailable, startTestDb } from "../db/testDb.js"
 import type { Env } from "../lib/env.js"
 import { signToken } from "../lib/jwt.js"
 import { upsertBySlug } from "../repositories/orgs.repo.js"
 import * as projectsRepo from "../repositories/projects.repo.js"
-
-const dockerAvailable = () => {
-  try {
-    execFileSync("docker", ["info"], { stdio: "ignore" })
-    return true
-  } catch {
-    return false
-  }
-}
-
-const packageDir = fileURLToPath(new URL("../..", import.meta.url))
 
 const env: Env = {
   githubClientId: "Ov23linvZE00y7VZSI4Y",
@@ -156,24 +143,13 @@ const makeSuperAdmin = (db: Db, userId: string) =>
   db.update(users).set({ isSuperAdmin: true }).where(eq(users.id, userId))
 
 describe.skipIf(!dockerAvailable())("GET /api/orgs/:slug", () => {
-  let container: StartedPostgreSqlContainer
   let teardown: () => Promise<void>
   let db: Db
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start()
-    const url = container.getConnectionUri()
-    execFileSync("bun", ["run", "db:migrate"], {
-      cwd: packageDir,
-      env: { ...process.env, DATABASE_URL: url },
-      stdio: "inherit",
-    })
-    const created = createDb(url)
-    db = created.db
-    teardown = async () => {
-      await created.client.end()
-      await container.stop()
-    }
+    const started = await startTestDb()
+    db = started.db
+    teardown = started.teardown
   }, 120_000)
 
   afterAll(async () => {
@@ -264,24 +240,13 @@ describe.skipIf(!dockerAvailable())("GET /api/orgs/:slug", () => {
 })
 
 describe.skipIf(!dockerAvailable())("PATCH /api/orgs/:slug", () => {
-  let container: StartedPostgreSqlContainer
   let teardown: () => Promise<void>
   let db: Db
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start()
-    const url = container.getConnectionUri()
-    execFileSync("bun", ["run", "db:migrate"], {
-      cwd: packageDir,
-      env: { ...process.env, DATABASE_URL: url },
-      stdio: "inherit",
-    })
-    const created = createDb(url)
-    db = created.db
-    teardown = async () => {
-      await created.client.end()
-      await container.stop()
-    }
+    const started = await startTestDb()
+    db = started.db
+    teardown = started.teardown
   }, 120_000)
 
   afterAll(async () => {
@@ -376,24 +341,13 @@ describe.skipIf(!dockerAvailable())("PATCH /api/orgs/:slug", () => {
 })
 
 describe.skipIf(!dockerAvailable())("POST /api/orgs", () => {
-  let container: StartedPostgreSqlContainer
   let teardown: () => Promise<void>
   let db: Db
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start()
-    const url = container.getConnectionUri()
-    execFileSync("bun", ["run", "db:migrate"], {
-      cwd: packageDir,
-      env: { ...process.env, DATABASE_URL: url },
-      stdio: "inherit",
-    })
-    const created = createDb(url)
-    db = created.db
-    teardown = async () => {
-      await created.client.end()
-      await container.stop()
-    }
+    const started = await startTestDb()
+    db = started.db
+    teardown = started.teardown
   }, 120_000)
 
   afterAll(async () => {
@@ -503,24 +457,13 @@ describe.skipIf(!dockerAvailable())("POST /api/orgs", () => {
 })
 
 describe.skipIf(!dockerAvailable())("GET /api/orgs", () => {
-  let container: StartedPostgreSqlContainer
   let teardown: () => Promise<void>
   let db: Db
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start()
-    const url = container.getConnectionUri()
-    execFileSync("bun", ["run", "db:migrate"], {
-      cwd: packageDir,
-      env: { ...process.env, DATABASE_URL: url },
-      stdio: "inherit",
-    })
-    const created = createDb(url)
-    db = created.db
-    teardown = async () => {
-      await created.client.end()
-      await container.stop()
-    }
+    const started = await startTestDb()
+    db = started.db
+    teardown = started.teardown
   }, 120_000)
 
   afterAll(async () => {

@@ -281,7 +281,7 @@ bun run build        # build every package
 bun run typecheck    # every package, plus the e2e project
 bun run lint         # biome check ., including the DB naming rule
 bun run format       # biome format --write .
-bun run test         # every package's unit tests
+bun run test         # every package's unit tests, on one shared Postgres container
 bun run e2e          # Playwright, on a throwaway database it creates and drops
 bun run cli -- status   # the CLI from source, on its own `dev` profile
 ```
@@ -298,6 +298,10 @@ bun run db:verify                      # read-only: assert it already is
 `db:migrate` is the only supported way to change a database's shape — it runs drizzle-kit's
 migrations and then the post-migrate steps in `packages/server/src/db/steps.ts` (today, the
 full-text search indexes, which cannot be built inside a migration's transaction).
+
+The server's tests need Docker and start exactly one Postgres for the whole run, copying a golden
+database per test file rather than migrating each one. Without Docker those tests skip and the run
+still passes. `CLAUDE.md` has the mechanism and the lint rule that keeps it in one place.
 
 See [CLAUDE.md](CLAUDE.md) for the contributor detail: working on several branches at once, the
 database naming rule, the seed/identity snapshot, and the logging conventions.

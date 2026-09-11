@@ -35,6 +35,10 @@
     {
       "path": "./packages/server/src/db/naming.grit",
       "includes": ["**/packages/server/src/db/schema.ts"]
+    },
+    {
+      "path": "./packages/server/src/db/testBootstrap.grit",
+      "includes": ["**/packages/server/src/**/*.test.ts"]
     }
   ]
 }

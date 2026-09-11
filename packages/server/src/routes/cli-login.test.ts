@@ -1,28 +1,18 @@
-import { execFile, execFileSync } from "node:child_process"
+import { execFile } from "node:child_process"
 import { mkdtempSync, readFileSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 import { serve } from "@hono/node-server"
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
 import { buildApp } from "../app.js"
-import { createDb, type Db } from "../db/client.js"
+import type { Db } from "../db/client.js"
 import { orgs, userOrgs, users } from "../db/schema.js"
+import { dockerAvailable, startTestDb } from "../db/testDb.js"
 import type { Env } from "../lib/env.js"
 import { signToken, verifyToken } from "../lib/jwt.js"
 
-const dockerAvailable = () => {
-  try {
-    execFileSync("docker", ["info"], { stdio: "ignore" })
-    return true
-  } catch {
-    return false
-  }
-}
-
-const packageDir = fileURLToPath(new URL("../..", import.meta.url))
 const cliEntry = fileURLToPath(new URL("../../../cli/src/index.ts", import.meta.url))
 const execFileAsync = promisify(execFile)
 
@@ -38,24 +28,13 @@ const env: Env = {
 }
 
 describe.skipIf(!dockerAvailable())("cli login round-trip", () => {
-  let container: StartedPostgreSqlContainer
   let teardown: () => Promise<void>
   let db: Db
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start()
-    const url = container.getConnectionUri()
-    execFileSync("bun", ["run", "db:migrate"], {
-      cwd: packageDir,
-      env: { ...process.env, DATABASE_URL: url },
-      stdio: "inherit",
-    })
-    const created = createDb(url)
-    db = created.db
-    teardown = async () => {
-      await created.client.end()
-      await container.stop()
-    }
+    const started = await startTestDb()
+    db = started.db
+    teardown = started.teardown
   }, 120_000)
 
   afterAll(async () => {

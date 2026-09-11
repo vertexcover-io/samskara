@@ -5,11 +5,10 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { CheckpointStore, FileSystem, IngestPayload } from "@samskara/core"
 import { createClaudePlugin, createLogger } from "@samskara/core"
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql"
 import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
 import { buildApp } from "../app.js"
-import { createDb, type Db } from "../db/client.js"
+import type { Db } from "../db/client.js"
 import {
   messages,
   orgs,
@@ -22,19 +21,11 @@ import {
   userOrgs,
   users,
 } from "../db/schema.js"
+import { dockerAvailable, startTestDb } from "../db/testDb.js"
 import type { Env } from "../lib/env.js"
 import { signToken } from "../lib/jwt.js"
 import { captureLogger } from "../lib/test-logger.js"
 import * as projectsRepo from "../repositories/projects.repo.js"
-
-const dockerAvailable = () => {
-  try {
-    execFileSync("docker", ["info"], { stdio: "ignore" })
-    return true
-  } catch {
-    return false
-  }
-}
 
 const packageDir = fileURLToPath(new URL("../..", import.meta.url))
 
@@ -148,7 +139,6 @@ const post = (app: ReturnType<typeof buildApp>, payload: unknown, token?: string
   })
 
 describe.skipIf(!dockerAvailable())("ingest route", () => {
-  let container: StartedPostgreSqlContainer
   let teardown: () => Promise<void>
   let db: Db
   let app: ReturnType<typeof buildApp>
@@ -156,15 +146,8 @@ describe.skipIf(!dockerAvailable())("ingest route", () => {
   let routeUserId: string
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start()
-    const url = container.getConnectionUri()
-    execFileSync("bun", ["run", "db:migrate"], {
-      cwd: packageDir,
-      env: { ...process.env, DATABASE_URL: url },
-      stdio: "inherit",
-    })
-    const created = createDb(url)
-    db = created.db
+    const started = await startTestDb()
+    db = started.db
     const [user] = await db
       .insert(users)
       .values({ githubId: 4242, githubLogin: "route-user" })
@@ -181,10 +164,7 @@ describe.skipIf(!dockerAvailable())("ingest route", () => {
       },
       rootLog: createLogger({ service: "test" }, { level: "silent" }),
     })
-    teardown = async () => {
-      await created.client.end()
-      await container.stop()
-    }
+    teardown = started.teardown
   }, 120_000)
 
   afterAll(async () => {

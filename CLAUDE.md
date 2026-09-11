@@ -118,8 +118,10 @@ than quietly migrating the main checkout's database.
 migration that adds a column without touching `schema.ts` is not checked — keep `schema.ts` the
 source of truth and generate migrations from it.
 
-The server's test suite starts a real `pgvector/pgvector:pg16` container via testcontainers and runs
-the migrations against it. Those tests skip themselves when Docker is not available.
+The server's test suite starts one real `pgvector/pgvector:pg16` container for the whole run, in the
+vitest `globalSetup`, and each test file takes a private database from `startTestDb()` in
+`packages/server/src/db/testDb.ts`. Those tests skip themselves when Docker is not available. A test
+file that starts its own container is a lint error, and the error says what to use instead.
 
 ## Message transformers
 
@@ -155,5 +157,6 @@ that tag is what releases. The README's "Releases" section has the rest, includi
 tarball bundles core the way it does.
 
 `scripts/` is tested by `bun test`, not vitest. Run it with `bun run test:scripts` — a bare
-`bun test scripts/` also matches `packages/server/src/scripts/*.test.ts` and starts real Postgres
-containers.
+`bun test scripts/` also matches `packages/server/src/scripts/*.test.ts`, which then fail with
+`TEST_PG_ADMIN_URL is unset`: bun never reads `vitest.config.ts`, so `globalSetup` never runs.
+That failure is the wrong runner, not a result.
