@@ -5,6 +5,7 @@ import type { FilterOption, SessionListPayload } from "../api/types.js"
 import { SessionExpired } from "../auth/SessionExpired.js"
 import { optionFor } from "../components/combobox.js"
 import { FilterBar } from "../components/FilterBar.js"
+import { SessionListSkeleton } from "../components/SessionListSkeleton.js"
 import { SessionRow } from "../components/SessionRow.js"
 import {
   EMPTY_FILTERS,
@@ -15,10 +16,13 @@ import {
 } from "../sessions/filters.js"
 import { LoadingShell } from "../shell/LoadingShell.js"
 
+// `query` is the URL the answer belongs to. A settled state outlives the URL that asked for it by
+// one render: changing the address bar re-renders before this component's effect runs, so without
+// the pairing the old rows paint once under the new search.
 type State =
   | { readonly phase: "loading"; readonly previous: SessionListPayload | null }
-  | { readonly phase: "ready"; readonly payload: SessionListPayload }
-  | { readonly phase: "failed"; readonly error: ApiError }
+  | { readonly phase: "ready"; readonly query: string; readonly payload: SessionListPayload }
+  | { readonly phase: "failed"; readonly query: string; readonly error: ApiError }
 
 const panelClass = "border border-dashed border-rule bg-panel p-8 text-center"
 const primaryButton =
@@ -99,6 +103,21 @@ const ErrorState = ({ error }: { readonly error: ApiError }) => {
       </p>
     </section>
   )
+}
+
+// The most recent rows the page has held, whether or not they still answer the URL. Only the
+// placeholder's height and the filter vocabulary are built from them — never the results.
+const lastPayload = (state: State): SessionListPayload | null => {
+  if (state.phase === "ready") return state.payload
+  if (state.phase === "loading") return state.previous
+  return null
+}
+
+// A first load has nothing to hold the page's height, so it keeps the full-page message the other
+// routes use. Every later request sizes its placeholder from the list it is replacing.
+const Loading = ({ previous }: { readonly previous: SessionListPayload | null }) => {
+  if (previous === null) return <LoadingShell label="Retrieving sessions" />
+  return <SessionListSkeleton rows={Math.max(previous.sessions.length, 1)} />
 }
 
 const labelFor = (value: string | null, options: ReadonlyArray<FilterOption>): string | null =>
@@ -232,8 +251,8 @@ export const Sessions = () => {
       if (controller.signal.aborted) return
       setState(
         result.ok
-          ? { phase: "ready", payload: result.data }
-          : { phase: "failed", error: result.error },
+          ? { phase: "ready", query: effectiveQuery, payload: result.data }
+          : { phase: "failed", query: effectiveQuery, error: result.error },
       )
     })
     return () => controller.abort()
@@ -246,9 +265,11 @@ export const Sessions = () => {
 
   if (state.phase === "failed" && state.error.kind === "unauthorized") return <SessionExpired />
 
-  const payload =
-    state.phase === "ready" ? state.payload : state.phase === "loading" ? state.previous : null
-  const loading = state.phase === "loading"
+  const answered = state.phase !== "loading" && state.query === effectiveQuery
+  const payload = answered && state.phase === "ready" ? state.payload : null
+  const error = answered && state.phase === "failed" ? state.error : null
+  const previous = lastPayload(state)
+  const loading = payload === null && error === null
   const hasFilters = serializeFilters({ ...filters, page: 1 }).toString() !== ""
 
   return (
@@ -258,21 +279,24 @@ export const Sessions = () => {
         <FilterBar
           filters={filters}
           options={
-            payload?.filterOptions ?? { projects: [], authors: [], repositories: [], branches: [] }
+            (payload ?? previous)?.filterOptions ?? {
+              projects: [],
+              authors: [],
+              repositories: [],
+              branches: [],
+            }
           }
           onChange={applyFilters}
           onClear={resetFilters}
         />
       </div>
       <div className="mt-4" aria-busy={loading}>
-        {loading && payload === null ? <LoadingShell label="Retrieving sessions" /> : null}
-        {state.phase === "failed" ? (
-          state.error.kind === "notFound" ? (
-            <Denied onReset={resetFilters} />
-          ) : (
-            <ErrorState error={state.error} />
-          )
-        ) : null}
+        {loading ? <Loading previous={previous} /> : null}
+        {error === null ? null : error.kind === "notFound" ? (
+          <Denied onReset={resetFilters} />
+        ) : (
+          <ErrorState error={error} />
+        )}
         {payload === null ? null : payload.sessions.length === 0 &&
           payload.pagination.total === 0 ? (
           <NoResults hasFilters={hasFilters} onClear={resetFilters} />
