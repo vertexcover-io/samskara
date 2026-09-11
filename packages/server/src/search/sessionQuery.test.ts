@@ -1,21 +1,11 @@
-import { execFileSync } from "node:child_process"
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql"
 import { sql } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
-import { createDb } from "../db/client.js"
+import type { Db } from "../db/client.js"
+import { dockerAvailable, startEmptyTestDb } from "../db/testDb.js"
 import { compileSessionQuery, parseSessionQuery, SessionQueryError } from "./sessionQuery.js"
 
 const operands = (value: string) =>
   parseSessionQuery(value).branches.map((branch) => branch.operands)
-
-const dockerAvailable = (): boolean => {
-  try {
-    execFileSync("docker", ["info"], { stdio: "ignore" })
-    return true
-  } catch {
-    return false
-  }
-}
 
 describe("parseSessionQuery", () => {
   test("selects the final positive unquoted term in each OR branch for prefix matching", () => {
@@ -87,18 +77,13 @@ describe("parseSessionQuery", () => {
 })
 
 describe.skipIf(!dockerAvailable())("compileSessionQuery against PostgreSQL", () => {
-  let container: StartedPostgreSqlContainer
   let teardown: () => Promise<void>
-  let db: ReturnType<typeof createDb>["db"]
+  let db: Db
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("postgres:16").start()
-    const created = createDb(container.getConnectionUri())
-    db = created.db
-    teardown = async () => {
-      await created.client.end()
-      await container.stop()
-    }
+    const started = await startEmptyTestDb()
+    db = started.db
+    teardown = started.teardown
   }, 120_000)
 
   afterAll(async () => {
