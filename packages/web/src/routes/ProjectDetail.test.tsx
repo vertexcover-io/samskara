@@ -12,6 +12,7 @@ const PROJECT: ProjectDetailPayload = {
   owner: { type: "user", slug: "kgritesh" },
   sessionCount: 12,
   lastActiveAt: "2026-02-01T09:30:00.000Z",
+  repo: null,
 }
 
 const renderDetail = (
@@ -84,4 +85,23 @@ test("SC10: a viewer who may not delete is offered no delete control", async () 
 
   await screen.findByRole("heading", { name: "samskara" })
   expect(screen.queryByRole("button", { name: /delete project/i })).not.toBeInTheDocument()
+})
+
+test("SC10: a project with a linked repo renders it as a GitHub link, and a remoteless project shows no repo field", async () => {
+  const { unmount } = renderDetail({
+    ...PROJECT,
+    repo: { host: "github.com", owner: "vertexcover-io", repoName: "samskara" },
+  })
+
+  await screen.findByRole("heading", { name: "samskara" })
+  expect(screen.getByRole("link", { name: "vertexcover-io/samskara" })).toHaveAttribute(
+    "href",
+    "https://github.com/vertexcover-io/samskara",
+  )
+  expect(screen.getByText("Repository")).toBeInTheDocument()
+  unmount()
+
+  renderDetail(PROJECT)
+  await screen.findByRole("heading", { name: "samskara" })
+  expect(screen.queryByText("Repository")).not.toBeInTheDocument()
 })

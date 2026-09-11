@@ -17,6 +17,7 @@ export type LogoutAck = Ok<Client["api"]["auth"]["logout"]["$post"]>
 export type SessionListPayload = Ok<Client["api"]["sessions"]["$get"]>
 export type SessionSummary = SessionListPayload["sessions"][number]
 export type SessionFilterOptions = SessionListPayload["filterOptions"]
+export type FilterOption = SessionFilterOptions["projects"][number]
 export type SessionRepo = NonNullable<SessionSummary["repo"]>
 type SessionSearchMatch = NonNullable<SessionSummary["match"]>
 export type SearchSourceKind = SessionSearchMatch["sourceKind"]

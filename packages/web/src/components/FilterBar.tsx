@@ -10,6 +10,8 @@ import {
   SORTS,
   type Sort,
 } from "../sessions/filters.js"
+import { Caret } from "./combobox.js"
+import { Picker } from "./Picker.js"
 import { controlClass, labelClass, TextField } from "./TextField.js"
 
 const asRange = (value: string): Range => RANGES.find((range) => range === value) ?? "all"
@@ -19,22 +21,13 @@ const selectClass = `${controlClass} mt-0 cursor-pointer appearance-none pr-7`
 const buttonClass =
   "h-9 rounded-xs border border-ink bg-ink px-4 text-[0.78rem] font-semibold text-panel-2 transition-colors hover:bg-ink-2"
 
-const Caret = () => (
-  <svg
-    viewBox="0 0 12 8"
-    aria-hidden="true"
-    className="pointer-events-none absolute right-2 top-1/2 h-2 w-3 -translate-y-1/2 fill-none stroke-current stroke-[1.6] text-ink-soft"
-  >
-    <path d="M1 1.5 6 6.5l5-5" strokeLinecap="round" strokeLinejoin="round" />
-  </svg>
-)
-
-export type Option = { readonly value: string; readonly label: string }
+/** Its two callers map over client constants, so this shape is not the server's to change. */
+type Choosable = { readonly value: string; readonly label: string }
 
 type ChoiceProps = {
   readonly label: string
   readonly value: string
-  readonly options: ReadonlyArray<Option>
+  readonly options: ReadonlyArray<Choosable>
   readonly onChange: (value: string) => void
 }
 
@@ -58,16 +51,11 @@ const Choice = ({ label, value, options, onChange }: ChoiceProps) => {
             </option>
           ))}
         </select>
-        <Caret />
+        <Caret className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-ink-soft" />
       </div>
     </div>
   )
 }
-
-const withAny = (options: ReadonlyArray<Option>, anyLabel: string): ReadonlyArray<Option> => [
-  { value: "", label: anyLabel },
-  ...options,
-]
 
 const TextFilter = ({
   label,
@@ -276,31 +264,32 @@ export const FilterBar = ({ filters, options, onChange, onClear }: Props) => {
       </div>
 
       <div className="mt-2 grid grid-cols-1 gap-3 min-[560px]:grid-cols-2 min-[1000px]:grid-cols-4">
-        <Choice
+        <Picker
           label="Project"
           value={filters.project ?? ""}
-          options={withAny(options.projects, "All projects")}
+          options={options.projects}
+          placeholder="All projects"
           onChange={(project) => onChange(changedFilters(filters, { project: project || null }))}
         />
-        <Choice
+        <Picker
           label="User"
           value={filters.user ?? ""}
-          options={withAny(options.authors, "All users")}
+          options={options.authors}
+          placeholder="All users"
           onChange={(user) => onChange(changedFilters(filters, { user: user || null }))}
         />
-        <Choice
+        <Picker
           label="Repository"
           value={filters.repo ?? ""}
-          options={withAny(options.repositories, "All repositories")}
+          options={options.repositories}
+          placeholder="All repositories"
           onChange={(repo) => onChange(changedFilters(filters, { repo: repo || null }))}
         />
-        <Choice
+        <Picker
           label="Branch"
           value={filters.branch ?? ""}
-          options={withAny(
-            options.branches.map((branch) => ({ value: branch, label: branch })),
-            "All branches",
-          )}
+          options={options.branches.map((branch) => ({ value: branch, label: branch }))}
+          placeholder="All branches"
           onChange={(branch) => onChange(changedFilters(filters, { branch: branch || null }))}
         />
         <TextFilter

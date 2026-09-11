@@ -37,7 +37,7 @@ Confirmed capabilities:
 - Structured persistence of sessions, messages, raw source records, tool calls, tool results, and subagents.
 - Authenticated server ingest using an audience-scoped CLI token.
 - GitHub OAuth web authentication with organization gating.
-- Browsing captured work in the web UI: a projects list and project detail page (with a typed-slug-confirmed delete for the owner or a super admin), an orgs list and org detail page (members, projects, session totals, editable name and auto-add setting, super-admin-only registration), a sessions index filtered by project, author, and date range with shareable URLs, and a session detail view presenting conversation, timeline, tool calls, and artifacts including subagent branches.
+- Browsing captured work in the web UI: a projects list and project detail page (its linked GitHub repo, and a typed-slug-confirmed delete for the owner or a super admin), an orgs list and org detail page (members, projects, session totals, editable name and auto-add setting, super-admin-only registration), a sessions index filtered by project, author, and date range with shareable URLs, and a session detail view presenting conversation, timeline, tool calls, and artifacts including subagent branches.
 - CLI pairing and logout from the web account menu.
 - A web API (`/api/projects`, `/api/orgs`, `/api/sessions`, `/api/sessions/:id`) scoped to what each user may see; deleting a project and registering an org are further gated by ownership and super-admin status.
 

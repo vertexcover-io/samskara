@@ -197,6 +197,23 @@ const appendLines = async (
   await writeFile(path, body, { flag: "a", encoding: "utf8" })
 }
 
+/**
+ * A task notification as a Claude Code before 2.1.23x wrote one: an `attachment` line whose
+ * `commandMode` is the only mark of what it is. Newer versions put `origin.kind` on the `user`
+ * line instead. Normalizes to one `message` row with role `user` and subType `taskNotification`.
+ */
+export const oldCliTaskNotificationLine = (summary: string, minute: number): TranscriptLine => ({
+  type: "attachment",
+  uuid: crypto.randomUUID(),
+  timestamp: iso(minute),
+  sessionId: "placeholder",
+  attachment: {
+    type: "queued_command",
+    commandMode: "task-notification",
+    prompt: `<task-notification>\n<summary>${summary}</summary>\n</task-notification>`,
+  },
+})
+
 export const createTranscriptWriter = (options: {
   readonly home: string
   readonly cwd: string
@@ -225,3 +242,13 @@ export const createTranscriptWriter = (options: {
     },
   }
 }
+
+export const customTitleLine = (title: string): TranscriptLine => ({
+  type: "custom-title",
+  customTitle: title,
+})
+
+export const aiTitleLine = (title: string): TranscriptLine => ({
+  type: "ai-title",
+  aiTitle: title,
+})

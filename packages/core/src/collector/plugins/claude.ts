@@ -128,20 +128,34 @@ export const classifyClaudePath = (
   return null
 }
 
-/**
- * Claude Code names the session on an `ai-title` line and rewrites it as the subject becomes
- * clearer, so the last one in the batch wins. A batch with none returns undefined rather than an
- * empty string: the session upsert coalesces, so only a real title may replace a stored one.
- */
-const titleFrom = (records: ReadonlyArray<ParsedRecord>): string | undefined => {
-  for (let index = records.length - 1; index >= 0; index -= 1) {
-    const raw = records[index]?.raw
-    if (!isObject(raw) || raw.type !== "ai-title") continue
-    const title = stringValue(raw.aiTitle)?.trim()
+const lastTitleIn = (
+  lines: ReadonlyArray<unknown>,
+  type: "ai-title" | "custom-title",
+  field: "aiTitle" | "customTitle",
+): string | undefined => {
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const raw = lines[index]
+    if (!isObject(raw) || raw.type !== type) continue
+    const title = stringValue(raw[field])?.trim()
     if (title) return title
   }
   return undefined
 }
+
+/**
+ * Custom titles scan the full transcript so a later AI title cannot overwrite a user's rename.
+ * AI titles scan only the latest batch to avoid replaying stale model titles.
+ */
+export const titleFrom = (
+  batch: ReadonlyArray<ParsedRecord>,
+  transcript: ReadonlyArray<unknown>,
+): string | undefined =>
+  lastTitleIn(transcript, "custom-title", "customTitle") ??
+  lastTitleIn(
+    batch.map((record) => record.raw),
+    "ai-title",
+    "aiTitle",
+  )
 
 const roleFor = (role: unknown): "user" | "assistant" | "system" | "developer" | "unknown" => {
   if (role === "user" || role === "assistant" || role === "system" || role === "developer")
@@ -407,6 +421,22 @@ const budgetSchema = z.object({
 })
 const selectedLinesSchema = z.object({ lineStart: nonnegativeInt, lineEnd: nonnegativeInt })
 
+/**
+ * The shape a Claude Code before 2.1.23x wrote a task notification as. Newer versions put
+ * `origin.kind` on the `user` line itself, which `injectionSubType` reads. Both the reader below
+ * and the server's ingest transformer match on this, so the rule lives here rather than in each.
+ */
+export const isTaskNotificationAttachment = (attachment: unknown): boolean =>
+  isObject(attachment) &&
+  stringValue(attachment.type) === "queued_command" &&
+  stringValue(attachment.commandMode) === "task-notification"
+
+/** The same rule against a whole transcript line, which is what a stored `raw` holds. */
+export const isTaskNotificationLine = (line: unknown): boolean =>
+  isObject(line) &&
+  stringValue(line.type) === "attachment" &&
+  isTaskNotificationAttachment(line.attachment)
+
 const handleAttachmentMessage = (
   attachment: Record<string, unknown>,
   common: CommonFields,
@@ -423,6 +453,7 @@ const handleAttachmentMessage = (
         ? buildMessage(common, {
             msgType: "message",
             role: "user",
+            ...(isTaskNotificationAttachment(attachment) ? { subType: "taskNotification" } : {}),
             content: { type: "text", value: attachment.prompt },
             details: {
               ...conversationDetailsFor(attachment, "activeTurn"),
@@ -1081,7 +1112,10 @@ const collectTrack = async (
     checkpointAt: checkpointAtFor({ mtime: stat.mtimeMs, size: stat.size }),
   }
   if (!location.agentId) {
-    const title = titleFrom(records)
+    const title = titleFrom(
+      records,
+      allLines.map(({ data }) => data),
+    )
     return { ...shared, type: "main", ...(title === undefined ? {} : { title }) }
   }
 

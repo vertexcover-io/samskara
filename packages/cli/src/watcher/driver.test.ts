@@ -466,7 +466,6 @@ describe("watcher driver", () => {
     const serana = {
       host: "github.com",
       owner: "refrens",
-      ownerType: "org",
       repoName: "serana",
       root: "/work/serana",
     } as const
@@ -512,9 +511,32 @@ describe("watcher driver", () => {
       expect(sent[0]?.repo).toEqual({
         host: "github.com",
         owner: "refrens",
-        ownerType: "org",
         repoName: "serana",
       })
+    })
+
+    test("a repo whose ssh alias will not resolve leaves the message unattributed instead of failing the cycle, so the rest of the flush still ships", async () => {
+      const main = join(projects, "sess-1.jsonl")
+      await writeFile(
+        main,
+        [
+          assistantLine("l1", "sess-1", { cwd: "/work/andromeda" }),
+          assistantLine("l2", "sess-1", { cwd: "/work/serana" }),
+        ]
+          .map((line) => `${line}\n`)
+          .join(""),
+        "utf8",
+      )
+
+      const sink = createInMemorySink()
+      repoMocks.resolveRepo.mockImplementation(async (cwd) => {
+        if (cwd === "/work/serana") return serana
+        throw new Error("spawn ssh ENOENT")
+      })
+      await runCycle(config, deps({ sink, glob: async () => [main] }))
+
+      const sent = sink.received[0]?.records.flatMap((r) => r.messages) ?? []
+      expect(sent.map((m) => m.repo?.repoName)).toEqual([undefined, undefined, "serana", "serana"])
     })
 
     test("captures the session's starting cwd and HEAD once, on the flush that creates it, and never re-reads HEAD on a later flush", async () => {
@@ -634,7 +656,6 @@ describe("watcher driver", () => {
           repo: {
             host: "github.com",
             owner: "refrens",
-            ownerType: "org",
             repoName: "serana",
           },
           callId: "toolu_commit",

@@ -1,5 +1,5 @@
 {
-  "id": "16ca79b2-a006-48c0-bd47-e2ff04f5ea43",
+  "id": "5cbe6d49-31e0-442e-a5ce-edd5ff92a1a9",
   "prevId": "35544c38-8eb2-4fb1-a48d-030babddc101",
   "version": "7",
   "dialect": "postgresql",
@@ -1167,6 +1167,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "description": {
+          "name": "description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "cwd": {
           "name": "cwd",
           "type": "text",
@@ -1223,7 +1235,7 @@
           "primaryKey": false,
           "notNull": false,
           "generated": {
-            "as": "to_tsvector('simple'::regconfig, public.samskara_search_cap(((coalesce(\"sessions\".\"title\", '') || ' ') || \"sessions\".\"id\")))",
+            "as": "to_tsvector('simple'::regconfig, public.samskara_search_cap(((((((coalesce(\"sessions\".\"name\", '') || ' ') || coalesce(\"sessions\".\"description\", '')) || ' ') || coalesce(\"sessions\".\"title\", '')) || ' ') || \"sessions\".\"id\")))",
             "type": "stored"
           }
         }
@@ -1540,12 +1552,6 @@
         },
         "toolInput": {
           "name": "toolInput",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "metadata": {
-          "name": "metadata",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false

@@ -188,7 +188,6 @@ describe("collectGitEvents", () => {
     const subRepo: RepoIdentity = {
       host: "github.com",
       owner: "acme",
-      ownerType: "org",
       repoName: "serana",
     }
     const event = commitOf(
@@ -205,7 +204,6 @@ describe("collectGitEvents", () => {
     const serana: RepoIdentity = {
       host: "github.com",
       owner: "acme",
-      ownerType: "org",
       repoName: "serana",
     }
     const andromeda: RepoIdentity = { ...serana, repoName: "andromeda" }

@@ -111,7 +111,7 @@ const matchesGlob = (name: string, glob: string): boolean => {
   )
 }
 
-const isSecret = (path: string): boolean => {
+export const isSecret = (path: string): boolean => {
   const name = basename(path)
   if (SECRET_NAMES.has(name) || name.startsWith(".env.")) return true
   if (SECRET_EXTENSIONS.some((extension) => name.endsWith(extension))) return true

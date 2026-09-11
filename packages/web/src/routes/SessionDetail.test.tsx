@@ -6,6 +6,7 @@ import type { SessionDetailPayload } from "../api/types.js"
 import {
   buildPayload,
   commit,
+  facts,
   message,
   pastedImage,
   pullRequest,
@@ -173,6 +174,24 @@ const renderDetail = (
     return Promise.resolve(new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 }))
   })
 
+  return render(
+    <TestRouter initialEntries={[entry]}>
+      <Routes>
+        <Route path="/sessions/:sessionId" element={<SessionDetail />} />
+      </Routes>
+    </TestRouter>,
+  )
+}
+
+type FetchImpl = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+
+const jsonResponse = (status: number, body: unknown): Response =>
+  new Response(JSON.stringify(body), { status })
+
+const isPatch = (init: RequestInit | undefined): boolean => init?.method === "PATCH"
+
+const renderDetailWithFetch = (impl: FetchImpl, entry = "/sessions/s-1") => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(impl)
   return render(
     <TestRouter initialEntries={[entry]}>
       <Routes>
@@ -999,4 +1018,211 @@ test("S63: every record in the transcript carries an actor, so none renders unat
   for (const record of records) {
     expect(["user", "assistant", "aside"]).toContain(record.getAttribute("data-actor"))
   }
+})
+
+test("SC14: the header shows the human name with the captured title beneath it", async () => {
+  renderDetail(
+    buildPayload({
+      session: {
+        name: "Ingest cleanup",
+        title: "Ingest cleanup",
+        aiTitle: "Session issue investigation",
+      },
+    }),
+  )
+
+  await screen.findByRole("heading", { level: 1, name: "Ingest cleanup" })
+  expect(screen.getByText(/AI title: Session issue investigation/)).toBeInTheDocument()
+})
+
+test("SC15: a session with no human name shows one title and no AI-title line", async () => {
+  renderDetail(
+    buildPayload({ session: { name: null, title: "Captured title", aiTitle: "Captured title" } }),
+  )
+
+  await screen.findByRole("heading", { level: 1, name: "Captured title" })
+  expect(screen.queryByText(/AI title:/)).not.toBeInTheDocument()
+})
+
+test("SC30: a name identical to the captured title shows no AI-title line", async () => {
+  renderDetail(
+    buildPayload({
+      session: { name: "Captured title", title: "Captured title", aiTitle: "Captured title" },
+    }),
+  )
+
+  await screen.findByRole("heading", { level: 1, name: "Captured title" })
+  expect(screen.queryByText(/AI title:/)).not.toBeInTheDocument()
+})
+
+test("SC16: the edit control appears only for someone allowed to use it", async () => {
+  const { unmount } = renderDetail(buildPayload({ session: { canRename: true } }))
+  await screen.findByRole("heading", { level: 1 })
+  expect(screen.getByRole("button", { name: /edit/i })).toBeInTheDocument()
+  unmount()
+
+  renderDetail(buildPayload({ session: { canRename: false } }))
+  await screen.findByRole("heading", { level: 1 })
+  expect(screen.queryByRole("button", { name: /edit/i })).not.toBeInTheDocument()
+})
+
+test("SC17: saving sends the edited values and shows them", async () => {
+  const user = userEvent.setup()
+  const sent: Array<unknown> = []
+
+  renderDetailWithFetch((input, init) => {
+    const url = typeof input === "string" ? input : String(input)
+    if (url.includes("/artifacts")) return Promise.resolve(jsonResponse(200, { artifacts: [] }))
+    if (url.includes("/api/sessions/") && isPatch(init)) {
+      sent.push(init?.body ? JSON.parse(String(init.body)) : null)
+      return Promise.resolve(
+        jsonResponse(200, {
+          session: facts({
+            name: "New name",
+            description: "New description",
+            aiTitle: "Make ingest idempotent",
+            title: "New name",
+          }),
+        }),
+      )
+    }
+    if (url.includes("/api/sessions/")) return Promise.resolve(jsonResponse(200, PAYLOAD))
+    return Promise.resolve(jsonResponse(401, { error: "unauthorized" }))
+  })
+
+  await screen.findByRole("heading", { level: 1, name: "Make ingest idempotent" })
+  await user.click(screen.getByRole("button", { name: /edit/i }))
+
+  await user.clear(screen.getByRole("textbox", { name: "Name" }))
+  await user.type(screen.getByRole("textbox", { name: "Name" }), "New name")
+  await user.clear(screen.getByRole("textbox", { name: "Description" }))
+  await user.type(screen.getByRole("textbox", { name: "Description" }), "New description")
+  await user.click(screen.getByRole("button", { name: /save/i }))
+
+  await screen.findByRole("heading", { level: 1, name: "New name" })
+  expect(sent).toEqual([{ name: "New name", description: "New description" }])
+  expect(screen.getByText("New description")).toBeInTheDocument()
+  expect(screen.queryByRole("textbox", { name: "Name" })).not.toBeInTheDocument()
+})
+
+test("SC18: cancelling discards the edits and sends nothing", async () => {
+  const user = userEvent.setup()
+  const patched: Array<RequestInit | undefined> = []
+
+  renderDetailWithFetch((input, init) => {
+    const url = typeof input === "string" ? input : String(input)
+    if (url.includes("/artifacts")) return Promise.resolve(jsonResponse(200, { artifacts: [] }))
+    if (url.includes("/api/sessions/")) {
+      if (isPatch(init)) patched.push(init)
+      return Promise.resolve(jsonResponse(200, PAYLOAD))
+    }
+    return Promise.resolve(jsonResponse(401, { error: "unauthorized" }))
+  })
+
+  await screen.findByRole("heading", { level: 1, name: "Make ingest idempotent" })
+  await user.click(screen.getByRole("button", { name: /edit/i }))
+  await user.type(screen.getByRole("textbox", { name: "Name" }), "Discarded")
+  await user.type(screen.getByRole("textbox", { name: "Description" }), "Discarded too")
+  await user.click(screen.getByRole("button", { name: /cancel/i }))
+
+  expect(patched).toHaveLength(0)
+  expect(
+    screen.getByRole("heading", { level: 1, name: "Make ingest idempotent" }),
+  ).toBeInTheDocument()
+
+  await user.click(screen.getByRole("button", { name: /edit/i }))
+  expect(screen.getByRole("textbox", { name: "Name" })).toHaveValue("")
+  expect(screen.getByRole("textbox", { name: "Description" })).toHaveValue("")
+})
+
+test("SC19: a failed save keeps the form open and names the failure", async () => {
+  const user = userEvent.setup()
+
+  renderDetailWithFetch((input, init) => {
+    const url = typeof input === "string" ? input : String(input)
+    if (url.includes("/artifacts")) return Promise.resolve(jsonResponse(200, { artifacts: [] }))
+    if (url.includes("/api/sessions/") && isPatch(init))
+      return Promise.resolve(jsonResponse(403, { error: "forbidden" }))
+    if (url.includes("/api/sessions/")) return Promise.resolve(jsonResponse(200, PAYLOAD))
+    return Promise.resolve(jsonResponse(401, { error: "unauthorized" }))
+  })
+
+  await screen.findByRole("heading", { level: 1, name: "Make ingest idempotent" })
+  await user.click(screen.getByRole("button", { name: /edit/i }))
+  await user.type(screen.getByRole("textbox", { name: "Name" }), "Attempted rename")
+  await user.click(screen.getByRole("button", { name: /save/i }))
+
+  expect(await screen.findByRole("alert")).toBeInTheDocument()
+  expect(screen.getByRole("textbox", { name: "Name" })).toHaveValue("Attempted rename")
+  expect(
+    screen.getByRole("heading", { level: 1, name: "Make ingest idempotent" }),
+  ).toBeInTheDocument()
+})
+
+test("SC31: a save that lands for a different session is ignored", async () => {
+  const user = userEvent.setup()
+
+  renderDetailWithFetch((input, init) => {
+    const url = typeof input === "string" ? input : String(input)
+    if (url.includes("/artifacts")) return Promise.resolve(jsonResponse(200, { artifacts: [] }))
+    if (url.includes("/api/sessions/") && isPatch(init)) {
+      return Promise.resolve(
+        jsonResponse(200, {
+          session: { ...PAYLOAD.session, id: "s-elsewhere", title: "Someone else's session" },
+        }),
+      )
+    }
+    if (url.includes("/api/sessions/")) return Promise.resolve(jsonResponse(200, PAYLOAD))
+    return Promise.resolve(jsonResponse(401, { error: "unauthorized" }))
+  })
+
+  await screen.findByRole("heading", { level: 1, name: "Make ingest idempotent" })
+  await user.click(screen.getByRole("button", { name: /edit/i }))
+  await user.type(screen.getByRole("textbox", { name: "Name" }), "Renamed")
+  await user.click(screen.getByRole("button", { name: /save/i }))
+
+  await waitFor(() =>
+    expect(screen.queryByRole("textbox", { name: "Name" })).not.toBeInTheDocument(),
+  )
+  expect(
+    screen.getByRole("heading", { level: 1, name: "Make ingest idempotent" }),
+  ).toBeInTheDocument()
+  expect(screen.queryByText("Someone else's session")).not.toBeInTheDocument()
+})
+
+test("SC20: clearing the name in the form restores the derived title", async () => {
+  const user = userEvent.setup()
+  const sent: Array<unknown> = []
+  const named = buildPayload({
+    session: { name: "Ingest cleanup", title: "Ingest cleanup", aiTitle: "Captured title" },
+  })
+
+  renderDetailWithFetch((input, init) => {
+    const url = typeof input === "string" ? input : String(input)
+    if (url.includes("/artifacts")) return Promise.resolve(jsonResponse(200, { artifacts: [] }))
+    if (url.includes("/api/sessions/") && isPatch(init)) {
+      sent.push(init?.body ? JSON.parse(String(init.body)) : null)
+      return Promise.resolve(
+        jsonResponse(200, {
+          session: facts({
+            name: null,
+            description: null,
+            title: "Captured title",
+            aiTitle: "Captured title",
+          }),
+        }),
+      )
+    }
+    if (url.includes("/api/sessions/")) return Promise.resolve(jsonResponse(200, named))
+    return Promise.resolve(jsonResponse(401, { error: "unauthorized" }))
+  })
+
+  await screen.findByRole("heading", { level: 1, name: "Ingest cleanup" })
+  await user.click(screen.getByRole("button", { name: /edit/i }))
+  await user.clear(screen.getByRole("textbox", { name: "Name" }))
+  await user.click(screen.getByRole("button", { name: /save/i }))
+
+  await screen.findByRole("heading", { level: 1, name: "Captured title" })
+  expect(sent).toEqual([{ name: null, description: null }])
+  expect(screen.queryByText(/AI title:/)).not.toBeInTheDocument()
 })

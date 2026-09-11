@@ -2,17 +2,19 @@ import { mkdir, mkdtemp, readFile, rename, stat, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { describe, expect, test, vi } from "vitest"
-import type { ProjectIdentity } from "../../ingest/types.js"
+import type { ParsedRecord, ProjectIdentity } from "../../ingest/types.js"
 import { createLogger } from "../../logging.js"
 import { redactJson } from "../redact.js"
 import type { Checkpoint, CheckpointStore, CollectDeps } from "../types.js"
 import {
+  type ClaudeLineContext,
   classifyClaudePath,
   createClaudePlugin,
   lineUuidFor,
   normalizeClaude,
   readClaudeSidecar,
   stableJson,
+  titleFrom,
 } from "./claude.js"
 
 const nodeFs = {
@@ -689,6 +691,54 @@ describe("normalizeClaude", () => {
     })
   })
 
+  test("SC7: a task notification captured by an older CLI is marked as an injection", () => {
+    expect(
+      normalizeClaude({
+        type: "attachment",
+        attachment: {
+          type: "queued_command",
+          commandMode: "task-notification",
+          prompt: "<task-notification>done</task-notification>",
+        },
+      })[0],
+    ).toMatchObject({
+      msgType: "message",
+      role: "user",
+      subType: "taskNotification",
+      content: { type: "text", value: "<task-notification>done</task-notification>" },
+      details: { promptSource: "queued" },
+    })
+  })
+
+  test("SC8 (regression): a prompt the user queued is still a prompt", () => {
+    const message = normalizeClaude({
+      type: "attachment",
+      attachment: { type: "queued_command", commandMode: "prompt", prompt: "next" },
+    })[0]
+
+    expect(message).toMatchObject({ msgType: "message", role: "user" })
+    expect(message?.msgType === "message" ? message.subType : "unset").toBeUndefined()
+  })
+
+  test("SC9 (regression): a queued command with no prompt text is still a custom row", () => {
+    expect(
+      normalizeClaude({
+        type: "attachment",
+        attachment: { type: "queued_command", commandMode: "task-notification" },
+      })[0],
+    ).toMatchObject({ msgType: "custom", subType: "queued_command" })
+  })
+
+  test("SC10 (regression): the shape newer CLIs write is unchanged", () => {
+    expect(
+      normalizeClaude({
+        type: "user",
+        message: { role: "user", content: "body" },
+        origin: { kind: "task-notification" },
+      })[0],
+    ).toMatchObject({ subType: "taskNotification" })
+  })
+
   test("S14: turns, compaction, and local commands use only explicit evidence", () => {
     expect(
       normalizeClaude({
@@ -910,6 +960,73 @@ describe("normalizeClaude", () => {
     expect(
       normalizeClaude({ type: "attachment", attachment: { type: "skill_listing", skills: [] } })[0],
     ).toMatchObject({ msgType: "custom", subType: "skill_listing" })
+  })
+})
+
+describe("titleFrom", () => {
+  const record = (raw: Record<string, unknown>, lineNumber: number): ParsedRecord => {
+    const context: ClaudeLineContext = { sessionId: "sess-1", trackId: "main", lineNumber }
+    return {
+      lineUuid: lineUuidFor(context, raw),
+      lineNumber,
+      raw,
+      messages: normalizeClaude(raw, context),
+    }
+  }
+  const aiTitle = (title: string, lineNumber: number) =>
+    record({ type: "ai-title", aiTitle: title, sessionId: "sess-1" }, lineNumber)
+  const customTitle = (title: string, lineNumber: number) =>
+    record({ type: "custom-title", customTitle: title, sessionId: "sess-1" }, lineNumber)
+
+  const wholeFile = (batch: ReadonlyArray<ParsedRecord>) =>
+    titleFrom(
+      batch,
+      batch.map((entry) => entry.raw),
+    )
+
+  test("SC23: a batch whose only title record is a /rename uploads that name", () => {
+    expect(wholeFile([customTitle("Ship the rename fix", 1)])).toBe("Ship the rename fix")
+  })
+
+  test("SC24: a /rename beats the model's title in the same batch, in either order", () => {
+    expect(wholeFile([aiTitle("Debug the thing", 1), customTitle("Rename it", 2)])).toBe(
+      "Rename it",
+    )
+    expect(wholeFile([customTitle("Rename it", 1), aiTitle("Debug the thing", 2)])).toBe(
+      "Rename it",
+    )
+  })
+
+  test("SC25 (regression): a batch with only model titles still uploads the last one, and one with neither carries no title", () => {
+    expect(wholeFile([aiTitle("First guess", 1), aiTitle("Second guess", 2)])).toBe("Second guess")
+    expect(wholeFile([])).toBeUndefined()
+  })
+
+  test("SC26: a /rename from an earlier poll still wins over a model title arriving in a later batch", () => {
+    const renamed = customTitle("Rename it", 1)
+    const later = aiTitle("Debug the thing", 2)
+
+    expect(titleFrom([later], [renamed.raw, later.raw])).toBe("Rename it")
+
+    const renamedAgain = customTitle("Rename it again", 3)
+    expect(titleFrom([renamedAgain], [renamed.raw, later.raw, renamedAgain.raw])).toBe(
+      "Rename it again",
+    )
+  })
+
+  test("SC27: a model title in a later batch is uploaded when the session was never renamed", () => {
+    const first = aiTitle("First guess", 1)
+    const second = aiTitle("Second guess", 2)
+    expect(titleFrom([second], [first.raw, second.raw])).toBe("Second guess")
+  })
+
+  test("SC28: a poll that adds no title line carries no title, so the stored one survives", () => {
+    const renamed = customTitle("Rename it", 1)
+    const chatter = record({ type: "user", message: { role: "user", content: "go on" } }, 2)
+
+    expect(titleFrom([chatter], [renamed.raw, chatter.raw])).toBe("Rename it")
+
+    expect(titleFrom([chatter], [chatter.raw])).toBeUndefined()
   })
 })
 
