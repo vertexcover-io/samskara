@@ -30,7 +30,7 @@
   },
   "packages": {
     "core": {
-      "path": "packages/core",
+      "path": ".",
       "runner": "vitest",
       "commands": {
         "bootstrap": "bun install",
@@ -43,7 +43,7 @@
       }
     },
     "server": {
-      "path": "packages/server",
+      "path": ".",
       "runner": "vitest",
       "commands": {
         "bootstrap": "bun install",
@@ -58,7 +58,7 @@
       }
     },
     "web": {
-      "path": "packages/web",
+      "path": ".",
       "runner": "vitest",
       "commands": {
         "bootstrap": "bun install",
@@ -71,7 +71,7 @@
       }
     },
     "cli": {
-      "path": "packages/cli",
+      "path": ".",
       "runner": "vitest",
       "commands": {
         "bootstrap": "bun install",
