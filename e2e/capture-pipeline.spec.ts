@@ -10,8 +10,11 @@ import { expect, mintCliToken, mintSessionToken, test } from "./fixtures/auth.js
 import { API_BASE } from "./playwright.config.js"
 import { E2E_OTHER_USER_ID, E2E_USER_ID, orgId, seedDatabase } from "./seed.js"
 import {
+  aiTitleLine,
   assistantLine,
   createTranscriptWriter,
+  customTitleLine,
+  oldCliTaskNotificationLine,
   secretBearingLine,
   summaryLine,
   toolCallLine,
@@ -254,6 +257,28 @@ test.afterEach(harnessTeardown)
 test.describe("capture pipeline", () => {
   test.describe.configure({ timeout: 90_000 })
 
+  test("SC15: the real CLI reads an old-format task notification and it is not shown as the user's words", async () => {
+    const { writer, sql } = await useHarness()
+
+    await writer.append([
+      userLine("Kick off the bootstrap and tell me when it lands.", 0),
+      oldCliTaskNotificationLine('Background command "Bootstrap" completed (exit code 0)', 1),
+    ])
+
+    const rows = await pollUntil(
+      () => sql<{ subType: string | null; role: string | null }[]>`
+        select "subType", role from messages
+        where "sessionId" = ${SESSION_ID} and "msgType" = 'message'
+        order by "lineNumber"
+      `,
+      (r) => r.length >= 2,
+      (r) => `${r.length} message rows [${r.map((m) => m.subType ?? "null").join(", ")}]`,
+    )
+
+    expect(rows.map((r) => r.subType)).toEqual([null, "taskNotification"])
+    expect(rows.every((r) => r.role === "user")).toBe(true)
+  })
+
   test("P1: a transcript appearing on disk flows through the real watcher into Postgres, and the CLI's own state file records the project it synced", async () => {
     const { writer, sql, samskaraHome } = await useHarness()
 
@@ -412,9 +437,7 @@ test.describe("capture pipeline", () => {
     if (!project) throw new Error(`no project row for slug ${PROJECT_SLUG}`)
     await page.goto(`/sessions?project=${project.id}`)
 
-    // The collector never sets a title -- Claude transcripts carry none, so `sessions.title`
-    // is NULL. The list is named by the server's `derivedTitle`, which coalesces that NULL
-    // with the opening user prompt, so a captured session is never shown as "untitled".
+    // Sessions without an explicit title fall back to the opening prompt in the list.
     const row = page.getByRole("link", { name: /Rescans duplicate rows/ })
     await expect(row).toBeVisible()
 
@@ -495,6 +518,12 @@ test.describe("capture pipeline", () => {
     if (!project) throw new Error(`no project row for slug ${PROJECT_SLUG}`)
     expect(project.id).toBe(storedProjectId)
     expect(project.ownerOrgId).toBe(orgId("acme"))
+
+    const [repo] = await sql<{ ownerOrgId: string | null; ownerUserId: string | null }[]>`
+      select "ownerOrgId", "userId" as "ownerUserId" from repos
+      where host = 'github.com' and owner = 'acme' and "repoName" = 'widgets'
+    `
+    expect(repo).toMatchObject({ ownerOrgId: orgId("acme"), ownerUserId: null })
 
     const [session] = await sql<{ projectId: string }[]>`
       select "projectId" from sessions where id = ${SESSION_ID}
@@ -1216,5 +1245,38 @@ test.describe("capture pipeline", () => {
     expect(rawText).toContain("[Redacted]")
     expect(rawText).toContain("keep-me")
     expect(rawText).toContain("the literal word token appears here")
+  })
+
+  test("P15: a `/rename` typed in Claude Code reaches the session's stored title", async () => {
+    const { writer, sql } = await useHarness()
+
+    await writer.append([
+      userLine("Rescans duplicate rows - make ingest idempotent.", 0),
+      assistantLine("Plan: add a unique key, then switch inserts to upserts.", 1),
+      customTitleLine("Idempotent ingest fix"),
+    ])
+
+    const [stored] = await pollUntil(
+      () => sql<{ title: string | null }[]>`select title from sessions where id = ${SESSION_ID}`,
+      (rows) => rows.length > 0 && rows[0]?.title !== null,
+      (rows) => `title ${JSON.stringify(rows[0]?.title ?? null)}`,
+    )
+    expect(stored?.title).toBe("Idempotent ingest fix")
+
+    await writer.append([
+      assistantLine("Switched the last two call sites over.", 3),
+      aiTitleLine("Duplicate row investigation"),
+    ])
+
+    const [after] = await pollUntil(
+      () => sql<{ title: string | null; count: string }[]>`
+        select s.title,
+          (select count(*)::text from messages where "sessionId" = ${SESSION_ID}) as count
+        from sessions s where s.id = ${SESSION_ID}
+      `,
+      (rows) => Number(rows[0]?.count ?? 0) >= 3,
+      (rows) => `${rows[0]?.count ?? 0} messages, title ${JSON.stringify(rows[0]?.title ?? null)}`,
+    )
+    expect(after?.title).toBe("Idempotent ingest fix")
   })
 })

@@ -70,7 +70,10 @@ to re-run: it never rotates a secret that is already set, and it leaves a databa
 has projects alone.
 
 Only members of a registered org can log in. Leave the slug off and setup tells you how to add one
-later with `bun run seed:org YOUR_GITHUB_ORG_SLUG`. Every login re-checks the user's current GitHub
+later with `bun run seed:org YOUR_GITHUB_ORG_SLUG`. Once someone is signed in as a super admin, they
+can register further orgs from the web UI at `/orgs` instead — `seed:org` stays the only way to
+register the first one, before anybody can sign in, and the only one that rewrites an existing org's
+auto-add setting. Every login re-checks the user's current GitHub
 orgs, so leaving an org on GitHub revokes access on the next login.
 
 The variables setup writes:
@@ -94,10 +97,14 @@ bun run dev               # API on :3000, web on :8000
 
 Open http://localhost:8000 and sign in with GitHub.
 
-For local development without a GitHub OAuth app, set `LOCAL_LOGIN_SECRET` in `.env` and the
-sign-in page also offers a local-secret sign-in as the seeded `samskara-dev` user (`LOCAL_LOGIN_LOGIN`
-can point at any other seeded login; run `bun run seed` first). Leave `LOCAL_LOGIN_SECRET` unset in
-any real deployment.
+For local development without a GitHub OAuth app, set `LOCAL_LOGIN_SECRET` in `.env`. The sign-in
+page then offers a local-secret sign-in as the seeded `samskara-dev` user, and `LOCAL_LOGIN_LOGIN`
+can point at any other seeded login (run `bun run seed` first). With that secret set,
+`GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` may be left blank — `bun run setup` stops asking for
+them and the sign-in page drops the GitHub button rather than linking to an error page.
+
+Leave `LOCAL_LOGIN_SECRET` unset in any real deployment: it mints a full session for anyone who
+guesses it.
 
 ## Install the CLI
 
@@ -154,21 +161,34 @@ Samskara web URL [http://localhost:8000]:
 ```
 
 Press Enter to keep a default. The answers are saved to `~/.samskara/config.json` and every later
-command uses them, so this is asked once. Pass `--server URL` and `--web URL` to skip the questions,
-and re-run `samskara init` to point the CLI somewhere else. `SAMSKARA_API_URL` and
-`SAMSKARA_WEB_URL` still override the saved file for a single command; when either is set, `init`
-leaves that URL alone rather than asking. `samskara status` prints both URLs currently in use.
+command uses them, so this is asked once. Pass `--server URL` and `--web URL` to skip the questions.
+`SAMSKARA_API_URL` and `SAMSKARA_WEB_URL` still override the saved file for a single command; when
+either is set, `init` leaves that URL alone rather than asking. `samskara status` prints both URLs
+currently in use.
 
 Then `init` asks for a pairing code. Open the web UI, sign in, and pick **Pair the CLI → Generate code**
 from the account menu. A code never expires but works only once. The token it returns is stored at
 `~/.samskara/token` with mode `0600`.
 
+### Changing servers
+
+`state.json`, `artifacts.json`, `artifact-queue.json` and `projects.json` are built against one
+server and now record which. Point the CLI elsewhere and a mismatch stops things rather than letting
+them fail quietly: `status`, `search` and `logs` warn and carry on, `enable`, `disable` and `replay`
+refuse, and the watcher exits at startup.
+
+Move across with `samskara init --force`. It asks for the new URLs, then stops the watcher, copies
+every derived file **and your token** to `~/.samskara/backups/TIMESTAMP/`, clears the derived state,
+turns capture off for every project, and signs you out. It stops there — run `samskara login`, then
+`samskara enable` in each folder you want captured.
+
 ## CLI reference
 
 | Command | What it does |
 |---|---|
-| `samskara init` | Choose the server, log in, install the Claude Code `SessionStart` hook, start the watcher. Safe to re-run. |
+| `samskara init` | Choose the server, log in, install the Claude Code `SessionStart` hook, start the watcher. Refuses once a server is configured — see `--force`. |
 | `samskara init --server URL --web URL` | Same, without the questions. |
+| `samskara init --force` | Point a configured install at a different server: back up and clear the local state, disable every project, sign out. Does not log in or enable anything for you. |
 | `samskara login [--code CODE]` | Pair with the web UI and store a CLI token. |
 | `samskara logout` | Stop the watcher and delete the stored token. |
 | `samskara enable [path]` | Register this folder with the server and start capturing it (defaults to the current directory). |
@@ -183,6 +203,7 @@ from the account menu. A code never expires but works only once. The token it re
 | `samskara restart` | Stop the watcher and start a fresh one. |
 | `samskara upgrade [--check]` | Install the newest GitHub release over this one; `--check` only reports whether one exists. |
 | `samskara replay SESSION_ID` | Delete a session server-side and locally, then re-capture it from scratch. |
+| `samskara artifacts upload SESSION_ID PATH... [--base-dir DIR] [--no-created] [--dry-run]` | Upload files, or directories walked recursively, as artifacts of that session. Prints `ok`, `updated` or `failed` per file and exits 1 if any failed. `--base-dir` stores each path relative to `DIR` rather than the current directory, `--no-created` records the files as edited rather than created, and `--dry-run` prints what would upload without sending it. |
 | `samskara search [QUERY]` | Search captured sessions from the terminal and print each hit's URL. |
 | `samskara install-hooks` / `uninstall-hooks` | Install or remove the `SessionStart` hook by hand. |
 | `samskara watch [--foreground]` | Start the watcher daemon directly; `--foreground` runs the loop in this terminal. |
@@ -192,6 +213,14 @@ from the account menu. A code never expires but works only once. The token it re
 `enable` registers the folder with the server, so it needs a stored login and a reachable server —
 with either missing it exits 1 and writes nothing. By default it starts the clock now, so turning
 capture on for an old project does not retroactively upload years of history.
+
+`samskara artifacts upload` walks a directory argument recursively, skipping dotfiles, dot-directories,
+and files that look like credentials (`.env`, `id_rsa`, `*.pem`, and similar) — name one of those
+files directly and it uploads anyway. A path that resolves outside `--base-dir`, or two paths that
+would collide on the same stored location, stop the whole run before anything uploads. Re-running the
+same upload from the same directory updates the existing files; running it again from a *different*
+directory (or a different `--base-dir`) stores a second copy, because each file is keyed by its
+absolute path on disk.
 
 `samskara search` takes the same filters as the web UI's `/sessions` page and the same query grammar
 (see [Using the web UI](#using-the-web-ui)): `--project`, `--user`, `--repo`, `--branch`, `--pr`,
@@ -214,8 +243,11 @@ profile you are looking at.
 | Route | What you get |
 |---|---|
 | `/projects` | Every project you can read — session count, last activity, last session title |
+| `/projects/:id` | One project's name, slug, owner, session count, and linked GitHub repo (when it has one), with a typed-slug-confirmed delete for the owner or a super admin |
+| `/orgs` | Every org you belong to (every registered org for a super admin), with a registration form for super admins |
+| `/orgs/:slug` | One org's members, projects, and total session count, with an editable display name and auto-add-members toggle |
 | `/sessions` | Session index with search and filters |
-| `/sessions/:id` | One session: Conversation, Timeline, Tool Calls, and Artifacts tabs, with subagent branches you can expand |
+| `/sessions/:id` | One session: Conversation, Timeline, Tool Calls, and Artifacts tabs, with subagent branches you can expand and an editable name and description for the owner or a super admin |
 | `/sync-status` | Each project you can read, paired with every user who belongs to it and when they last synced it |
 
 Filters live in the query string, so any view you are looking at is a link you can paste to a

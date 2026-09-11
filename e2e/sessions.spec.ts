@@ -218,6 +218,20 @@ const search = async (page: Page, query: string): Promise<void> => {
   await page.getByRole("button", { name: "Search", exact: true }).click()
 }
 
+const chooseFilter = async (
+  page: Page,
+  label: string,
+  typed: string,
+  option: string,
+): Promise<void> => {
+  await page.getByRole("combobox", { name: label }).fill(typed)
+  await page.getByRole("option", { name: option }).click()
+}
+
+// A downshift menu renders its options only while open, so every vocabulary assertion opens first.
+const openMenu = (page: Page, label: string): Promise<void> =>
+  page.getByRole("button", { name: `Show ${label} suggestions` }).click()
+
 const expectOnlySession = async (page: Page, title: string): Promise<void> => {
   await expect(page.getByRole("link", { name: new RegExp(title) })).toBeVisible()
   await expect(page.getByRole("link", { name: /Hidden title evidence lantern/ })).toHaveCount(0)
@@ -255,22 +269,24 @@ test("keyword search finds only the approved session, message, PR, and tool sour
   }
 })
 
-test("repository, branch, PR number, and full or unique-prefix commit controls narrow sessions", async ({
+test("SC70, SC71: repository, branch, PR number, and full or unique-prefix commit controls narrow sessions", async ({
   authedPage: page,
 }) => {
   await page.goto("/sessions")
 
-  await page.getByRole("combobox", { name: "Repository" }).selectOption({ label: "acme/samskara" })
+  await chooseFilter(page, "Repository", "acme", "acme/samskara")
   await expect(page.getByRole("link", { name: /Structured message association/ })).toBeVisible()
   await expect(page.getByRole("link", { name: /Structured commit association/ })).toBeVisible()
   await expect(
     page.getByRole("link", { name: /Structured pull request association/ }),
   ).toBeVisible()
 
-  await page.getByRole("combobox", { name: "Branch" }).selectOption("release/search")
+  await chooseFilter(page, "Branch", "release", "release/search")
   await expectOnlySession(page, "Structured commit association")
 
-  await page.getByRole("combobox", { name: "Branch" }).selectOption("")
+  await page.getByRole("button", { name: "Clear Branch" }).click()
+  await expect(page).not.toHaveURL(/branch=/)
+  await expect(page.getByRole("link", { name: /Structured message association/ })).toBeVisible()
   await page.getByRole("textbox", { name: "PR number" }).fill("73")
   await page.getByRole("textbox", { name: "PR number" }).press("Enter")
   await expectOnlySession(page, "Structured pull request association")
@@ -288,45 +304,40 @@ test("repository, branch, PR number, and full or unique-prefix commit controls n
   await expectOnlySession(page, "Structured commit association")
 })
 
-test("keyword and structured filters combine with AND while authorized vocabulary ignores active filters", async ({
+test("SC72: keyword and structured filters combine with AND while authorized vocabulary ignores active filters", async ({
   authedPage: page,
 }) => {
   await page.goto("/sessions")
   await search(page, "combined-needle")
   await expectOnlySession(page, "Structured message association")
 
-  await expect(
-    page.getByRole("combobox", { name: "Project" }).getByRole("option", { name: "Samskara" }),
-  ).toBeAttached()
-  await expect(
-    page.getByRole("combobox", { name: "Project" }).getByRole("option", { name: "Andromeda" }),
-  ).toBeAttached()
-  await expect(
-    page.getByRole("combobox", { name: "User" }).getByRole("option", { name: E2E_USER_LOGIN }),
-  ).toBeAttached()
-  await expect(
-    page
-      .getByRole("combobox", { name: "User" })
-      .getByRole("option", { name: E2E_OTHER_USER_LOGIN }),
-  ).toBeAttached()
-  await expect(
-    page
-      .getByRole("combobox", { name: "Repository" })
-      .getByRole("option", { name: "acme/samskara" }),
-  ).toBeAttached()
-  await expect(
-    page.getByRole("combobox", { name: "Repository" }).getByRole("option", { name: "acme/sealed" }),
-  ).toHaveCount(0)
+  await openMenu(page, "Project")
+  await expect(page.getByRole("option", { name: "Samskara" })).toBeAttached()
+  await expect(page.getByRole("option", { name: "Andromeda" })).toBeAttached()
+
+  await openMenu(page, "User")
+  await expect(page.getByRole("option", { name: E2E_USER_LOGIN })).toBeAttached()
+  await expect(page.getByRole("option", { name: E2E_OTHER_USER_LOGIN })).toBeAttached()
+
+  // The only check that a reader is never offered a repository they cannot see. Typed rather than
+  // opened whole, so the 50-item cap cannot hide the negative as the fixture grows.
+  await page.getByRole("combobox", { name: "Repository" }).fill("acme/")
+  await expect(page.getByRole("option", { name: "acme/samskara" })).toBeAttached()
+  await expect(page.getByRole("option", { name: "acme/sealed" })).toHaveCount(0)
+  await page.getByRole("button", { name: "Clear Repository" }).click()
+
+  await openMenu(page, "Branch")
   for (const branch of ["feature/search", "release/search", "feature/pr-filter"]) {
-    await expect(
-      page.getByRole("combobox", { name: "Branch" }).getByRole("option", { name: branch }),
-    ).toBeAttached()
+    await expect(page.getByRole("option", { name: branch })).toBeAttached()
   }
 
-  await page.getByRole("combobox", { name: "Project" }).selectOption(projectId("samskara"))
-  await page.getByRole("combobox", { name: "User" }).selectOption(E2E_USER_LOGIN)
-  await page.getByRole("combobox", { name: "Repository" }).selectOption({ label: "acme/samskara" })
-  await page.getByRole("combobox", { name: "Branch" }).selectOption("feature/search")
+  await chooseFilter(page, "Project", "Samskara", "Samskara")
+  await expect(page).toHaveURL(new RegExp(`project=${projectId("samskara")}`))
+  await expect(page.getByText(/^within /i)).toContainText("Samskara")
+  await expect(page.getByText(/^within /i)).not.toContainText(projectId("samskara"))
+  await chooseFilter(page, "User", E2E_USER_LOGIN, E2E_USER_LOGIN)
+  await chooseFilter(page, "Repository", "acme", "acme/samskara")
+  await chooseFilter(page, "Branch", "feature/search", "feature/search")
   await page.getByRole("textbox", { name: "PR number" }).fill("42")
   await page.getByRole("textbox", { name: "PR number" }).press("Enter")
 
@@ -413,9 +424,12 @@ test("SC35: project links use accessible link semantics, filters restore through
   await page.goto("/projects")
   await page.getByRole("link", { name: /Samskara/ }).click()
 
+  // A project card opens the project page; the session list is one link further on.
+  await expect(page).toHaveURL(new RegExp(`/projects/${projectId("samskara")}$`))
+  await page.getByRole("link", { name: /all \d+ sessions/i }).click()
   await expect(page).toHaveURL(new RegExp(`/sessions\\?project=${projectId("samskara")}$`))
   await expect(page.getByRole("link", { name: /Pagination ledger 51/ })).toBeVisible()
-  await page.getByRole("combobox", { name: "User" }).selectOption(E2E_OTHER_USER_LOGIN)
+  await chooseFilter(page, "User", E2E_OTHER_USER_LOGIN, E2E_OTHER_USER_LOGIN)
   await expect(page.getByRole("link", { name: /Wire the auth guard/ })).toBeVisible()
 
   await page.goBack()
@@ -429,15 +443,18 @@ test("SC35: project links use accessible link semantics, filters restore through
   expect(overflow).toBeLessThanOrEqual(0)
 })
 
-test("SC34: clicking an org project card opens its sessions by id and the card shows the org", async ({
+test("SC34: clicking an org project card opens its project page, and the card shows the org", async ({
   authedPage: page,
 }) => {
   await page.goto("/projects")
 
-  const acmeWidgetCard = page.locator(`a[href="/sessions?project=${projectId("acme-widget")}"]`)
+  const acmeWidgetCard = page.locator(`a[href="/projects/${projectId("acme-widget")}"]`)
   await expect(acmeWidgetCard).toContainText("acme")
 
   await acmeWidgetCard.click()
+  await expect(page).toHaveURL(new RegExp(`/projects/${projectId("acme-widget")}$`))
+
+  await page.getByRole("link", { name: /all \d+ sessions/i }).click()
   await expect(page).toHaveURL(new RegExp(`/sessions\\?project=${projectId("acme-widget")}$`))
   await expect(page.getByRole("link", { name: /Acme widget session/i })).toBeVisible()
 })
@@ -448,7 +465,7 @@ test("SC8: a member sees the org's project card; a non-member does not", async (
 }) => {
   // Matched by href rather than accessible name: a dev database can carry an unrelated
   // "acme-widgets" project whose name would also satisfy a substring/regex name match.
-  const acmeWidgetCard = page.locator(`a[href="/sessions?project=${projectId("acme-widget")}"]`)
+  const acmeWidgetCard = page.locator(`a[href="/projects/${projectId("acme-widget")}"]`)
 
   await page.goto("/projects")
   await expect(acmeWidgetCard).toBeVisible()

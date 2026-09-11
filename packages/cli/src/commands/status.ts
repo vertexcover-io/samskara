@@ -5,6 +5,7 @@ import { readToken } from "../config/credentials.js"
 import { watcherPid } from "../config/daemon.js"
 import { configHome, profile, statePath, watchLogDir } from "../config/paths.js"
 import { listProjects } from "../config/projects.js"
+import { warnOnServerChange } from "../config/server-scope.js"
 import { apiBase, webBase } from "../config.js"
 import { relativeTime, resolveIo, type Writer } from "../io.js"
 import { verifyToken } from "../login.js"
@@ -41,7 +42,8 @@ const latestSyncBySlug = async (): Promise<ReadonlyMap<string, string>> => {
 }
 
 export const statusCommand = async (options: StatusOptions = {}): Promise<number> => {
-  const { stdout } = resolveIo(options)
+  const { stdout, stderr } = resolveIo(options)
+  await warnOnServerChange(stderr).catch(() => {})
   const now = (options.now ?? (() => new Date()))()
   const projects = [...(await listProjects())].sort((a, b) => a.slug.localeCompare(b.slug))
   // Reported inline rather than thrown: `status` is the command someone runs to find out what is

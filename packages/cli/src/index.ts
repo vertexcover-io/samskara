@@ -2,6 +2,7 @@
 import { realpathSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { Command } from "commander"
+import { uploadArtifactsCommand } from "./commands/artifacts.js"
 import { disableCommand } from "./commands/disable.js"
 import { enableCommand } from "./commands/enable.js"
 import { ensureCommand } from "./commands/ensure.js"
@@ -51,10 +52,12 @@ program
   .description("Choose a server, authenticate, install the SessionStart hook, start the watcher")
   .option("--server <url>", "Samskara API URL (default: http://localhost:3000)")
   .option("--web <url>", "Samskara web URL (default: http://localhost:8000)")
-  .action(async (options: { server?: string; web?: string }) => {
+  .option("--force", "point an already-configured install at a different server")
+  .action(async (options: { server?: string; web?: string; force?: boolean }) => {
     process.exitCode = await initCommand({
       ...(options.server === undefined ? {} : { server: options.server }),
       ...(options.web === undefined ? {} : { web: options.web }),
+      ...(options.force === true ? { force: true } : {}),
     })
   })
 
@@ -223,6 +226,33 @@ program
       { fetch: globalThis.fetch },
     )
   })
+
+const artifacts = program.command("artifacts").description("Work with session artifacts")
+
+artifacts
+  .command("upload <sessionId> <paths...>")
+  .description("Upload files as artifacts of a session")
+  .option("--base-dir <dir>", "derive relative paths against this directory (default: cwd)")
+  .option("--no-created", "record the files as edited rather than created")
+  .option("--dry-run", "show what would upload, and upload nothing")
+  .action(
+    async (
+      sessionId: string,
+      paths: string[],
+      flags: { baseDir?: string; created?: boolean; dryRun?: boolean },
+    ) => {
+      process.exitCode = await uploadArtifactsCommand(
+        {
+          sessionId,
+          paths,
+          ...(flags.baseDir === undefined ? {} : { baseDir: flags.baseDir }),
+          created: flags.created !== false,
+          dryRun: flags.dryRun === true,
+        },
+        { apiBase: apiBase(), token: await readToken(), fetch: globalThis.fetch },
+      )
+    },
+  )
 
 program
   .command("restart")

@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm"
+import { asc, eq } from "drizzle-orm"
 import type { Db, Querier } from "../db/client.js"
 import { users } from "../db/schema.js"
 
@@ -35,8 +35,14 @@ export const findByGithubId = async (db: Db, githubId: number): Promise<User | n
   return user ?? null
 }
 
+/** `githubLogin` has no unique constraint, so order by the id that does. */
 export const findByGithubLogin = async (db: Db, githubLogin: string): Promise<User | null> => {
-  const [user] = await db.select().from(users).where(eq(users.githubLogin, githubLogin))
+  const [user] = await db
+    .select()
+    .from(users)
+    .where(eq(users.githubLogin, githubLogin))
+    .orderBy(asc(users.githubId))
+    .limit(1)
   return user ?? null
 }
 

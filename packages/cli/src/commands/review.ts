@@ -342,7 +342,9 @@ export const reviewCommand = async (
 ): Promise<number> => {
   const deps: ReviewDeps = {
     apiBase: options.apiBase ?? apiBase(),
-    token: options.token ?? (await readToken()),
+    // `??` would treat an explicit null as "unset" and fall through to the stored token,
+    // so a caller that means "not paired" reads the developer's real credentials instead.
+    token: "token" in options ? (options.token ?? null) : await readToken(),
     fetch: options.fetch ?? globalThis.fetch,
     now: options.now,
     stdout: options.stdout,

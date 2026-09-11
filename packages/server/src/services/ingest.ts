@@ -21,16 +21,8 @@ import * as sessionsRepo from "../repositories/sessions.repo.js"
 import * as subagentsRepo from "../repositories/subagents.repo.js"
 import * as tokenUsageRepo from "../repositories/tokenUsage.repo.js"
 import * as toolRowsRepo from "../repositories/toolRows.repo.js"
+import { applyTransformers, type FlatMessage } from "./messageTransformers.js"
 import { findOrCreateProject } from "./projects.js"
-
-type FlatMessage = {
-  readonly message: NormalizedMessage
-  readonly lineUuid: string
-  readonly lineNumber: number
-  readonly raw: unknown
-  readonly sourceRelativePath: string
-  readonly isSubagent: boolean
-}
 
 const flatten = (
   records: ReadonlyArray<ParsedRecord>,
@@ -54,15 +46,9 @@ type RepoIdKey = string
 // collapse onto one key.
 const KEY_SEPARATOR = "\n"
 
-// Mirrors the (host, owner, repoName) part of repos' identity -- `userId` is constant across one
-// ingest.
 const repoKeyOf = (repo: RepoIdentity): RepoIdKey =>
   [repo.host, repo.owner, repo.repoName].join(KEY_SEPARATOR)
 
-/**
- * A PR's URL carries no owner type, and `ownerType` is not part of the identity key, so a
- * PR-derived repo collapses onto the same row as a cwd-derived one.
- */
 const prRepoOf = (event: PullRequestEvent): RepoIdentity => ({
   host: event.host,
   owner: event.owner,
@@ -74,7 +60,7 @@ const repoOf = (event: GitEvent): RepoIdentity | undefined =>
 
 /**
  * Upserts each distinct repo once before the rows are mapped, so `toMessageRow` stays pure and
- * synchronous -- mirroring how the project is upserted once rather than per row.
+ * synchronous.
  */
 const resolveRepoIds = async (
   tx: Querier,
@@ -92,7 +78,8 @@ const resolveRepoIds = async (
   }
   const resolved = new Map<RepoIdKey, string>()
   for (const [key, identity] of distinct) {
-    resolved.set(key, await reposRepo.upsertByIdentity(tx, identity, userId))
+    const owner = await reposRepo.ownerFor(tx, identity, userId)
+    resolved.set(key, await reposRepo.upsertByIdentity(tx, identity, owner))
   }
   return resolved
 }
@@ -262,7 +249,9 @@ export type Ctx = { readonly db: Db; readonly log: pino.Logger; readonly userId:
 
 export const ingest = async (ctx: Ctx, payload: IngestPayload): Promise<IngestResponse> => {
   const { db, log, userId } = ctx
-  const flat = flatten(payload.records, payload.sourceRelativePath, payload.type === "subagent")
+  const { messages: flat, changed } = applyTransformers(
+    flatten(payload.records, payload.sourceRelativePath, payload.type === "subagent"),
+  )
 
   try {
     return await db.transaction(async (tx) => {
@@ -320,7 +309,12 @@ export const ingest = async (ctx: Ctx, payload: IngestPayload): Promise<IngestRe
       await storeTokens(tx, flat, idByKey)
       await subagentsRepo.resolveParentAgentIds(tx, payload.sessionId)
       log.info(
-        { sessionId: payload.sessionId, accepted: ingested, duplicates: deduped },
+        {
+          sessionId: payload.sessionId,
+          accepted: ingested,
+          duplicates: deduped,
+          transformed: Object.fromEntries(changed),
+        },
         "Ingestion completed",
       )
       return { ingested, deduped }

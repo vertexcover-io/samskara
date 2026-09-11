@@ -21,6 +21,7 @@ const samskara: ProjectSummary = {
   owner: { type: "user", slug: "e2e-user" },
   sessionCount: 3,
   lastActiveAt: "2026-02-01T09:30:00.000Z",
+  repo: null,
 }
 
 const jsonResponse = (status: number, body: unknown): Response =>
@@ -108,6 +109,7 @@ test("SC10: the projects page renders one card for each project the API returns"
     owner: { type: "user", slug: "e2e-user" },
     sessionCount: 0,
     lastActiveAt: null,
+    repo: null,
   }
   stubFetch({
     me: () => Promise.resolve(jsonResponse(200, user)),
@@ -158,7 +160,7 @@ test("S10: a session that expires after /api/auth/me resolved lands on /login an
   expect(calls.filter((path) => path.endsWith("/api/projects")).length).toBeLessThanOrEqual(1)
 })
 
-test("S13, SC32: activating the samskara card navigates to /sessions?project=<id> with the project id encoded", async () => {
+test("SC7: activating the samskara card navigates to its project page with the project id encoded", async () => {
   stubFetch({
     me: () => Promise.resolve(jsonResponse(200, user)),
     projects: () => Promise.resolve(jsonResponse(200, { projects: [samskara] })),
@@ -170,5 +172,5 @@ test("S13, SC32: activating the samskara card navigates to /sessions?project=<id
   const card = await within(main).findByRole("link", { name: /samskara/i })
   await userEvent.click(card)
 
-  expect(screen.getByTestId("location")).toHaveTextContent("/sessions?project=p-1")
+  expect(screen.getByTestId("location")).toHaveTextContent("/projects/p-1")
 })

@@ -42,7 +42,7 @@ const jsonText = (column: string): string =>
  * because drizzle-kit's loader cannot follow an import out of this file.
  */
 export const SEARCH_DOCUMENT_TEXT = {
-  sessions: `((coalesce("sessions"."title", '') || ' ') || "sessions"."id")`,
+  sessions: `((((((coalesce("sessions"."name", '') || ' ') || coalesce("sessions"."description", '')) || ' ') || coalesce("sessions"."title", '')) || ' ') || "sessions"."id")`,
   messages: `(((("messages"."id"::text || ' ') || ${jsonText('"messages"."content"')}) || ' ') || ${jsonText('"messages"."details"')})`,
   pullRequests: `coalesce("pullRequests"."title", '')`,
   toolCall: `(("toolCall"."toolId" || ' ') || ${jsonText('"toolCall"."toolInput"')})`,
@@ -95,22 +95,24 @@ export const repos = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     host: text("host").notNull(),
     owner: text("owner").notNull(),
-    // Nullable and unconstrained: a remote URL cannot tell a user repo from an org repo, and a
-    // PR-derived repo may never have been a cwd. Guessing 'org' asserted a fact we do not have.
-    // Out of the identity key for the same reason -- an unknown must not split one repo in two.
-    ownerType: text("ownerType"),
     repoName: text("repoName").notNull(),
-    userId: uuid("userId")
-      .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
+    ownerUserId: uuid("userId").references(() => users.id, { onDelete: "cascade" }),
+    ownerOrgId: uuid("ownerOrgId").references(() => orgs.id, { onDelete: "cascade" }),
     createdAt,
     updatedAt,
   },
-  // Repos are personal, mirroring projects' UNIQUE (slug, ownerId): the same repo seen by two
-  // users is two rows. `host` is in the key because github.com/acme/x and gitlab.com/acme/x are
-  // genuinely different repos -- and it does not split ssh from https, since `parseRemote`
-  // yields the same host string for both forms.
-  (t) => [unique("repos_identity_unique").on(t.host, t.owner, t.repoName, t.userId)],
+  // `host` is in the key because github.com/acme/x and gitlab.com/acme/x are different repos. It
+  // does not split ssh from https: `resolveRemote` yields the same host string for both forms.
+  (t) => [
+    check("repos_one_owner_check", sql`(${t.ownerUserId} is null) <> (${t.ownerOrgId} is null)`),
+    uniqueIndex("repos_identity_owner_user_unique")
+      .on(sql`lower(${t.host})`, sql`lower(${t.owner})`, sql`lower(${t.repoName})`, t.ownerUserId)
+      .where(sql`${t.ownerOrgId} is null`),
+    uniqueIndex("repos_identity_owner_org_unique")
+      .on(sql`lower(${t.host})`, sql`lower(${t.owner})`, sql`lower(${t.repoName})`, t.ownerOrgId)
+      .where(sql`${t.ownerUserId} is null`),
+    index("repos_owner_org_idx").on(t.ownerOrgId),
+  ],
 )
 
 export const userOrgs = pgTable(
@@ -135,6 +137,7 @@ export const projects = pgTable(
     slug: text("slug").notNull(),
     ownerUserId: uuid("ownerId").references(() => users.id, { onDelete: "cascade" }),
     ownerOrgId: uuid("ownerOrgId").references(() => orgs.id, { onDelete: "cascade" }),
+    repoId: uuid("repoId").references(() => repos.id, { onDelete: "set null" }),
     createdAt,
     updatedAt,
   },
@@ -188,6 +191,8 @@ export const sessions = pgTable(
     model: text("model"),
     provider: text("provider"),
     title: text("title"),
+    name: text("name"),
+    description: text("description"),
     cwd: text("cwd"),
     startCommit: text("startCommit"),
     cliVersion: text("cliVersion"),

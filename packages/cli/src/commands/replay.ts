@@ -1,6 +1,7 @@
 import { basename, sep } from "node:path"
 import { checkpointStoreSchema } from "@samskara/core"
 import { atomicWriteJson, readJson, withFileLock } from "../config/atomic.js"
+import { refuseOnServerChange, stampIn } from "../config/server-scope.js"
 import { resolveIo, type Writer } from "../io.js"
 
 export type ReplayDeps = {
@@ -16,6 +17,7 @@ export type ReplayDeps = {
   readonly stopWatcher: () => Promise<boolean>
   readonly startWatcher: () => Promise<unknown>
   readonly stdout?: Writer
+  readonly stderr?: Writer
 }
 
 /**
@@ -26,6 +28,12 @@ export type ReplayDeps = {
 export const belongsToSession = (filePath: string, sessionId: string): boolean =>
   basename(filePath) === `${sessionId}.jsonl` || filePath.includes(`${sep}${sessionId}${sep}`)
 
+// The stamp on disk, not a fresh one: a replay removes a session, it does not re-home the file.
+const carried = (value: unknown): { readonly apiBase?: string } => {
+  const recorded = stampIn(value)
+  return recorded === null ? {} : { apiBase: recorded }
+}
+
 const clearCheckpoints = async (path: string, sessionId: string): Promise<number> =>
   withFileLock(path, async () => {
     const parsed = checkpointStoreSchema.safeParse(await readJson(path))
@@ -35,7 +43,11 @@ const clearCheckpoints = async (path: string, sessionId: string): Promise<number
       ([, checkpoint]) => !belongsToSession(checkpoint.filePath, sessionId),
     )
     const dropped = Object.keys(parsed.data.checkpoints).length - kept.length
-    if (dropped > 0) await atomicWriteJson(path, { checkpoints: Object.fromEntries(kept) })
+    if (dropped > 0)
+      await atomicWriteJson(path, {
+        ...carried(parsed.data),
+        checkpoints: Object.fromEntries(kept),
+      })
     return dropped
   })
 
@@ -49,7 +61,11 @@ const clearArtifactState = async (path: string, sessionId: string): Promise<numb
     const kept = Object.entries(artifacts).filter(([key]) => !key.startsWith(`${sessionId}:`))
     const dropped = Object.keys(artifacts).length - kept.length
     if (dropped > 0)
-      await atomicWriteJson(path, { version: 1, artifacts: Object.fromEntries(kept) })
+      await atomicWriteJson(path, {
+        version: 1,
+        ...carried(state),
+        artifacts: Object.fromEntries(kept),
+      })
     return dropped
   })
 
@@ -61,7 +77,12 @@ const clearQueue = async (path: string, sessionId: string): Promise<number> =>
 
     const kept = entries.filter((entry) => entry.sessionId !== sessionId)
     const dropped = entries.length - kept.length
-    if (dropped > 0) await atomicWriteJson(path, { version: 1, entries: kept })
+    if (dropped > 0)
+      await atomicWriteJson(path, {
+        version: 1,
+        ...carried(queue),
+        entries: kept,
+      })
     return dropped
   })
 
@@ -91,7 +112,8 @@ const deleteRemote = async (deps: ReplayDeps, sessionId: string): Promise<string
  * begin with.
  */
 export const replayCommand = async (sessionId: string, deps: ReplayDeps): Promise<number> => {
-  const { stdout } = resolveIo(deps)
+  const { stdout, stderr } = resolveIo(deps)
+  if (await refuseOnServerChange(stderr)) return 1
 
   if (!deps.token) {
     stdout.write("Not logged in. Run `samskara login` first.\n")

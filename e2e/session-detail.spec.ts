@@ -178,3 +178,28 @@ test("EDGE-008 S44: a session id that does not exist renders the not-found state
   await expect(page).toHaveURL(/\/sessions$/)
   await expect(page.getByRole("link", { name: /Make ingest idempotent/ })).toBeVisible()
 })
+
+test("SC21, A1: a rename typed in the browser survives a reload, and the session becomes findable by its new name", async ({
+  authedPage: page,
+}) => {
+  await page.goto("/sessions/e2e-detail-1")
+
+  await page.getByRole("button", { name: /edit/i }).click()
+  const nameField = page.getByRole("textbox", { name: "Name" })
+  await nameField.fill("Idempotent ingest fixups zircon")
+  await page.getByRole("button", { name: /save/i }).click()
+
+  const heading = page.getByRole("heading", { level: 1, name: "Idempotent ingest fixups zircon" })
+  await expect(heading).toBeVisible()
+
+  await page.reload()
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Idempotent ingest fixups zircon" }),
+  ).toBeVisible()
+
+  await page.goto(`/sessions?project=${projectId("samskara")}`)
+  await page.getByRole("searchbox", { name: /search session evidence/i }).fill("zircon")
+  await page.getByRole("button", { name: "Search", exact: true }).click()
+
+  await expect(page.getByRole("link", { name: /Idempotent ingest fixups zircon/ })).toBeVisible()
+})

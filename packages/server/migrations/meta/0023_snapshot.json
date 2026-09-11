@@ -1,6 +1,6 @@
 {
-  "id": "35544c38-8eb2-4fb1-a48d-030babddc101",
-  "prevId": "fc35004b-e60c-43d0-bbc5-88b999ab69a1",
+  "id": "09f29de6-421e-4963-b152-2c3483bef069",
+  "prevId": "5cbe6d49-31e0-442e-a5ce-edd5ff92a1a9",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -718,6 +718,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "repoId": {
+          "name": "repoId",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "createdAt": {
           "name": "createdAt",
           "type": "timestamp with time zone",
@@ -819,6 +825,19 @@
             "id"
           ],
           "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "projects_repoId_repos_id_fk": {
+          "name": "projects_repoId_repos_id_fk",
+          "tableFrom": "projects",
+          "tableTo": "repos",
+          "columnsFrom": [
+            "repoId"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
@@ -953,23 +972,29 @@
           "primaryKey": false,
           "notNull": true
         },
-        "ownerType": {
-          "name": "ownerType",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "repoName": {
           "name": "repoName",
           "type": "text",
           "primaryKey": false,
           "notNull": true
         },
+        "ownerType": {
+          "name": "ownerType",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "userId": {
           "name": "userId",
           "type": "uuid",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
+        },
+        "ownerOrgId": {
+          "name": "ownerOrgId",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
         },
         "createdAt": {
           "name": "createdAt",
@@ -986,7 +1011,91 @@
           "default": "now()"
         }
       },
-      "indexes": {},
+      "indexes": {
+        "repos_identity_owner_user_unique": {
+          "name": "repos_identity_owner_user_unique",
+          "columns": [
+            {
+              "expression": "host",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "owner",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "repoName",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "userId",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"repos\".\"ownerOrgId\" is null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "repos_identity_owner_org_unique": {
+          "name": "repos_identity_owner_org_unique",
+          "columns": [
+            {
+              "expression": "host",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "owner",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "repoName",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "ownerOrgId",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"repos\".\"userId\" is null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "repos_owner_org_idx": {
+          "name": "repos_owner_org_idx",
+          "columns": [
+            {
+              "expression": "ownerOrgId",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "repos_userId_users_id_fk": {
           "name": "repos_userId_users_id_fk",
@@ -1000,23 +1109,30 @@
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
+        },
+        "repos_ownerOrgId_orgs_id_fk": {
+          "name": "repos_ownerOrgId_orgs_id_fk",
+          "tableFrom": "repos",
+          "tableTo": "orgs",
+          "columnsFrom": [
+            "ownerOrgId"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "repos_identity_unique": {
-          "name": "repos_identity_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "host",
-            "owner",
-            "repoName",
-            "userId"
-          ]
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "repos_one_owner_check": {
+          "name": "repos_one_owner_check",
+          "value": "(\"repos\".\"userId\" is null) <> (\"repos\".\"ownerOrgId\" is null)"
         }
       },
-      "policies": {},
-      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.sessionPullRequests": {
@@ -1167,6 +1283,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "description": {
+          "name": "description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "cwd": {
           "name": "cwd",
           "type": "text",
@@ -1223,7 +1351,7 @@
           "primaryKey": false,
           "notNull": false,
           "generated": {
-            "as": "to_tsvector('simple'::regconfig, public.samskara_search_cap(((coalesce(\"sessions\".\"title\", '') || ' ') || \"sessions\".\"id\")))",
+            "as": "to_tsvector('simple'::regconfig, public.samskara_search_cap(((((((coalesce(\"sessions\".\"name\", '') || ' ') || coalesce(\"sessions\".\"description\", '')) || ' ') || coalesce(\"sessions\".\"title\", '')) || ' ') || \"sessions\".\"id\")))",
             "type": "stored"
           }
         }

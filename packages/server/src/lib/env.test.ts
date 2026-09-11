@@ -46,6 +46,24 @@ describe("loadEnv", () => {
     expect(env.localLoginLogin).toBe("teammate")
   })
 
+  test("a set LOCAL_LOGIN_SECRET makes the GitHub app optional - both keys may be blank", () => {
+    const env = loadEnv({
+      ...complete,
+      GITHUB_CLIENT_ID: "",
+      GITHUB_CLIENT_SECRET: "",
+      LOCAL_LOGIN_SECRET: "open sesame",
+    })
+    expect(env.githubClientId).toBe("")
+    expect(env.githubClientSecret).toBe("")
+    expect(env.localLoginSecret).toBe("open sesame")
+  })
+
+  test("without LOCAL_LOGIN_SECRET both GitHub keys are still required, and each is named", () => {
+    const bare = { ...complete, GITHUB_CLIENT_ID: "", GITHUB_CLIENT_SECRET: "" }
+    expect(() => loadEnv(bare)).toThrow(/GITHUB_CLIENT_ID/)
+    expect(() => loadEnv(bare)).toThrow(/GITHUB_CLIENT_SECRET/)
+  })
+
   test("parses SUPER_ADMIN_LOGINS into a trimmed, lowercased list", () => {
     expect(
       loadEnv({ ...complete, SUPER_ADMIN_LOGINS: " Harit , riteshK ,, " }).superAdminLogins,

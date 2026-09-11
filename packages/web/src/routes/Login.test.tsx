@@ -32,7 +32,6 @@ const jsonResponse = (status: number, body: unknown): Response =>
 type MethodsResponse = () => Promise<Response>
 type LocalResponse = (secret: string) => Promise<Response>
 
-/** Stubs /api/auth/methods (always called) and optionally /api/auth/local. */
 const stubAuthFetch = (methods: MethodsResponse, local?: LocalResponse): void => {
   vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
     const path = typeof input === "string" ? input : input.toString()
@@ -45,10 +44,10 @@ const stubAuthFetch = (methods: MethodsResponse, local?: LocalResponse): void =>
   })
 }
 
-const renderLogin = () =>
+const renderLogin = (onLocalSignedIn?: (path: string) => void) =>
   render(
     <MemoryRouter>
-      <Login />
+      <Login onLocalSignedIn={onLocalSignedIn} />
     </MemoryRouter>,
   )
 
@@ -57,17 +56,18 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-test("L1: while /api/auth/methods says local=false the page shows only the GitHub control", async () => {
-  stubAuthFetch(() => Promise.resolve(jsonResponse(200, { github: true, local: false })))
+test("L1: while /api/auth/methods says local=false no secret box appears", async () => {
+  // github=false is the synchronisation point: without it this passes on the first paint.
+  stubAuthFetch(() => Promise.resolve(jsonResponse(200, { github: false, local: false })))
 
   renderLogin()
 
-  expect(await screen.findByRole("link", { name: /continue with github/i })).toBeInTheDocument()
   await waitFor(() =>
-    expect(
-      screen.queryByRole("button", { name: /sign in with local secret/i }),
-    ).not.toBeInTheDocument(),
+    expect(screen.queryByRole("link", { name: /continue with github/i })).not.toBeInTheDocument(),
   )
+  expect(
+    screen.queryByRole("button", { name: /sign in with local secret/i }),
+  ).not.toBeInTheDocument()
   expect(screen.queryByLabelText("Local secret")).not.toBeInTheDocument()
 })
 
@@ -90,11 +90,7 @@ test("L3: a successful local login sends the typed secret and reloads to /", asy
   )
   const signedIn = vi.fn()
 
-  render(
-    <MemoryRouter>
-      <Login onLocalSignedIn={signedIn} />
-    </MemoryRouter>,
-  )
+  renderLogin(signedIn)
 
   await userEvent.type(await screen.findByLabelText("Local secret"), "open sesame")
   await userEvent.click(screen.getByRole("button", { name: /sign in with local secret/i }))
@@ -132,4 +128,33 @@ test("L5: a 404 unknown_user surfaces the seed hint rather than a generic failur
   await userEvent.click(screen.getByRole("button", { name: /sign in with local secret/i }))
 
   expect(await screen.findByRole("alert")).toHaveTextContent(/bun run seed/)
+})
+
+test("L6: typing after a rejection clears the alert straight away, before any new request", async () => {
+  stubAuthFetch(
+    () => Promise.resolve(jsonResponse(200, { github: true, local: true })),
+    () => Promise.resolve(jsonResponse(401, { error: "unauthorized" })),
+  )
+
+  renderLogin()
+
+  const field = await screen.findByLabelText("Local secret")
+  await userEvent.type(field, "not-the-secret")
+  await userEvent.click(screen.getByRole("button", { name: /sign in with local secret/i }))
+  expect(await screen.findByRole("alert")).toBeInTheDocument()
+
+  await userEvent.type(field, "x")
+
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+})
+
+test("L7: an unconfigured GitHub app drops its button rather than linking to an error page", async () => {
+  stubAuthFetch(() => Promise.resolve(jsonResponse(200, { github: false, local: true })))
+
+  renderLogin()
+
+  expect(
+    await screen.findByRole("button", { name: /sign in with local secret/i }),
+  ).toBeInTheDocument()
+  expect(screen.queryByRole("link", { name: /continue with github/i })).not.toBeInTheDocument()
 })

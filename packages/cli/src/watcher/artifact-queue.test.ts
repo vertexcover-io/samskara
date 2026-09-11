@@ -1,7 +1,8 @@
 import { mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { beforeEach, describe, expect, test } from "vitest"
+import { afterEach, beforeEach, describe, expect, test } from "vitest"
+import { writeSettings } from "../config/settings.js"
 import {
   type ArtifactQueueEntry,
   enqueue,
@@ -24,10 +25,18 @@ const entry = (over: Partial<ArtifactQueueEntry> = {}): ArtifactQueueEntry => ({
 })
 
 describe("artifact queue", () => {
+  const originalHome = process.env.SAMSKARA_HOME
   let queuePath: string
 
   beforeEach(async () => {
-    queuePath = join(await mkdtemp(join(tmpdir(), "samskara-queue-")), "artifact-queue.json")
+    const dir = await mkdtemp(join(tmpdir(), "samskara-queue-"))
+    queuePath = join(dir, "artifact-queue.json")
+    // The writers stamp via `persistedApiUrl()`, which reads `config.json` under `SAMSKARA_HOME`.
+    process.env.SAMSKARA_HOME = dir
+  })
+
+  afterEach(() => {
+    process.env.SAMSKARA_HOME = originalHome
   })
 
   test("S10: the key joins on a colon, which a session id can never contain", () => {
@@ -158,6 +167,20 @@ describe("artifact queue", () => {
     await enqueue(queuePath, [entry()], recorder.log)
 
     expect(recorder.warn).toHaveLength(0)
+  })
+
+  test("SC13: queueing an artifact records the server, and the entry stays readable and claimable", async () => {
+    await writeSettings({ apiUrl: "https://one.example", webUrl: "https://one.example" })
+
+    await enqueue(queuePath, [entry()])
+
+    const queue = await readQueue(queuePath)
+    expect(queue.apiBase).toBe("https://one.example")
+    expect(queue.entries).toEqual([entry()])
+
+    // `claim()` reads through `readQueueOrReset` -- a schema that rejected the new field would
+    // silently reset the file here instead of returning the entry.
+    expect(await readQueueOrReset(queuePath)).toEqual(queue)
   })
 
   test("the queue file is written as pretty JSON, matching the other config files", async () => {

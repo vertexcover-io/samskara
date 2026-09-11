@@ -1,6 +1,7 @@
 import type pino from "pino"
 import { z } from "zod"
 import { atomicWriteJson, readOrReset, readValidated, withFileLock } from "../config/atomic.js"
+import { persistedApiUrl } from "../config/server-scope.js"
 import { mergeArtifact, type PotentialArtifact } from "./artifact-extract.js"
 
 export const QUEUE_DEPTH_WARN_THRESHOLD = 200
@@ -21,7 +22,11 @@ const queueEntrySchema = z
   .readonly()
 
 const artifactQueueSchema = z
-  .object({ version: z.literal(1), entries: z.array(queueEntrySchema).readonly() })
+  .object({
+    version: z.literal(1),
+    apiBase: z.string().optional(),
+    entries: z.array(queueEntrySchema).readonly(),
+  })
   .strict()
   .readonly()
 
@@ -77,7 +82,11 @@ export const enqueue = async (
       merged.set(keyOf(entry), prev === undefined ? entry : fold(prev, entry))
     }
 
-    const next: ArtifactQueue = { version: 1, entries: [...merged.values()] }
+    const next: ArtifactQueue = {
+      version: 1,
+      apiBase: persistedApiUrl(),
+      entries: [...merged.values()],
+    }
     await atomicWriteJson(path, next)
 
     if (next.entries.length > QUEUE_DEPTH_WARN_THRESHOLD) {

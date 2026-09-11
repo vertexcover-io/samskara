@@ -4,7 +4,13 @@ import type { Db } from "../db/client.js"
 import type { Env } from "../lib/env.js"
 import { type AuthVariables, requireAuth } from "../lib/require-auth.js"
 import { validate } from "../lib/validate.js"
-import { listAccessibleSummaries, type ProjectSummaryRow } from "../repositories/projects.repo.js"
+import {
+  canDelete,
+  findVisibleSummaryById,
+  listAccessibleSummaries,
+  type ProjectSummaryRow,
+  remove,
+} from "../repositories/projects.repo.js"
 import { findOrCreateProject, reassignSessions } from "../services/projects.js"
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -21,6 +27,10 @@ const serialize = (row: ProjectSummaryRow) => ({
   owner: { type: row.ownerType, slug: row.ownerSlug },
   sessionCount: row.sessionCount,
   lastActiveAt: row.lastActiveAt === null ? null : new Date(row.lastActiveAt).toISOString(),
+  repo:
+    row.repoHost !== null && row.repoOwner !== null && row.repoName !== null
+      ? { host: row.repoHost, owner: row.repoOwner, repoName: row.repoName }
+      : null,
 })
 
 export const projectsRoutes = ({ db, env }: Deps) =>
@@ -32,12 +42,34 @@ export const projectsRoutes = ({ db, env }: Deps) =>
     // The CLI's `--project <name|slug>` needs a name-to-id lookup. `GET /` above is
     // web-audience-only by contract (a cli token never reads the web API), so this is the
     // cli-side counterpart: the same visibility, the bare fields resolution needs.
+    // Registered before `/:id` so the literal path is not captured by the param route.
     .get("/resolve", requireAuth({ db, env }, ["cli"]), async (c) => {
       const rows = await listAccessibleSummaries(db, c.get("user").id)
       return c.json(
         { projects: rows.map((row) => ({ id: row.id, name: row.name, slug: row.slug })) },
         200,
       )
+    })
+    .get("/:id", requireAuth({ db, env }, ["web"]), async (c) => {
+      const projectId = c.req.param("id")
+      if (!UUID.test(projectId)) return c.json({ error: "projectNotFound" }, 404)
+      const userId = c.get("user").id
+      const [row, deletable] = await Promise.all([
+        findVisibleSummaryById(db, userId, projectId),
+        canDelete(db, userId, projectId),
+      ])
+      if (row === null) return c.json({ error: "projectNotFound" }, 404)
+      return c.json({ project: serialize(row), viewerCanDelete: deletable }, 200)
+    })
+    .delete("/:id", requireAuth({ db, env }, ["web"]), async (c) => {
+      const projectId = c.req.param("id")
+      const userId = c.get("user").id
+      if (!UUID.test(projectId) || (await findVisibleSummaryById(db, userId, projectId)) === null) {
+        return c.json({ error: "projectNotFound" }, 404)
+      }
+      if (!(await canDelete(db, userId, projectId))) return c.json({ error: "forbidden" }, 403)
+      await remove(db, projectId)
+      return c.body(null, 204)
     })
     .post(
       "/",

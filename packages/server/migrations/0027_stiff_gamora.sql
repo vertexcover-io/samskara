@@ -1,3 +1,10 @@
+CREATE TABLE "learningSessions" (
+	"learningId" uuid NOT NULL,
+	"sessionId" text NOT NULL,
+	"createdAt" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "learningSessions_learningId_sessionId_pk" PRIMARY KEY("learningId","sessionId")
+);
+--> statement-breakpoint
 CREATE TABLE "learnings" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"projectId" uuid NOT NULL,
@@ -35,10 +42,13 @@ CREATE TABLE "sessionReviews" (
 	CONSTRAINT "sessionReviews_friction_check" CHECK ("sessionReviews"."friction" in ('none', 'moderate', 'high'))
 );
 --> statement-breakpoint
+ALTER TABLE "learningSessions" ADD CONSTRAINT "learningSessions_learningId_learnings_id_fk" FOREIGN KEY ("learningId") REFERENCES "public"."learnings"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "learningSessions" ADD CONSTRAINT "learningSessions_sessionId_sessions_id_fk" FOREIGN KEY ("sessionId") REFERENCES "public"."sessions"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "learnings" ADD CONSTRAINT "learnings_projectId_projects_id_fk" FOREIGN KEY ("projectId") REFERENCES "public"."projects"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "learnings" ADD CONSTRAINT "learnings_sourceReviewId_sessionReviews_id_fk" FOREIGN KEY ("sourceReviewId") REFERENCES "public"."sessionReviews"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "sessionReviews" ADD CONSTRAINT "sessionReviews_sessionId_sessions_id_fk" FOREIGN KEY ("sessionId") REFERENCES "public"."sessions"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "sessionReviews" ADD CONSTRAINT "sessionReviews_projectId_projects_id_fk" FOREIGN KEY ("projectId") REFERENCES "public"."projects"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+CREATE INDEX "learningSessions_sessionId_idx" ON "learningSessions" USING btree ("sessionId");--> statement-breakpoint
 CREATE INDEX "learnings_project_status_idx" ON "learnings" USING btree ("projectId","status");--> statement-breakpoint
 CREATE INDEX "learnings_audience_idx" ON "learnings" USING btree ("audience");--> statement-breakpoint
 CREATE INDEX "sessionReviews_project_idx" ON "sessionReviews" USING btree ("projectId");

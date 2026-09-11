@@ -18,22 +18,30 @@ type Props = {
 }
 
 export const ProjectCard = ({ project, to }: Props) => {
-  const { name, slug, owner, sessionCount, lastActiveAt } = project
+  const { id, name, slug, owner, sessionCount, lastActiveAt } = project
   const dormant = sessionCount === 0
 
   return (
-    <Link
-      to={to}
-      className="flex w-full flex-col gap-3 border border-rule bg-panel-2 p-4 text-left shadow-card transition-colors hover:border-ink-soft"
-    >
+    <article className="flex w-full flex-col gap-3 border border-rule bg-panel-2 p-4 text-left shadow-card transition-colors focus-within:border-ink-soft hover:border-ink-soft">
       <div className="min-w-0">
-        <h2 className="truncate text-[0.9375rem] font-semibold">{name}</h2>
+        <h2 className="truncate text-[0.9375rem] font-semibold">
+          <Link to={to} className="hover:underline">
+            {name}
+          </Link>
+        </h2>
         <p className="truncate font-mono text-[0.78rem] text-custody">/{slug}</p>
-        {owner.type === "org" ? (
-          <p className="truncate text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-ink-soft">
-            org · {owner.slug}
-          </p>
-        ) : null}
+        <p className="truncate text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-ink-soft">
+          {owner.type === "org" ? (
+            <Link
+              to={`/orgs/${encodeURIComponent(owner.slug)}`}
+              className="text-custody hover:underline"
+            >
+              org · {owner.slug}
+            </Link>
+          ) : (
+            "yours"
+          )}
+        </p>
       </div>
 
       <div className="grid grid-cols-2 gap-3">
@@ -48,10 +56,17 @@ export const ProjectCard = ({ project, to }: Props) => {
       </div>
 
       {dormant ? (
-        <output className="block border-t border-rule-soft pt-2 text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-warn">
-          No sessions captured
+        <output className="block border-t border-rule-soft pt-2 text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-ink-soft">
+          No sessions captured yet
         </output>
-      ) : null}
-    </Link>
+      ) : (
+        <Link
+          to={`/sessions?project=${encodeURIComponent(id)}`}
+          className="block border-t border-rule-soft pt-2 text-[0.78rem] font-semibold text-custody hover:underline"
+        >
+          View {sessionCount} sessions
+        </Link>
+      )}
+    </article>
   )
 }

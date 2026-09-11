@@ -2,6 +2,7 @@ import { realpath, stat } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
 import type { ProjectIdentity } from "@samskara/core"
 import { runGitOrNull } from "../git.js"
+import { canonicalSshHost } from "../ssh.js"
 
 export type ParsedRemote = {
   readonly host: string
@@ -9,14 +10,25 @@ export type ParsedRemote = {
   readonly repoName: string
 }
 
+const SSH_REMOTE = /^git@([^:]+):([^/]+)\/(.+)$/
+const HTTPS_REMOTE = /^https?:\/\/([^/]+)\/([^/]+)\/(.+)$/
+
+const clean = (url: string): string => url.trim().replace(/\.git$/, "")
+
 export const parseRemote = (url: string): ParsedRemote | null => {
-  const cleaned = url.trim().replace(/\.git$/, "")
-  const ssh = cleaned.match(/^git@([^:]+):([^/]+)\/(.+)$/)
+  const cleaned = clean(url)
+  const ssh = cleaned.match(SSH_REMOTE)
   if (ssh?.[1] && ssh[2] && ssh[3]) return { host: ssh[1], owner: ssh[2], repoName: ssh[3] }
-  const https = cleaned.match(/^https?:\/\/([^/]+)\/([^/]+)\/(.+)$/)
+  const https = cleaned.match(HTTPS_REMOTE)
   if (https?.[1] && https[2] && https[3])
     return { host: https[1], owner: https[2], repoName: https[3] }
   return null
+}
+
+export const resolveRemote = async (url: string): Promise<ParsedRemote | null> => {
+  const parsed = parseRemote(url)
+  if (parsed === null || !SSH_REMOTE.test(clean(url))) return parsed
+  return { ...parsed, host: await canonicalSshHost(parsed.host) }
 }
 
 // Blanket-replace both `/` and `\` so the slug is stable cross-platform.
@@ -60,7 +72,7 @@ export const resolveProject = async (startDir: string): Promise<ProjectIdentity 
   const declared = (await gitRootOf(startDir)) ?? resolve(startDir)
   const root = await realpath(declared).catch(() => declared)
   const remote = await runGitOrNull(["config", "--get", "remote.origin.url"], root)
-  const parsed = remote ? parseRemote(remote) : null
+  const parsed = remote ? await resolveRemote(remote).catch(() => parseRemote(remote)) : null
   if (parsed) {
     const { host, owner, repoName } = parsed
     return { name: repoName, slug: `${owner}-${repoName}`, root, remote: { host, owner, repoName } }

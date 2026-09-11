@@ -1,10 +1,12 @@
-import { mkdtemp } from "node:fs/promises"
+import { mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ProjectIdentity } from "@samskara/core"
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
 import { reviveWatcher, watcherPid } from "../config/daemon.js"
+import { projectsPath } from "../config/paths.js"
 import { getProject, upsertProject } from "../config/projects.js"
+import { writeSettings } from "../config/settings.js"
 import { resolveProject } from "../watcher/resolveProject.js"
 import { disableCommand } from "./disable.js"
 import { enableCommand } from "./enable.js"
@@ -522,6 +524,39 @@ describe("enable command", () => {
     })
     expect(output.join("")).toContain("Nothing to change")
   })
+
+  test("SC23: a mismatched projects.json refuses enable, leaving the file byte-for-byte unchanged", async () => {
+    const { output } = await setup()
+    const errors: string[] = []
+    await writeSettings({ apiUrl: "https://two.example", webUrl: "https://two.example" })
+    const before = JSON.stringify({
+      version: 1,
+      apiBase: "https://one.example",
+      projects: {
+        "acme-widget": {
+          name: "widget",
+          path: "/work/widget",
+          enabled: true,
+          enabledAt: "2026-07-25T10:00:00.000Z",
+          projectId: FAKE_PROJECT_ID,
+        },
+      },
+    })
+    await writeFile(projectsPath(), before, "utf8")
+
+    const code = await enableCommand({
+      ...defaultDeps,
+      cwd: "/work/widget",
+      stdout: { write: (text) => output.push(text) },
+      stderr: { write: (text) => errors.push(text) },
+    })
+
+    expect(code).toBe(1)
+    expect(errors.join("")).toContain("https://one.example")
+    expect(errors.join("")).toContain("https://two.example")
+    expect(errors.join("")).toContain("samskara init --force")
+    expect(await readFile(projectsPath(), "utf8")).toBe(before)
+  })
 })
 
 describe("disable command", () => {
@@ -577,6 +612,35 @@ describe("disable command", () => {
 
     expect([first, second]).toEqual([0, 0])
     expect(await getProject("acme-widget")).toBeNull()
+  })
+
+  test("SC23b: a mismatched projects.json refuses disable, leaving the file byte-for-byte unchanged", async () => {
+    const { output } = await setup()
+    const errors: string[] = []
+    await writeSettings({ apiUrl: "https://two.example", webUrl: "https://two.example" })
+    const before = JSON.stringify({
+      version: 1,
+      apiBase: "https://one.example",
+      projects: {
+        "acme-widget": {
+          name: "widget",
+          path: "/work/widget",
+          enabled: true,
+          enabledAt: "2026-07-25T10:00:00.000Z",
+        },
+      },
+    })
+    await writeFile(projectsPath(), before, "utf8")
+
+    const code = await disableCommand({
+      cwd: "/work/widget",
+      stdout: { write: (text) => output.push(text) },
+      stderr: { write: (text) => errors.push(text) },
+    })
+
+    expect(code).toBe(1)
+    expect(errors.join("")).toContain("samskara init --force")
+    expect(await readFile(projectsPath(), "utf8")).toBe(before)
   })
 })
 

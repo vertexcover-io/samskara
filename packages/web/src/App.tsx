@@ -4,6 +4,9 @@ import { AuthProvider, useAuth } from "./auth/AuthProvider.js"
 import { RequireAuth } from "./auth/RequireAuth.js"
 import { Learnings } from "./routes/Learnings.js"
 import { Login } from "./routes/Login.js"
+import { OrgDetail } from "./routes/OrgDetail.js"
+import { Orgs } from "./routes/Orgs.js"
+import { ProjectDetail } from "./routes/ProjectDetail.js"
 import { Projects } from "./routes/Projects.js"
 import { SessionDetail } from "./routes/SessionDetail.js"
 import { Sessions } from "./routes/Sessions.js"
@@ -33,6 +36,30 @@ export const AppRoutes = () => (
       element={
         <Protected>
           <Projects />
+        </Protected>
+      }
+    />
+    <Route
+      path="/projects/:id"
+      element={
+        <Protected>
+          <ProjectDetail />
+        </Protected>
+      }
+    />
+    <Route
+      path="/orgs"
+      element={
+        <Protected>
+          <Orgs />
+        </Protected>
+      }
+    />
+    <Route
+      path="/orgs/:slug"
+      element={
+        <Protected>
+          <OrgDetail />
         </Protected>
       }
     />

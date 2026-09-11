@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest"
-import { checkpointSchema } from "./types.js"
+import { checkpointSchema, checkpointStoreSchema } from "./types.js"
 
 const legacyCheckpoint = {
   filePath: "/sessions/a.jsonl",
@@ -20,5 +20,20 @@ describe("checkpoint project identity", () => {
 
     expect(parsed.success).toBe(true)
     if (parsed.success) expect(parsed.data.projectSlug).toBe("acme-widget")
+  })
+
+  test("SC11: the store schema carries an optional apiBase, so the CLI's stamp survives a parse", () => {
+    const parsed = checkpointStoreSchema.safeParse({
+      checkpoints: { "/a.jsonl": legacyCheckpoint },
+      apiBase: "https://one.example",
+    })
+
+    expect(parsed.success).toBe(true)
+    if (parsed.success) expect(parsed.data.apiBase).toBe("https://one.example")
+
+    // Not `.strict()`: a store written before this field existed must keep parsing.
+    const legacy = checkpointStoreSchema.safeParse({ checkpoints: {} })
+    expect(legacy.success).toBe(true)
+    if (legacy.success) expect(legacy.data.apiBase).toBeUndefined()
   })
 })

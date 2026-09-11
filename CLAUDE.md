@@ -138,7 +138,12 @@ today, so plain PostgreSQL is enough; `recreate` drops and rebuilds the cluster 
 - `bun run db:verify` — read-only check that every step is already converged
 - `bun run seed` — idempotent dev fixture: dev user, org, project, 3 sessions, then restores `.seed/identity.json` if it is there. `--from FILE` reads a different snapshot; `--if-empty` makes it a no-op when the database already has projects, which is how `setup` stays safe to re-run
 - `bun run seed:capture` — write `.seed/identity.json` from the current database. `--to FILE` writes elsewhere. Writes nothing when no real user has signed in yet
-- `bun run seed:org ORG_SLUG` — register a real GitHub org
+- `bun run seed:org ORG_SLUG` — register a real GitHub org, and the only path that works before
+  anyone has signed in. Re-running it writes `autoAddMembers` from the flag you passed, so it is
+  also how you change that setting from a shell
+- A signed-in super admin registers further orgs from the web UI at `/orgs`. That path deliberately
+  does **not** touch an org that already exists: re-registering a slug to fix a typo must not reopen
+  automatic membership for everyone in that GitHub org
 
 **Post-migrate steps.** Some database work cannot live in a migration: `create index
 concurrently` is rejected inside a migration's transaction, so the full-text search indexes are
@@ -163,6 +168,25 @@ source of truth and generate migrations from it.
 
 The server's test suite starts a real `pgvector/pgvector:pg16` container via testcontainers and runs
 the migrations against it. Those tests skip themselves when Docker is not available.
+
+## Message transformers
+
+A client can be wrong about what it uploads — an older CLI missing a field a newer one sets. Fixing
+only the reader leaves every already-installed client still uploading the old shape, so the
+correction also runs server-side, in `MESSAGE_TRANSFORMERS`
+(`packages/server/src/services/messageTransformers.ts`). `ingest()`
+(`packages/server/src/services/ingest.ts`) runs the list on every arriving message before a row is
+built, and logs how many messages each entry changed in the `transformed` field of the "Ingestion
+completed" line — that count is how you tell whether a transformer still fires.
+
+A transformer may only fill in a value the client left unset, never overwrite one it sent, and
+returns its input unchanged when it doesn't apply — so leaving one registered after it stops being
+needed costs nothing but a reference comparison. Each entry's own docblock says the condition for
+deleting it (typically: this count reads zero across a full release, meaning every client now sets
+the value itself); retiring one is removing its entry from the list and nothing else.
+
+Rows already stored before a fix ships need a separate migration — a transformer only ever sees a
+message once, on the way in.
 
 ## Logging
 

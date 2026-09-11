@@ -21,3 +21,9 @@ blob-report/
 .humanlayer
 e2e/fixtures/p12-outside-*/
 .opencode/opencode.json
+
+# Written per-machine by Claude Code; biome only reads this file, not the global gitignore.
+.claude/settings.local.json
+
+# Local deploy script — machine specific, never committed.
+scripts/deploy.sh

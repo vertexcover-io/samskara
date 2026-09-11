@@ -70,14 +70,28 @@ test("clear search removes relevance and reset clears every control", async () =
   expect(onClear).toHaveBeenCalledOnce()
 })
 
-test("uses server vocabulary, preserves exact branch case, and deliberately applies PR and commit text", async () => {
+const choose = async (
+  user: ReturnType<typeof userEvent.setup>,
+  name: string,
+  typed: string,
+  option: string,
+): Promise<void> => {
+  await user.type(screen.getByRole("combobox", { name }), typed)
+  await user.click(screen.getByRole("option", { name: option }))
+}
+
+test("SC64: uses server vocabulary, preserves exact branch case, and deliberately applies PR and commit text", async () => {
   const user = userEvent.setup()
   const { onChange } = renderBar({ ...EMPTY_FILTERS, page: 2 })
 
-  await user.selectOptions(screen.getByRole("combobox", { name: "Repository" }), "repo-1")
+  for (const placeholder of ["All projects", "All users", "All repositories", "All branches"]) {
+    expect(screen.getByPlaceholderText(placeholder)).toBeInTheDocument()
+  }
+
+  await choose(user, "Repository", "acme", "acme/samskara")
   expect(onChange).toHaveBeenLastCalledWith({ ...EMPTY_FILTERS, repo: "repo-1" })
 
-  await user.selectOptions(screen.getByRole("combobox", { name: "Branch" }), "feat/Search")
+  await choose(user, "Branch", "feat/search", "feat/Search")
   expect(onChange).toHaveBeenLastCalledWith({ ...EMPTY_FILTERS, branch: "feat/Search" })
 
   const [prApply, commitApply] = screen.getAllByRole("button", { name: "Apply" })
@@ -108,4 +122,15 @@ test("only exposes relevance as a sort choice when a keyword is active", () => {
     />,
   )
   expect(screen.getByRole("option", { name: "Relevance" })).toBeInTheDocument()
+})
+
+test("SC65 (regression): Last active and Sort by are still native dropdowns", async () => {
+  const user = userEvent.setup()
+  const { onChange } = renderBar()
+
+  expect(screen.getByRole("combobox", { name: "Last active" })).toBeInstanceOf(HTMLSelectElement)
+  expect(screen.getByRole("combobox", { name: "Sort by" })).toBeInstanceOf(HTMLSelectElement)
+
+  await user.selectOptions(screen.getByRole("combobox", { name: "Sort by" }), "tokens")
+  expect(onChange).toHaveBeenLastCalledWith({ ...EMPTY_FILTERS, sort: "tokens" })
 })

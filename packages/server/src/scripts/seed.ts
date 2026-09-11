@@ -287,6 +287,14 @@ export const restoreIdentity = async (
   })
   if (links.length > 0) await target.insert(userOrgs).values(links).onConflictDoNothing()
 
+  // Joined to the dev org as well as their own: otherwise the org switcher lists one org and
+  // anything scoped to the seeded org reads as empty for a real github account.
+  const devOrg = await orgsRepo.findBySlug(target, DEV_ORG_SLUG)
+  if (devOrg) {
+    const devLinks = [...userIdByGithubId.values()].map((userId) => ({ userId, orgId: devOrg.id }))
+    if (devLinks.length > 0) await target.insert(userOrgs).values(devLinks).onConflictDoNothing()
+  }
+
   // Without a grant the restored user logs in and sees an empty app: the demo project belongs to
   // the seeded org, which a real github account is not a member of.
   const [demo] = await target.select().from(projects).where(eq(projects.slug, DEV_PROJECT_SLUG))

@@ -9,8 +9,12 @@ import {
   type NormalizedMessage,
   type ParsedRecord,
   type ProjectIdentity,
+  readCheckpoints,
 } from "@samskara/core"
-import { beforeEach, describe, expect, test, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
+import { projectsPath, statePath as scopedStatePath } from "../config/paths.js"
+import { ALL_SCOPED_PATHS, scopeMismatch } from "../config/server-scope.js"
+import { writeSettings } from "../config/settings.js"
 import { DEFAULT_MESSAGE_CAP, DEFAULT_SESSION_CONCURRENCY } from "../config.js"
 import { enqueue } from "./artifact-queue.js"
 import { runArtifactWorkers } from "./artifact-worker.js"
@@ -137,6 +141,7 @@ describe("flushCause", () => {
 })
 
 describe("watcher driver", () => {
+  const originalHome = process.env.SAMSKARA_HOME
   let dir: string
   let projects: string
   let config: WatcherConfig
@@ -156,6 +161,8 @@ describe("watcher driver", () => {
     repoMocks.resolveRepo.mockReset()
     repoMocks.resolveHead.mockReset()
     dir = await mkdtemp(join(tmpdir(), "samskara-watch-"))
+    // `runCycle` stamps via `persistedApiUrl()`, which reads `config.json` under `SAMSKARA_HOME`.
+    process.env.SAMSKARA_HOME = dir
     projects = join(dir, ".claude", "projects", "bucket")
     await mkdir(projects, { recursive: true })
     config = {
@@ -163,6 +170,43 @@ describe("watcher driver", () => {
       messageCap: DEFAULT_MESSAGE_CAP,
       sessionConcurrency: DEFAULT_SESSION_CONCURRENCY,
     }
+  })
+
+  afterEach(() => {
+    process.env.SAMSKARA_HOME = originalHome
+  })
+
+  test("SC11: a completed cycle records the server it uploaded to", async () => {
+    const main = join(projects, "sess-1.jsonl")
+    await writeFile(main, `${assistantLine("l1", "sess-1")}\n`, "utf8")
+    await writeSettings({ apiUrl: "https://one.example", webUrl: "https://one.example" })
+
+    const store = await runCycle(config, deps({ glob: async () => [main] }))
+    expect(store.apiBase).toBe("https://one.example")
+
+    const roundTripped = await readCheckpoints(nodeFs, config.statePath)
+    expect(roundTripped.apiBase).toBe("https://one.example")
+    expect(
+      (roundTripped.checkpoints[main] as { lineProcessed: number } | undefined)?.lineProcessed,
+    ).toBe(1)
+  })
+
+  test("SC16: the full check spans every scoped file", async () => {
+    await writeSettings({ apiUrl: "https://two.example", webUrl: "https://two.example" })
+    await writeFile(
+      scopedStatePath(),
+      JSON.stringify({ apiBase: "https://one.example", checkpoints: {} }),
+      "utf8",
+    )
+    await writeFile(
+      projectsPath(),
+      JSON.stringify({ version: 1, apiBase: "https://two.example", projects: {} }),
+      "utf8",
+    )
+
+    await expect(scopeMismatch(ALL_SCOPED_PATHS())).resolves.toEqual([
+      { file: scopedStatePath(), recorded: "https://one.example", current: "https://two.example" },
+    ])
   })
 
   test("flushes a grown main file and advances the watermark", async () => {
@@ -435,7 +479,6 @@ describe("watcher driver", () => {
     const serana = {
       host: "github.com",
       owner: "refrens",
-      ownerType: "org",
       repoName: "serana",
       root: "/work/serana",
     } as const
@@ -481,9 +524,32 @@ describe("watcher driver", () => {
       expect(sent[0]?.repo).toEqual({
         host: "github.com",
         owner: "refrens",
-        ownerType: "org",
         repoName: "serana",
       })
+    })
+
+    test("a repo whose ssh alias will not resolve leaves the message unattributed instead of failing the cycle, so the rest of the flush still ships", async () => {
+      const main = join(projects, "sess-1.jsonl")
+      await writeFile(
+        main,
+        [
+          assistantLine("l1", "sess-1", { cwd: "/work/andromeda" }),
+          assistantLine("l2", "sess-1", { cwd: "/work/serana" }),
+        ]
+          .map((line) => `${line}\n`)
+          .join(""),
+        "utf8",
+      )
+
+      const sink = createInMemorySink()
+      repoMocks.resolveRepo.mockImplementation(async (cwd) => {
+        if (cwd === "/work/serana") return serana
+        throw new Error("spawn ssh ENOENT")
+      })
+      await runCycle(config, deps({ sink, glob: async () => [main] }))
+
+      const sent = sink.received[0]?.records.flatMap((r) => r.messages) ?? []
+      expect(sent.map((m) => m.repo?.repoName)).toEqual([undefined, undefined, "serana", "serana"])
     })
 
     test("captures the session's starting cwd and HEAD once, on the flush that creates it, and never re-reads HEAD on a later flush", async () => {
@@ -603,7 +669,6 @@ describe("watcher driver", () => {
           repo: {
             host: "github.com",
             owner: "refrens",
-            ownerType: "org",
             repoName: "serana",
           },
           callId: "toolu_commit",

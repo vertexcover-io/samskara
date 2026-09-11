@@ -39,6 +39,12 @@ test("SC4: a response body that is not JSON becomes a server error, not a thrown
   })
 })
 
+test("a 204 response with no body is treated as success, not a malformed response", async () => {
+  const noContent = new Response(null, { status: 204 })
+  const result = await request(() => Promise.resolve(noContent))
+  expect(result).toEqual({ ok: true, data: undefined })
+})
+
 test("SC5: an aborted request becomes a network error that says it was cancelled", async () => {
   const aborted = () => {
     const error = new Error("aborted")

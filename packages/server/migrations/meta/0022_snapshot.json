@@ -1,6 +1,6 @@
 {
-  "id": "44a1654e-1e4d-43a6-925c-44cfca212a08",
-  "prevId": "fc35004b-e60c-43d0-bbc5-88b999ab69a1",
+  "id": "5cbe6d49-31e0-442e-a5ce-edd5ff92a1a9",
+  "prevId": "35544c38-8eb2-4fb1-a48d-030babddc101",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -51,12 +51,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "baseHash": {
-          "name": "baseHash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "currentContent": {
           "name": "currentContent",
           "type": "bytea",
@@ -71,12 +65,6 @@
         },
         "diff": {
           "name": "diff",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "oldFragment": {
-          "name": "oldFragment",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -320,198 +308,6 @@
       },
       "policies": {},
       "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.learnings": {
-      "name": "learnings",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "projectId": {
-          "name": "projectId",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "audience": {
-          "name": "audience",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "category": {
-          "name": "category",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "title": {
-          "name": "title",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "detail": {
-          "name": "detail",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "evidence": {
-          "name": "evidence",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "fingerprint": {
-          "name": "fingerprint",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'candidate'"
-        },
-        "occurrenceCount": {
-          "name": "occurrenceCount",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 1
-        },
-        "sourceReviewId": {
-          "name": "sourceReviewId",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "firstSeenAt": {
-          "name": "firstSeenAt",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "lastSeenAt": {
-          "name": "lastSeenAt",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "createdAt": {
-          "name": "createdAt",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updatedAt": {
-          "name": "updatedAt",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "learnings_project_status_idx": {
-          "name": "learnings_project_status_idx",
-          "columns": [
-            {
-              "expression": "projectId",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "status",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "learnings_audience_idx": {
-          "name": "learnings_audience_idx",
-          "columns": [
-            {
-              "expression": "audience",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "learnings_projectId_projects_id_fk": {
-          "name": "learnings_projectId_projects_id_fk",
-          "tableFrom": "learnings",
-          "tableTo": "projects",
-          "columnsFrom": [
-            "projectId"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "learnings_sourceReviewId_sessionReviews_id_fk": {
-          "name": "learnings_sourceReviewId_sessionReviews_id_fk",
-          "tableFrom": "learnings",
-          "tableTo": "sessionReviews",
-          "columnsFrom": [
-            "sourceReviewId"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "learnings_project_fingerprint_unique": {
-          "name": "learnings_project_fingerprint_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "projectId",
-            "fingerprint"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "learnings_audience_check": {
-          "name": "learnings_audience_check",
-          "value": "\"learnings\".\"audience\" in ('agent', 'human')"
-        },
-        "learnings_status_check": {
-          "name": "learnings_status_check",
-          "value": "\"learnings\".\"status\" in ('candidate', 'accepted', 'superseded')"
-        }
-      },
       "isRLSEnabled": false
     },
     "public.messages": {
@@ -1325,143 +1121,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.sessionReviews": {
-      "name": "sessionReviews",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "sessionId": {
-          "name": "sessionId",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "projectId": {
-          "name": "projectId",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "analyzer": {
-          "name": "analyzer",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "outcome": {
-          "name": "outcome",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "friction": {
-          "name": "friction",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "summary": {
-          "name": "summary",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "signals": {
-          "name": "signals",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "createdAt": {
-          "name": "createdAt",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updatedAt": {
-          "name": "updatedAt",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "sessionReviews_project_idx": {
-          "name": "sessionReviews_project_idx",
-          "columns": [
-            {
-              "expression": "projectId",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "sessionReviews_sessionId_sessions_id_fk": {
-          "name": "sessionReviews_sessionId_sessions_id_fk",
-          "tableFrom": "sessionReviews",
-          "tableTo": "sessions",
-          "columnsFrom": [
-            "sessionId"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "sessionReviews_projectId_projects_id_fk": {
-          "name": "sessionReviews_projectId_projects_id_fk",
-          "tableFrom": "sessionReviews",
-          "tableTo": "projects",
-          "columnsFrom": [
-            "projectId"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "sessionReviews_session_analyzer_unique": {
-          "name": "sessionReviews_session_analyzer_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "sessionId",
-            "analyzer"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "sessionReviews_outcome_check": {
-          "name": "sessionReviews_outcome_check",
-          "value": "\"sessionReviews\".\"outcome\" in ('shipped', 'productive', 'struggled', 'aborted')"
-        },
-        "sessionReviews_friction_check": {
-          "name": "sessionReviews_friction_check",
-          "value": "\"sessionReviews\".\"friction\" in ('none', 'moderate', 'high')"
-        }
-      },
-      "isRLSEnabled": false
-    },
     "public.sessions": {
       "name": "sessions",
       "schema": "",
@@ -1504,6 +1163,18 @@
         },
         "title": {
           "name": "title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "description": {
+          "name": "description",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -1564,7 +1235,7 @@
           "primaryKey": false,
           "notNull": false,
           "generated": {
-            "as": "to_tsvector('simple'::regconfig, public.samskara_search_cap(((coalesce(\"sessions\".\"title\", '') || ' ') || \"sessions\".\"id\")))",
+            "as": "to_tsvector('simple'::regconfig, public.samskara_search_cap(((((((coalesce(\"sessions\".\"name\", '') || ' ') || coalesce(\"sessions\".\"description\", '')) || ' ') || coalesce(\"sessions\".\"title\", '')) || ' ') || \"sessions\".\"id\")))",
             "type": "stored"
           }
         }

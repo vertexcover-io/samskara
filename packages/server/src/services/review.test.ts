@@ -44,6 +44,10 @@ const detailWith = (overrides: Partial<SessionDetailRow> = {}): SessionDetailRow
   session: {
     id: "s1",
     title: "fix the build",
+    name: null,
+    description: null,
+    aiTitle: null,
+    canRename: true,
     projectId: "p1",
     projectName: "widget",
     projectSlug: "acme-widget",

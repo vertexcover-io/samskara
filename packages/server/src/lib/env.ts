@@ -1,8 +1,10 @@
 import { z } from "zod"
 
-const EnvSchema = z.object({
-  GITHUB_CLIENT_ID: z.string().min(1),
-  GITHUB_CLIENT_SECRET: z.string().min(1),
+export const DEFAULT_LOCAL_LOGIN = "samskara-dev"
+
+const BaseEnvSchema = z.object({
+  GITHUB_CLIENT_ID: z.string().default(""),
+  GITHUB_CLIENT_SECRET: z.string().default(""),
   PUBLIC_BASE_URL: z.string().min(1),
   WEB_BASE_URL: z.string().url().optional(),
   COOKIE_SECURE: z.enum(["true", "false"]).transform((value) => value === "true"),
@@ -19,7 +21,7 @@ const EnvSchema = z.object({
         .filter((login) => login.length > 0),
     ),
   LOCAL_LOGIN_SECRET: z.string().default(""),
-  LOCAL_LOGIN_LOGIN: z.string().min(1).default("samskara-dev"),
+  LOCAL_LOGIN_LOGIN: z.string().min(1).default(DEFAULT_LOCAL_LOGIN),
   /**
    * Which CLI runs the reviewer agent. Each harness carries its own default model; an
    * explicit AI_REVIEW_MODEL overrides either default.
@@ -39,6 +41,20 @@ export const DEFAULT_REVIEW_MODEL: Readonly<Record<"opencode" | "claude", string
   claude: "sonnet",
 }
 
+const requireSignInMethod = (data: z.infer<typeof BaseEnvSchema>, ctx: z.RefinementCtx): void => {
+  if (data.LOCAL_LOGIN_SECRET.length > 0) return
+  for (const key of ["GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET"] as const) {
+    if (data[key].length > 0) continue
+    ctx.addIssue({
+      code: "custom",
+      path: [key],
+      message: `${key} is required unless LOCAL_LOGIN_SECRET is set`,
+    })
+  }
+}
+
+const EnvSchema = BaseEnvSchema.superRefine(requireSignInMethod)
+
 export type Env = {
   readonly githubClientId: string
   readonly githubClientSecret: string
@@ -49,8 +65,8 @@ export type Env = {
   readonly jwtExpiresIn: string
   readonly superAdminLogins: ReadonlyArray<string>
   readonly webDist?: string | undefined
-  readonly localLoginSecret: string
-  readonly localLoginLogin: string
+  readonly localLoginSecret?: string | undefined
+  readonly localLoginLogin?: string | undefined
   readonly aiReviewHarness: "opencode" | "claude"
   readonly aiReviewModel: string
   readonly aiReviewTimeoutMs: number

@@ -1,11 +1,12 @@
-import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ProjectIdentity } from "@samskara/core"
 import { afterEach, expect, test, vi } from "vitest"
 import { upsertProject } from "../config/projects.js"
-import { drainWorkers, globAll, withStoredProjectId } from "./index.js"
-import { spyLogger } from "./test-logger.js"
+import { writeSettings } from "../config/settings.js"
+import { drainWorkers, globAll, watch, withStoredProjectId } from "./index.js"
+import { silentLogger, spyLogger } from "./test-logger.js"
 
 const originalHome = process.env.SAMSKARA_HOME
 
@@ -30,6 +31,23 @@ test("SC43: the watcher stamps the stored projectId onto the identity", async ()
 
   expect(await withStoredProjectId(withId)).toEqual({ ...withId, projectId })
   expect(await withStoredProjectId(withoutId)).toEqual(withoutId)
+})
+
+test("SC10: the watcher refuses to start when local state disagrees with the configured server", async () => {
+  const home = await mkdtemp(join(tmpdir(), "samskara-watcher-scope-"))
+  process.env.SAMSKARA_HOME = home
+  await writeFile(join(home, "token"), "test-token", "utf8")
+  await writeSettings({ apiUrl: "https://two.example", webUrl: "https://two.example" })
+  const stateContent = JSON.stringify({ apiBase: "https://one.example", checkpoints: {} })
+  await writeFile(join(home, "state.json"), stateContent, "utf8")
+
+  await expect(watch({ log: silentLogger() })).rejects.toThrow(
+    "Local state was captured against https://one.example, but this CLI is configured for " +
+      "https://two.example. Run `samskara init --force` before capturing again.",
+  )
+
+  // No cycle ran: the file was never re-read and rewritten with the new server's stamp.
+  expect(await readFile(join(home, "state.json"), "utf8")).toBe(stateContent)
 })
 
 test("watch discovery ignores broken symlinks and returns every nested JSONL", async () => {
