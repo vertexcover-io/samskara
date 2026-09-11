@@ -148,6 +148,84 @@ describe.skipIf(!dockerAvailable())("ingest repositories", () => {
     expect(row?.startCommit).toBeNull()
   })
 
+  test("ST2: writing tags leaves updatedAt alone, while an ordinary column still advances it", async () => {
+    const id = "sess-tags-updated-at"
+    await seedSession(id)
+    const readRow = async () => {
+      const [row] = await db
+        .select({ tags: sessions.tags, updatedAt: sessions.updatedAt })
+        .from(sessions)
+        .where(eq(sessions.id, id))
+      if (!row) throw new Error("session disappeared")
+      return row
+    }
+
+    const before = await readRow()
+    await db
+      .update(sessions)
+      .set({ tags: ["harness"] })
+      .where(eq(sessions.id, id))
+    const tagged = await readRow()
+
+    expect(tagged.tags).toEqual(["harness"])
+    expect(tagged.updatedAt.getTime()).toBe(before.updatedAt.getTime())
+
+    await db.update(sessions).set({ model: "opus" }).where(eq(sessions.id, id))
+    const remodelled = await readRow()
+
+    expect(remodelled.updatedAt.getTime()).toBeGreaterThan(before.updatedAt.getTime())
+  })
+
+  test("ST3: updateTags adds, removes, dedupes and keeps a canonical order", async () => {
+    const id = "sess-tags-set-ops"
+    const { userId } = await seedSession(id)
+    const tagsOf = async () => {
+      const [row] = await db
+        .select({ tags: sessions.tags })
+        .from(sessions)
+        .where(eq(sessions.id, id))
+      return row?.tags
+    }
+
+    expect(await sessionsRepo.updateTags(db, id, userId, { add: ["harness", "demo"] })).toBe(
+      "updated",
+    )
+    expect(await tagsOf()).toEqual(["demo", "harness"])
+
+    await sessionsRepo.updateTags(db, id, userId, { add: ["harness", "spike"] })
+    expect(await tagsOf()).toEqual(["demo", "harness", "spike"])
+
+    await sessionsRepo.updateTags(db, id, userId, { remove: ["demo", "absent"] })
+    expect(await tagsOf()).toEqual(["harness", "spike"])
+
+    await sessionsRepo.updateTags(db, id, userId, { remove: ["harness", "spike"] })
+    expect(await tagsOf()).toEqual([])
+  })
+
+  test("ST3: two adds against the live column both survive, so a concurrent tagger loses nothing", async () => {
+    const id = "sess-tags-concurrent"
+    const { userId } = await seedSession(id)
+
+    await Promise.all([
+      sessionsRepo.updateTags(db, id, userId, { add: ["first"] }),
+      sessionsRepo.updateTags(db, id, userId, { add: ["second"] }),
+    ])
+
+    const [row] = await db.select({ tags: sessions.tags }).from(sessions).where(eq(sessions.id, id))
+    expect(row?.tags).toEqual(["first", "second"])
+  })
+
+  test("ST3: updateTags refuses a session the caller cannot see or cannot edit", async () => {
+    const id = "sess-tags-permissions"
+    await seedSession(id)
+    const stranger = await seedUser()
+
+    expect(await sessionsRepo.updateTags(db, id, stranger.id, { add: ["nope"] })).toBe("notFound")
+    expect(
+      await sessionsRepo.updateTags(db, "sess-tags-missing", stranger.id, { add: ["nope"] }),
+    ).toBe("notFound")
+  })
+
   test("projects.upsert is idempotent per (slug, ownerId) and refreshes name", async () => {
     const owner = await seedUser()
     const first = await projectsRepo.upsert(db, {

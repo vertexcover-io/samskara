@@ -135,13 +135,11 @@ export type UpdateSessionFields = {
   readonly description?: string | null
 }
 
-/** Human-field updates do not advance `updatedAt`; migration 0022 excludes them from its trigger. */
-export const updateHumanFields = async (
+const editGate = async (
   db: Querier,
   sessionId: string,
   userId: string,
-  changes: UpdateSessionFields,
-): Promise<"updated" | "forbidden" | "notFound"> => {
+): Promise<"ok" | "forbidden" | "notFound"> => {
   const [row] = await db
     .select({
       canEdit: canEditSession(db, userId),
@@ -151,8 +149,52 @@ export const updateHumanFields = async (
     .innerJoin(projects, eq(projects.id, sessions.projectId))
     .where(and(eq(sessions.id, sessionId), visibleToUser(db, userId)))
   if (row === undefined) return "notFound"
-  if (!row.canEdit) return "forbidden"
+  return row.canEdit ? "ok" : "forbidden"
+}
+
+/** Human-field updates do not advance `updatedAt`; migration 0022 excludes them from its trigger. */
+export const updateHumanFields = async (
+  db: Querier,
+  sessionId: string,
+  userId: string,
+  changes: UpdateSessionFields,
+): Promise<"updated" | "forbidden" | "notFound"> => {
+  const gate = await editGate(db, sessionId, userId)
+  if (gate !== "ok") return gate
   await db.update(sessions).set(changes).where(eq(sessions.id, sessionId))
+  return "updated"
+}
+
+export type UpdateSessionTags = {
+  readonly add?: ReadonlyArray<string>
+  readonly remove?: ReadonlyArray<string>
+}
+
+const textArray = (tags: ReadonlyArray<string>): SQL =>
+  sql`array[${sql.join(
+    tags.map((tag) => sql`${tag}`),
+    sql`, `,
+  )}]::text[]`
+
+export const updateTags = async (
+  db: Querier,
+  sessionId: string,
+  userId: string,
+  changes: UpdateSessionTags,
+): Promise<"updated" | "forbidden" | "notFound"> => {
+  const gate = await editGate(db, sessionId, userId)
+  if (gate !== "ok") return gate
+  const remove = changes.remove ?? []
+  const add = changes.add ?? []
+  const kept =
+    remove.length === 0
+      ? sql`${sessions.tags}`
+      : sql`(select coalesce(array_agg(t), '{}'::text[]) from unnest(${sessions.tags}) as t where t <> all(${textArray(remove)}))`
+  const next =
+    add.length === 0
+      ? kept
+      : sql`(select coalesce(array_agg(distinct t), '{}'::text[]) from unnest(${kept} || ${textArray(add)}) as t)`
+  await db.update(sessions).set({ tags: next }).where(eq(sessions.id, sessionId))
   return "updated"
 }
 
@@ -181,6 +223,7 @@ export type SessionSummaryRow = {
   readonly tokensTotal: number
   readonly status: string
   readonly lastActiveAt: string
+  readonly tags: ReadonlyArray<string>
   readonly match: SessionMatch | null
 }
 
@@ -198,6 +241,7 @@ export type SessionFilterOptions = {
   readonly authors: ReadonlyArray<SessionFilterOption>
   readonly repositories: ReadonlyArray<SessionRepositoryFilterOption>
   readonly branches: ReadonlyArray<string>
+  readonly tags: ReadonlyArray<string>
 }
 
 /** The parser owns construction of this trusted tsquery SQL fragment. */
@@ -208,6 +252,7 @@ export type SessionListFilter = {
   readonly userLogin?: string
   readonly repoId?: string
   readonly branch?: string
+  readonly tags?: ReadonlyArray<string>
   readonly prNumber?: number
   readonly commit?: string
   readonly searchQuery?: ParsedSessionQuery
@@ -436,7 +481,7 @@ const safeSnippet = (
 // limit reach sessions_activity_idx and the page stops after `limit` rows.
 const authorizationCte = (db: Querier, userId: string) => sql`
   authorized_sessions as (
-    select "sessions"."id", "sessions"."title", ${sessionActivityAt} as "lastActiveAt", "projects"."id" as "projectId", "projects"."name" as "projectName", "projects"."slug" as "projectSlug", "users"."githubLogin" as "userLogin"
+    select "sessions"."id", "sessions"."title", "sessions"."tags", ${sessionActivityAt} as "lastActiveAt", "projects"."id" as "projectId", "projects"."name" as "projectName", "projects"."slug" as "projectSlug", "users"."githubLogin" as "userLogin"
     from "sessions"
     join "projects" on "projects"."id" = "sessions"."projectId"
     join "users" on "users"."id" = "sessions"."userId"
@@ -469,6 +514,8 @@ const filterPredicates = (
   const clauses: SQL[] = []
   if (filter.projectId !== undefined) clauses.push(sql`a."projectId" = ${filter.projectId}`)
   if (filter.userLogin !== undefined) clauses.push(sql`a."userLogin" = ${filter.userLogin}`)
+  if (filter.tags !== undefined && filter.tags.length > 0)
+    clauses.push(sql`a."tags" && ${textArray(filter.tags)}`)
   if (filter.since !== undefined)
     clauses.push(sql`a."lastActiveAt" >= ${filter.since.toISOString()}`)
   if (filter.until !== undefined)
@@ -500,7 +547,7 @@ const filterPredicates = (
 }
 
 const filterOptionsFor = async (db: Querier, userId: string): Promise<SessionFilterOptions> => {
-  const [projectsRows, authorRows, repoRows, branchRows] = await Promise.all([
+  const [projectsRows, authorRows, repoRows, branchRows, tagRows] = await Promise.all([
     db.execute(
       sql`with ${authorizationCte(db, userId)} select distinct "projectId" as value, "projectName" as label from authorized_sessions order by label, value`,
     ),
@@ -513,12 +560,16 @@ const filterOptionsFor = async (db: Querier, userId: string): Promise<SessionFil
     db.execute(
       sql`with ${authorizationCte(db, userId)}, values_ as (select m."gitBranch" as branch from "messages" m join authorized_sessions a on a.id = m."sessionId" union select c.branch from "commits" c join authorized_sessions a on a.id = c."sessionId" union select pr."baseBranch" from "pullRequests" pr join "sessionPullRequests" sp on sp."prId" = pr.id join authorized_sessions a on a.id = sp."sessionId" union select pr."headBranch" from "pullRequests" pr join "sessionPullRequests" sp on sp."prId" = pr.id join authorized_sessions a on a.id = sp."sessionId") select distinct branch collate "C" as branch from values_ where branch is not null and branch <> '' order by branch`,
     ),
+    db.execute(
+      sql`with ${authorizationCte(db, userId)} select distinct tag collate "C" as tag from authorized_sessions a, unnest(a."tags") as tag order by tag`,
+    ),
   ])
   return {
     projects: projectsRows as unknown as ReadonlyArray<SessionFilterOption>,
     authors: authorRows as unknown as ReadonlyArray<SessionFilterOption>,
     repositories: repoRows as unknown as ReadonlyArray<SessionRepositoryFilterOption>,
     branches: (branchRows as unknown as ReadonlyArray<{ branch: string }>).map((row) => row.branch),
+    tags: (tagRows as unknown as ReadonlyArray<{ tag: string }>).map((row) => row.tag),
   }
 }
 
@@ -577,7 +628,7 @@ export const listAccessible = async (
     select p.id, ${derivedTitle} as title, p."projectId", p."projectName", p."projectSlug", p."userLogin",
       r.host as "repoHost", r.owner as "repoOwner", r."repoName" as "repoName", ${durationMs} as "durationMs",
       ${isTokenSort ? sql`p."tokensTotal"` : tokensFor(sql`"sessions"."id"`)} as "tokensTotal", ${status} as status,
-      p."lastActiveAt", p."sourceKind", p."sourceRowId", p.score, p.total, t."sourceText",
+      p."lastActiveAt", p."tags", p."sourceKind", p."sourceRowId", p.score, p.total, t."sourceText",
       case when t."sourceText" is null then null else ts_headline('simple'::regconfig, t."sourceText", ${query ?? sql`null::tsquery`}, ${SNIPPET_OPTIONS}) end as headline
     from paged p join "sessions" on "sessions".id = p.id left join "repos" r on r.id = ${dominantRepoId}
     cross join lateral (select ${sourceTextSql} as "sourceText") t
@@ -603,6 +654,7 @@ export const listAccessible = async (
       tokensTotal: Number(row.tokensTotal),
       status: row.status as string,
       lastActiveAt: String(row.lastActiveAt),
+      tags: (row.tags as ReadonlyArray<string> | null) ?? [],
       match:
         row.sourceKind === null
           ? null
@@ -634,6 +686,7 @@ export type SessionFactsRow = {
   readonly title: string | null
   readonly name: string | null
   readonly description: string | null
+  readonly tags: ReadonlyArray<string>
   readonly aiTitle: string | null
   readonly canRename: boolean
   readonly projectId: string
@@ -747,6 +800,7 @@ export const findVisibleSession = async (
       title: derivedTitle,
       name: sessions.name,
       description: sessions.description,
+      tags: sessions.tags,
       aiTitle: sessions.title,
       canRename: canEditSession(db, userId),
       projectId: projects.id,

@@ -68,6 +68,7 @@ type SessionSummary = {
   readonly tokensTotal: number
   readonly status: string
   readonly lastActiveAt: string
+  readonly tags: ReadonlyArray<string>
 }
 
 const seedUser = (db: Db, githubId: number, login: string, isSuperAdmin = false): Promise<string> =>
@@ -229,6 +230,46 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
 
     const detail = await request(db, admin, "/locked-session")
     expect(detail.status).toBe(200)
+  })
+
+  test("ST5: ?tags matches any one of the named tags, and the facet lists the visible vocabulary", async () => {
+    const owner = await seedUser(db, 3201, "st5-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "ST5", slug: "st5" },
+      ownerId: owner,
+    })
+    for (const id of ["st5-a", "st5-b", "st5-c"]) {
+      await seedSession(db, { id, userId: owner, projectId, title: id, updatedAt: new Date() })
+    }
+    await db
+      .update(sessions)
+      .set({ tags: ["a", "b", "c"] })
+      .where(eq(sessions.id, "st5-a"))
+    await db
+      .update(sessions)
+      .set({ tags: ["a", "b", "d"] })
+      .where(eq(sessions.id, "st5-b"))
+
+    expect(sortedIdsOf(await listAs(db, owner, "?tags=c"))).toEqual(["st5-a"])
+    expect(sortedIdsOf(await listAs(db, owner, "?tags=c,d"))).toEqual(["st5-a", "st5-b"])
+    expect(sortedIdsOf(await listAs(db, owner, "?tags=a"))).toEqual(["st5-a", "st5-b"])
+    expect(idsOf(await listAs(db, owner, "?tags=absent"))).toEqual([])
+
+    const body = (await (await request(db, owner, "")).json()) as {
+      filterOptions: { tags: ReadonlyArray<string> }
+      sessions: ReadonlyArray<SessionSummary>
+    }
+    expect(body.filterOptions.tags).toEqual(["a", "b", "c", "d"])
+    expect(body.sessions.find((row) => row.id === "st5-a")?.tags).toEqual(["a", "b", "c"])
+    expect(body.sessions.find((row) => row.id === "st5-c")?.tags).toEqual([])
+  })
+
+  test("ST5: an empty or malformed tags filter is refused rather than ignored", async () => {
+    const owner = await seedUser(db, 3202, "st5-bad")
+
+    expect((await request(db, owner, "?tags=")).status).toBe(400)
+    expect((await request(db, owner, "?tags=,")).status).toBe(400)
+    expect((await request(db, owner, "?tags=has%20space")).status).toBe(400)
   })
 
   test("S20: project, user, and range each narrow the list on their own - an unfiltered request returns all four sessions", async () => {
@@ -629,6 +670,7 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
       tokensTotal: 350,
       status: "complete",
       lastActiveAt: new Date("2026-02-05T11:30:00Z").toISOString(),
+      tags: [],
     })
   })
 
@@ -1467,6 +1509,86 @@ describe.skipIf(!dockerAvailable())("PATCH /api/sessions/:id", () => {
     await db.delete(userOrgs)
     await db.delete(orgs)
     await db.delete(users)
+  })
+
+  const tagsRequest = async (
+    db: Db,
+    userId: string,
+    sessionId: string,
+    json: unknown,
+    aud: "web" | "cli" = "web",
+  ): Promise<{ readonly status: number; readonly body: unknown }> => {
+    const token = await signToken(env, { sub: userId, aud })
+    const res = await buildApp(db, env).request(`/api/sessions/${sessionId}/tags`, {
+      method: "PATCH",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify(json),
+    })
+    return { status: res.status, body: await res.json() }
+  }
+
+  const seedOwnedSession = async (id: string, githubId: number) => {
+    const owner = await seedUser(db, githubId, `${id}-owner`)
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: id, slug: id },
+      ownerId: owner,
+    })
+    await seedSession(db, { id, userId: owner, projectId, title: id, updatedAt: new Date() })
+    return owner
+  }
+
+  test("ST4: a cli token adds tags and the response carries the stored set back", async () => {
+    const owner = await seedOwnedSession("st4-cli", 3101)
+
+    const added = await tagsRequest(db, owner, "st4-cli", { add: ["Harness", "demo"] }, "cli")
+
+    expect(added.status).toBe(200)
+    expect((added.body as { session: { tags: string[] } }).session.tags).toEqual([
+      "demo",
+      "harness",
+    ])
+  })
+
+  test("ST4: a web token removes a tag, and the detail read agrees", async () => {
+    const owner = await seedOwnedSession("st4-web", 3102)
+    await tagsRequest(db, owner, "st4-web", { add: ["harness", "demo"] })
+
+    const removed = await tagsRequest(db, owner, "st4-web", { remove: ["demo"] })
+
+    expect(removed.status).toBe(200)
+    const read = await detailRequest(db, owner, "st4-web")
+    const body = (await read.json()) as { session: { tags: string[] } }
+    expect(body.session.tags).toEqual(["harness"])
+  })
+
+  test("ST4: a cli token reads the tags back without the web-only detail route", async () => {
+    const owner = await seedOwnedSession("st4-read", 3106)
+    await tagsRequest(db, owner, "st4-read", { add: ["harness"] }, "cli")
+
+    const token = await signToken(env, { sub: owner, aud: "cli" })
+    const res = await buildApp(db, env).request("/api/sessions/st4-read/tags", {
+      headers: { authorization: `Bearer ${token}` },
+    })
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ tags: ["harness"] })
+  })
+
+  test("ST4: an invalid tag, an empty list and an empty body are all refused", async () => {
+    const owner = await seedOwnedSession("st4-bad", 3103)
+
+    expect((await tagsRequest(db, owner, "st4-bad", { add: ["two words"] })).status).toBe(400)
+    expect((await tagsRequest(db, owner, "st4-bad", { add: ["a,b"] })).status).toBe(400)
+    expect((await tagsRequest(db, owner, "st4-bad", { add: [] })).status).toBe(400)
+    expect((await tagsRequest(db, owner, "st4-bad", {})).status).toBe(400)
+  })
+
+  test("ST4: a session the caller cannot see is reported as missing", async () => {
+    await seedOwnedSession("st4-hidden", 3104)
+    const stranger = await seedUser(db, 3105, "st4-stranger")
+
+    expect((await tagsRequest(db, stranger, "st4-hidden", { add: ["nope"] })).status).toBe(404)
+    expect((await tagsRequest(db, stranger, "st4-absent", { add: ["nope"] })).status).toBe(404)
   })
 
   test("SC1: the owner sets a name and description, and a later read returns them", async () => {

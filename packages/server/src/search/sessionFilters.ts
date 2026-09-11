@@ -61,6 +61,23 @@ export const sessionListQuerySchema = z.object({
     .regex(/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/)
     .optional(),
   branch: nonEmptyUnicode(255).optional(),
+  tags: z
+    .string()
+    .transform((value) => value.split(","))
+    .pipe(
+      z
+        .array(
+          z
+            .string()
+            .trim()
+            .toLowerCase()
+            .regex(/^[^\s,]{1,32}$/),
+        )
+        .min(1)
+        .max(50),
+    )
+    .transform((tags) => [...new Set(tags)])
+    .optional(),
   pr: canonicalPr.optional(),
   commit: canonicalCommit.optional(),
   range: z.enum(SESSION_RANGES).optional(),

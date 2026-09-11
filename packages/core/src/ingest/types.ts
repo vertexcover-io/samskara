@@ -405,6 +405,26 @@ export const updateSessionRequestSchema = z
   .strict()
   .refine((body) => Object.keys(body).length > 0, { message: "no fields to update" })
 
+const sessionTag = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .regex(/^[^\s,]{1,32}$/)
+
+const sessionTagList = z
+  .array(sessionTag)
+  .min(1)
+  .max(50)
+  .transform((tags) => [...new Set(tags)])
+
+export const updateSessionTagsRequestSchema = z
+  .object({
+    add: sessionTagList.optional(),
+    remove: sessionTagList.optional(),
+  })
+  .strict()
+  .refine((body) => Object.keys(body).length > 0, { message: "no fields to update" })
+
 export const registerOrgRequestSchema = z
   .object({
     githubSlug: z.string().regex(/^[a-z\d](?:[a-z\d]|-(?=[a-z\d])){0,38}$/i),
@@ -580,6 +600,7 @@ export type ReassignSessionsResponse = z.infer<typeof reassignSessionsResponseSc
 
 export type UpdateOrgRequest = z.infer<typeof updateOrgRequestSchema>
 export type UpdateSessionRequest = z.infer<typeof updateSessionRequestSchema>
+export type UpdateSessionTagsRequest = z.infer<typeof updateSessionTagsRequestSchema>
 export type RegisterOrgRequest = z.infer<typeof registerOrgRequestSchema>
 export type AgentInfo = z.infer<typeof agentInfoSchema>
 export type IngestPayload = z.infer<typeof ingestPayloadSchema>
