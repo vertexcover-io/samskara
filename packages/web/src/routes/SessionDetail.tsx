@@ -9,7 +9,9 @@ import type {
   TokenTotals,
 } from "../api/types.js"
 import { SessionExpired } from "../auth/SessionExpired.js"
+import { Chip } from "../components/Chip.js"
 import { RepoLink } from "../components/RepoLink.js"
+import { TagPicker } from "../components/TagPicker.js"
 import { controlClass, labelClass } from "../components/TextField.js"
 import { AgentRail, agentEntries } from "../session/AgentRail.js"
 import { ArtifactsView } from "../session/ArtifactsView.js"
@@ -62,6 +64,55 @@ const requestSessionPatch = (
   id: string,
   json: { name?: string | null; description?: string | null },
 ) => request(() => client.api.sessions[":id"].$patch({ param: { id }, json }))
+
+const requestSessionTagsPatch = (id: string, json: { add?: string[]; remove?: string[] }) =>
+  request(() => client.api.sessions[":id"].tags.$patch({ param: { id }, json }))
+
+const TagEditor = ({
+  session,
+  options,
+  onSaved,
+}: {
+  session: SessionFacts
+  options: ReadonlyArray<string>
+  onSaved: (session: SessionFacts) => void
+}) => {
+  const [error, setError] = useState<string | null>(null)
+
+  const apply = (json: { add?: string[]; remove?: string[] }): void => {
+    setError(null)
+    requestSessionTagsPatch(session.id, json).then((result) => {
+      if (!result.ok) {
+        setError(result.error.message)
+        return
+      }
+      onSaved(result.data.session)
+    })
+  }
+
+  return (
+    <div className="mt-2 max-w-[32rem]">
+      <TagPicker
+        label="Tags"
+        selected={session.tags}
+        options={options}
+        allowCreate
+        placeholder="Add a tag"
+        onChange={(next) => {
+          const added = next.filter((tag) => !session.tags.includes(tag))
+          const removed = session.tags.filter((tag) => !next.includes(tag))
+          if (added.length > 0) apply({ add: added })
+          else if (removed.length > 0) apply({ remove: removed })
+        }}
+      />
+      {error === null ? null : (
+        <p role="alert" className="mt-1 text-[0.78rem] text-stamp">
+          {error}
+        </p>
+      )}
+    </div>
+  )
+}
 
 type EditDraft = {
   readonly name: string
@@ -251,6 +302,15 @@ const SessionHead = ({
       ) : null}
       {edit !== null || session.description === null ? null : (
         <p className="mt-1 max-w-[62ch] text-[0.82rem] text-ink-soft">{session.description}</p>
+      )}
+      {session.canRename ? (
+        <TagEditor session={session} options={session.tags} onSaved={onSaved} />
+      ) : session.tags.length === 0 ? null : (
+        <div className="mt-2 flex flex-wrap gap-1 font-mono text-[0.72rem] text-ink-soft">
+          {session.tags.map((tag) => (
+            <Chip key={tag}>{tag}</Chip>
+          ))}
+        </div>
       )}
       {edit === null ? null : (
         <SessionEditForm

@@ -258,7 +258,13 @@ export const Sessions = () => {
         <FilterBar
           filters={filters}
           options={
-            payload?.filterOptions ?? { projects: [], authors: [], repositories: [], branches: [] }
+            payload?.filterOptions ?? {
+              projects: [],
+              authors: [],
+              repositories: [],
+              branches: [],
+              tags: [],
+            }
           }
           onChange={applyFilters}
           onClear={resetFilters}

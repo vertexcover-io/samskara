@@ -22,6 +22,7 @@ const session: SessionSummary = {
   projectSlug: "samskara",
   userLogin: "maya",
   repo: null,
+  tags: [],
   durationMs: 900_000,
   tokensTotal: 4200,
   status: "complete",
@@ -60,6 +61,7 @@ const filterOptions = {
   ],
   repositories: [],
   branches: [],
+  tags: ["harness", "demo"],
 }
 
 const payload = (
@@ -141,6 +143,22 @@ test("S23: the request sent to the server carries the same filters the URL decla
   expect(calls.filter((path) => path !== "/api/sessions")).toEqual([
     "/api/sessions?project=samskara&user=maya&range=week",
   ])
+})
+
+test("ST7: picking two tags sends them as one comma-joined parameter", async () => {
+  const calls = stubFetch(okWith([session]))
+  renderAt("/sessions")
+  await screen.findByRole("link", { name: /port the session detail surface/i })
+
+  await openMenu("Tags")
+  await userEvent.click(await screen.findByRole("option", { name: "harness" }))
+  await openMenu("Tags")
+  await userEvent.click(await screen.findByRole("option", { name: "demo" }))
+
+  await waitFor(() =>
+    expect(screen.getByTestId("location")).toHaveTextContent("tags=harness%2Cdemo"),
+  )
+  expect(calls.at(-1)).toBe("/api/sessions?tags=harness%2Cdemo")
 })
 
 test("SC67 (S24): changing User to maya writes user=maya into the URL and refetches without a full page load", async () => {
@@ -456,6 +474,7 @@ test("the active-filter summary names each filter from its own option list", asy
             authors: [{ value: "u-uuid", label: "maya" }],
             repositories: [{ value: "r-uuid", label: "acme/samskara" }],
             branches: ["release/search"],
+            tags: [],
           },
         }),
       )
