@@ -24,6 +24,9 @@ describe("loadEnv", () => {
       superAdminLogins: [],
       localLoginSecret: "",
       localLoginLogin: "samskara-dev",
+      aiReviewHarness: "opencode",
+      aiReviewModel: "zai-coding-plan/glm-5.3-flash",
+      aiReviewTimeoutMs: 600000,
     })
   })
 
@@ -101,5 +104,50 @@ describe("loadEnv", () => {
 
   test("throws when a required key is present but empty", () => {
     expect(() => loadEnv({ ...complete, GITHUB_CLIENT_ID: "" })).toThrow(/GITHUB_CLIENT_ID/)
+  })
+
+  test("defaults AI_REVIEW_MODEL to zai-coding-plan/glm-5.3-flash and AI_REVIEW_TIMEOUT_MS to 600000", () => {
+    const env = loadEnv(complete)
+    expect(env.aiReviewModel).toBe("zai-coding-plan/glm-5.3-flash")
+    expect(env.aiReviewTimeoutMs).toBe(600000)
+  })
+
+  test("reads AI_REVIEW_MODEL verbatim and coerces digit AI_REVIEW_TIMEOUT_MS to a number", () => {
+    const env = loadEnv({
+      ...complete,
+      AI_REVIEW_MODEL: "minimax-coding-plan/MiniMax-M3",
+      AI_REVIEW_TIMEOUT_MS: "1500",
+    })
+    expect(env.aiReviewModel).toBe("minimax-coding-plan/MiniMax-M3")
+    expect(env.aiReviewTimeoutMs).toBe(1500)
+  })
+
+  test("rejects a non-digit AI_REVIEW_TIMEOUT_MS", () => {
+    expect(() => loadEnv({ ...complete, AI_REVIEW_TIMEOUT_MS: "soon" })).toThrow(
+      /AI_REVIEW_TIMEOUT_MS/,
+    )
+  })
+
+  test("defaults AI_REVIEW_HARNESS to opencode", () => {
+    expect(loadEnv(complete).aiReviewHarness).toBe("opencode")
+  })
+
+  test("reads AI_REVIEW_HARNESS=claude and defaults its model to sonnet", () => {
+    const env = loadEnv({ ...complete, AI_REVIEW_HARNESS: "claude" })
+    expect(env.aiReviewHarness).toBe("claude")
+    expect(env.aiReviewModel).toBe("sonnet")
+  })
+
+  test("an explicit AI_REVIEW_MODEL wins over the harness default", () => {
+    const env = loadEnv({
+      ...complete,
+      AI_REVIEW_HARNESS: "claude",
+      AI_REVIEW_MODEL: "claude-opus-4-6",
+    })
+    expect(env.aiReviewModel).toBe("claude-opus-4-6")
+  })
+
+  test("rejects an unrecognized AI_REVIEW_HARNESS", () => {
+    expect(() => loadEnv({ ...complete, AI_REVIEW_HARNESS: "cursor" })).toThrow(/AI_REVIEW_HARNESS/)
   })
 })

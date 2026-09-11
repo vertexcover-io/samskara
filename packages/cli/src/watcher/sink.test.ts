@@ -5,6 +5,7 @@ import { createArtifactSink, createHttpSink } from "./sink.js"
 const payload: IngestPayload = {
   type: "main",
   sessionId: "sess-1",
+  source: "claude_code",
   project: { name: "widget", slug: "acme-widget" },
   sourceRelativePath: "sess-1.jsonl",
   records: [

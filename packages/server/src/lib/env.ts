@@ -22,7 +22,24 @@ const BaseEnvSchema = z.object({
     ),
   LOCAL_LOGIN_SECRET: z.string().default(""),
   LOCAL_LOGIN_LOGIN: z.string().min(1).default(DEFAULT_LOCAL_LOGIN),
+  /**
+   * Which CLI runs the reviewer agent. Each harness carries its own default model; an
+   * explicit AI_REVIEW_MODEL overrides either default.
+   */
+  AI_REVIEW_HARNESS: z.enum(["opencode", "claude"]).default("opencode"),
+  AI_REVIEW_MODEL: z.string().min(1).optional(),
+  AI_REVIEW_TIMEOUT_MS: z
+    .string()
+    .regex(/^\d+$/, "AI_REVIEW_TIMEOUT_MS must be digits (milliseconds)")
+    .default("600000")
+    .transform((value) => Number(value)),
 })
+
+/** A model id the paired harness CLI understands when no explicit one is configured. */
+export const DEFAULT_REVIEW_MODEL: Readonly<Record<"opencode" | "claude", string>> = {
+  opencode: "zai-coding-plan/glm-5.3-flash",
+  claude: "sonnet",
+}
 
 const requireSignInMethod = (data: z.infer<typeof BaseEnvSchema>, ctx: z.RefinementCtx): void => {
   if (data.LOCAL_LOGIN_SECRET.length > 0) return
@@ -50,6 +67,9 @@ export type Env = {
   readonly webDist?: string | undefined
   readonly localLoginSecret?: string | undefined
   readonly localLoginLogin?: string | undefined
+  readonly aiReviewHarness: "opencode" | "claude"
+  readonly aiReviewModel: string
+  readonly aiReviewTimeoutMs: number
 }
 
 type Source = Record<string, string | undefined>
@@ -75,5 +95,9 @@ export const loadEnv = (source: Source = process.env): Env => {
     webDist: parsed.data.WEB_DIST,
     localLoginSecret: parsed.data.LOCAL_LOGIN_SECRET,
     localLoginLogin: parsed.data.LOCAL_LOGIN_LOGIN,
+    aiReviewHarness: parsed.data.AI_REVIEW_HARNESS,
+    aiReviewModel:
+      parsed.data.AI_REVIEW_MODEL ?? DEFAULT_REVIEW_MODEL[parsed.data.AI_REVIEW_HARNESS],
+    aiReviewTimeoutMs: parsed.data.AI_REVIEW_TIMEOUT_MS,
   }
 }

@@ -190,6 +190,13 @@
       "when": 1788951971000,
       "tag": "0026_task_notification_subtype",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1789129528915,
+      "tag": "0027_stiff_gamora",
+      "breakpoints": true
     }
   ]
 }

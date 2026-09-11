@@ -34,6 +34,9 @@ const env: Env = {
   jwtSecret: "test-secret-value",
   jwtExpiresIn: "7d",
   superAdminLogins: [],
+  aiReviewHarness: "opencode",
+  aiReviewModel: "zai-coding-plan/glm-5.3-flash",
+  aiReviewTimeoutMs: 600_000,
 }
 
 const stubClient = (opts: {

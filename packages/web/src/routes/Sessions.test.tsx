@@ -26,6 +26,7 @@ const session: SessionSummary = {
   tokensTotal: 4200,
   status: "complete",
   lastActiveAt: "2026-02-01T09:30:00.000Z",
+  hasAiReview: false,
 }
 
 const jsonResponse = (status: number, body: unknown): Response =>
@@ -125,7 +126,10 @@ test("SC66 (S23): loading /sessions?project=p&user=u&range=week seeds every cont
 
   await screen.findByRole("link", { name: /port the session detail surface/i })
 
-  expect(filterBox("Project").value).toBe("Samskara")
+  // The box seeds from the raw query value and only acquires its label once the response's
+  // filterOptions land, so this is a wait, not a read: asserting straight through raced the
+  // upgrade and read back "samskara" on a loaded runner.
+  await waitFor(() => expect(filterBox("Project").value).toBe("Samskara"))
   expect(filterBox("User").value).toBe("maya")
   expect(control(/last active/i).value).toBe("week")
 })
@@ -175,7 +179,10 @@ test("S25: an empty result keeps the filter values and offers a clear-filters ac
   renderAt("/sessions?project=samskara&user=maya&range=week")
 
   expect(await screen.findByText(/no sessions match/i)).toBeInTheDocument()
-  expect(filterBox("Project").value).toBe("Samskara")
+  // The box seeds from the raw query value and only acquires its label once the response's
+  // filterOptions land, so this is a wait, not a read: asserting straight through raced the
+  // upgrade and read back "samskara" on a loaded runner.
+  await waitFor(() => expect(filterBox("Project").value).toBe("Samskara"))
   expect(filterBox("User").value).toBe("maya")
   expect(control(/last active/i).value).toBe("week")
 

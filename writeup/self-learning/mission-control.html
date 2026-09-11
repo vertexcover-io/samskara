@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Mission control — self-learning samskara</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root {
+    --bg:#ffffff; --bg-2:#f7f8fa;
+    --line:#e4e6ea; --line-strong:#cfd3da;
+    --ink:#16181d; --ink-2:#4b5160; --ink-3:#9aa0ad;
+    --accent:#1d4ed8; --accent-soft:#eff4ff;
+    --mid:#a36a1c; --mid-soft:#fdf6ea;
+    --high:#1f7a4d; --high-soft:#edf7f1;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg) !important; color: var(--ink) !important; font: 15px/1.55 var(--sans); -webkit-font-smoothing: antialiased; }
+  .page { max-width: 54rem; margin: 0 auto; padding: 40px 24px 80px; }
+  h1 { margin: 0 0 10px; font-size: 28px; line-height: 1.25; letter-spacing: -0.02em; font-weight: 650; }
+  section { margin-bottom: 40px; }
+  section > h2 { margin: 0 0 14px; font-size: 12px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--ink-3); border-bottom: 1px solid var(--line); padding-bottom: 7px; }
+  p { margin: 0 0 12px; color: var(--ink-2); }
+  p:last-child { margin-bottom: 0; }
+  a { color: var(--accent); }
+  strong { color: var(--ink); font-weight: 620; }
+  code { font-family: var(--mono); font-size: 0.88em; color: var(--ink-2); background: var(--bg-2); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; overflow-wrap: anywhere; }
+  .lede { font-size: 16.5px; color: var(--ink); }
+  .card { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 18px 20px; margin-bottom: 14px; }
+  ul.plain { margin: 0; padding-left: 20px; color: var(--ink-2); }
+  ul.plain li { margin-bottom: 9px; }
+  ul.plain li:last-child { margin-bottom: 0; }
+  .refs { margin-top: 8px; font-size: 12px; color: var(--ink-3); font-family: var(--mono); overflow-wrap: anywhere; }
+  .board { display: flex; flex-direction: column; margin: 0 0 18px; }
+  .board-group { margin: 14px 0 8px; font-size: 13.5px; color: var(--ink); font-weight: 650; }
+  .board-group:first-of-type { margin-top: 0; }
+  .board-blurb { font-weight: 400; color: var(--ink-3); font-size: 12.5px; }
+  .brow { display: flex; gap: 12px; align-items: baseline; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; margin-bottom: 6px; }
+  .bid { font-family: var(--mono); font-size: 11px; color: var(--ink-3); flex: 0 0 3.4rem; }
+  .bitem { font-weight: 620; color: var(--ink); flex: 0 0 15rem; font-size: 13.5px; }
+  .bnote { color: var(--ink-2); font-size: 12.5px; flex: 1 1 auto; }
+  .tag { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; padding: 2px 8px; flex: 0 0 auto; }
+  .tag.built { background: var(--high-soft); color: var(--high); }
+  .tag.blue { background: var(--accent-soft); color: var(--accent); }
+  .tag.planned { background: var(--mid-soft); color: var(--mid); }
+  .tag.blocked { background: #fdf1f0; color: #b3392f; }
+  .foot { border-top: 1px solid var(--line); padding-top: 16px; margin-top: 40px; font-size: 11.5px; color: var(--ink-3); line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="page">
+
+<h1>Self-learning samskara</h1>
+<p class="lede">The pieces that turn recorded sessions into lessons are built and all their tests pass, but five audits found the loop cannot actually close yet: the part that decides whether a session's work landed never sees the commits, and the part that writes lessons into a repo would erase the lessons already there.</p>
+
+<section id="where">
+  <h2>Where are we</h2>
+  <div class="card">
+    <p><strong>What the mission is.</strong> Sessions are already recorded and searchable. The mission closes the circle: judge each session, turn the judgments into lessons, and deliver the lessons to two readers — the repo, for the next agent, and the person, told plainly.</p>
+  </div>
+  <div class="card">
+    <p><strong>What exists.</strong> A judge per session: outcome, friction, and the specifics (the same tool failing three times, a file edited four times, prompts sent into mounting errors). Server-side lesson storage, deduplicated per fingerprint. Two commands: <code>samskara review</code> and <code>samskara learn --write</code>.</p>
+    <p class="refs">packages/core/src/review/ · packages/server/src/routes/reviews.ts · packages/cli/src/commands/review.ts, learn.ts</p>
+  </div>
+  <div class="card">
+    <p><strong>Why it can't close yet.</strong> Five audits agree on the blockers listed below. The doc audits' rewrites are already in.</p>
+  </div>
+</section>
+
+  <section id="roadmaps">
+    <h2>Two roadmaps, read together</h2>
+    <div class="card">
+      <p><strong>Where they came from.</strong> Two independent agents produced roadmaps this session — one from the project understanding alone (GLM-5.3), one from auditing what exists (MiniMax-M3). The code-grounded one re-verified all 13 audit findings with file:line evidence: three fixed (#3 scoping, #5 acceptance surface, #12 deleted script), ten still broken — the four criticals stand exactly as this page lists them. Both files live in <code>writeup/self-learning/roadmaps/</code> and agree on the shape of the finish line.
+      <p><strong>What the synthesis changes.</strong> The understanding-driven roadmap adds five capabilities the code does not have — capture of <em>opencode</em> sessions through the unwired plugin registry, semantic similar-session retrieval on the idle pgvector store, loop-efficacy measurement, automatic review on session quiet, and delivery of accepted lessons to the next agent's eyes. It also forces one re-ordering: opencode capture goes <em>first</em>. It depends on nothing, and without it the mission has no real data to learn from — this very repo's sessions are opencode sessions, invisible to samskara today.
+    </div>
+    <div class="card">
+      <p><strong>Synthesized order.</strong> 1. opencode capture source (W6 + B's seam map: loosen the server's <code>source</code> literal, build the plugin against opencode's sqlite session store, wire the registry into the watcher). 2. Truthful reviews (W1 = audit fix 1, plus tracks/tokens). 3. Safe write-back (W2 = fixes 2 and 4). 4. Review on quiet (W3 = fix 6). 5. Human feedback surface, semantic retrieval, efficacy measurement (W5, W7, W8 — in that order, each unlocked by the ones before it).
+      <p class="refs">writeup/self-learning/roadmaps/A-from-understanding.md · writeup/self-learning/roadmaps/B-from-existing.md</p>
+    </div>
+  </section>
+
+  <section id="dogfood">
+    <h2>The loop now watches itself</h2>
+    <div class="card">
+      <p><strong>Samskara is running on this repo.</strong> The server and web UI are live (API :3000, web :8000, local Postgres on :5433), the CLI is paired, and capture is enabled for this folder. The opencode capture source landed the same day: a plugin now reads opencode's own session database, and this repo's sessions — every one of them opencode — flow into the project <code>vertexcover-io-samskara</code> alongside any Claude sessions. The loop finally has real data to learn from; what follows below is making its judgments truthful.
+    </div>
+  </section>
+
+  <section id="owner">
+    <h2>What needs the owner</h2>
+  <div class="card">
+    <p><strong>Nothing right now.</strong> The one open decision was settled: lessons promote by human check only — nothing accepts itself, ever. The curation page described below is that check. An LLM-backed judge later would need an API-key ruling; the heuristic one needs nothing.</p>
+  </div>
+</section>
+
+<section id="ruled">
+  <h2>Ruled, and built</h2>
+  <div class="card">
+    <p><strong>Lessons promote by human check only</strong> — the owner ruled out any threshold that accepts by itself. The surface for that check now exists: a Lessons page in the web UI. It lists one row per lesson per project — who it is for (agents or humans), how many sessions showed it, the evidence pointers — with Accept and Reject buttons on candidates, and Retire on accepted ones. Only someone who can edit the project can press them; anyone who can merely read the project can read the lessons but not change their status. A second view on the same page, "common across projects", groups the same lesson appearing in two or more projects into one row with the project names listed — the tool-shaped lessons that are not really about any one project. It carries no buttons on purpose: a shared lesson is accepted or retired in each project's own view, by the people who own that project.</p>
+    <p class="refs">packages/web/src/routes/Learnings.tsx · routes/reviews.ts (scoping + /common) · V7-V9 in reviews.test.ts</p>
+  </div>
+</section>
+
+<section id="broken">
+  <h2>What is broken, worst first</h2>
+  <div class="card">
+    <ul class="plain">
+      <li><strong>The verdict "shipped" can never happen.</strong> The judge decides "shipped" when it sees a commit or a pull request, but nothing ever tells it about commits — the code that loads a session for review fetches its commits and pull requests and then throws them away. So every session that landed work is mislabeled, and every lesson built on top of that verdict stands on sand.
+        <div class="refs">packages/core/src/review/events.ts · services/review.ts:32</div></li>
+      <li><strong>Writing lessons into a repo erases the lessons already there.</strong> This repo has four lessons written by hand before this mission. The write command regenerates the index file listing only what came from the server — and since nothing can be accepted yet (see the decision above), the first real run would write an empty index. The four files would still exist but nothing would list them, which is the same as losing them.
+        <div class="refs">packages/cli/src/commands/learn.ts:131 · .harness/knowledge/INDEX.md</div></li>
+      <li><strong>Anyone paired with the server can read and re-rank any project's lessons.</strong> Every other part of the server checks that the asking user can see the project; the lessons list and its edit route check nothing.
+        <div class="refs">routes/reviews.ts:41-60</div></li>
+      <li><strong><code>--project</code> by name is silently ignored.</strong> The command only forwards a project when the value looks like a UUID. Given a name, it quietly fetches every project's lessons and writes them all into whatever repo you're standing in. The help text promises names work.
+        <div class="refs">learn.ts:57 · index.ts:130</div></li>
+      <li><strong>Nothing ever reviews a session by itself.</strong> Capture runs automatically for everyone; judging and writing back are two commands somebody has to remember. The audits recommend the reviewer ride the watcher's existing ten-second loop — when a session's transcript has gone quiet, review it then.
+        <div class="refs">watcher/index.ts:152</div></li>
+      <li><strong>Subagent work pollutes the judgment.</strong> A subagent's task prompt looks like a human prompt to the judge, and subagent and main lines interleave in no fixed order, so re-reviewing the same session can change the answer.
+        <div class="refs">services/review.ts:32 · schema.ts:227</div></li>
+      <li><strong>"Seen 5 times" would be a lie.</strong> Reviewing the same session twice counts as seeing the lesson twice. The count should move only when a different session shows the same lesson.</li>
+      <li><strong>Lesson titles can leak your username.</strong> File paths in lessons are absolute, taken straight from the agent's tool calls, so <code>/Users/&lt;you&gt;/&hellip;</code> lands in committed files — and the same file on two machines counts as two different lessons.</li>
+    </ul>
+  </div>
+</section>
+
+<section id="board">
+  <h2>The board</h2>
+  <div class="card">
+    <p>Every open thread, one row each. <code>board.csv</code> beside this page is the source of truth &mdash; this section renders it one row per line, and a script test enforces the mapping, so the two cannot drift. A row carries its id, the work, the state, and the one sentence that says what done means for it. Update the CSV; the page follows.</p>
+  </div>
+    <h3 class="board-group">AI review <span class="board-blurb">&mdash; The second analyzer: harness-run, lens-based, grounded. The active wave.</span></h3>
+    <div class="board">
+      <div class="brow" data-board-id="AI-1" data-board-status="done"><span class="bid">AI-1</span><span class="bitem">Lens ontology (core)</span><span class="bnote">Schemas + grounding gate + prompt registry + session exporter landed in @samskara/core with 40 tests</span><span class="tag built">done</span></div>
+      <div class="brow" data-board-id="AI-2" data-board-status="done"><span class="bid">AI-2</span><span class="bitem">Harness runner + job lifecycle (server)</span><span class="bnote">Runner XDG-sandboxed (empty opencode home, auth copied in) - jobs registry (4 concurrent) - editor-gated POST analyze + GET aireview + GET job status - 190 server tests green</span><span class="tag built">done</span></div>
+      <div class="brow" data-board-id="AI-3" data-board-status="done"><span class="bid">AI-3</span><span class="bitem">Web: Analyze button + timeline lens</span><span class="bnote">Analyze button only when no ai-v1 review - 3s polling - timeline entries deep-link into the conversation span - learnings lenses with evidence links - 252 web tests green</span><span class="tag built">done</span></div>
+      <div class="brow" data-board-id="AI-4" data-board-status="done"><span class="bid">AI-4</span><span class="bitem">CLI: samskara review --ai</span><span class="bnote">samskara review --ai polls the job and prints verdict + lenses; --json exits non-zero when lenses are missing so agents can loop</span><span class="tag built">done</span></div>
+      <div class="brow" data-board-id="AI-5" data-board-status="done"><span class="bid">AI-5</span><span class="bitem">Live end-to-end on the test session</span><span class="bnote">Sandbox + alias + position ids verified live on the 5-msg session (16s end-to-end); 4 real bugs found end-to-end (msb --timeout format, missing auth stage + xdg-data mkdir, </dev/null on stdin, plus the earlier three). 1501-msg session review grounded correctly but emit was malformed - export shape is the next thing to fix (AI-6)</span><span class="tag built">done</span></div>
+      <div class="brow" data-board-id="AI-6" data-board-status="done"><span class="bid">AI-6</span><span class="bitem">Tighten export shape so big sessions don't take 6 min</span><span class="bnote">Export drops turnEvent/custom and folds call+result pairs (1500-msg fixture 280KB to 112KB); prompt cites the pre-shaped export instead of read-it-fully; XML heal recovers dropped lens-wrapper openers - 214 core tests</span><span class="tag built">done</span></div>
+      <div class="brow" data-board-id="AI-7" data-board-status="todo"><span class="bid">AI-7</span><span class="bitem">Owner writeup page</span><span class="bnote">One HTML page for the owner via the writeup skill after AI-5 closes</span><span class="tag planned">todo</span></div>
+      <div class="brow" data-board-id="AI-8" data-board-status="done"><span class="bid">AI-8</span><span class="bitem">Analyze job survives reload + duplicate-run guard</span><span class="bnote">Found live: an owner click looked dead because reload forgets a running job. aireview now carries the running job so the page joins the poll on load; POST analyze 409s on already-running/already-exists; CLI attaches to running jobs - 208 server / 258 web tests</span><span class="tag built">done</span></div>
+      <div class="brow" data-board-id="AI-9" data-board-status="done"><span class="bid">AI-9</span><span class="bitem">Review quality overhaul (verdict language, incremental XML, accordion learnings)</span><span class="bnote">Landed end-to-end: template-fill XML contract (agent assembles review.xml incrementally, self-validates, server reads file back); synonym healing (friction=overcome no longer kills a review); numbers + per-phase durations computed server-side, never model-claimed; plain-language verdict sentences; time-flow strip; accordion learnings with human/agent/harness audiences; partial banner + review-agent run panel with sandbox log. Verified live on ses_fc28df46 (3min run, partial honestly flagged: healer dropped 2 of 11 claimed entries)</span><span class="tag built">done</span></div>
+      <div class="brow" data-board-id="AI-10" data-board-status="done"><span class="bid">AI-10</span><span class="bitem">Reviewer harness choice (claude lane, per-run model)</span><span class="bnote">AI_REVIEW_HARNESS env (opencode|claude); createClaudeRunner (headless claude -p, HOME/CLAUDE_CONFIG_DIR redirected into the workspace); analyze accepts {harness,model} and the modal posts them; per-harness defaults (opencode glm-5.3-flash, claude sonnet); msb stays opencode-only</span><span class="tag built">done</span></div>
+      <div class="brow" data-board-id="AI-11" data-board-status="done"><span class="bid">AI-11</span><span class="bitem">Redo review + visible job state</span><span class="bnote">analyze accepts force=true and the upsert supersedes; Redo button reuses the harness/model dialog; card shows Redo running/failed with plain-language reasons; reload rejoins running redos; analyzedAt surfaced so a redo moves the timestamp</span><span class="tag built">done</span></div>
+      <div class="brow" data-board-id="AI-12" data-board-status="done"><span class="bid">AI-12</span><span class="bitem">Contract v3: breadcrumbs lens + staged CONTRACT.md</span><span class="bnote">harnessLearnings replaced by breadcrumbs (query/command/path/procedure/tool) across schema/template/parser/grounding/counts; full contract staged into the workspace as CONTRACT.md, prompt now a lean pointer; learnings must name a change not a compliment; unknown categories default instead of dropping; friction=none passes through (was healed to moderate)</span><span class="tag built">done</span></div>
+      <div class="brow" data-board-id="AI-13" data-board-status="done"><span class="bid">AI-13</span><span class="bitem">Reviewer transcript capture + Reviewer session modal</span><span class="bnote">Pipeline lifts the reviewer's own session before workspace cleanup (claude jsonl from its redirected config dir; opencode sqlite from the redirected XDG - covers soft and msb lanes); modal renders it conversation-style (roles, text, inline tool calls); falls back to the output tail</span><span class="tag built">done</span></div>
+      <div class="brow" data-board-id="AI-14" data-board-status="done"><span class="bid">AI-14</span><span class="bitem">Sessions list: AI-review badge + filter; UI simplification</span><span class="bnote">hasAiReview on list rows + aiReview=done|missing filter (web and samskara search --ai-review); static review card hidden; verdict = color dot + plain sentence (no enum words); full timeline with duration + % of session</span><span class="tag built">done</span></div>
+      <div class="brow" data-board-id="AI-15" data-board-status="done"><span class="bid">AI-15</span><span class="bitem">Evidence links scroll: seq to real message id bridge</span><span class="bnote">run.recordIds maps export aliases (msg-N) to captured message ids; timeline and evidence links resolve through it so the conversation tab scrolls to the cited record; review-tab refresh keeps content on screen (scroll-to-top bug)</span><span class="tag built">done</span></div>
+      <div class="brow" data-board-id="LL-1" data-board-status="done"><span class="bid">LL-1</span><span class="bitem">Optional local-secret sign-in alongside GitHub OAuth</span><span class="bnote">Env-gated dev login (LOCAL_LOGIN_SECRET) so dogfooding works without the GitHub round trip; invisible when unset; constant-time compare; existing users only</span><span class="tag built">done</span></div>
+    </div>
+    <h3 class="board-group">Truthful reviews <span class="board-blurb">&mdash; Make the static verdict mean what it says before anything builds on it.</span></h3>
+    <div class="board">
+      <div class="brow" data-board-id="TR-1" data-board-status="done"><span class="bid">TR-1</span><span class="bitem">Feed commits/PRs into the review projection</span><span class="bnote">reviewFromDetail projects commits/pullRequests into review events so outcome shipped is reachable (a commit beats abort signals - precedence pinned in tests); tokenUsage folded as one aggregate tokens event - 202 server tests</span><span class="tag built">done</span></div>
+      <div class="brow" data-board-id="TR-2" data-board-status="done"><span class="bid">TR-2</span><span class="bitem">learn --write merges hand-written lessons</span><span class="bnote">writeLearnings merges hand-written lessons into INDEX (never clobbers, empty accepted set leaves everything intact); generated files carry a source frontmatter mark and only those are pruned</span><span class="tag built">done</span></div>
+      <div class="brow" data-board-id="TR-3" data-board-status="done"><span class="bid">TR-3</span><span class="bitem">--project resolves names loudly</span><span class="bnote">GET /api/projects/resolve (cli audience) + CLI resolves name/slug/prefix loudly; unknown or ambiguous exits 1 before anything is written; help text truthful</span><span class="tag built">done</span></div>
+      <div class="brow" data-board-id="TR-4" data-board-status="done"><span class="bid">TR-4</span><span class="bitem">Occurrence counts per distinct session</span><span class="bnote">learningSessions link table (migration 0023_tense_scream); occurrenceCount bumps only on a new distinct session (idempotent re-review, heuristic and AI paths share upsertLearning); title keeps the max magnitude</span><span class="tag built">done</span></div>
+      <div class="brow" data-board-id="TR-5" data-board-status="todo"><span class="bid">TR-5</span><span class="bitem">Per-track projection</span><span class="bnote">Subagent task prompts count as human prompts; project tracks separately in events.ts</span><span class="tag planned">todo</span></div>
+      <div class="brow" data-board-id="TR-6" data-board-status="todo"><span class="bid">TR-6</span><span class="bitem">Relative-path fingerprints</span><span class="bnote">Absolute edit paths leak usernames and split fingerprints across machines; use the artifact table relativePath</span><span class="tag planned">todo</span></div>
+      <div class="brow" data-board-id="TR-7" data-board-status="todo"><span class="bid">TR-7</span><span class="bitem">Shared counters + token fold</span><span class="bnote">Extractor re-derives analyzer counters and has diverged; messages carry no tokens so reviews report zero</span><span class="tag planned">todo</span></div>
+    </div>
+    <h3 class="board-group">Loop automation <span class="board-blurb">&mdash; The front of the loop runs unattended.</span></h3>
+    <div class="board">
+      <div class="brow" data-board-id="LA-1" data-board-status="todo"><span class="bid">LA-1</span><span class="bitem">Review on quiet (watcher sweep)</span><span class="bnote">Idle-session sweep in the watcher 10s cycle calls the review endpoint; needs TR-1 first so auto reviews are truthful</span><span class="tag planned">todo</span></div>
+    </div>
+    <h3 class="board-group">Subagent awareness <span class="board-blurb">&mdash; Tracks, nested timelines, and judging orchestration itself.</span></h3>
+    <div class="board">
+      <div class="brow" data-board-id="SA-1" data-board-status="done"><span class="bid">SA-1</span><span class="bitem">Collect children when parent checkpoint current</span><span class="bnote">opencode collector checks children before skipping on a current parent checkpoint; a quiet parent with a moved child now ships only the child tracks; quiescent families emit nothing</span><span class="tag built">done</span></div>
+      <div class="brow" data-board-id="SA-2" data-board-status="todo"><span class="bid">SA-2</span><span class="bitem">Nested subagent timeline lanes</span><span class="bnote">Lens payloads already carry track identity; render subagent activity as nested lanes inside the timeline</span><span class="tag planned">todo</span></div>
+      <div class="brow" data-board-id="SA-3" data-board-status="todo"><span class="bid">SA-3</span><span class="bitem">Sub-reviews + spawning-efficiency lens</span><span class="bnote">Per-track sub-reviews and a lens that judges orchestration itself - was spawning worth it</span><span class="tag planned">todo</span></div>
+    </div>
+    <h3 class="board-group">Memory <span class="board-blurb">&mdash; The archive answers who hit this before.</span></h3>
+    <div class="board">
+      <div class="brow" data-board-id="ME-1" data-board-status="todo"><span class="bid">ME-1</span><span class="bitem">pgvector similar-sessions</span><span class="bnote">Provisioned and unused; embed summaries/error signatures; GET /api/sessions/:id/similar + web panel</span><span class="tag planned">todo</span></div>
+    </div>
+    <h3 class="board-group">Delivery <span class="board-blurb">&mdash; Accepted lessons reach the next session's agent.</span></h3>
+    <div class="board">
+      <div class="brow" data-board-id="DE-1" data-board-status="todo"><span class="bid">DE-1</span><span class="bitem">Accepted lessons reach the next agent</span><span class="bnote">CLAUDE.md pointer or SessionStart hook at .harness/knowledge/ in enabled projects; the loop agent-half stays open until something reads what learn writes</span><span class="tag planned">todo</span></div>
+    </div>
+</section>
+
+<section id="done">
+  <h2>What does done look like</h2>
+  <div class="card">
+    <ul class="plain">
+      <li>The foundation exists: the audit and writing skills are in the repo, the playbooks including the tone guide are in <code>docs/playbook/</code>, and the project-understanding doc says why the repo exists — the doc audits graded it and their corrections are in.</li>
+      <li>The whole dev stack now runs on this machine without Docker: one script starts a local Postgres on the port the compose file used, and the server's tests make themselves a throwaway database on it.</li>
+      <li>The judge exists and its tests say what it judges; the server stores reviews and lessons and its tests run against a real database; the two commands exist with tests. What is missing is not more machinery — it is the five fixes above before any of it is trusted with real sessions.</li>
+      <li>Not yet done, and it gates everything: one real session from this repo reviewed end to end, at least one lesson accepted, written back, and the hand-written index still intact afterwards. The writeup page comes after that closes.</li>
+    </ul>
+  </div>
+</section>
+
+<div class="foot">
+  The session log is <code>log.md</code> and the checklist is <code>board.csv</code> beside this page; the machine-facing state is <code>RESUME.md</code>. Where they disagree with this page, this page wins and RESUME gets fixed. How this page is written is governed by <code>../../docs/playbook/tone_and_taste.md</code>.
+</div>
+
+</div>
+</body>
+</html>

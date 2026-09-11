@@ -16,6 +16,7 @@ const populated: SessionSummary = {
   tokensTotal: 128_400,
   status: "complete",
   lastActiveAt: "2026-02-01T09:30:00.000Z",
+  hasAiReview: false,
 }
 
 const renderRow = (session: SessionSummary) =>
@@ -103,6 +104,16 @@ test("S26: the row is a link, so a session opens in a new tab the way any other 
   renderRow(populated)
 
   expect(screen.getByRole("link")).toHaveAttribute("href", "/sessions/s-1")
+})
+
+test("S44: a session with a landed AI review wears a badge", () => {
+  renderRow({ ...populated, hasAiReview: true })
+  expect(screen.getByText("AI review")).toBeInTheDocument()
+})
+
+test("S44: a session the AI review has not reached carries no badge", () => {
+  renderRow({ ...populated, hasAiReview: false })
+  expect(screen.queryByText("AI review")).not.toBeInTheDocument()
 })
 
 test("search evidence renders a supported source label and escaped highlighted text", () => {

@@ -31,6 +31,11 @@ const env: Env = {
   jwtSecret: "test-secret-value",
   jwtExpiresIn: "7d",
   superAdminLogins: [],
+  localLoginSecret: "",
+  localLoginLogin: "samskara-dev",
+  aiReviewModel: "zai-coding-plan/glm-5.3",
+  aiReviewHarness: "opencode",
+  aiReviewTimeoutMs: 600000,
 }
 
 const sha256 = (content: string | Buffer): string =>

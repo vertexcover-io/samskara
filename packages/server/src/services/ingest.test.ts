@@ -80,6 +80,7 @@ const mainPayload = (
 ): IngestPayload => ({
   type: "main",
   sessionId,
+  source: "claude_code",
   sourceRelativePath: `${sessionId}.jsonl`,
   project: payloadProject,
   records: recordsFrom(items),
@@ -93,6 +94,7 @@ const subagentPayload = (
 ): IngestPayload => ({
   type: "subagent",
   sessionId,
+  source: "claude_code",
   sourceRelativePath: `${sessionId}/subagents/agent-${agentId}.jsonl`,
   project,
   agent: { agentId, agentType: "auditor", description: "fixture subagent" },
@@ -306,6 +308,7 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
       await ingest(ctx, {
         type: "main",
         sessionId,
+        source: "claude_code",
         sourceRelativePath: `${sessionId}.jsonl`,
         project,
         records,
@@ -378,7 +381,14 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
 
     await ingest(
       { db, log, userId: ctx.userId },
-      { type: "main", sessionId, sourceRelativePath: `${sessionId}.jsonl`, project, records },
+      {
+        type: "main",
+        sessionId,
+        source: "claude_code",
+        sourceRelativePath: `${sessionId}.jsonl`,
+        project,
+        records,
+      },
     )
 
     const completion = info.mock.calls.find((call) => call[1] === "Ingestion completed")

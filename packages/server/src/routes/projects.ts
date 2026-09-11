@@ -39,6 +39,17 @@ export const projectsRoutes = ({ db, env }: Deps) =>
       const rows = await listAccessibleSummaries(db, c.get("user").id)
       return c.json({ projects: rows.map(serialize) }, 200)
     })
+    // The CLI's `--project <name|slug>` needs a name-to-id lookup. `GET /` above is
+    // web-audience-only by contract (a cli token never reads the web API), so this is the
+    // cli-side counterpart: the same visibility, the bare fields resolution needs.
+    // Registered before `/:id` so the literal path is not captured by the param route.
+    .get("/resolve", requireAuth({ db, env }, ["cli"]), async (c) => {
+      const rows = await listAccessibleSummaries(db, c.get("user").id)
+      return c.json(
+        { projects: rows.map((row) => ({ id: row.id, name: row.name, slug: row.slug })) },
+        200,
+      )
+    })
     .get("/:id", requireAuth({ db, env }, ["web"]), async (c) => {
       const projectId = c.req.param("id")
       if (!UUID.test(projectId)) return c.json({ error: "projectNotFound" }, 404)

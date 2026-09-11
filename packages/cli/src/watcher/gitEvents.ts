@@ -73,10 +73,16 @@ const pullRequestFacts = (output: unknown): ReadonlyArray<PullRequestFacts> => {
 
 type PendingCall = { readonly command: string; readonly repo?: RepoIdentity }
 
+/**
+ * Claude Code names its shell tool `Bash` (capital); opencode names its `bash` (lower). Both
+ * carry a `command` field, both go through the same git-event pipeline.
+ */
+const SHELL_TOOL_NAMES = new Set(["Bash", "bash"])
+
 const isBashCall = (
   message: NormalizedMessage,
 ): message is Extract<NormalizedMessage, { msgType: "toolCall" }> =>
-  message.msgType === "toolCall" && message.details.name === "Bash"
+  message.msgType === "toolCall" && SHELL_TOOL_NAMES.has(message.details.name)
 
 const pendingOf = (
   message: Extract<NormalizedMessage, { msgType: "toolCall" }>,

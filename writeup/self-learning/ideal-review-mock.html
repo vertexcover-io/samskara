@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>What a session review should say — worked on ses_fc28df46</title>
+<style>
+  :root {
+    --ink: #1a1d21; --ink-soft: #4d5560; --faded: #8a919c;
+    --rule: #d9dde3; --panel: #f6f7f9; --ok: #1a7f4e; --warn: #9a6700; --bad: #b3362b;
+    --accent: #2454a6;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; color: var(--ink); background: #fbfbfc;
+    font: 16px/1.6 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 48px 28px 96px; }
+  h1 { font-size: 26px; line-height: 1.3; margin: 0 0 6px; }
+  h2 { font-size: 19px; margin: 44px 0 4px; }
+  h2 .sub { display: block; font-size: 14px; font-weight: 400; color: var(--ink-soft); margin-top: 2px; }
+  p { margin: 10px 0; }
+  .meta { color: var(--ink-soft); font-size: 14px; margin-bottom: 28px; }
+  .mono { font: 13px/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
+  .chip { font: 12px/1.5 ui-monospace, Menlo, monospace; background: #eef1f5; border: 1px solid var(--rule);
+    border-radius: 4px; padding: 1px 6px; white-space: nowrap; color: var(--ink-soft); }
+  .chip.link { color: var(--accent); cursor: pointer; }
+  .stamp { display: inline-block; font-size: 12px; font-weight: 700; letter-spacing: 0.04em;
+    border-radius: 4px; padding: 2px 8px; }
+  .stamp.ok { background: #e2f2e9; color: var(--ok); }
+  .stamp.warn { background: #fbf0dc; color: var(--warn); }
+  .stamp.bad { background: #fbe4e1; color: var(--bad); }
+  section { margin: 26px 0; }
+  .card { border: 1px solid var(--rule); background: #fff; border-radius: 8px; padding: 18px 20px; margin: 14px 0; }
+  .card.prototype { border-style: solid; border-color: #b9c6dd; }
+  .findings li { margin: 14px 0; }
+  .findings p { margin: 4px 0; }
+  .slot { margin: 8px 0; }
+  .slot b { color: var(--ink); }
+  .aud { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: 0.05em; padding: 2px 8px;
+    border-radius: 10px; margin-right: 8px; vertical-align: 1px; }
+  .aud.you { background: #e7ecf6; color: var(--accent); }
+  .aud.agent { background: #efe7f6; color: #6b3fa0; }
+  .aud.harness { background: #e8f0ee; color: #2a6f5a; }
+  .flow { display: flex; border-radius: 5px; overflow: hidden; height: 26px; margin: 10px 0 6px;
+    font-size: 11px; font-weight: 600; color: #fff; }
+  .flow div { display: flex; align-items: center; justify-content: center; white-space: nowrap; overflow: hidden; }
+  .legend { font-size: 13px; color: var(--ink-soft); }
+  .trow { display: grid; grid-template-columns: 26px 168px 1fr; gap: 10px; padding: 10px 0;
+    border-bottom: 1px solid var(--rule); align-items: baseline; }
+  .trow:last-child { border-bottom: none; }
+  .trow .kind { text-align: center; font-size: 15px; }
+  .trow .t { font-weight: 600; }
+  .trow .d { font-size: 13px; color: var(--ink-soft); }
+  .trow .sum { font-size: 14px; }
+  .trow .ev { margin-top: 4px; }
+  .note { border-left: 3px solid var(--rule); padding: 2px 0 2px 14px; color: var(--ink-soft); font-size: 14px; }
+  .banner { border: 1px solid #e5c9a5; background: #fdf6ea; border-radius: 8px; padding: 12px 16px; margin: 14px 0;
+    font-size: 14px; }
+  .banner b { color: var(--warn); }
+  .q li { margin: 12px 0; }
+  code { font: 13px/1.5 ui-monospace, Menlo, monospace; background: #eef1f5; border-radius: 4px; padding: 0 4px; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>What a session review should say</h1>
+<p class="meta">Worked end-to-end on the real review of <span class="mono">ses_fc28df46</span> ("Reviewing recorded AI coding session export", Aug 26, 4m 38s, 130 records, 27 tool calls). Every number and quote below is from the database, not invented. This page is for alignment — nothing is built yet.</p>
+
+<h2>Part 1 — What the current review gets wrong</h2>
+<p>The review that rendered on your screen is accurate — I checked its claims against the transcript and every citation resolves. The problems are what's missing, what it blames, and how it reads. Six findings:</p>
+
+<ol class="findings">
+  <li>
+    <p><b>More than half of the review was silently thrown away.</b> The reviewer's own last message (seq 128) says it wrote 20 timeline entries and 5 human + 6 agent learnings. What persisted is 8 entries and 2 + 2 — a 6 KB payload. The XML healing step recovered what it could and dropped the rest without a word. The page shows 8 entries as if that were the whole review, so you judged a mutilated deliverable.</p>
+  </li>
+  <li>
+    <p><b>It blames you for our bug.</b> The top "human learning" is <i>"Ship the export you promise"</i> — but the missing <code>session.json</code> was a samskara pipeline failure from that era (the exporter never wrote the file into the workspace; since fixed). The lens set has two audiences, human and agent, so a harness failure has nowhere to go and gets laundered into "your prompt was bad advice".</p>
+  </li>
+  <li>
+    <p><b>The review carries no numbers.</b> Not duration, not tokens, not tool-call counts, not what the detour cost. The session burned 95 of 278 seconds (34%) recovering from the missing file before any analysis started — the single most important fact about this session, and it appears nowhere. Without numbers, "moderate friction" is an opinion.</p>
+  </li>
+  <li>
+    <p><b>The timeline is prose wearing a timeline costume.</b> Entries have seq ranges but no clock time, no duration, no share of session. Nothing answers "where did the time go". Tags like <span class="chip">review</span> <span class="chip">task-setup</span> are taxonomy for us, noise for you.</p>
+  </li>
+  <li>
+    <p><b>Learnings describe the past, never the next time.</b> "Define the fallback for a missing artifact" is advice-shaped but abstract: no cost, no imperative, no repeat context (is this the first time or the fifth?). And the sharpest learning in the session — the agent validated its grounding against a reconstruction it built itself, which is circular — is buried inside the summary paragraph and never becomes a learning at all. That's your "a learning that isn't isolated as one".</p>
+  </li>
+  <li>
+    <p><b>Timeline entries don't navigate.</b> Clicking one does nothing (verified headless). The deep-links you were promised exist only on the small seq chips inside learnings. The verdict stamps (<span class="stamp ok">SHIPPED</span> <span class="stamp warn">MODERATE</span>) float with no one-line "why" bound to them — the why lives in a dense summary paragraph.</p>
+  </li>
+</ol>
+
+<h2>Part 2 — The ideal, on this exact session
+  <span class="sub">This is what the review tab should render after the changes. Skim the bold lines first; every chip marked like <span class="chip link">msg-47</span> is a working deep-link into the conversation.</span>
+</h2>
+
+<div class="card prototype">
+  <p style="margin-top:0"><span class="stamp ok">SHIPPED</span> <span class="stamp warn">MODERATE FRICTION</span>
+  &nbsp;— <b>the review artifact landed and every citation checks out, but a third of the session went to recovering an input file our own pipeline failed to deliver.</b></p>
+  <p class="meta" style="margin:8px 0 0">
+    <span class="chip">4m 38s</span> <span class="chip">130 records</span> <span class="chip">27 tool calls</span>
+    <span class="chip">24.9k in / 5.1k out tokens</span> <span class="chip">280.8k cache reads</span>
+    <span class="chip">1 track</span> <span class="chip">reviewer: glm-5.3</span>
+  </p>
+</div>
+
+<div class="card prototype">
+  <p style="margin-top:0"><b>Where the time went.</b> Each block is wall-clock; the detour the review should have named starts at the second block.</p>
+  <div class="flow">
+    <div style="width:4%; background:#7a8697" title="Kickoff 10s">·</div>
+    <div style="width:34%; background:#b3362b" title="Recovering the missing export 95s">recovering the missing export · 95s</div>
+    <div style="width:5%; background:#9a6700" title="Read rebuilt export 12s">·</div>
+    <div style="width:28%; background:#2454a6" title="Analyzing the inner session 78s">analysis · 78s</div>
+    <div style="width:25%; background:#1a7f4e" title="Building + validating the review 83s">build + validate · 83s</div>
+    <div style="width:4%; background:#7a8697" title="Wrap 14s">·</div>
+  </div>
+  <p class="legend"><b>34% of the session (95 of 278s, seq 3–77)</b> was spent reconstructing an export the task prompt promised would be sitting there — a pipeline failure, not a task problem. Everything after it went normally.</p>
+</div>
+
+<div class="card prototype">
+  <p style="margin-top:0"><b>Timeline.</b> One line per phase while skimming; expand for the story. Icons: ● phase · ◆ turning point · ■ event. Rows are links into the conversation span.</p>
+  <div class="trow">
+    <div class="kind">●</div>
+    <div><div class="t">Task received</div><div class="d">10s · seq 0–2</div></div>
+    <div><div class="sum">Prompt hands over a review task and promises <code>session.json</code> beside the agent.</div>
+      <div class="ev"><span class="chip link">msg-0</span></div></div>
+  </div>
+  <div class="trow">
+    <div class="kind">■</div>
+    <div><div class="t">The promised file isn't there</div><div class="d">~25s · seq 3–28</div></div>
+    <div><div class="sum">Two reads fail, filesystem sweep confirms the export never landed. <b>The data contract is broken at second 10.</b></div>
+      <div class="ev"><span class="chip link">msg-4</span> <span class="chip link">msg-20</span></div></div>
+  </div>
+  <div class="trow">
+    <div class="kind">◆</div>
+    <div><div class="t">Pivot: mine opencode.db instead</div><div class="d">71s · seq 29–76</div></div>
+    <div><div class="sum">Agent decides, without asking, to rebuild the export from a 196 MB database. ~20 schema-probing bash calls before the first real query.</div>
+      <div class="ev"><span class="chip link">msg-47</span> <span class="chip link">msg-57</span></div></div>
+  </div>
+  <div class="trow">
+    <div class="kind">●</div>
+    <div><div class="t">Inner session analyzed</div><div class="d">90s · seq 77–114</div></div>
+    <div><div class="sum">Rebuilt export read end-to-end; Docker saga, clobbered files and subagent tracks of the inner session mapped.</div>
+      <div class="ev"><span class="chip link">msg-77</span> <span class="chip link">msg-100</span></div></div>
+  </div>
+  <div class="trow">
+    <div class="kind">◆</div>
+    <div><div class="t">Review built and self-validated</div><div class="d">83s · seq 115–129</div></div>
+    <div><div class="sum">Citations pulled programmatically (good), grounding checked against the agent's own reconstruction (circular — see learnings).</div>
+      <div class="ev"><span class="chip link">msg-115</span> <span class="chip link">msg-128</span></div></div>
+  </div>
+</div>
+
+<div class="card prototype">
+  <p style="margin-top:0"><b>What actually happened, in three sentences.</b> The reviewer agent was promised an export file that our pipeline never wrote, spent 95 seconds reconstructing it from the opencode database, then produced a fully-grounded review of the inner session. The deliverable shipped. Nothing the human did wasted time — every avoidable cost traces to the toolchain or the agent's choices inside the recovery.</p>
+</div>
+
+<div class="card prototype">
+  <p style="margin-top:0"><b>Learnings.</b> Three audiences — <span class="aud you">YOU</span> what you could do differently, <span class="aud agent">AGENT</span> what the agent should do differently, <span class="aud harness">HARNESS</span> what we must fix in samskara itself. Each names its cost and one thing to do next time.</p>
+
+  <div class="card">
+    <p><span class="aud harness">HARNESS</span> <b>The exporter delivered an empty promise.</b></p>
+    <p class="slot"><b>Situation:</b> the task prompt asserted <code>session.json</code> sat in the workspace; the exporter never wrote it (bug of that era, since fixed — the pipeline now asserts the export before spawning the reviewer).</p>
+    <p class="slot"><b>Cost:</b> 95s of 278s — 34% of the session — before any analysis began.</p>
+    <p class="slot"><b>Next time:</b> a review that finds its input missing should say so in its verdict line, not bury it in a learning.</p>
+    <p class="ev"><span class="chip link">msg-0</span> <span class="chip link">msg-4</span> <span class="chip">severity: high</span> <span class="chip">first occurrence</span></p>
+  </div>
+
+  <div class="card">
+    <p><span class="aud agent">AGENT</span> <b>Escalate before swapping the source of truth.</b></p>
+    <p class="slot"><b>Situation:</b> when the export was missing, the agent silently substituted its own reconstruction from opencode.db, changing what "grounded" means for the whole review.</p>
+    <p class="slot"><b>Cost:</b> no time wasted — a trust cost. The review's evidence chain silently changed basis.</p>
+    <p class="slot"><b>Next time:</b> when an input contract breaks, name it in the reply and proceed marked, or stop and ask.</p>
+    <p class="ev"><span class="chip link">msg-47</span> <span class="chip link">msg-48</span> <span class="chip">severity: medium</span></p>
+  </div>
+
+  <div class="card">
+    <p><span class="aud agent">AGENT</span> <b>Probe a schema once, then query.</b></p>
+    <p class="slot"><b>Situation:</b> ~20 bash calls walked the 196 MB database's schema and tables before the first purposeful query, though the session id was known from the start.</p>
+    <p class="slot"><b>Cost:</b> most of the 71s reconstruction block; ~24k input tokens.</p>
+    <p class="slot"><b>Next time:</b> read the schema in one query, write the three queries you need, run them.</p>
+    <p class="ev"><span class="chip link">msg-34</span> <span class="chip link">msg-57</span> <span class="chip">severity: low</span></p>
+  </div>
+
+  <div class="card">
+    <p><span class="aud harness">HARNESS</span> <b>Self-certified grounding is circular.</b></p>
+    <p class="slot"><b>Situation:</b> the agent validated its citations against the session.json it had just reconstructed itself — the check can't fail, so it proves nothing. Today this observation lives in the summary paragraph and nowhere else.</p>
+    <p class="slot"><b>Cost:</b> the persisted review's grounding was re-verified server-side (that gate held), but the reviewer's own validation step was theater.</p>
+    <p class="slot"><b>Next time:</b> the prompt should forbid self-certification explicitly; grounding authority stays server-side only.</p>
+    <p class="ev"><span class="chip link">msg-118</span> <span class="chip link">msg-128</span> <span class="chip">severity: medium</span></p>
+  </div>
+
+  <div class="card">
+    <p><span class="aud you">YOU</span> <b>Nothing to change in how you gave this task.</b></p>
+    <p class="slot"><b>Situation:</b> the prompt was complete and specific; every avoidable cost traces to the toolchain or the agent's recovery choices.</p>
+    <p class="slot"><b>Next time:</b> optionally, tasks that depend on a generated artifact can carry one line — "if it's missing, stop and say so" — which would have cut the detour, but that is defense against our bug, not a flaw in your prompt.</p>
+    <p class="ev"><span class="chip">no cost attributed</span></p>
+  </div>
+</div>
+
+<div class="banner">
+  <b>This banner is what today's page should have shown:</b> Recovered 8 of 20 timeline entries and 4 of 11 learnings that the reviewer reports writing (seq 128). The XML reply was malformed and partially healed. Treat this review as incomplete — rerun recommended.
+</div>
+</section>
+
+<h2>Part 3 — What has to change where
+  <span class="sub">The mapping from findings to work, so alignment on Part 2 decides all of it.</span>
+</h2>
+<section>
+  <ol class="findings">
+    <li><p><b>Lens schema (core):</b> timeline entries gain wall-clock start + duration; learnings gain cost, severity, next-time line, and a third audience <code>harness</code>; the review gains a numbers block (duration, tokens, tool calls) computed from the session, not generated by the reviewer.</p></li>
+    <li><p><b>Prompt (core):</b> attribution rules — harness failures are named as harness, never reworded into human advice; numbers come pre-computed so the reviewer cites instead of estimating; self-certification forbidden; "no learning" must be stated explicitly, not implied by silence.</p></li>
+    <li><p><b>Pipeline (server):</b> the reviewer's self-reported counts (it already emits them) are checked against what parses — a mismatch either fails the job or persists with a visible <b>partial</b> banner like the one above. Silent loss becomes impossible.</p></li>
+    <li><p><b>Web:</b> verdict line with its one-sentence why; the time-flow strip; skim/collapse timeline rows wired as deep-links; learning cards with the four slots; the partial banner.</p></li>
+  </ol>
+</section>
+
+<h2>Part 4 — Decisions I need from you</h2>
+<section>
+  <ol class="q">
+    <li><p><b>Harness as a third audience</b> — separate learnings about samskara itself, so they stop landing on you. Yes?</p></li>
+    <li><p><b>Partial reviews:</b> when emitted counts ≠ persisted counts, hard-fail the job (rerun needed, no partial state) or persist with the banner? My vote: banner + auto-rerun once, fail if it repeats.</p></li>
+    <li><p><b>The "YOU: nothing to change" card</b> — always render an explicit empty-verdict for the human, or omit when there's nothing? My vote: always render; silence reads as "didn't check".</p></li>
+    <li><p><b>Severity vocabulary</b> — the three-level low/medium/high on cost (time, tokens, trust), or no severity at all in v1? My vote: keep it, it drives sorting.</p></li>
+    <li><p><b>Timeline granularity</b> — 5 phases like above (skimmable) vs the current 8+ entries with detail collapsed. My vote: reviewer emits phases + turning points only; the UI never shows more than ~7 rows unexpanded.</p></li>
+  </ol>
+</section>
+
+<p class="note">Sources: review payload <span class="mono">f72e17d8</span> (6.0 KB), transcript seq 0–129, tokenUsage table, reviewer wrap-up claim at seq 128. Durations derived from message timestamps.</p>
+
+</main>
+</body>
+</html>

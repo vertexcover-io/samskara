@@ -3,6 +3,7 @@ import { parseSessionQuery, type SessionQuery } from "./sessionQuery.js"
 
 export const SESSION_SORTS = ["recent", "oldest", "tokens", "project", "relevance"] as const
 export const SESSION_RANGES = ["all", "hour", "today", "week", "month", "custom"] as const
+export const AI_REVIEW_FILTERS = ["done", "missing"] as const
 
 const validIsoDate = (value: string): boolean => {
   const [year, month, day] = value.split("-").map(Number)
@@ -63,6 +64,7 @@ export const sessionListQuerySchema = z.object({
   branch: nonEmptyUnicode(255).optional(),
   pr: canonicalPr.optional(),
   commit: canonicalCommit.optional(),
+  aiReview: z.enum(AI_REVIEW_FILTERS).optional(),
   range: z.enum(SESSION_RANGES).optional(),
   from: isoDate,
   to: isoDate,

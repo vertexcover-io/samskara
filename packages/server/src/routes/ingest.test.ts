@@ -49,6 +49,11 @@ const env: Env = {
   jwtSecret: "test-secret-value",
   jwtExpiresIn: "7d",
   superAdminLogins: [],
+  localLoginSecret: "",
+  localLoginLogin: "samskara-dev",
+  aiReviewModel: "zai-coding-plan/glm-5.3",
+  aiReviewHarness: "opencode",
+  aiReviewTimeoutMs: 600000,
 }
 
 const project = { name: "widget", slug: "acme-widget" } as const
@@ -84,6 +89,7 @@ const mainPayload = (
 ): IngestPayload => ({
   type: "main",
   sessionId,
+  source: "claude_code",
   sourceRelativePath: `${sessionId}.jsonl`,
   project: overrideProject,
   title: "hello",
@@ -112,6 +118,7 @@ const mainPayload = (
 const subagentPayload = (sessionId: string): IngestPayload => ({
   type: "subagent",
   sessionId,
+  source: "claude_code",
   sourceRelativePath: `subagents/${sessionId}.jsonl`,
   project,
   agent: { agentId: "agent-z" },
@@ -220,6 +227,7 @@ describe.skipIf(!dockerAvailable())("ingest route", () => {
     const payload: IngestPayload = {
       type: "subagent",
       sessionId: "no-session",
+      source: "claude_code",
       sourceRelativePath: "subagents/agent-z.jsonl",
       project,
       agent: { agentId: "agent-z" },
@@ -312,6 +320,7 @@ describe.skipIf(!dockerAvailable())("ingest route", () => {
     const payload: IngestPayload = {
       type: "main",
       sessionId: "sess-arms",
+      source: "claude_code",
       sourceRelativePath: "sess-arms.jsonl",
       project,
       records: [
