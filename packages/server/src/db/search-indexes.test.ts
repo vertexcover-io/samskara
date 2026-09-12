@@ -216,6 +216,35 @@ describe.skipIf(!dockerAvailable())("session search database foundation", () => 
     }
   }, 120_000)
 
+  test("uses the sessions tags GIN index for a selective tag filter", async () => {
+    const db = createDb(url)
+    try {
+      const [user] = await db.client<{ readonly id: string }[]>`
+        insert into users ("githubId", "githubLogin") values (900002, 'tag-planner-owner') returning id
+      `
+      if (user === undefined) throw new Error("tag planner user was not inserted")
+      const [project] = await db.client<{ readonly id: string }[]>`
+        insert into projects (name, slug, "ownerId") values ('Tag Planner', 'tag-planner', ${user.id}) returning id
+      `
+      if (project === undefined) throw new Error("tag planner project was not inserted")
+      await db.client`
+        insert into sessions (id, source, "userId", "projectId", title, tags)
+        select 'tag-planner-' || series, 'claude_code', ${user.id}, ${project.id},
+          'ordinary session ' || series,
+          case when series = 1 then array['needle']::text[] else array['other']::text[] end
+        from generate_series(1, 10000) as series
+      `
+      await db.client`analyze sessions`
+      const [planRow] = await db.client.unsafe<{ readonly "QUERY PLAN": unknown }[]>(
+        `explain (analyze, buffers, format json) select id from sessions where tags && array['needle']::text[]`,
+      )
+      const plan = JSON.stringify(planRow?.["QUERY PLAN"])
+      expect(plan).toContain("sessions_session_filter_tags_v1_idx")
+    } finally {
+      await db.client.end()
+    }
+  }, 120_000)
+
   test("drops stale V2 indexes only after verified V3 creation when requested", async () => {
     runDbScript("db:migrate", url, ["--drop-stale"])
     const db = createDb(url)

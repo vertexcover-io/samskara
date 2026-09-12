@@ -189,11 +189,11 @@ export const updateTags = async (
   const kept =
     remove.length === 0
       ? sql`${sessions.tags}`
-      : sql`(select coalesce(array_agg(t), '{}'::text[]) from unnest(${sessions.tags}) as t where t <> all(${textArray(remove)}))`
+      : sql`(select coalesce(array_agg(t order by t), '{}'::text[]) from unnest(${sessions.tags}) as t where t <> all(${textArray(remove)}))`
   const next =
     add.length === 0
       ? kept
-      : sql`(select coalesce(array_agg(distinct t), '{}'::text[]) from unnest(${kept} || ${textArray(add)}) as t)`
+      : sql`(select coalesce(array_agg(distinct t order by t), '{}'::text[]) from unnest(${kept} || ${textArray(add)}) as t)`
   await db.update(sessions).set({ tags: next }).where(eq(sessions.id, sessionId))
   return "updated"
 }
