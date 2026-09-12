@@ -1248,8 +1248,8 @@ test("ST8: typing a new tag sends it as an add, and removing a chip sends it as 
 
   await screen.findByRole("heading", { level: 1, name: "Make ingest idempotent" })
 
-  await user.type(screen.getByRole("combobox", { name: "Tags" }), "harness")
-  await user.click(await screen.findByRole("option", { name: "harness" }))
+  await user.click(screen.getByRole("button", { name: "Add tag" }))
+  await user.type(screen.getByRole("combobox", { name: "Add a tag" }), "harness{Enter}")
 
   await screen.findByRole("button", { name: "Remove harness" })
   expect(sent).toEqual([{ add: ["harness"] }])

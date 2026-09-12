@@ -11,7 +11,7 @@ import type {
 import { SessionExpired } from "../auth/SessionExpired.js"
 import { Chip } from "../components/Chip.js"
 import { RepoLink } from "../components/RepoLink.js"
-import { TagPicker } from "../components/TagPicker.js"
+import { TagAdd } from "../components/TagAdd.js"
 import { controlClass, labelClass } from "../components/TextField.js"
 import { AgentRail, agentEntries } from "../session/AgentRail.js"
 import { ArtifactsView } from "../session/ArtifactsView.js"
@@ -70,14 +70,26 @@ const requestSessionTagsPatch = (id: string, json: { add?: string[]; remove?: st
 
 const TagEditor = ({
   session,
-  options,
   onSaved,
 }: {
   session: SessionFacts
-  options: ReadonlyArray<string>
   onSaved: (session: SessionFacts) => void
 }) => {
   const [error, setError] = useState<string | null>(null)
+  const [options, setOptions] = useState<ReadonlyArray<string>>([])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    request(() =>
+      client.api.sessions.$get(
+        { query: { project: session.projectId, limit: "1" } },
+        { init: { signal: controller.signal } },
+      ),
+    ).then((result) => {
+      if (!controller.signal.aborted && result.ok) setOptions(result.data.filterOptions.tags)
+    })
+    return () => controller.abort()
+  }, [session.projectId])
 
   const apply = (json: { add?: string[]; remove?: string[] }): void => {
     setError(null)
@@ -92,19 +104,15 @@ const TagEditor = ({
 
   return (
     <div className="mt-2 max-w-[32rem]">
-      <TagPicker
-        label="Tags"
-        selected={session.tags}
-        options={options}
-        allowCreate
-        placeholder="Add a tag"
-        onChange={(next) => {
-          const added = next.filter((tag) => !session.tags.includes(tag))
-          const removed = session.tags.filter((tag) => !next.includes(tag))
-          if (added.length > 0) apply({ add: added })
-          else if (removed.length > 0) apply({ remove: removed })
-        }}
-      />
+      <span className={labelClass}>Tags</span>
+      <div className="mt-1.5 flex flex-wrap items-center gap-1 font-mono text-[0.72rem]">
+        {session.tags.map((tag) => (
+          <Chip key={tag} onRemove={() => apply({ remove: [tag] })} removeLabel={`Remove ${tag}`}>
+            {tag}
+          </Chip>
+        ))}
+        <TagAdd selected={session.tags} options={options} onAdd={(tag) => apply({ add: [tag] })} />
+      </div>
       {error === null ? null : (
         <p role="alert" className="mt-1 text-[0.78rem] text-stamp">
           {error}
@@ -304,7 +312,7 @@ const SessionHead = ({
         <p className="mt-1 max-w-[62ch] text-[0.82rem] text-ink-soft">{session.description}</p>
       )}
       {session.canRename ? (
-        <TagEditor session={session} options={session.tags} onSaved={onSaved} />
+        <TagEditor session={session} onSaved={onSaved} />
       ) : session.tags.length === 0 ? null : (
         <div className="mt-2 flex flex-wrap gap-1 font-mono text-[0.72rem] text-ink-soft">
           {session.tags.map((tag) => (
