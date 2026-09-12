@@ -12,6 +12,7 @@ import {
 } from "../sessions/filters.js"
 import { Caret } from "./combobox.js"
 import { Picker } from "./Picker.js"
+import { TagPicker } from "./TagPicker.js"
 import { controlClass, labelClass, TextField } from "./TextField.js"
 
 const asRange = (value: string): Range => RANGES.find((range) => range === value) ?? "all"
@@ -291,6 +292,13 @@ export const FilterBar = ({ filters, options, onChange, onClear }: Props) => {
           options={options.branches.map((branch) => ({ value: branch, label: branch }))}
           placeholder="All branches"
           onChange={(branch) => onChange(changedFilters(filters, { branch: branch || null }))}
+        />
+        <TagPicker
+          label="Tags"
+          selected={filters.tags}
+          options={options.tags}
+          placeholder="Any tag"
+          onChange={(tags) => onChange(changedFilters(filters, { tags }))}
         />
         <TextFilter
           label="PR number"

@@ -16,6 +16,7 @@ export type SearchFlags = {
   readonly user?: string
   readonly repo?: string
   readonly branch?: string
+  readonly tags?: string
   readonly pr?: string
   readonly commit?: string
   readonly range?: string
@@ -28,8 +29,9 @@ export type SearchFlags = {
 }
 
 // Hand-mirrors `serializeFilters` in packages/web/src/sessions/filters.ts, field for field, so a
-// CLI search and a UI search produce the same query string. They are copies rather than one shared
-// function because packages/web depends on no workspace package today. Change one, change both.
+// CLI search and a UI search produce the same query string -- `tags` is comma-joined on both
+// sides, never repeated. They are copies rather than one shared function because packages/web
+// depends on no workspace package today. Change one, change both.
 export const searchQuery = (flags: SearchFlags): URLSearchParams => {
   const custom = flags.range === "custom"
   const sort = flags.sort ?? (flags.query === undefined ? "recent" : "relevance")
@@ -39,6 +41,7 @@ export const searchQuery = (flags: SearchFlags): URLSearchParams => {
     ["user", flags.user],
     ["repo", flags.repo],
     ["branch", flags.branch],
+    ["tags", flags.tags],
     ["pr", flags.pr],
     ["commit", flags.commit?.toLowerCase()],
     ["range", flags.range === "all" ? undefined : flags.range],

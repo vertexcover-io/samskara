@@ -10,6 +10,7 @@ import {
   reassignSessionsRequestSchema,
   reassignSessionsResponseSchema,
   updateSessionRequestSchema,
+  updateSessionTagsRequestSchema,
 } from "./types.js"
 
 const records: ReadonlyArray<ParsedRecord> = [
@@ -315,4 +316,27 @@ test("SC29: the update request schema rejects an empty or whitespace-only name a
   expect(updateSessionRequestSchema.safeParse({ name: "   " }).success).toBe(false)
   expect(updateSessionRequestSchema.safeParse({ description: "" }).success).toBe(false)
   expect(updateSessionRequestSchema.safeParse({ description: "\t\n " }).success).toBe(false)
+})
+
+test("ST1: the tags request schema trims, lowercases and dedupes what it accepts", () => {
+  const parsed = updateSessionTagsRequestSchema.safeParse({ add: ["  Harness  ", "DEMO", "demo"] })
+  expect(parsed.success).toBe(true)
+  expect(parsed.data?.add).toEqual(["harness", "demo"])
+})
+
+test("ST1: the tags request schema rejects whitespace, commas, over-long tags and empty bodies", () => {
+  expect(updateSessionTagsRequestSchema.safeParse({ add: ["two words"] }).success).toBe(false)
+  expect(updateSessionTagsRequestSchema.safeParse({ add: ["a,b"] }).success).toBe(false)
+  expect(updateSessionTagsRequestSchema.safeParse({ add: ["t".repeat(33)] }).success).toBe(false)
+  expect(updateSessionTagsRequestSchema.safeParse({ add: ["t".repeat(32)] }).success).toBe(true)
+  expect(updateSessionTagsRequestSchema.safeParse({ add: [""] }).success).toBe(false)
+  expect(updateSessionTagsRequestSchema.safeParse({ add: ["   "] }).success).toBe(false)
+  expect(updateSessionTagsRequestSchema.safeParse({ add: [] }).success).toBe(false)
+  expect(updateSessionTagsRequestSchema.safeParse({}).success).toBe(false)
+  expect(updateSessionTagsRequestSchema.safeParse({ add: ["ok"], extra: 1 }).success).toBe(false)
+})
+
+test("ST1: the tags request schema accepts remove on its own and both together", () => {
+  expect(updateSessionTagsRequestSchema.safeParse({ remove: ["harness"] }).success).toBe(true)
+  expect(updateSessionTagsRequestSchema.safeParse({ add: ["a"], remove: ["b"] }).success).toBe(true)
 })

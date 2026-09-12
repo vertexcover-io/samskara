@@ -35,6 +35,7 @@ export const facts = (overrides: Partial<SessionFacts> = {}): SessionFacts => ({
   title: "Make ingest idempotent",
   name: null,
   description: null,
+  tags: [],
   aiTitle: "Make ingest idempotent",
   canRename: true,
   projectId: "p-1",

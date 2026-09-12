@@ -193,6 +193,7 @@ export const sessions = pgTable(
     title: text("title"),
     name: text("name"),
     description: text("description"),
+    tags: text("tags").array().notNull().default([]),
     cwd: text("cwd"),
     startCommit: text("startCommit"),
     cliVersion: text("cliVersion"),

@@ -284,6 +284,7 @@ export const Sessions = () => {
               authors: [],
               repositories: [],
               branches: [],
+              tags: [],
             }
           }
           onChange={applyFilters}
