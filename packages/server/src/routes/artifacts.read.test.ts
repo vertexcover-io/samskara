@@ -1,12 +1,9 @@
-import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
-import { fileURLToPath } from "node:url"
 import { createLogger } from "@samskara/core"
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql"
 import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import { buildApp } from "../app.js"
-import { createDb, type Db } from "../db/client.js"
+import type { Db } from "../db/client.js"
 import {
   artifact,
   orgs,
@@ -16,6 +13,7 @@ import {
   userProjectGrant,
   users,
 } from "../db/schema.js"
+import { dockerAvailable, startTestDb } from "../db/testDb.js"
 import type { Env } from "../lib/env.js"
 import { signToken } from "../lib/jwt.js"
 import * as projectsRepo from "../repositories/projects.repo.js"
@@ -81,17 +79,6 @@ describe("rangeResponse", () => {
   })
 })
 
-const dockerAvailable = () => {
-  try {
-    execFileSync("docker", ["info"], { stdio: "ignore" })
-    return true
-  } catch {
-    return false
-  }
-}
-
-const packageDir = fileURLToPath(new URL("../..", import.meta.url))
-
 const env: Env = {
   githubClientId: "id",
   githubClientSecret: "secret",
@@ -126,7 +113,6 @@ type SeedArtifact = {
 }
 
 describe.skipIf(!dockerAvailable())("artifact read routes", () => {
-  let container: StartedPostgreSqlContainer
   let teardown: () => Promise<void>
   let db: Db
   let app: ReturnType<typeof buildApp>
@@ -167,15 +153,8 @@ describe.skipIf(!dockerAvailable())("artifact read routes", () => {
   }
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start()
-    const url = container.getConnectionUri()
-    execFileSync("bun", ["run", "db:migrate"], {
-      cwd: packageDir,
-      env: { ...process.env, DATABASE_URL: url },
-      stdio: "inherit",
-    })
-    const created = createDb(url)
-    db = created.db
+    const started = await startTestDb()
+    db = started.db
 
     const seedUser = async (githubId: number, login: string): Promise<string> => {
       const [row] = await db.insert(users).values({ githubId, githubLogin: login }).returning()
@@ -223,10 +202,7 @@ describe.skipIf(!dockerAvailable())("artifact read routes", () => {
     strangerToken = await signToken(env, { sub: strangerId, aud: "web" })
 
     app = buildApp(db, env, { rootLog: createLogger({ service: "test" }, { level: "silent" }) })
-    teardown = async () => {
-      await created.client.end()
-      await container.stop()
-    }
+    teardown = started.teardown
   }, 180_000)
 
   afterAll(async () => {

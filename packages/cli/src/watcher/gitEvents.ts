@@ -7,10 +7,6 @@ import type {
   RepoIdentity,
 } from "@samskara/core"
 import { isGitCommitCommand, isPrCreateCommand } from "@samskara/core"
-import type pino from "pino"
-import { z } from "zod"
-
-const bashInput = z.object({ command: z.string().min(1) })
 
 /**
  * Both scan rather than anchor: real output puts hook and npm noise above the commit line and
@@ -73,17 +69,13 @@ const pullRequestFacts = (output: unknown): ReadonlyArray<PullRequestFacts> => {
 
 type PendingCall = { readonly command: string; readonly repo?: RepoIdentity }
 
-const isBashCall = (
-  message: NormalizedMessage,
-): message is Extract<NormalizedMessage, { msgType: "toolCall" }> =>
-  message.msgType === "toolCall" && message.details.name === "Bash"
-
+/** A shell call is whatever the plugin marked as one; no tool name is known here. */
 const pendingOf = (
   message: Extract<NormalizedMessage, { msgType: "toolCall" }>,
 ): PendingCall | null => {
-  const parsed = bashInput.safeParse(message.details.input)
-  if (!parsed.success) return null
-  return { command: parsed.data.command, ...(message.repo ? { repo: message.repo } : {}) }
+  const metadata = message.details.metadata
+  if (metadata?.type !== "shell") return null
+  return { command: metadata.command, ...(message.repo ? { repo: message.repo } : {}) }
 }
 
 /**
@@ -106,10 +98,7 @@ const pendingOf = (
  * filter: the server trusts no event and re-verifies each against the stored call before keeping
  * it, so a candidate from a grep or a non-Bash tool is dropped there.
  */
-export const collectGitEvents = (
-  records: ReadonlyArray<ParsedRecord>,
-  log: pino.Logger,
-): ReadonlyArray<GitEvent> => {
+export const collectGitEvents = (records: ReadonlyArray<ParsedRecord>): ReadonlyArray<GitEvent> => {
   const calls = new Map<string, PendingCall>()
   const seen = new Set<string>()
   const events: GitEvent[] = []
@@ -117,12 +106,8 @@ export const collectGitEvents = (
   for (const message of records.flatMap((record) => record.messages)) {
     if (message.msgType === "toolCall") {
       seen.add(message.details.callId)
-      if (isBashCall(message)) {
-        const pending = pendingOf(message)
-        if (pending) calls.set(message.details.callId, pending)
-        else
-          log.debug({ callId: message.details.callId }, "bash tool input did not parse; skipping")
-      }
+      const pending = pendingOf(message)
+      if (pending) calls.set(message.details.callId, pending)
       continue
     }
     if (message.msgType !== "toolResult" || message.details.status === "failure") continue

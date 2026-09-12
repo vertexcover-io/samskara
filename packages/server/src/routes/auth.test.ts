@@ -1,29 +1,16 @@
-import { execFileSync } from "node:child_process"
-import { fileURLToPath } from "node:url"
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql"
 import { eq } from "drizzle-orm"
 import { SignJWT } from "jose"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import { buildApp } from "../app.js"
-import { createDb, type Db } from "../db/client.js"
+import type { Db } from "../db/client.js"
 import { orgs, userOrgs, users } from "../db/schema.js"
+import { dockerAvailable, startTestDb } from "../db/testDb.js"
 import type { Env } from "../lib/env.js"
 import { signToken, verifyToken } from "../lib/jwt.js"
 import { seedOrg } from "../scripts/seed-org.js"
 import type { User } from "../services/auth.js"
 import type { GithubClient, GithubProfile } from "../services/github.js"
 import { createPairingStore } from "../services/pairing.js"
-
-const dockerAvailable = () => {
-  try {
-    execFileSync("docker", ["info"], { stdio: "ignore" })
-    return true
-  } catch {
-    return false
-  }
-}
-
-const packageDir = fileURLToPath(new URL("../..", import.meta.url))
 
 const env: Env = {
   githubClientId: "Ov23linvZE00y7VZSI4Y",
@@ -55,24 +42,13 @@ const sessionFrom = (setCookie: string | null): string | undefined =>
     .split(";")[0]
 
 describe.skipIf(!dockerAvailable())("auth routes (callback + start)", () => {
-  let container: StartedPostgreSqlContainer
   let teardown: () => Promise<void>
   let db: Db
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start()
-    const url = container.getConnectionUri()
-    execFileSync("bun", ["run", "db:migrate"], {
-      cwd: packageDir,
-      env: { ...process.env, DATABASE_URL: url },
-      stdio: "inherit",
-    })
-    const created = createDb(url)
-    db = created.db
-    teardown = async () => {
-      await created.client.end()
-      await container.stop()
-    }
+    const started = await startTestDb()
+    db = started.db
+    teardown = started.teardown
   }, 120_000)
 
   afterAll(async () => {
@@ -450,24 +426,13 @@ const clearedSession = (setCookie: string | null): boolean =>
     .some((c) => c.trimStart().startsWith("session=;") || /session=;/.test(c))
 
 describe.skipIf(!dockerAvailable())("auth routes (me + logout)", () => {
-  let container: StartedPostgreSqlContainer
   let teardown: () => Promise<void>
   let db: Db
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start()
-    const url = container.getConnectionUri()
-    execFileSync("bun", ["run", "db:migrate"], {
-      cwd: packageDir,
-      env: { ...process.env, DATABASE_URL: url },
-      stdio: "inherit",
-    })
-    const created = createDb(url)
-    db = created.db
-    teardown = async () => {
-      await created.client.end()
-      await container.stop()
-    }
+    const started = await startTestDb()
+    db = started.db
+    teardown = started.teardown
   }, 120_000)
 
   afterAll(async () => {
@@ -599,24 +564,13 @@ const jsonPost = (body: unknown, cookie?: string): RequestInit => ({
 })
 
 describe.skipIf(!dockerAvailable())("auth routes (cli pairing)", () => {
-  let container: StartedPostgreSqlContainer
   let teardown: () => Promise<void>
   let db: Db
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start()
-    const url = container.getConnectionUri()
-    execFileSync("bun", ["run", "db:migrate"], {
-      cwd: packageDir,
-      env: { ...process.env, DATABASE_URL: url },
-      stdio: "inherit",
-    })
-    const created = createDb(url)
-    db = created.db
-    teardown = async () => {
-      await created.client.end()
-      await container.stop()
-    }
+    const started = await startTestDb()
+    db = started.db
+    teardown = started.teardown
   }, 120_000)
 
   afterAll(async () => {
@@ -767,24 +721,13 @@ describe.skipIf(!dockerAvailable())("auth routes (cli pairing)", () => {
 })
 
 describe.skipIf(!dockerAvailable())("auth routes (methods + local login)", () => {
-  let container: StartedPostgreSqlContainer
   let teardown: () => Promise<void>
   let db: Db
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start()
-    const url = container.getConnectionUri()
-    execFileSync("bun", ["run", "db:migrate"], {
-      cwd: packageDir,
-      env: { ...process.env, DATABASE_URL: url },
-      stdio: "inherit",
-    })
-    const created = createDb(url)
-    db = created.db
-    teardown = async () => {
-      await created.client.end()
-      await container.stop()
-    }
+    const started = await startTestDb()
+    db = started.db
+    teardown = started.teardown
   }, 120_000)
 
   afterAll(async () => {

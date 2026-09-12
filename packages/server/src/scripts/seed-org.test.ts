@@ -1,10 +1,8 @@
-import { execFileSync } from "node:child_process"
-import { fileURLToPath } from "node:url"
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql"
 import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
-import { createDb, type Db } from "../db/client.js"
+import type { Db } from "../db/client.js"
 import { orgs } from "../db/schema.js"
+import { dockerAvailable, startTestDb } from "../db/testDb.js"
 import { parseArgs, seedOrg } from "./seed-org.js"
 
 describe("parseArgs", () => {
@@ -32,36 +30,14 @@ describe("parseArgs", () => {
   })
 })
 
-const dockerAvailable = () => {
-  try {
-    execFileSync("docker", ["info"], { stdio: "ignore" })
-    return true
-  } catch {
-    return false
-  }
-}
-
-const packageDir = fileURLToPath(new URL("../..", import.meta.url))
-
 describe.skipIf(!dockerAvailable())("S6: seed:org upserts an org row", () => {
-  let container: StartedPostgreSqlContainer
   let teardown: () => Promise<void>
   let db: Db
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start()
-    const url = container.getConnectionUri()
-    execFileSync("bun", ["run", "db:migrate"], {
-      cwd: packageDir,
-      env: { ...process.env, DATABASE_URL: url },
-      stdio: "inherit",
-    })
-    const created = createDb(url)
-    db = created.db
-    teardown = async () => {
-      await created.client.end()
-      await container.stop()
-    }
+    const started = await startTestDb()
+    db = started.db
+    teardown = started.teardown
   }, 120_000)
 
   afterAll(async () => {

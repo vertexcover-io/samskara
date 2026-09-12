@@ -1,6 +1,6 @@
 {
-  "id": "fdf84092-a17a-456d-9781-ad7bb5d0b68a",
-  "prevId": "be5d6c2a-af1f-4125-b4b2-e9707c32ed25",
+  "id": "37108953-769d-4c31-a93e-1acdd58cd547",
+  "prevId": "fdf84092-a17a-456d-9781-ad7bb5d0b68a",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1288,6 +1288,13 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "tags": {
+          "name": "tags",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'"
         },
         "cwd": {
           "name": "cwd",

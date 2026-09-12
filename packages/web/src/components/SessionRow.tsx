@@ -44,6 +44,9 @@ type Props = {
   readonly showProject?: boolean
 }
 
+/** Shared with SessionListSkeleton, so a placeholder row keeps the frame of the row it stands in for. */
+export const rowFrameClass = "border border-rule bg-panel-2 px-4 py-2"
+
 export const SessionRow = ({ session, to, showProject = true }: Props) => {
   const { title, projectName, userLogin, repo, durationMs, tokensTotal, lastActiveAt, tags } =
     session
@@ -52,7 +55,7 @@ export const SessionRow = ({ session, to, showProject = true }: Props) => {
   return (
     <Link
       to={to}
-      className="grid w-full grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 gap-y-0.5 border border-rule bg-panel-2 px-4 py-2 text-left transition-colors hover:border-ink-soft min-[900px]:grid-cols-[auto_minmax(0,1fr)_minmax(0,14rem)_auto]"
+      className={`grid w-full grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 gap-y-0.5 ${rowFrameClass} text-left transition-colors hover:border-ink-soft min-[900px]:grid-cols-[auto_minmax(0,1fr)_minmax(0,14rem)_auto]`}
     >
       <span
         aria-hidden="true"

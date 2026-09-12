@@ -5,6 +5,7 @@ import {
   type ParsedRecord,
   type ProjectIdentity,
   projectIdentitySchema,
+  type SessionSource,
 } from "../ingest/types.js"
 import type { FileSystem } from "./fs.js"
 
@@ -21,7 +22,20 @@ export const claudeCheckpointSchema = checkpointBaseSchema.extend({
   lineProcessed: z.number(),
 })
 
-export const checkpointSchema = claudeCheckpointSchema
+/**
+ * OpenCode keeps a session in SQLite rows rather than an append-only file, so its watermark is the
+ * session's `time_updated`, not an mtime and a line count.
+ */
+export const opencodeCheckpointSchema = checkpointBaseSchema.extend({
+  source: z.literal("opencode"),
+  timeUpdated: z.number(),
+  lastMessageId: z.string(),
+})
+
+export const checkpointSchema = z.discriminatedUnion("source", [
+  claudeCheckpointSchema,
+  opencodeCheckpointSchema,
+])
 export const checkpointStoreSchema = z
   .object({
     checkpoints: z.record(z.string(), checkpointSchema),
@@ -36,9 +50,12 @@ export const checkpointStoreSchema = z
 
 export type CheckpointBase = z.infer<typeof checkpointBaseSchema>
 export type ClaudeCheckpoint = z.infer<typeof claudeCheckpointSchema>
+export type OpencodeCheckpoint = z.infer<typeof opencodeCheckpointSchema>
 export type Checkpoint = z.infer<typeof checkpointSchema>
 export type CheckpointStore = z.infer<typeof checkpointStoreSchema>
-export type CheckpointBody = Omit<ClaudeCheckpoint, keyof CheckpointBase>
+export type CheckpointBody =
+  | Omit<ClaudeCheckpoint, keyof CheckpointBase>
+  | Omit<OpencodeCheckpoint, keyof CheckpointBase>
 
 export type CollectDeps = {
   readonly fs: FileSystem
@@ -71,6 +88,6 @@ export type SessionBatch = {
 }
 
 export interface AgentPlugin {
-  readonly source: string
-  collect(prev: CheckpointStore, deps: CollectDeps): Promise<ReadonlyArray<SessionBatch>>
+  readonly source: SessionSource
+  collect(store: CheckpointStore, deps: CollectDeps): Promise<ReadonlyArray<SessionBatch>>
 }

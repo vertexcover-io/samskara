@@ -7,10 +7,11 @@
 
 Samskara records what your AI coding agent actually did, and makes it searchable.
 
-Claude Code already writes a transcript of every session to `~/.claude/projects`. Those files are
-local, per-machine, and hard to read. Samskara watches them, ships the sessions you opt into to a
-server you run, and gives you a web UI to browse and search them — across projects, across
-machines, across everyone on the team.
+Claude Code already writes a transcript of every session to `~/.claude/projects`, and OpenCode
+keeps its sessions in `~/.local/share/opencode/opencode.db`. Both are local, per-machine, and hard
+to read. Samskara watches them, ships the sessions you opt into to a server you run, and gives you
+a web UI to browse and search them — across projects, across machines, across everyone on the
+team.
 
 Capture is opt-in per folder: no session content leaves your machine until you run
 `samskara enable` in a project.
@@ -25,12 +26,17 @@ Capture is opt-in per folder: no session content leaves your machine until you r
 ## How it works
 
 ```
-Claude Code                 samskara CLI                  server + web UI
+Claude Code / OpenCode      samskara CLI                  server + web UI
 ~/.claude/projects/  ──▶  watcher (background)  ──POST──▶  Postgres + pgvector
-   transcripts            reads enabled folders   /api/ingest      ▲
+opencode.db               reads enabled folders   /api/ingest      ▲
                                                                    │
                                                           browse & search at :8000
 ```
+
+OpenCode capture is automatic when its database exists and switches itself off, with a debug log
+line, when it does not. Each harness has a collector plugin in `@samskara/core` that turns its own
+format into the same normalized messages; everything downstream reads those, never the raw
+transcript, so adding a third harness means adding a plugin and nothing else.
 
 A `SessionStart` hook keeps the watcher alive: every time you start a Claude Code session, the hook
 makes sure the background watcher is running. The watcher polls transcripts, keeps a per-session
@@ -277,7 +283,7 @@ The same query and filters are available from the terminal with `samskara search
 
 | Package | What it holds |
 |---|---|
-| `@samskara/core` | Shared types, the collector framework (`SourceAdapter` + Claude plugin), the logging factory |
+| `@samskara/core` | Shared types, the collector framework (`AgentPlugin` + the Claude Code and OpenCode plugins), the logging factory |
 | `@samskara/cli` | The `samskara` binary — pairing, capture opt-in, the watcher |
 | `@samskara/server` | Hono API on Node, Drizzle + postgres-js + pgvector |
 | `@samskara/web` | Vite + React + Tailwind UI |
@@ -288,7 +294,7 @@ bun run build        # build every package
 bun run typecheck    # every package, plus the e2e project
 bun run lint         # biome check ., including the DB naming rule
 bun run format       # biome format --write .
-bun run test         # every package's unit tests
+bun run test         # every package's unit tests, on one shared Postgres container
 bun run e2e          # Playwright, on a throwaway database it creates and drops
 bun run cli -- status   # the CLI from source, on its own `dev` profile
 ```
@@ -305,6 +311,10 @@ bun run db:verify                      # read-only: assert it already is
 `db:migrate` is the only supported way to change a database's shape — it runs drizzle-kit's
 migrations and then the post-migrate steps in `packages/server/src/db/steps.ts` (today, the
 full-text search indexes, which cannot be built inside a migration's transaction).
+
+The server's tests need Docker and start exactly one Postgres for the whole run, copying a golden
+database per test file rather than migrating each one. Without Docker those tests skip and the run
+still passes. `CLAUDE.md` has the mechanism and the lint rule that keeps it in one place.
 
 See [CLAUDE.md](CLAUDE.md) for the contributor detail: working on several branches at once, the
 database naming rule, the seed/identity snapshot, and the logging conventions.

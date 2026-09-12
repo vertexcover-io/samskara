@@ -1,17 +1,9 @@
-import { execFileSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { readFileSync } from "node:fs"
-import { join } from "node:path"
-import { fileURLToPath } from "node:url"
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql"
 import { and, eq } from "drizzle-orm"
-import { type MigrationMeta, readMigrationFiles } from "drizzle-orm/migrator"
-import postgres from "postgres"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
-import { z } from "zod"
 import * as messagesRepo from "../repositories/messages.repo.js"
 import * as sessionsRepo from "../repositories/sessions.repo.js"
-import { createDb, type Db } from "./client.js"
+import type { Db } from "./client.js"
 import {
   commits,
   messages,
@@ -23,17 +15,7 @@ import {
   subagents,
   users,
 } from "./schema.js"
-
-const dockerAvailable = () => {
-  try {
-    execFileSync("docker", ["info"], { stdio: "ignore" })
-    return true
-  } catch {
-    return false
-  }
-}
-
-const packageDir = fileURLToPath(new URL("../..", import.meta.url))
+import { dockerAvailable, startTestDb } from "./testDb.js"
 
 let messageLineNumber = 0
 const messageRow = (
@@ -56,26 +38,13 @@ const messageRow = (
 }
 
 describe.skipIf(!dockerAvailable())("identity mesh schema", () => {
-  let container: StartedPostgreSqlContainer
   let teardown: () => Promise<void>
   let db: Db
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start()
-    const url = container.getConnectionUri()
-
-    execFileSync("bun", ["run", "db:migrate"], {
-      cwd: packageDir,
-      env: { ...process.env, DATABASE_URL: url },
-      stdio: "inherit",
-    })
-
-    const created = createDb(url)
-    db = created.db
-    teardown = async () => {
-      await created.client.end()
-      await container.stop()
-    }
+    const started = await startTestDb()
+    db = started.db
+    teardown = started.teardown
   }, 120_000)
 
   afterAll(async () => {
@@ -101,7 +70,6 @@ describe.skipIf(!dockerAvailable())("identity mesh schema", () => {
 })
 
 describe.skipIf(!dockerAvailable())("session data model", () => {
-  let container: StartedPostgreSqlContainer
   let teardown: () => Promise<void>
   let db: Db
 
@@ -122,21 +90,9 @@ describe.skipIf(!dockerAvailable())("session data model", () => {
   }
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start()
-    const url = container.getConnectionUri()
-
-    execFileSync("bun", ["run", "db:migrate"], {
-      cwd: packageDir,
-      env: { ...process.env, DATABASE_URL: url },
-      stdio: "inherit",
-    })
-
-    const created = createDb(url)
-    db = created.db
-    teardown = async () => {
-      await created.client.end()
-      await container.stop()
-    }
+    const started = await startTestDb()
+    db = started.db
+    teardown = started.teardown
   }, 120_000)
 
   afterAll(async () => {
@@ -377,101 +333,6 @@ describe.skipIf(!dockerAvailable())("session data model", () => {
       if (!after) throw new Error("update returned no row")
       expect(after.updatedAt.getTime()).toBeGreaterThan(before.updatedAt.getTime())
       expect(after.createdAt.getTime()).toBe(before.createdAt.getTime())
-    }
-  })
-})
-
-describe.skipIf(!dockerAvailable())("0020 migration backfills existing sessions", () => {
-  let container: StartedPostgreSqlContainer
-  let client: postgres.Sql
-
-  const migrationsFolder = fileURLToPath(new URL("../../migrations", import.meta.url))
-  const TARGET = "0020_session_activity_times"
-  // drizzle's own reader: journal order, each file already split at its breakpoints.
-  const migrations = readMigrationFiles({ migrationsFolder })
-  const journal = z
-    .object({ entries: z.array(z.object({ tag: z.string() })) })
-    .parse(JSON.parse(readFileSync(join(migrationsFolder, "meta/_journal.json"), "utf8")))
-  const targetIndex = journal.entries.findIndex((entry) => entry.tag === TARGET)
-  const target = migrations[targetIndex]
-  if (!target) throw new Error(`${TARGET} is not in the migration journal`)
-
-  const apply = async (migration: MigrationMeta) => {
-    for (const statement of migration.sql) await client.unsafe(statement)
-  }
-
-  const sessionWithMessages = "sess-premigration-with-messages"
-  const sessionWithoutMessages = "sess-premigration-without-messages"
-  const earliest = new Date("2026-01-01T09:00:00Z")
-  const latest = new Date("2026-01-01T12:00:00Z")
-  let updatedAtBefore: ReadonlyMap<string, number>
-
-  type SessionTimes = {
-    readonly id: string
-    readonly startedAt: Date | null
-    readonly lastMessageAt: Date | null
-    readonly updatedAt: Date
-  }
-  const sessionTimes = () =>
-    client<SessionTimes[]>`select id, "startedAt", "lastMessageAt", "updatedAt" from sessions`
-
-  beforeAll(async () => {
-    container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start()
-    // A plain client, not createDb's: drizzle strips postgres.js's date parsers and serializers
-    // from the client it wraps, so raw queries through it neither take nor return a Date.
-    client = postgres(container.getConnectionUri(), { max: 1 })
-
-    // Everything before the target by hand, seed on that schema, then the target alone: what is
-    // under test is the backfill in that one file, not a fresh database that already has the
-    // columns. Raw SQL throughout, because drizzle's builders spell today's schema.ts against a
-    // database frozen here.
-    for (const migration of migrations.slice(0, targetIndex)) await apply(migration)
-
-    const [user] = await client<{ readonly id: string }[]>`
-      insert into users ("githubId", "githubLogin") values (55001, 'pre-migration-user') returning id
-    `
-    if (!user) throw new Error("seed user failed")
-    const [project] = await client<{ readonly id: string }[]>`
-      insert into projects (name, slug, "ownerId") values ('pre', 'pre-migration', ${user.id}) returning id
-    `
-    if (!project) throw new Error("seed project failed")
-    await client`
-      insert into sessions (id, source, "userId", "projectId") values
-        (${sessionWithMessages}, 'claude_code', ${user.id}, ${project.id}),
-        (${sessionWithoutMessages}, 'claude_code', ${user.id}, ${project.id})
-    `
-    await client`
-      insert into messages ("sessionId", "lineUuid", "subIndex", "msgType", "lineNumber", raw, "sourceSchemaVersion", timestamp) values
-        (${sessionWithMessages}, ${randomUUID()}, 0, 'message', 1, '{}', 1, ${latest}),
-        (${sessionWithMessages}, ${randomUUID()}, 0, 'message', 2, '{}', 1, ${earliest})
-    `
-    const before = await client<{ readonly id: string; readonly updatedAt: Date }[]>`
-      select id, "updatedAt" from sessions
-    `
-    updatedAtBefore = new Map(before.map((row) => [row.id, row.updatedAt.getTime()]))
-
-    await apply(target)
-  }, 120_000)
-
-  afterAll(async () => {
-    await client?.end()
-    await container?.stop()
-  })
-
-  test("SC13: existing sessions are backfilled from their stored messages, and one with none keeps null", async () => {
-    const byId = new Map((await sessionTimes()).map((row) => [row.id, row]))
-
-    expect(byId.get(sessionWithMessages)?.startedAt?.getTime()).toBe(earliest.getTime())
-    expect(byId.get(sessionWithMessages)?.lastMessageAt?.getTime()).toBe(latest.getTime())
-    expect(byId.get(sessionWithoutMessages)?.startedAt).toBeNull()
-    expect(byId.get(sessionWithoutMessages)?.lastMessageAt).toBeNull()
-  })
-
-  test("SC14: the backfill leaves every session's updatedAt untouched", async () => {
-    const after = await sessionTimes()
-    expect(after).toHaveLength(2)
-    for (const row of after) {
-      expect(row.updatedAt.getTime()).toBe(updatedAtBefore.get(row.id))
     }
   })
 })

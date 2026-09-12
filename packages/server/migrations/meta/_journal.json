@@ -194,8 +194,15 @@
     {
       "idx": 27,
       "version": "7",
-      "when": 1789132951419,
-      "tag": "0027_busy_paibok",
+      "when": 1789140396417,
+      "tag": "0027_spooky_masked_marvel",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1789226102033,
+      "tag": "0028_demonic_azazel",
       "breakpoints": true
     }
   ]
