@@ -16,6 +16,7 @@ const populated: SessionSummary = {
   tokensTotal: 128_400,
   status: "complete",
   lastActiveAt: "2026-02-01T09:30:00.000Z",
+  tags: ["harness"],
 }
 
 const renderRow = (session: SessionSummary) =>

@@ -1,4 +1,4 @@
-import { updateSessionRequestSchema } from "@samskara/core"
+import { updateSessionRequestSchema, updateSessionTagsRequestSchema } from "@samskara/core"
 import { Hono } from "hono"
 import { ZodError } from "zod"
 import type { Db } from "../db/client.js"
@@ -16,6 +16,7 @@ import {
   type SessionDetailRow,
   type SessionSummaryRow,
   updateHumanFields,
+  updateTags,
 } from "../repositories/sessions.repo.js"
 import {
   dateWindowFor,
@@ -43,6 +44,7 @@ const serialize = (row: SessionSummaryRow) => ({
   tokensTotal: Number(row.tokensTotal),
   status: row.status,
   lastActiveAt: new Date(row.lastActiveAt).toISOString(),
+  tags: row.tags,
   ...(row.match === null ? {} : { match: row.match }),
 })
 
@@ -93,6 +95,7 @@ export const sessionsRoutes = ({ db, env }: Deps) =>
             q: "invalidSearchQuery",
             repo: "invalidRepo",
             branch: "invalidBranch",
+            tags: "invalidTags",
             tz: "invalidTimeZone",
             page: "invalidPage",
             limit: "invalidLimit",
@@ -118,6 +121,7 @@ export const sessionsRoutes = ({ db, env }: Deps) =>
           userLogin: query.user,
           repoId: query.repo,
           branch: query.branch,
+          tags: query.tags,
           prNumber: query.pr,
           commit: query.commit,
           searchQuery: query.parsedQuery,
@@ -154,6 +158,26 @@ export const sessionsRoutes = ({ db, env }: Deps) =>
         const userId = c.get("user").id
         const id = c.req.param("id")
         const outcome = await updateHumanFields(db, id, userId, c.req.valid("json"))
+        if (outcome === "notFound") return c.json({ error: "sessionNotFound" }, 404)
+        if (outcome === "forbidden") return c.json({ error: "forbidden" }, 403)
+        const facts = await findVisibleSession(db, userId, id)
+        if (facts === undefined) return c.json({ error: "sessionNotFound" }, 404)
+        return c.json({ session: serializeFacts(facts) }, 200)
+      },
+    )
+    .get("/:id/tags", requireAuth({ db, env }, ["web", "cli"]), async (c) => {
+      const facts = await findVisibleSession(db, c.get("user").id, c.req.param("id"))
+      if (facts === undefined) return c.json({ error: "sessionNotFound" }, 404)
+      return c.json({ tags: facts.tags }, 200)
+    })
+    .patch(
+      "/:id/tags",
+      requireAuth({ db, env }, ["web", "cli"]),
+      validate("json", updateSessionTagsRequestSchema),
+      async (c) => {
+        const userId = c.get("user").id
+        const id = c.req.param("id")
+        const outcome = await updateTags(db, id, userId, c.req.valid("json"))
         if (outcome === "notFound") return c.json({ error: "sessionNotFound" }, 404)
         if (outcome === "forbidden") return c.json({ error: "forbidden" }, 403)
         const facts = await findVisibleSession(db, userId, id)

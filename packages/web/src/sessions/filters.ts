@@ -29,6 +29,7 @@ export type SessionFilters = {
   readonly user: string | null
   readonly repo: string | null
   readonly branch: string | null
+  readonly tags: ReadonlyArray<string>
   readonly pr: string | null
   readonly commit: string | null
   readonly range: Range
@@ -45,6 +46,7 @@ export const EMPTY_FILTERS: SessionFilters = {
   user: null,
   repo: null,
   branch: null,
+  tags: [],
   pr: null,
   commit: null,
   range: "all",
@@ -85,6 +87,11 @@ const pageNumber = (value: string | null): number => {
  */
 const rawValue = (value: string | null): string | null => (value === "" ? null : value)
 
+const tagList = (value: string | null): ReadonlyArray<string> => {
+  const text = rawValue(value)
+  return text === null ? [] : [...new Set(text.split(","))]
+}
+
 const commitValue = (value: string | null): string | null => {
   const text = rawValue(value)
   return text === null ? null : text.trim().toLowerCase()
@@ -104,6 +111,7 @@ export const parseFilters = (params: URLSearchParams): SessionFilters => {
     user: trimmed(params.get("user")),
     repo: rawValue(params.get("repo")),
     branch: rawValue(params.get("branch")),
+    tags: tagList(params.get("tags")),
     pr: rawValue(params.get("pr")),
     commit: commitValue(params.get("commit")),
     range: isRange(params.get("range")) ? (params.get("range") as Range) : "all",
@@ -116,7 +124,8 @@ export const parseFilters = (params: URLSearchParams): SessionFilters => {
 }
 
 // `searchQuery` in packages/cli/src/commands/search.ts hand-mirrors this function so the CLI and
-// the UI build the same query string. Change one, change both.
+// the UI build the same query string, `tags` included -- it is comma-joined on both sides, never
+// repeated. Change one, change both.
 export const serializeFilters = (filters: SessionFilters): URLSearchParams => {
   const params = new URLSearchParams()
   if (filters.q !== null) params.set("q", filters.q)
@@ -124,6 +133,7 @@ export const serializeFilters = (filters: SessionFilters): URLSearchParams => {
   if (filters.user !== null) params.set("user", filters.user)
   if (filters.repo !== null) params.set("repo", filters.repo)
   if (filters.branch !== null) params.set("branch", filters.branch)
+  if (filters.tags.length > 0) params.set("tags", filters.tags.join(","))
   if (filters.pr !== null) params.set("pr", filters.pr)
   if (filters.commit !== null) params.set("commit", filters.commit.toLowerCase())
   if (filters.range !== "all") params.set("range", filters.range)

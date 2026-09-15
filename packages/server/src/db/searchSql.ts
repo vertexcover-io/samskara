@@ -23,8 +23,9 @@ export type SearchDocument = {
 
 export type SearchFilterIndex = {
   readonly indexName: string
-  readonly table: "messages" | "commits" | "pullRequests"
+  readonly table: "messages" | "commits" | "pullRequests" | "sessions"
   readonly definition: string
+  readonly method?: "gin"
   readonly where?: string
 }
 
@@ -94,6 +95,12 @@ export const SEARCH_FILTER_INDEXES: ReadonlyArray<SearchFilterIndex> = [
     definition: `"headBranch", "id"`,
     where: `"headBranch" is not null`,
   },
+  {
+    indexName: "sessions_session_filter_tags_v1_idx",
+    table: "sessions",
+    definition: `"tags"`,
+    method: "gin",
+  },
 ]
 
 export const searchIndexDefinition = (document: SearchDocument): string =>
@@ -101,7 +108,8 @@ export const searchIndexDefinition = (document: SearchDocument): string =>
 
 export const filterIndexDefinition = (index: SearchFilterIndex): string => {
   const predicate = index.where === undefined ? "" : ` where ${index.where}`
-  return `create index "${index.indexName}" on "${index.table}" (${index.definition})${predicate}`
+  const method = index.method === undefined ? "" : ` using ${index.method}`
+  return `create index "${index.indexName}" on "${index.table}"${method} (${index.definition})${predicate}`
 }
 
 /** Normalize insignificant PostgreSQL deparser differences before drift comparisons. */

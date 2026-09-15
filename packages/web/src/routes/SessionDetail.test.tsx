@@ -1226,3 +1226,34 @@ test("SC20: clearing the name in the form restores the derived title", async () 
   expect(sent).toEqual([{ name: null, description: null }])
   expect(screen.queryByText(/AI title:/)).not.toBeInTheDocument()
 })
+
+test("ST8: typing a new tag sends it as an add, and removing a chip sends it as a remove", async () => {
+  const user = userEvent.setup()
+  const sent: Array<unknown> = []
+  const tagged = {
+    ...PAYLOAD,
+    session: { ...PAYLOAD.session, tags: ["harness"] },
+  }
+
+  renderDetailWithFetch((input, init) => {
+    const url = typeof input === "string" ? input : String(input)
+    if (url.includes("/artifacts")) return Promise.resolve(jsonResponse(200, { artifacts: [] }))
+    if (url.includes("/tags") && isPatch(init)) {
+      sent.push(JSON.parse(String(init?.body)))
+      return Promise.resolve(jsonResponse(200, { session: tagged.session }))
+    }
+    if (url.includes("/api/sessions/")) return Promise.resolve(jsonResponse(200, PAYLOAD))
+    return Promise.resolve(jsonResponse(401, { error: "unauthorized" }))
+  })
+
+  await screen.findByRole("heading", { level: 1, name: "Make ingest idempotent" })
+
+  await user.click(screen.getByRole("button", { name: "Add tag" }))
+  await user.type(screen.getByRole("combobox", { name: "Add a tag" }), "harness{Enter}")
+
+  await screen.findByRole("button", { name: "Remove harness" })
+  expect(sent).toEqual([{ add: ["harness"] }])
+
+  await user.click(screen.getByRole("button", { name: "Remove harness" }))
+  expect(sent).toEqual([{ add: ["harness"] }, { remove: ["harness"] }])
+})

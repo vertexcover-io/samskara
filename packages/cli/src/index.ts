@@ -15,6 +15,7 @@ import { replayCommand } from "./commands/replay.js"
 import { restartCommand } from "./commands/restart.js"
 import { type SearchOptions, searchCommand } from "./commands/search.js"
 import { statusCommand } from "./commands/status.js"
+import { type TagsAction, tagsCommand } from "./commands/tags.js"
 import { upgradeCommand } from "./commands/upgrade.js"
 import { watchCommand } from "./commands/watch.js"
 import { readToken } from "./config/credentials.js"
@@ -159,6 +160,7 @@ program
   .option("--user <login>", "GitHub login of the person who ran the session")
   .option("--repo <name>", "repository as owner/name, its bare name, or its id")
   .option("--branch <name>", "git branch")
+  .option("--tags <tags>", "comma-separated tags; a session matching any one of them is listed")
   .option("--pr <number>", "pull request number")
   .option("--commit <sha>", "commit sha, or at least 7 characters of one")
   .option("--range <range>", "all, hour, today, week, month or custom")
@@ -206,6 +208,27 @@ artifacts
       )
     },
   )
+
+const tags = program.command("tags").description("Read and change a session's tags")
+
+const tagsSubcommand = (name: string, summary: string, action: TagsAction) => {
+  const command = tags.command(name).description(summary)
+  const variadic = action === "ls" ? command : command.argument("<tags...>", "tags to change")
+  variadic
+    .option("--session-id <id>", "session to act on (default: $CLAUDE_CODE_SESSION_ID)")
+    .action(async (...args: ReadonlyArray<unknown>) => {
+      const flags = args[action === "ls" ? 0 : 1] as { sessionId?: string }
+      process.exitCode = await tagsCommand({
+        action,
+        ...(action === "ls" ? {} : { tags: args[0] as string[] }),
+        ...(flags.sessionId === undefined ? {} : { sessionId: flags.sessionId }),
+      })
+    })
+}
+
+tagsSubcommand("add", "Add one or more tags to a session", "add")
+tagsSubcommand("rm", "Remove one or more tags from a session", "rm")
+tagsSubcommand("ls", "Print a session's tags", "ls")
 
 program
   .command("restart")

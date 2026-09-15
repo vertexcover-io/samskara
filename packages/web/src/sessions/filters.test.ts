@@ -12,6 +12,7 @@ describe("session filter URLs", () => {
       user: "o'brien",
       repo: "8af8c0ae-fc61-4471-9c5e-7f252f1425e3",
       branch: "feat/Release Case",
+      tags: ["harness", "demo"],
       pr: "42",
       commit: "ABCDEF0123456",
       range: "custom" as const,
@@ -24,6 +25,18 @@ describe("session filter URLs", () => {
 
     expect(roundTrip(filters)).toEqual({ ...filters, commit: "abcdef0123456" })
     expect(serializeFilters(filters).toString()).toContain("branch=feat%2FRelease+Case")
+  })
+
+  test("ST6: tags travel as one comma-joined parameter, deduped, and vanish when empty", () => {
+    expect(serializeFilters({ ...EMPTY_FILTERS, tags: ["harness", "demo"] }).toString()).toBe(
+      "tags=harness%2Cdemo",
+    )
+    expect(serializeFilters({ ...EMPTY_FILTERS, tags: [] }).toString()).toBe("")
+    expect(parseFilters(new URLSearchParams("tags=harness,demo,harness")).tags).toEqual([
+      "harness",
+      "demo",
+    ])
+    expect(parseFilters(new URLSearchParams("")).tags).toEqual([])
   })
 
   test("omits contextual defaults and all cleared values", () => {

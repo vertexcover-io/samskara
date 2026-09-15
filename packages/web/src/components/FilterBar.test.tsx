@@ -18,6 +18,7 @@ const options: SessionFilterOptions = {
     },
   ],
   branches: ["main", "feat/Search"],
+  tags: ["harness", "demo"],
 }
 
 const renderBar = (filters: SessionFilters = EMPTY_FILTERS) => {

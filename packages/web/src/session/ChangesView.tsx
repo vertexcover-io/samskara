@@ -1,4 +1,5 @@
 import type { SessionCommit, SessionPullRequest, SessionRepo } from "../api/types.js"
+import { Chip } from "../components/Chip.js"
 import { absoluteTime, relativeTime } from "../time.js"
 
 const Unavailable = () => (
@@ -54,10 +55,6 @@ const Sep = () => (
   <span aria-hidden="true" className="text-rule">
     ·
   </span>
-)
-
-const Chip = ({ children }: { children: React.ReactNode }) => (
-  <span className="rounded-pill border border-rule px-2 py-0.5">{children}</span>
 )
 
 const RepoName = ({ repo }: { repo: SessionRepo }) => (

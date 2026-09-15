@@ -56,9 +56,12 @@ describe("searchSql", () => {
 
   test("builds one canonical definition per expected concurrent index", () => {
     expect(SEARCH_DOCUMENTS.map(searchIndexDefinition)).toHaveLength(5)
-    expect(SEARCH_FILTER_INDEXES.map(filterIndexDefinition)).toHaveLength(7)
+    expect(SEARCH_FILTER_INDEXES.map(filterIndexDefinition)).toHaveLength(8)
     expect(SEARCH_FILTER_INDEXES.map(filterIndexDefinition)).toContain(
       'create index "commits_session_filter_sha_v1_idx" on "commits" (lower("sha") text_pattern_ops, "sessionId")',
+    )
+    expect(SEARCH_FILTER_INDEXES.map(filterIndexDefinition)).toContain(
+      'create index "sessions_session_filter_tags_v1_idx" on "sessions" using gin ("tags")',
     )
   })
 

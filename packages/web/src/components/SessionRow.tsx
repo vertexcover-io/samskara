@@ -2,6 +2,7 @@ import { Link } from "react-router-dom"
 import { repoLabel } from "../api/repo.js"
 import type { SearchSourceKind, SessionSummary } from "../api/types.js"
 import { absoluteTime, relativeTime } from "../time.js"
+import { Chip } from "./Chip.js"
 
 const Unavailable = () => (
   <span className="text-faded italic underline decoration-dotted">unavailable</span>
@@ -47,7 +48,8 @@ type Props = {
 export const rowFrameClass = "border border-rule bg-panel-2 px-4 py-2"
 
 export const SessionRow = ({ session, to, showProject = true }: Props) => {
-  const { title, projectName, userLogin, repo, durationMs, tokensTotal, lastActiveAt } = session
+  const { title, projectName, userLogin, repo, durationMs, tokensTotal, lastActiveAt, tags } =
+    session
   const match = session.match ?? null
 
   return (
@@ -69,6 +71,13 @@ export const SessionRow = ({ session, to, showProject = true }: Props) => {
           {durationMs === null ? <Unavailable /> : formatDuration(durationMs)} ·{" "}
           {formatTokens(tokensTotal)}
         </span>
+        {tags.length === 0 ? null : (
+          <span className="mt-1 flex flex-wrap gap-1 font-mono text-[0.68rem] text-ink-soft">
+            {tags.map((tag) => (
+              <Chip key={tag}>{tag}</Chip>
+            ))}
+          </span>
+        )}
       </span>
 
       <span className="col-start-2 truncate font-mono text-[0.72rem] text-faded min-[900px]:col-start-3 min-[900px]:self-center">
