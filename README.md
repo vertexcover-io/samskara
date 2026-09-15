@@ -257,7 +257,7 @@ profile you are looking at.
 | `/orgs/:slug` | One org's members, projects, and total session count, with an editable display name and auto-add-members toggle |
 | `/sessions` | Session index with search and filters |
 | `/sessions/:id` | One session: Conversation, Timeline, Tool Calls, and Artifacts tabs, with subagent branches you can expand and an editable name and description for the owner or a super admin |
-| `/sync-status` | Each project you can read, paired with every user who belongs to it and when they last synced it |
+| `/sync-status` | Each project you can read, paired with every user who belongs to it, when they last synced it, and the samskara CLI version they upload from over the date they moved onto it. Anyone who has not uploaded since that CLI shipped reads "unknown" |
 
 Filters live in the query string, so any view you are looking at is a link you can paste to a
 teammate, and Back/Forward work the way you expect.

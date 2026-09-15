@@ -150,6 +150,7 @@ export const projects = pgTable(
       .on(t.slug, t.ownerOrgId)
       .where(sql`${t.ownerUserId} is null`),
     index("projects_owner_org_idx").on(t.ownerOrgId),
+    index("projects_owner_user_idx").on(t.ownerUserId),
   ],
 )
 
@@ -169,6 +170,30 @@ export const userProjectGrant = pgTable(
     primaryKey({ columns: [t.userId, t.projectId] }),
     check("userProjectGrant_scope_check", sql`${t.scope} in ('admin', 'editor', 'viewer')`),
     index("userProjectGrant_projectId_idx").on(t.projectId),
+  ],
+)
+
+/**
+ * Why this exists when `sessions.cliVersion` already does: a session's version is overwritten on
+ * every flush, so it cannot date a version change. Here `createdAt` is the first sighting of a
+ * person on a version and is never updated, which is what makes it the upgrade date.
+ */
+export const userCliVersion = pgTable(
+  "userCliVersion",
+  {
+    userId: uuid("userId")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    projectId: uuid("projectId")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    cliVersion: text("cliVersion").notNull(),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.projectId, t.cliVersion] }),
+    index("userCliVersion_user_updated_idx").on(t.userId, t.updatedAt),
   ],
 )
 

@@ -11,6 +11,7 @@ import type {
 import { isGitCommitCommand, isPrCreateCommand, pullRequestFlags } from "@samskara/core"
 import type pino from "pino"
 import type { Db, Querier } from "../db/client.js"
+import * as cliVersionsRepo from "../repositories/cliVersions.repo.js"
 import * as commitsRepo from "../repositories/commits.repo.js"
 import type { MessageRow } from "../repositories/messages.repo.js"
 import * as messagesRepo from "../repositories/messages.repo.js"
@@ -308,6 +309,9 @@ export const ingest = async (ctx: Ctx, payload: IngestPayload): Promise<IngestRe
       await storePullRequests(tx, storeInput)
       await storeTokens(tx, flat, idByKey)
       await subagentsRepo.resolveParentAgentIds(tx, payload.sessionId)
+      if (payload.type === "main" && payload.cliVersion !== undefined) {
+        await cliVersionsRepo.record(tx, { userId, projectId, cliVersion: payload.cliVersion })
+      }
       log.info(
         {
           sessionId: payload.sessionId,

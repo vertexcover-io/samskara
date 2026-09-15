@@ -16,6 +16,7 @@ import { projectsPath, statePath as scopedStatePath } from "../config/paths.js"
 import { ALL_SCOPED_PATHS, scopeMismatch } from "../config/server-scope.js"
 import { writeSettings } from "../config/settings.js"
 import { DEFAULT_MESSAGE_CAP, DEFAULT_SESSION_CONCURRENCY } from "../config.js"
+import { cliVersion } from "../version.js"
 import { enqueue } from "./artifact-queue.js"
 import { runArtifactWorkers } from "./artifact-worker.js"
 import {
@@ -157,6 +158,23 @@ describe("watcher driver", () => {
     ...over,
   })
 
+  const flushMainAndSubagent = async () => {
+    const main = join(projects, "sess-1.jsonl")
+    const sub = join(projects, "sess-1", "subagents", "agent-af66.jsonl")
+    await mkdir(join(projects, "sess-1", "subagents"), { recursive: true })
+    await writeFile(main, `${assistantLine("l1", "sess-1")}\n`, "utf8")
+    await writeFile(sub, `${assistantLine("s1", "sess-1", { agentId: "af66" })}\n`, "utf8")
+    await writeFile(
+      sub.replace(/\.jsonl$/, ".meta.json"),
+      JSON.stringify({ agentId: "af66" }),
+      "utf8",
+    )
+
+    const sink = createInMemorySink()
+    await runCycle(config, deps({ sink, glob: async () => [sub, main] }))
+    return sink
+  }
+
   beforeEach(async () => {
     repoMocks.resolveRepo.mockReset()
     repoMocks.resolveHead.mockReset()
@@ -267,20 +285,17 @@ describe("watcher driver", () => {
   })
 
   test("processes main before subagent within a session", async () => {
-    const main = join(projects, "sess-1.jsonl")
-    const sub = join(projects, "sess-1", "subagents", "agent-af66.jsonl")
-    await mkdir(join(projects, "sess-1", "subagents"), { recursive: true })
-    await writeFile(main, `${assistantLine("l1", "sess-1")}\n`, "utf8")
-    await writeFile(sub, `${assistantLine("s1", "sess-1", { agentId: "af66" })}\n`, "utf8")
-    await writeFile(
-      sub.replace(/\.jsonl$/, ".meta.json"),
-      JSON.stringify({ agentId: "af66" }),
-      "utf8",
-    )
-
-    const sink = createInMemorySink()
-    await runCycle(config, deps({ sink, glob: async () => [sub, main] }))
+    const sink = await flushMainAndSubagent()
     expect(sink.received.map((p) => p.type)).toEqual(["main", "subagent"])
+  })
+
+  test("SC33: a flush stamps this CLI's own version on the main upload and none on a subagent one", async () => {
+    const sink = await flushMainAndSubagent()
+
+    const [mainUpload, subUpload] = sink.received
+    expect(mainUpload?.type === "main" && mainUpload.cliVersion).toBe(cliVersion)
+    expect(subUpload?.type).toBe("subagent")
+    expect(subUpload && "cliVersion" in subUpload).toBe(false)
   })
 
   test("a torn trailing line is not flushed until completed", async () => {

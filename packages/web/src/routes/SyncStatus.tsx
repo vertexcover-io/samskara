@@ -113,6 +113,35 @@ const SyncedCell = ({ lastSyncedAt }: { readonly lastSyncedAt: string | null }) 
   </td>
 )
 
+const HAS_VISIBLE_CHARACTER = /[^\s\p{Cf}\p{Cc}\p{Zs}\p{Zl}\p{Zp}]/u
+
+const CliVersionCell = ({
+  cliVersion,
+  cliVersionSince,
+}: {
+  readonly cliVersion: string | null
+  readonly cliVersionSince: string | null
+}) => (
+  <td className="border border-rule px-2 py-1 align-top">
+    {cliVersion === null || !HAS_VISIBLE_CHARACTER.test(cliVersion) ? (
+      <span className="text-faded italic underline decoration-dotted">unknown</span>
+    ) : (
+      <>
+        <span className="font-mono">{cliVersion}</span>
+        {cliVersionSince === null ? null : (
+          <time
+            className="block text-[0.72rem] text-ink-soft"
+            dateTime={cliVersionSince}
+            title={absoluteTime(cliVersionSince)}
+          >
+            since {relativeTime(cliVersionSince)}
+          </time>
+        )}
+      </>
+    )}
+  </td>
+)
+
 const ARIA_SORT: Readonly<Record<Direction, "ascending" | "descending">> = {
   asc: "ascending",
   desc: "descending",
@@ -123,6 +152,7 @@ const COLUMN_LABEL: Readonly<Record<Column, string>> = {
   project: "Project",
   sessions: "Sessions",
   synced: "Last synced",
+  cli: "CLI version",
 }
 
 const SortableHeader = ({
@@ -169,6 +199,7 @@ const SyncStatusTable = ({
             <ProjectCell row={row} />
             <td className="border border-rule px-2 py-1 align-top">{row.sessionCount}</td>
             <SyncedCell lastSyncedAt={row.lastSyncedAt} />
+            <CliVersionCell cliVersion={row.cliVersion} cliVersionSince={row.cliVersionSince} />
           </tr>
         ))}
       </tbody>

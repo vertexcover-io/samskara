@@ -1,6 +1,6 @@
 import type { SyncStatusRow } from "../api/types.js"
 
-export const COLUMNS = ["user", "project", "sessions", "synced"] as const
+export const COLUMNS = ["user", "project", "sessions", "synced", "cli"] as const
 
 export type Column = (typeof COLUMNS)[number]
 
@@ -87,6 +87,39 @@ const compareBy =
 
 const compareStrings = (a: string, b: string): number => a.localeCompare(b)
 
+const SEGMENTS = /^v?(\d+)\.(\d+)\.(\d+)(?:-([^+]+))?(?:\+.+)?$/
+
+type ParsedVersion = { readonly segments: readonly number[]; readonly prerelease: boolean }
+
+const parseVersion = (version: string): ParsedVersion | null => {
+  const match = SEGMENTS.exec(version.trim())
+  if (!match) return null
+  return {
+    segments: [Number(match[1]), Number(match[2]), Number(match[3])],
+    prerelease: match[4] !== undefined,
+  }
+}
+
+/**
+ * Matches `isNewer` in `packages/cli/src/commands/upgrade.ts`: a prerelease sorts below the
+ * release carrying the same numbers, build metadata is ignored, and a string neither recognises
+ * sorts below every version they do. The two cannot share one module today, because the web
+ * package does not depend on `@samskara/core` and core pulls in `better-sqlite3`, which a browser
+ * bundle cannot take.
+ */
+export const compareVersions = (a: string, b: string): number => {
+  const left = parseVersion(a)
+  const right = parseVersion(b)
+  if (left === null || right === null) {
+    return (left === null ? 0 : 1) - (right === null ? 0 : 1)
+  }
+  for (const [index, value] of left.segments.entries()) {
+    const other = right.segments[index] ?? 0
+    if (value !== other) return value - other
+  }
+  return (right.prerelease ? 1 : 0) - (left.prerelease ? 1 : 0)
+}
+
 const COMPARATORS: Readonly<Record<Column, RowComparator>> = {
   user: compareBy((row) => row.githubLogin, compareStrings),
   project: compareBy((row) => row.projectName, compareStrings),
@@ -95,6 +128,7 @@ const COMPARATORS: Readonly<Record<Column, RowComparator>> = {
     (a, b) => a - b,
   ),
   synced: compareBy((row) => row.lastSyncedAt, compareStrings),
+  cli: compareBy((row) => row.cliVersion, compareVersions),
 }
 
 export const sortRows = (

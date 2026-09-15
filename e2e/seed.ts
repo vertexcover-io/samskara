@@ -80,6 +80,7 @@ export type SeedProject = {
   readonly owner?: "primary" | "other"
   /** An org-owned project instead of a user-owned one. Mutually exclusive with `owner`. */
   readonly org?: string
+  readonly cliVersions?: Partial<Record<"primary" | "other", string>>
   readonly sessions: ReadonlyArray<SeedSession>
 }
 
@@ -284,6 +285,15 @@ export const seedDatabase = async (spec: SeedSpec): Promise<void> => {
         insert into projects (id, name, slug, "ownerId", "ownerOrgId")
         values (${id}, ${project.name}, ${project.slug}, ${ownerUserId}, ${ownerOrgId})
       `
+
+      const seenAt = new Date(Date.UTC(2026, 1, 1 + index, 9))
+      for (const [who, cliVersion] of Object.entries(project.cliVersions ?? {})) {
+        const userId = who === "other" ? E2E_OTHER_USER_ID : E2E_USER_ID
+        await sql`
+          insert into "userCliVersion" ("userId", "projectId", "cliVersion", "createdAt", "updatedAt")
+          values (${userId}, ${id}, ${cliVersion}, ${seenAt}, ${seenAt})
+        `
+      }
 
       for (const [order, session] of project.sessions.entries()) {
         const updatedAt = new Date(Date.UTC(2026, 1, 1 + index, 9, order))

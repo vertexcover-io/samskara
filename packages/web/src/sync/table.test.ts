@@ -1,6 +1,7 @@
 import { expect, test } from "vitest"
 import type { SyncStatusRow } from "../api/types.js"
 import {
+  compareVersions,
   DEFAULT_STATE,
   filterRows,
   nextDirection,
@@ -19,6 +20,8 @@ const row = (overrides: Partial<SyncStatusRow>): SyncStatusRow => ({
   projectSlug: "samskara",
   sessionCount: 1,
   lastSyncedAt: "2026-08-20T10:00:00.000Z",
+  cliVersion: "0.4.2",
+  cliVersionSince: "2026-08-13T10:00:00.000Z",
   ...overrides,
 })
 
@@ -100,4 +103,59 @@ test("SC26: a user holding no project contributes no project suggestion", () => 
 
   expect(projectOptions(rows)).toEqual(["Zeta"])
   expect(userOptions(rows)).toEqual(["asha", "solo"])
+})
+
+test("SC39: sorting by CLI version follows the numbers, not the alphabet", () => {
+  const oldest = row({ userId: "u-1", cliVersion: "0.9.0" })
+  const patched = row({ userId: "u-2", cliVersion: "0.2.13" })
+  const newest = row({ userId: "u-3", cliVersion: "0.10.0" })
+
+  expect(compareVersions("0.10.0", "0.9.0")).toBeGreaterThan(0)
+  expect(compareVersions("0.9.0", "0.2.13")).toBeGreaterThan(0)
+
+  const sorted = sortRows([oldest, patched, newest], { ...DEFAULT_STATE, column: "cli" })
+  expect(sorted.map((r) => r.userId)).toEqual(["u-3", "u-1", "u-2"])
+})
+
+test("SC39: a prerelease sorts below the release carrying the same numbers", () => {
+  const cases: ReadonlyArray<readonly [string, string, "above" | "below"]> = [
+    ["1.4.0", "1.4.0-rc.1", "above"],
+    ["1.4.0-rc.1", "1.3.9", "above"],
+    ["1.4.2-rc.1", "1.4.2", "below"],
+    ["1.4.2-rc.1", "1.4.1", "above"],
+    ["1.4.0+build.5", "1.4.0", "below"],
+    ["1.4.0+build.5", "1.3.9", "above"],
+  ]
+
+  for (const [left, right, expected] of cases) {
+    const gap = compareVersions(left, right)
+    if (expected === "above") expect([left, right, gap > 0]).toEqual([left, right, true])
+    else expect([left, right, gap <= 0]).toEqual([left, right, true])
+  }
+})
+
+test("SC39: build metadata does not change the order", () => {
+  expect(compareVersions("1.4.0+build.5", "1.4.0")).toBe(0)
+  expect(compareVersions("v1.4.0", "1.4.0")).toBe(0)
+})
+
+test("SC39: a string that is not a version sorts below every version", () => {
+  expect(compareVersions("dev", "0.0.1")).toBeLessThan(0)
+  expect(compareVersions("0.0.1", "dev")).toBeGreaterThan(0)
+  expect(compareVersions("dev", "nightly")).toBe(0)
+})
+
+test("SC40: rows with no recorded version sort last in both directions", () => {
+  const versioned = row({ userId: "u-1", cliVersion: "0.4.2" })
+  const unknown = row({ userId: "u-2", cliVersion: null, cliVersionSince: null })
+
+  const descending = sortRows([unknown, versioned], { ...DEFAULT_STATE, column: "cli" })
+  expect(descending.map((r) => r.userId)).toEqual(["u-1", "u-2"])
+
+  const ascending = sortRows([unknown, versioned], {
+    ...DEFAULT_STATE,
+    column: "cli",
+    direction: "asc",
+  })
+  expect(ascending.map((r) => r.userId)).toEqual(["u-1", "u-2"])
 })
