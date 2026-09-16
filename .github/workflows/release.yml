@@ -3,18 +3,25 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "major, minor, patch, or an explicit 1.4.0"
+        type: string
+        default: patch
 
 permissions:
   contents: write
 
 jobs:
-  release:
+  # Runs first, so a manual release never tags code that fails its tests.
+  test:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          ref: ${{ github.sha }}
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -22,15 +29,11 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
-      # A tag that disagrees with the manifests would ship a tarball named after the wrong release.
-      - name: Check the tag matches the version in the manifests
-        run: |
-          tagged="${GITHUB_REF_NAME#v}"
-          packaged=$(node -p "require('./packages/cli/package.json').version")
-          if [ "$tagged" != "$packaged" ]; then
-            echo "tag $GITHUB_REF_NAME does not match package version $packaged" >&2
-            exit 1
-          fi
+      # A hand-pushed tag already exists, so the earliest a mismatch can stop it is here.
+      # A manual run has no tag yet; cut builds one from the manifests it just wrote.
+      - name: Check the pushed tag matches the version in the manifests
+        if: github.event_name == 'push'
+        run: bun scripts/check-release-tag.ts "$GITHUB_REF_NAME"
 
       - run: bun run lint
 
@@ -40,11 +43,69 @@ jobs:
 
       - run: bun run test
 
+  # A tag pushed with GITHUB_TOKEN starts no workflow run, so a manual release cuts its tag here
+  # and the release job below publishes it in this same run.
+  cut:
+    needs: test
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      # The commit the test job passed. If the branch has moved since, the push below is
+      # rejected rather than releasing code nobody tested.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.19
+
+      - name: Bump every manifest, commit and tag
+        id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          git config user.name "$GITHUB_ACTOR"
+          git config user.email "$GITHUB_ACTOR_ID+$GITHUB_ACTOR@users.noreply.github.com"
+          bun run release:version "$BUMP"
+          tag="v$(node -p "require('./package.json').version")"
+          bun scripts/check-release-tag.ts "$tag"
+          git push --atomic origin "HEAD:$GITHUB_REF_NAME" "$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: [test, cut]
+    # A pushed tag skips cut; a manual run publishes only once cut has pushed its tag.
+    if: ${{ !cancelled() && needs.test.result == 'success' && needs.cut.result != 'failure' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TAG: ${{ needs.cut.outputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.cut.outputs.tag || github.ref_name }}
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.19
+
+      - run: bun install --frozen-lockfile
+
       - run: bun run release:pack
 
-      - run: cp "dist/samskara-cli-${GITHUB_REF_NAME#v}.tgz" dist/samskara-cli.tgz
+      - run: cp "dist/samskara-cli-${TAG#v}.tgz" dist/samskara-cli.tgz
 
+      # A tag like v0.5.0-rc.1 publishes as a pre-release, so it never becomes "Latest".
       - name: Publish the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/*.tgz --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+        run: |
+          flags=""
+          case "$TAG" in *-*) flags="--prerelease" ;; esac
+          gh release create "$TAG" dist/*.tgz --verify-tag --generate-notes --title "$TAG" $flags

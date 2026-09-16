@@ -37,7 +37,8 @@
     "seed": "bun run --cwd packages/server seed",
     "seed:capture": "bun run --cwd packages/server seed:capture",
     "release:version": "bun scripts/version.ts",
-    "release:pack": "bun run build --filter=@samskara/cli && bun scripts/pack-cli.ts"
+    "release:pack": "bun run build --filter=@samskara/cli && bun scripts/pack-cli.ts",
+    "release": "bun scripts/release.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.10",
