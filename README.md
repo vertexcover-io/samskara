@@ -320,17 +320,35 @@ database naming rule, the seed/identity snapshot, and the logging conventions.
 ## Releases
 
 Every package carries the same version, so one tag names one state of the whole repo. Cutting a
-release is two commands:
+release is one command, and it does not run on your machine:
 
 ```sh
-bun run release:version patch    # or minor, major, or an explicit 1.4.0
+bun run release patch            # or minor, major, or an explicit 1.4.0
+bun run release patch --watch    # …and stream the run until it finishes
+```
+
+That dispatches `.github/workflows/release.yml` against the branch you are on. The workflow runs
+lint, typecheck and the tests first; only then does it bump every manifest, commit
+`chore(release): vX.Y.Z`, tag it, push both, build the CLI tarball and create the GitHub release
+with it attached. Nothing is tagged until the tests are green, so a failed release leaves no
+version behind to clean up. A tag ending in a pre-release suffix (`v1.4.0-rc.1`) publishes as a
+pre-release and never becomes "Latest".
+
+`bun run release` refuses to dispatch a branch whose local tip differs from `origin`'s — the
+workflow builds from what origin has, so an unpushed commit would silently be left out. Pass
+`--ref BRANCH` to release a branch you are not standing on. You can also run the workflow from the
+Actions tab; the `bump` input is the same string.
+
+Pushing a `v*` tag by hand still works and still releases. That path skips the bump-and-tag job and
+only re-checks the tag against the manifests, so it is the escape hatch, not the normal route:
+
+```sh
+bun run release:version patch    # bumps all five manifests, commits, tags
 git push origin master --follow-tags
 ```
 
-`release:version` refuses a dirty tree, writes the version into the root manifest and all four
-packages, commits and tags it, and stops there — `--no-git` bumps the files only. Pushing the tag
-runs `.github/workflows/release.yml`, which re-checks the tag against the manifests, runs lint,
-typecheck and the tests, builds the CLI tarball and creates the GitHub release with it attached.
+`release:version` refuses a dirty tree and stops after tagging — `--no-git` bumps the files only.
+`bun scripts/check-release-tag.ts vX.Y.Z` is the check the workflow runs, if you want it locally.
 
 Only the CLI ships an artifact; the server and web UI are deployed from source. To build the
 tarball without releasing anything, `bun run release:pack` writes `dist/samskara-cli-VERSION.tgz`.

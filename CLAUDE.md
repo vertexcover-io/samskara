@@ -157,10 +157,15 @@ comes from `LOG_LEVEL`, defaulting to `info` in production and `debug` elsewhere
 
 ## Releases
 
-Every package carries the same version. Never hand-edit a `version` field:
-`bun run release:version patch|minor|major|1.4.0` writes all five and tags the commit, and pushing
-that tag is what releases. The README's "Releases" section has the rest, including why the CLI
-tarball bundles core the way it does.
+Every package carries the same version. Never hand-edit a `version` field.
+`bun run release patch|minor|major|1.4.0` dispatches `.github/workflows/release.yml` on the current
+branch; the workflow tests first, then bumps all five manifests, commits, tags, pushes and
+publishes. Add `--watch` to follow it, `--ref BRANCH` to release another branch. It refuses a
+branch whose tip is not on origin, because the workflow builds from origin.
+
+`bun run release:version patch|…` is the local escape hatch: it bumps and tags on your machine, and
+pushing that tag releases through the same workflow. The README's "Releases" section has the rest,
+including why the CLI tarball bundles core the way it does.
 
 `scripts/` is tested by `bun test`, not vitest. Run it with `bun run test:scripts` — a bare
 `bun test scripts/` also matches `packages/server/src/scripts/*.test.ts`, which then fail with

@@ -5,7 +5,7 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 
 /** Every package carries the same version, so a tag names one state of the whole repo. */
-const MANIFESTS = [
+export const MANIFESTS = [
   "package.json",
   "packages/cli/package.json",
   "packages/core/package.json",
