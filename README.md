@@ -132,8 +132,6 @@ It needs Node 22+. To remove it later: `npm uninstall -g @samskara/cli`.
 To upgrade, run `samskara upgrade`. It asks GitHub for the newest release, and if that is newer
 than the CLI you are running it installs that release's tarball over this one — the same
 `npm i -g TARBALL` as above, so it needs write access to the global npm prefix.
-`samskara upgrade --check` only reports whether a newer release exists. Either way, run
-`samskara restart` afterwards so the running watcher picks up the new build.
 
 ### From a checkout instead
 
@@ -204,7 +202,7 @@ turns capture off for every project, and signs you out. It stops there — run `
 | `samskara status` | Server and web URLs, projects, capture state, last sync time, watcher PID. Start here when something looks off. |
 | `samskara logs [-f]` | Pretty-print the watcher log. `-f` streams new lines. |
 | `samskara restart` | Stop the watcher and start a fresh one. |
-| `samskara upgrade [--check]` | Install the newest GitHub release over this one; `--check` only reports whether one exists. |
+| `samskara upgrade [--check] [--json]` | Install the newest GitHub release over this one and restart the watcher; `--check` only reports whether one exists, `--json` prints the result as JSON. |
 | `samskara replay SESSION_ID` | Delete a session server-side and locally, then re-capture it from scratch. |
 | `samskara artifacts upload SESSION_ID PATH... [--base-dir DIR] [--no-created] [--dry-run]` | Upload files, or directories walked recursively, as artifacts of that session. Prints `ok`, `updated` or `failed` per file and exits 1 if any failed. `--base-dir` stores each path relative to `DIR` rather than the current directory, `--no-created` records the files as edited rather than created, and `--dry-run` prints what would upload without sending it. |
 | `samskara tags add\|rm\|ls [TAG...] [--session-id ID]` | Read and change a session's tags, printing the resulting set. Without `--session-id` the session is `$CLAUDE_CODE_SESSION_ID`, which Claude Code exports into every command it runs; a plain terminal exports nothing, so name the session there. Tags are lowercased and may not contain spaces or commas. |

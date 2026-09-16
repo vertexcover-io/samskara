@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, test, vi } from "vitest"
 import { isNewer, RELEASES_API, upgradeCommand } from "./upgrade.js"
 
+const parse = (text: string): Record<string, unknown> => JSON.parse(text) as Record<string, unknown>
+
 const release = (version: string) => ({
   tag_name: `v${version}`,
   assets: [
@@ -52,15 +54,18 @@ describe("isNewer", () => {
 describe("upgrade command", () => {
   let fetchMock: ReturnType<typeof vi.fn>
   let install: ReturnType<typeof vi.fn>
+  let restartWatcher: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
     fetchMock = vi.fn().mockResolvedValue(jsonResponse(release("0.2.0")))
     install = vi.fn().mockResolvedValue(undefined)
+    restartWatcher = vi.fn().mockResolvedValue({ restarted: true, pid: 4242 })
   })
 
   const deps = (current: string) => ({
     fetch: fetchMock as unknown as typeof fetch,
     install,
+    restartWatcher,
     current,
   })
 
@@ -73,7 +78,49 @@ describe("upgrade command", () => {
     expect(fetchMock).toHaveBeenCalledWith(RELEASES_API, expect.anything())
     expect(install).toHaveBeenCalledWith("https://example.test/samskara-cli-0.2.0.tgz")
     expect(streams.stdout.join("")).toContain("0.2.0")
-    expect(streams.stdout.join("")).toContain("samskara restart")
+  })
+
+  test("restarts the watcher once the new build is installed", async () => {
+    const streams = output()
+
+    const code = await upgradeCommand({}, { ...deps("0.1.0"), ...streams.writers })
+
+    expect(code).toBe(0)
+    expect(restartWatcher).toHaveBeenCalledTimes(1)
+    expect(install.mock.invocationCallOrder[0] as number).toBeLessThan(
+      restartWatcher.mock.invocationCallOrder[0] as number,
+    )
+    expect(streams.stdout.join("")).toContain("4242")
+  })
+
+  test("a watcher that was not running is reported rather than started", async () => {
+    const streams = output()
+    restartWatcher.mockResolvedValue({ restarted: false, pid: null })
+
+    const code = await upgradeCommand({}, { ...deps("0.1.0"), ...streams.writers })
+
+    expect(code).toBe(0)
+    expect(streams.stdout.join("")).toMatch(/not running/i)
+  })
+
+  test("a failed restart warns but keeps the successful install", async () => {
+    const streams = output()
+    restartWatcher.mockRejectedValue(new Error("failed to spawn watcher daemon"))
+
+    const code = await upgradeCommand({}, { ...deps("0.1.0"), ...streams.writers })
+
+    expect(code).toBe(0)
+    expect(streams.stdout.join("")).toContain("0.2.0")
+    expect(streams.stderr.join("")).toContain("samskara restart")
+  })
+
+  test("nothing is restarted when nothing was installed", async () => {
+    const streams = output()
+
+    await upgradeCommand({}, { ...deps("0.2.0"), ...streams.writers })
+    await upgradeCommand({ check: true }, { ...deps("0.1.0"), ...streams.writers })
+
+    expect(restartWatcher).not.toHaveBeenCalled()
   })
 
   test("an already-current CLI installs nothing", async () => {
@@ -150,5 +197,95 @@ describe("upgrade command", () => {
 
     expect(code).toBe(1)
     expect(streams.stderr.join("")).toContain("EACCES")
+    expect(restartWatcher).not.toHaveBeenCalled()
+  })
+})
+
+describe("upgrade --json", () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  let install: ReturnType<typeof vi.fn>
+  let restartWatcher: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue(jsonResponse(release("0.2.0")))
+    install = vi.fn().mockResolvedValue(undefined)
+    restartWatcher = vi.fn().mockResolvedValue({ restarted: true, pid: 4242 })
+  })
+
+  const deps = (current: string) => ({
+    fetch: fetchMock as unknown as typeof fetch,
+    install,
+    restartWatcher,
+    current,
+  })
+
+  test("--check prints one JSON object and no prose", async () => {
+    const streams = output()
+
+    const code = await upgradeCommand(
+      { check: true, json: true },
+      { ...deps("0.1.0"), ...streams.writers },
+    )
+
+    expect(code).toBe(0)
+    expect(parse(streams.stdout.join(""))).toEqual({
+      status: "available",
+      current: "0.1.0",
+      latest: "0.2.0",
+      tarball: "https://example.test/samskara-cli-0.2.0.tgz",
+    })
+  })
+
+  test("--check on an up-to-date CLI says so as JSON", async () => {
+    const streams = output()
+
+    const code = await upgradeCommand(
+      { check: true, json: true },
+      { ...deps("0.2.0"), ...streams.writers },
+    )
+
+    expect(code).toBe(0)
+    expect(parse(streams.stdout.join("")).status).toBe("current")
+  })
+
+  test("an install reports the restarted watcher as JSON", async () => {
+    const streams = output()
+
+    const code = await upgradeCommand({ json: true }, { ...deps("0.1.0"), ...streams.writers })
+
+    expect(code).toBe(0)
+    expect(parse(streams.stdout.join(""))).toMatchObject({
+      status: "upgraded",
+      current: "0.1.0",
+      latest: "0.2.0",
+      watcher: { restarted: true, pid: 4242 },
+    })
+  })
+
+  test("a failed restart lands in the JSON rather than on stderr", async () => {
+    const streams = output()
+    restartWatcher.mockRejectedValue(new Error("failed to spawn watcher daemon"))
+
+    const code = await upgradeCommand({ json: true }, { ...deps("0.1.0"), ...streams.writers })
+
+    expect(code).toBe(0)
+    expect(streams.stderr).toEqual([])
+    expect(parse(streams.stdout.join("")).watcher).toEqual({
+      restarted: false,
+      pid: null,
+      error: "failed to spawn watcher daemon",
+    })
+  })
+
+  test("a failure prints JSON on stderr and exits non-zero", async () => {
+    const streams = output()
+    fetchMock.mockResolvedValue(jsonResponse({}, false))
+
+    const code = await upgradeCommand({ json: true }, { ...deps("0.1.0"), ...streams.writers })
+
+    expect(code).toBe(1)
+    expect(streams.stdout).toEqual([])
+    expect(parse(streams.stderr.join(""))).toMatchObject({ status: "error" })
+    expect(String(parse(streams.stderr.join("")).message)).toContain("404")
   })
 })

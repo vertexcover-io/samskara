@@ -241,8 +241,12 @@ program
   .command("upgrade")
   .description("Install the newest release from GitHub over this one")
   .option("--check", "only report whether a newer release exists")
-  .action(async (options: { check?: boolean }) => {
-    process.exitCode = await upgradeCommand({ check: Boolean(options.check) })
+  .option("--json", "print the result as JSON")
+  .action(async (options: { check?: boolean; json?: boolean }) => {
+    process.exitCode = await upgradeCommand({
+      check: Boolean(options.check),
+      json: Boolean(options.json),
+    })
   })
 
 program
