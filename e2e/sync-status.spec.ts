@@ -1,3 +1,5 @@
+import type { Locator } from "@playwright/test"
+import { COLUMNS } from "../packages/web/src/sync/table.js"
 import { expect, test } from "./fixtures/auth.js"
 import { E2E_OTHER_USER_LOGIN, E2E_USER_LOGIN, seedDatabase } from "./seed.js"
 
@@ -8,6 +10,7 @@ const SEED = {
     {
       slug: "sync-status-primary",
       name: "Primary Sync Project",
+      cliVersions: { primary: "0.9.1" },
       sessions: [{ id: "sync-status-e2e-primary", title: "Primary capture" }],
     },
     {
@@ -26,6 +29,9 @@ test.beforeEach(async () => {
   await seedDatabase(SEED)
 })
 
+/** Both the Last synced and CLI version cells render a `time`, so the column has to be named. */
+const syncedCell = (row: Locator) => row.locator("td").nth(COLUMNS.indexOf("synced"))
+
 test("SC13: a signed-in visit follows the Sync nav link to /sync-status and lists both seeded users with their projects and sync times", async ({
   authedPage: page,
 }) => {
@@ -38,14 +44,14 @@ test("SC13: a signed-in visit follows the Sync nav link to /sync-status and list
   const primaryRow = page.locator("tr", { hasText: "Primary Sync Project" })
   await expect(primaryRow).toBeVisible()
   await expect(primaryRow.getByText(E2E_USER_LOGIN, { exact: true })).toBeVisible()
-  await expect(primaryRow.locator("time")).toBeVisible()
+  await expect(syncedCell(primaryRow).locator("time")).toBeVisible()
 
   // The org project pairs with both members, so the colleague's row is picked out by their login.
   const secondaryRow = page
     .locator("tr", { hasText: "Secondary Sync Project" })
     .filter({ hasText: E2E_OTHER_USER_LOGIN })
   await expect(secondaryRow).toBeVisible()
-  await expect(secondaryRow.locator("time")).toBeVisible()
+  await expect(syncedCell(secondaryRow).locator("time")).toBeVisible()
 })
 
 test("SC21: a project filter narrows the table and survives a reload", async ({
@@ -67,19 +73,21 @@ test("SC21: a project filter narrows the table and survives a reload", async ({
   await expect(page.locator("tr", { hasText: "Secondary Sync Project" })).toHaveCount(0)
 })
 
-test("SC22: the table does not scroll sideways on a narrow screen", async ({
+test("SC22/SC47: the table shows the CLI version column and does not scroll sideways on a narrow screen", async ({
   authedPage: page,
 }) => {
   await page.setViewportSize({ width: 320, height: 800 })
   await page.goto("/sync-status")
-  await expect(page.locator("tr", { hasText: "Primary Sync Project" })).toBeVisible()
+  const primaryRow = page.locator("tr", { hasText: "Primary Sync Project" })
+  await expect(primaryRow).toBeVisible()
+  await expect(primaryRow.getByText("0.9.1")).toBeVisible()
 
   const overflow = await page.evaluate(
     () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
   )
   expect(overflow).toBeLessThanOrEqual(0)
 
-  for (const label of ["User", "Project", "Sessions", "Last synced"]) {
+  for (const label of ["User", "Project", "Sessions", "Last synced", "CLI version"]) {
     await expect(page.getByRole("columnheader", { name: label })).toBeVisible()
   }
 })

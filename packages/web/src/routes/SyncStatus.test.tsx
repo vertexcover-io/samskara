@@ -16,6 +16,8 @@ const ROW: SyncStatusRow = {
   projectSlug: "samskara",
   sessionCount: 3,
   lastSyncedAt: "2026-08-20T10:00:00.000Z",
+  cliVersion: "0.4.2",
+  cliVersionSince: "2026-08-13T10:00:00.000Z",
 }
 
 const stubFetch = (status: number, body: unknown) => {
@@ -63,7 +65,9 @@ test("SC2: the page shows one row for each returned pair, each with its own proj
 })
 
 test("SC3: a pair with no sessions reads 'never', holding no <time> element", async () => {
-  stubFetch(200, { rows: [{ ...ROW, lastSyncedAt: null }] })
+  stubFetch(200, {
+    rows: [{ ...ROW, lastSyncedAt: null, cliVersion: null, cliVersionSince: null }],
+  })
 
   renderPage()
 
@@ -113,7 +117,7 @@ test("SC6: an expired session paints the session-expired panel, not the retrieva
   expect(screen.queryByText(/retrieval failed/i)).not.toBeInTheDocument()
 })
 
-test("SC18: the active column reports its direction to a screen reader, and the other three report none", async () => {
+test("SC18: the active column reports its direction to a screen reader, and the other four report none", async () => {
   stubFetch(200, { rows: [ROW] })
 
   renderPage("/sync-status?sort=user&dir=asc")
@@ -126,6 +130,10 @@ test("SC18: the active column reports its direction to a screen reader, and the 
     "none",
   )
   expect(screen.getByRole("columnheader", { name: "Last synced" })).toHaveAttribute(
+    "aria-sort",
+    "none",
+  )
+  expect(screen.getByRole("columnheader", { name: "CLI version" })).toHaveAttribute(
     "aria-sort",
     "none",
   )
@@ -205,6 +213,92 @@ test("SC27: the Project box suggests the projects on the page, and picking one f
 
   expect(screen.getByTestId("location")).toHaveTextContent("project=Andromeda")
   expect(screen.queryByText("Samskara")).not.toBeInTheDocument()
+})
+
+test("SC41: the cell shows the version over its date, and 'unknown' where there is none", async () => {
+  const unversioned: SyncStatusRow = {
+    ...ROW,
+    userId: "u-2",
+    githubLogin: "unversioned-user",
+    cliVersion: null,
+    cliVersionSince: null,
+  }
+  stubFetch(200, { rows: [ROW, unversioned] })
+
+  renderPage()
+
+  expect(await screen.findByText("0.4.2")).toBeInTheDocument()
+  expect(screen.getByTitle(absoluteTime(ROW.cliVersionSince as string))).toBeInTheDocument()
+
+  const unknownRow = screen.getByText("unknown").closest("tr") as HTMLElement
+  expect(unknownRow).toBeInTheDocument()
+  expect(within(unknownRow).queryByText(/^since /)).not.toBeInTheDocument()
+})
+
+test("SC41: a cliVersion with no visible character falls back to 'unknown'", async () => {
+  const invisible: SyncStatusRow = {
+    ...ROW,
+    userId: "u-2",
+    githubLogin: "invisible-user",
+    cliVersion: "\u200B",
+  }
+  stubFetch(200, { rows: [invisible] })
+
+  renderPage()
+
+  const row = (await screen.findByText("invisible-user")).closest("tr") as HTMLElement
+  expect(within(row).getByText("unknown")).toBeInTheDocument()
+  expect(within(row).queryByText(/^since /)).not.toBeInTheDocument()
+})
+
+test("SC42 (regression): the existing columns, filters and sorting still behave", async () => {
+  const other: SyncStatusRow = {
+    ...ROW,
+    userId: "u-2",
+    githubLogin: "asha",
+    projectId: "p-2",
+    projectName: "Andromeda",
+    projectSlug: "andromeda",
+    lastSyncedAt: "2026-08-19T09:00:00.000Z",
+  }
+  const never: SyncStatusRow = {
+    ...ROW,
+    userId: "u-3",
+    githubLogin: "kiran",
+    projectId: "p-3",
+    projectName: "Borealis",
+    projectSlug: "borealis",
+    lastSyncedAt: null,
+  }
+  stubFetch(200, { rows: [ROW, other, never] })
+  const user = userEvent.setup()
+
+  renderPage()
+
+  expect(await screen.findByText("Samskara")).toBeInTheDocument()
+  expect(screen.getByText("Andromeda")).toBeInTheDocument()
+  expect(screen.getByText("maya")).toBeInTheDocument()
+  expect(screen.getByText("asha")).toBeInTheDocument()
+  expect(screen.getAllByText("3")).toHaveLength(3)
+
+  await user.type(screen.getByRole("combobox", { name: "Project" }), "andro")
+  const table = screen.getByRole("table")
+  expect(within(table).queryByText("Samskara")).not.toBeInTheDocument()
+  expect(within(table).getByText("Andromeda")).toBeInTheDocument()
+
+  await user.clear(screen.getByRole("combobox", { name: "Project" }))
+
+  const logins = () =>
+    screen
+      .getAllByRole("row")
+      .slice(1)
+      .map((row) => within(row as HTMLElement).getAllByRole("cell")[0]?.textContent)
+
+  await user.click(screen.getByRole("button", { name: "Last synced" }))
+  expect(logins()).toEqual(["asha", "maya", "kiran"])
+
+  await user.click(screen.getByRole("button", { name: "Last synced" }))
+  expect(logins()).toEqual(["maya", "asha", "kiran"])
 })
 
 test("SC28: typing narrows the suggestions to the matching users only", async () => {

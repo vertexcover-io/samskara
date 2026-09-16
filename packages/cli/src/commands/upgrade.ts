@@ -11,7 +11,7 @@ const ReleaseSchema = z.object({
   assets: z.array(z.object({ name: z.string(), browser_download_url: z.string() })),
 })
 
-const SEGMENTS = /^v?(\d+)\.(\d+)\.(\d+)(-.+)?$/
+const SEGMENTS = /^v?(\d+)\.(\d+)\.(\d+)(?:-([^+]+))?(?:\+.+)?$/
 
 type Parsed = { readonly segments: readonly number[]; readonly prerelease: boolean }
 

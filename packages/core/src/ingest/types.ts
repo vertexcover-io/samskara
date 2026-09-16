@@ -540,9 +540,31 @@ const sessionOriginShape = {
   startCommit: nonemptyString.optional(),
 }
 
+/**
+ * The version of the samskara CLI that sent this upload. Unlike the launch context above, it is
+ * re-stamped on every flush: it answers what the user is running now, not what they were running
+ * when the session began. Optional because a CLI released before this field existed sends nothing.
+ */
+const cliIdentityShape = {
+  cliVersion: z
+    .string()
+    .trim()
+    .min(1)
+    .max(64)
+    .regex(/[^\s\p{Cf}\p{Cc}\p{Zs}\p{Zl}\p{Zp}]/u)
+    .optional(),
+}
+
 export const ingestPayloadSchema = z
   .discriminatedUnion("type", [
-    z.object({ ...ingestBaseShape, ...sessionOriginShape, type: z.literal("main") }).strict(),
+    z
+      .object({
+        ...ingestBaseShape,
+        ...sessionOriginShape,
+        ...cliIdentityShape,
+        type: z.literal("main"),
+      })
+      .strict(),
     z.object({ ...ingestBaseShape, type: z.literal("subagent"), agent: agentInfoSchema }).strict(),
   ])
   .superRefine((payload, ctx) => {

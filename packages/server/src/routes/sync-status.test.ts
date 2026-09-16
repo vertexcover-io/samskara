@@ -7,6 +7,7 @@ import {
   orgs,
   projects,
   sessions,
+  userCliVersion,
   userOrgs,
   userProjectGrant,
   users,
@@ -59,6 +60,24 @@ const seedSession = (
     updatedAt: input.updatedAt,
   })
 
+const seedCliVersion = (
+  db: Db,
+  input: {
+    userId: string
+    projectId: string
+    cliVersion: string
+    createdAt: Date
+    updatedAt: Date
+  },
+) =>
+  db.insert(userCliVersion).values({
+    userId: input.userId,
+    projectId: input.projectId,
+    cliVersion: input.cliVersion,
+    createdAt: input.createdAt,
+    updatedAt: input.updatedAt,
+  })
+
 const readAs = async (db: Db, userId: string): Promise<{ status: number; body: unknown }> => {
   const token = await signToken(env, { sub: userId, aud: "web" })
   const res = await buildApp(db, env).request("/api/sync-status", {
@@ -88,6 +107,7 @@ describe.skipIf(!dockerAvailable())("GET /api/sync-status", () => {
   })
 
   beforeEach(async () => {
+    await db.delete(userCliVersion)
     await db.delete(sessions)
     await db.delete(userProjectGrant)
     await db.delete(userOrgs)
@@ -312,5 +332,112 @@ describe.skipIf(!dockerAvailable())("GET /api/sync-status", () => {
 
     expect(new Set(rows.map((row) => row.projectId))).toEqual(new Set([shared]))
     expect(new Set(rows.map((row) => row.userId))).toEqual(new Set([owner, grantee]))
+  })
+
+  test("SC43: the response carries each person's current version and the date they moved onto it", async () => {
+    const owner = await seedUser(db, "version-owner")
+    const projectId = await seedProject(db, "Versioned", "versioned", owner)
+    await seedCliVersion(db, {
+      userId: owner,
+      projectId,
+      cliVersion: "0.3.0",
+      createdAt: new Date("2026-01-01T00:00:00Z"),
+      updatedAt: new Date("2026-01-01T00:00:00Z"),
+    })
+    await seedCliVersion(db, {
+      userId: owner,
+      projectId,
+      cliVersion: "0.4.2",
+      createdAt: new Date("2026-01-15T00:00:00Z"),
+      updatedAt: new Date("2026-01-21T00:00:00Z"),
+    })
+
+    const rows = await rowsAs(db, owner)
+    const row = rows.find((candidate) => candidate.projectId === projectId)
+
+    expect(row?.cliVersion).toBe("0.4.2")
+    expect(row?.cliVersionSince).toBe(new Date("2026-01-15T00:00:00Z").toISOString())
+  })
+
+  test("SC43: with two machines alive, the column follows the one that uploaded last", async () => {
+    const owner = await seedUser(db, "two-machine-owner")
+    const projectId = await seedProject(db, "Two machines", "two-machines", owner)
+    await seedCliVersion(db, {
+      userId: owner,
+      projectId,
+      cliVersion: "0.4.2",
+      createdAt: new Date("2026-03-01T00:00:00Z"),
+      updatedAt: new Date("2026-03-02T00:00:00Z"),
+    })
+    await seedCliVersion(db, {
+      userId: owner,
+      projectId,
+      cliVersion: "0.3.0",
+      createdAt: new Date("2026-01-01T00:00:00Z"),
+      updatedAt: new Date("2026-03-09T00:00:00Z"),
+    })
+
+    const rows = await rowsAs(db, owner)
+    const row = rows.find((candidate) => candidate.projectId === projectId)
+
+    expect(row?.cliVersion).toBe("0.3.0")
+    expect(row?.cliVersionSince).toBe(new Date("2026-01-01T00:00:00Z").toISOString())
+  })
+
+  test("SC44: every project row for one person carries the same version", async () => {
+    const owner = await seedUser(db, "multi-project-owner")
+    const p1 = await seedProject(db, "First", "first-project", owner)
+    const p2 = await seedProject(db, "Second", "second-project", owner)
+    await seedCliVersion(db, {
+      userId: owner,
+      projectId: p1,
+      cliVersion: "0.5.0",
+      createdAt: new Date("2026-02-01T00:00:00Z"),
+      updatedAt: new Date("2026-02-10T00:00:00Z"),
+    })
+
+    const rows = await rowsAs(db, owner)
+    const firstRow = rows.find((candidate) => candidate.projectId === p1)
+    const secondRow = rows.find((candidate) => candidate.projectId === p2)
+
+    expect(firstRow?.cliVersion).toBe("0.5.0")
+    expect(secondRow?.cliVersion).toBe("0.5.0")
+    expect(firstRow?.cliVersionSince).toBe(secondRow?.cliVersionSince)
+  })
+
+  test("SC45: the since date is the earliest sighting across that person's projects", async () => {
+    const owner = await seedUser(db, "earliest-owner")
+    const p1 = await seedProject(db, "Early", "early-project", owner)
+    const p2 = await seedProject(db, "Late", "late-project", owner)
+    await seedCliVersion(db, {
+      userId: owner,
+      projectId: p1,
+      cliVersion: "0.4.2",
+      createdAt: new Date("2026-01-01T00:00:00Z"),
+      updatedAt: new Date("2026-01-01T00:00:00Z"),
+    })
+    await seedCliVersion(db, {
+      userId: owner,
+      projectId: p2,
+      cliVersion: "0.4.2",
+      createdAt: new Date("2026-01-08T00:00:00Z"),
+      updatedAt: new Date("2026-01-08T00:00:00Z"),
+    })
+
+    const rows = await rowsAs(db, owner)
+    const row = rows.find((candidate) => candidate.projectId === p1)
+
+    expect(row?.cliVersionSince).toBe(new Date("2026-01-01T00:00:00Z").toISOString())
+  })
+
+  test("SC46: a person with no recorded version gets nothing rather than a guess", async () => {
+    const owner = await seedUser(db, "no-version-owner")
+    const projectId = await seedProject(db, "Unversioned", "unversioned", owner)
+
+    const rows = await rowsAs(db, owner)
+    const row = rows.find((candidate) => candidate.projectId === projectId)
+
+    expect(row?.cliVersion).toBeNull()
+    expect(row?.cliVersionSince).toBeNull()
   })
 })

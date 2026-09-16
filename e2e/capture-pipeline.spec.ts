@@ -5,6 +5,7 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 import postgres from "postgres"
+import { cliVersion } from "../packages/cli/src/version.js"
 import { requireDatabaseUrl } from "./db.js"
 import { expect, mintCliToken, mintSessionToken, test } from "./fixtures/auth.js"
 import { API_BASE } from "./playwright.config.js"
@@ -311,6 +312,12 @@ test.describe("capture pipeline", () => {
     if (!session) throw new Error(`no session row was created for ${SESSION_ID}`)
     expect(session.source).toBe("claude_code")
     expect(session.userId).toBe(E2E_USER_ID)
+
+    const versions = await sql<{ cliVersion: string }[]>`
+      select "cliVersion" from "userCliVersion"
+      where "userId" = ${E2E_USER_ID} and "projectId" = ${session.projectId}
+    `
+    expect(versions.map((row) => row.cliVersion)).toEqual([cliVersion])
 
     // The project is created by the pipeline itself, from the cwd the transcript carries.
     const [project] = await sql<{ slug: string; name: string }[]>`

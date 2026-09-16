@@ -139,6 +139,12 @@ needed costs nothing but a reference comparison. Each entry's own docblock says 
 deleting it (typically: this count reads zero across a full release, meaning every client now sets
 the value itself); retiring one is removing its entry from the list and nothing else.
 
+The `userCliVersion` table is the second half of that answer. A zero count tells you no arriving
+message needed the correction; `userCliVersion` tells you which CLI versions are still uploading at
+all, so you can say whether everyone has moved past the version that needed the transformer, rather
+than only that nobody happened to trip it lately. The sync page reads the same table, so
+`/sync-status` answers it without a query.
+
 Rows already stored before a fix ships need a separate migration — a transformer only ever sees a
 message once, on the way in.
 

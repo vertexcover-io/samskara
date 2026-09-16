@@ -1,6 +1,6 @@
-import { and, asc, eq, isNotNull, or, sql } from "drizzle-orm"
+import { and, asc, desc, eq, isNotNull, or, sql } from "drizzle-orm"
 import type { Db } from "../db/client.js"
-import { projects, users } from "../db/schema.js"
+import { projects, userCliVersion, users } from "../db/schema.js"
 import { memberOfProject, visibleToUser } from "./projects.repo.js"
 
 export type SyncStatusRow = {
@@ -13,6 +13,8 @@ export type SyncStatusRow = {
   readonly projectSlug: string | null
   readonly sessionCount: number
   readonly lastSyncedAt: string | null
+  readonly cliVersion: string | null
+  readonly cliVersionSince: string | null
 }
 
 const pairSessions = sql`"sessions" where "sessions"."projectId" = "projects"."id" and "sessions"."userId" = "users"."id"`
@@ -22,12 +24,35 @@ const sessionCount = sql<number>`(select count(*)::int from ${pairSessions})`
 const lastSyncedAt = sql<string | null>`(select max("sessions"."updatedAt") from ${pairSessions})`
 
 /**
+ * One row per person: the version they most recently uploaded from, and the first time they were
+ * seen on it. `distinct on` picks the latest row per user; the window runs before it, so the
+ * surviving row already carries the earliest sighting of its own version across every project.
+ */
+const currentCliVersion = (db: Db) =>
+  db.$with("currentCliVersion").as(
+    db
+      .selectDistinctOn([userCliVersion.userId], {
+        userId: userCliVersion.userId,
+        cliVersion: userCliVersion.cliVersion,
+        since:
+          sql<string>`min(${userCliVersion.createdAt}) over (partition by ${userCliVersion.userId}, ${userCliVersion.cliVersion})`.as(
+            "since",
+          ),
+      })
+      .from(userCliVersion)
+      .orderBy(userCliVersion.userId, desc(userCliVersion.updatedAt)),
+  )
+
+/**
  * Scoped to the viewer: a row exists only where the viewer may read the project and the listed
  * user belongs to it. The viewer keeps their own row even with no project, so a first-time
  * account sees itself rather than an empty page.
  */
-export const listSyncStatus = (db: Db, viewerId: string): Promise<ReadonlyArray<SyncStatusRow>> =>
-  db
+export const listSyncStatus = (db: Db, viewerId: string): Promise<ReadonlyArray<SyncStatusRow>> => {
+  const current = currentCliVersion(db)
+
+  return db
+    .with(current)
     .select({
       userId: users.id,
       githubLogin: users.githubLogin,
@@ -38,8 +63,12 @@ export const listSyncStatus = (db: Db, viewerId: string): Promise<ReadonlyArray<
       projectSlug: projects.slug,
       sessionCount,
       lastSyncedAt,
+      cliVersion: current.cliVersion,
+      cliVersionSince: current.since,
     })
     .from(users)
     .leftJoin(projects, and(memberOfProject(db, users.id), visibleToUser(db, viewerId)))
+    .leftJoin(current, eq(current.userId, users.id))
     .where(or(eq(users.id, viewerId), isNotNull(projects.id)))
     .orderBy(sql`${lastSyncedAt} desc nulls last`, asc(users.githubLogin), asc(projects.name))
+}

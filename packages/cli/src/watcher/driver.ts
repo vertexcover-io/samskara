@@ -16,6 +16,7 @@ import { readCheckpoints, writeCheckpoints } from "@samskara/core"
 import type pino from "pino"
 import { mapWithLimit } from "../concurrency.js"
 import { persistedApiUrl } from "../config/server-scope.js"
+import { cliVersion } from "../version.js"
 import { collectArtifacts } from "./artifact-extract.js"
 import { type ArtifactQueueEntry, enqueue } from "./artifact-queue.js"
 import { shouldCaptureArtifacts } from "./containment.js"
@@ -122,7 +123,7 @@ const payloadFor = (
   } = track
   const events = gitEvents.length === 0 ? {} : { gitEvents }
   if (payload.type === "subagent") return { ...payload, records, ...events }
-  return { ...payload, records, ...origin, ...events }
+  return { ...payload, records, ...origin, ...events, cliVersion }
 }
 
 // One resolver for the daemon's whole life, so its cwd cache outlives a cycle.

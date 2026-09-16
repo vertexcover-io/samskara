@@ -19,6 +19,9 @@ const serialize = (row: SyncStatusRow) => ({
   projectSlug: row.projectSlug,
   sessionCount: row.sessionCount,
   lastSyncedAt: row.lastSyncedAt === null ? null : new Date(row.lastSyncedAt).toISOString(),
+  cliVersion: row.cliVersion,
+  cliVersionSince:
+    row.cliVersionSince === null ? null : new Date(row.cliVersionSince).toISOString(),
 })
 
 export const syncStatusRoutes = ({ db, env }: Deps) =>

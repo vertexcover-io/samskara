@@ -16,6 +16,7 @@ import {
   tokenUsage,
   toolCall,
   toolResult,
+  userCliVersion,
   userOrgs,
   users,
 } from "../db/schema.js"
@@ -71,7 +72,10 @@ const recordsFrom = (items: ReadonlyArray<TestMessage>): ReadonlyArray<ParsedRec
 }
 
 type SessionOrigin = { readonly startCwd?: string; readonly startCommit?: string }
-type MainPayloadOptions = SessionOrigin & { readonly source?: IngestPayload["source"] }
+type MainPayloadOptions = SessionOrigin & {
+  readonly source?: IngestPayload["source"]
+  readonly cliVersion?: string
+}
 
 const mainPayload = (
   sessionId: string,
@@ -1294,5 +1298,141 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
         ?.source
     expect(await sourceOf(opencode)).toBe("opencode")
     expect(await sourceOf(legacy)).toBe("claude_code")
+  })
+
+  const cliVersionRows = (projectId: string) =>
+    db
+      .select()
+      .from(userCliVersion)
+      .where(and(eq(userCliVersion.userId, userId), eq(userCliVersion.projectId, projectId)))
+
+  const projectIdOf = async (sessionId: string) =>
+    (
+      await db
+        .select({ projectId: sessions.projectId })
+        .from(sessions)
+        .where(eq(sessions.id, sessionId))
+    )[0]?.projectId ?? ""
+
+  test("SC34: an upload carrying cliVersion 0.4.2 records it in the version table", async () => {
+    const sessionId = "sess-cli-version-new"
+    await ingest(
+      ctx,
+      mainPayload(
+        sessionId,
+        [customMessage({ sessionId, lineUuid: "0191d942-3ba5-7dba-9a7d-0000000000e1" })],
+        { cliVersion: "0.4.2" },
+        { name: "cliver", slug: "acme-cliver-new" },
+      ),
+    )
+
+    const rows = await cliVersionRows(await projectIdOf(sessionId))
+    expect(rows.map((row) => row.cliVersion)).toEqual(["0.4.2"])
+  })
+
+  test("SC35: re-uploading the same version moves last-seen and leaves first-seen alone", async () => {
+    const sessionId = "sess-cli-version-resend"
+    const upload = (lineUuid: string) =>
+      ingest(
+        ctx,
+        mainPayload(
+          sessionId,
+          [customMessage({ sessionId, lineUuid })],
+          { cliVersion: "0.4.2" },
+          { name: "cliver", slug: "acme-cliver-resend" },
+        ),
+      )
+
+    await upload("0191d942-3ba5-7dba-9a7d-0000000000e2")
+    const projectId = await projectIdOf(sessionId)
+    const [first] = await cliVersionRows(projectId)
+    if (!first) throw new Error("no userCliVersion row after the first upload")
+
+    await upload("0191d942-3ba5-7dba-9a7d-0000000000e3")
+
+    const rows = await cliVersionRows(projectId)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.createdAt).toEqual(first.createdAt)
+    expect(rows[0]?.updatedAt.getTime()).toBeGreaterThan(first.updatedAt.getTime())
+  })
+
+  test("SC36: uploading 0.5.0 after 0.4.2 adds a row rather than replacing the old one", async () => {
+    const sessionId = "sess-cli-version-upgrade"
+    const upload = (lineUuid: string, version: string) =>
+      ingest(
+        ctx,
+        mainPayload(
+          sessionId,
+          [customMessage({ sessionId, lineUuid })],
+          { cliVersion: version },
+          { name: "cliver", slug: "acme-cliver-upgrade" },
+        ),
+      )
+
+    await upload("0191d942-3ba5-7dba-9a7d-0000000000e4", "0.4.2")
+    const projectId = await projectIdOf(sessionId)
+    const [old] = await cliVersionRows(projectId)
+    if (!old) throw new Error("no userCliVersion row after the first upload")
+
+    await upload("0191d942-3ba5-7dba-9a7d-0000000000e5", "0.5.0")
+
+    const byVersion = new Map(
+      (await cliVersionRows(projectId)).map((row) => [row.cliVersion, row] as const),
+    )
+    expect([...byVersion.keys()].sort()).toEqual(["0.4.2", "0.5.0"])
+    expect(byVersion.get("0.4.2")).toEqual(old)
+    expect(byVersion.get("0.5.0")?.createdAt.getTime()).toBeGreaterThan(old.createdAt.getTime())
+  })
+
+  test("SC37 (regression): a later upload sending no version keeps every message, the recorded version and the row count", async () => {
+    const sessionId = "sess-cli-version-dropped"
+    const project = { name: "cliver", slug: "acme-cliver-dropped" }
+    await ingest(
+      ctx,
+      mainPayload(
+        sessionId,
+        [customMessage({ sessionId, lineUuid: "0191d942-3ba5-7dba-9a7d-0000000000e6" })],
+        { cliVersion: "0.4.2" },
+        project,
+      ),
+    )
+    expect(
+      await ingest(
+        ctx,
+        mainPayload(
+          sessionId,
+          [
+            customMessage({
+              sessionId,
+              lineUuid: "0191d942-3ba5-7dba-9a7d-0000000000e7",
+              lineNumber: 2,
+            }),
+          ],
+          {},
+          project,
+        ),
+      ),
+    ).toEqual({ ingested: 1, deduped: 0 })
+
+    const kept = await cliVersionRows(await projectIdOf(sessionId))
+    expect(kept.map((row) => row.cliVersion)).toEqual(["0.4.2"])
+    expect(await db.select().from(messages).where(eq(messages.sessionId, sessionId))).toHaveLength(
+      2,
+    )
+  })
+
+  test("SC37 (regression): a session only ever uploaded without a version records no version at all", async () => {
+    const sessionId = "sess-cli-version-never"
+    await ingest(
+      ctx,
+      mainPayload(
+        sessionId,
+        [customMessage({ sessionId, lineUuid: "0191d942-3ba5-7dba-9a7d-0000000000e8" })],
+        {},
+        { name: "cliver", slug: "acme-cliver-never" },
+      ),
+    )
+
+    expect(await cliVersionRows(await projectIdOf(sessionId))).toHaveLength(0)
   })
 })
