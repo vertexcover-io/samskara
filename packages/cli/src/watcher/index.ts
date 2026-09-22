@@ -50,7 +50,7 @@ const statOf = async (
   return { size, mtimeMs }
 }
 
-const nodeFs: FileSystem = {
+export const nodeFs: FileSystem = {
   readFile: (path) => readFile(path, "utf8"),
   writeFile: (path, data) => writeFile(path, data, "utf8"),
   rename,

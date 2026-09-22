@@ -13,6 +13,7 @@ import { logsCommand } from "./commands/logs.js"
 import { reassignCommand } from "./commands/reassign.js"
 import { replayCommand } from "./commands/replay.js"
 import { restartCommand } from "./commands/restart.js"
+import { type ReviewSessionOptions, reviewSessionCommand } from "./commands/review-session.js"
 import { type SearchOptions, searchCommand } from "./commands/search.js"
 import { statusCommand } from "./commands/status.js"
 import { type TagsAction, tagsCommand } from "./commands/tags.js"
@@ -92,6 +93,25 @@ program
       },
       stopWatcher: stopWatcherDaemon,
       startWatcher: startWatcherDaemon,
+    })
+  })
+
+program
+  .command("review-session <sessionId|path>")
+  .description(
+    "Review a locally captured Claude Code session with a coding harness, entirely on this machine",
+  )
+  .option("--harness <name>", "reviewer CLI: opencode or claude (default: opencode)")
+  .option("--model <name>", "model override (default: the harness's own)")
+  .option("--timeout <ms>", "harness wall clock in milliseconds (default: 600000)")
+  .option("--out <dir>", "where results land (default: ./review-out/SESSION_ID)")
+  .option("--keep", "keep the scratch workspace")
+  .option("--dry-run", "stage the workspace and stop, without calling a model")
+  .option("--no-sandbox-home", "claude only: hand the reviewer the real HOME (keychain auth)")
+  .action(async (target: string, flags: ReviewSessionOptions) => {
+    process.exitCode = await reviewSessionCommand(target, {
+      ...flags,
+      verbose: program.opts().verbose === true,
     })
   })
 
