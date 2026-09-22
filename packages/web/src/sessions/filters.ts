@@ -11,7 +11,7 @@ export const RANGE_LABEL: Readonly<Record<Range, string>> = {
   custom: "Custom range…",
 }
 
-export const SORTS = ["relevance", "recent", "oldest", "tokens", "project"] as const
+export const SORTS = ["relevance", "recent", "oldest", "project"] as const
 
 export type Sort = (typeof SORTS)[number]
 
@@ -19,7 +19,6 @@ export const SORT_LABEL: Readonly<Record<Sort, string>> = {
   relevance: "Relevance",
   recent: "Most recent",
   oldest: "Oldest first",
-  tokens: "Most tokens",
   project: "Project name",
 }
 

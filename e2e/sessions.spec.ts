@@ -304,12 +304,24 @@ test("SC70, SC71: repository, branch, PR number, and full or unique-prefix commi
   await expectOnlySession(page, "Structured commit association")
 })
 
-test("SC72: keyword and structured filters combine with AND while authorized vocabulary ignores active filters", async ({
+test("SC7, SC72: keyword and structured filters combine with AND while authorized vocabulary ignores active filters, fetched once per page load", async ({
   authedPage: page,
 }) => {
+  // The dropdown vocabulary is fetched once on mount, not on every filter change: a second
+  // request here would mean the 935ms repositories/branches scan is back on the interaction path.
+  const filtersRequests: Array<string> = []
+  page.on("request", (request) => {
+    if (request.url().includes("/api/sessions/filters")) filtersRequests.push(request.url())
+  })
+
   await page.goto("/sessions")
   await search(page, "combined-needle")
   await expectOnlySession(page, "Structured message association")
+
+  // Captured after the initial mount, not before: React's StrictMode (dev only) double-invokes
+  // a fresh effect, so the mount itself may already show two requests. What must not happen is
+  // growth beyond that baseline as the filters below are applied.
+  const afterInitialMount = filtersRequests.length
 
   await openMenu(page, "Project")
   await expect(page.getByRole("option", { name: "Samskara" })).toBeAttached()
@@ -345,6 +357,8 @@ test("SC72: keyword and structured filters combine with AND while authorized voc
   await page.getByRole("textbox", { name: "PR number" }).fill("")
   await page.getByRole("textbox", { name: "PR number" }).press("Enter")
   await expectOnlySession(page, "Structured message association")
+
+  expect(filtersRequests).toHaveLength(afterInitialMount)
 })
 
 test("relevance evidence, pagination, clear-search reset, reload, and browser history preserve URL state", async ({

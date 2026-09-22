@@ -51,6 +51,7 @@ import {
 } from "../session/records.js"
 import { type Tab, type TabId, Tabs } from "../session/Tabs.js"
 import { ToolCallsView } from "../session/ToolCallsView.js"
+import { useFilterOptions } from "../sessions/useFilterOptions.js"
 import { LoadingShell } from "../shell/LoadingShell.js"
 import { absoluteTime } from "../time.js"
 
@@ -96,20 +97,7 @@ const TagEditor = ({
   onSaved: (session: SessionFacts) => void
 }) => {
   const [error, setError] = useState<string | null>(null)
-  const [options, setOptions] = useState<ReadonlyArray<string>>([])
-
-  useEffect(() => {
-    const controller = new AbortController()
-    request(() =>
-      client.api.sessions.$get(
-        { query: { project: session.projectId, limit: "1" } },
-        { init: { signal: controller.signal } },
-      ),
-    ).then((result) => {
-      if (!controller.signal.aborted && result.ok) setOptions(result.data.filterOptions.tags)
-    })
-    return () => controller.abort()
-  }, [session.projectId])
+  const options = useFilterOptions().tags
 
   const apply = (json: { add?: string[]; remove?: string[] }): void => {
     setError(null)

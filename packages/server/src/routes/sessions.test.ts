@@ -54,10 +54,9 @@ type SessionSummary = {
   readonly projectName: string
   readonly projectSlug: string
   readonly userLogin: string
-  readonly repo: SessionRepo | null
-  readonly durationMs: number | null
-  readonly tokensTotal: number
+  readonly messageCount: number
   readonly status: string
+  readonly startedAt: string | null
   readonly lastActiveAt: string
   readonly tags: ReadonlyArray<string>
   readonly hasAiReview: boolean
@@ -148,6 +147,33 @@ const listAs = async (
 
 const idsOf = (rows: ReadonlyArray<SessionSummary>): ReadonlyArray<string> => rows.map((r) => r.id)
 
+type FilterOptionsBody = {
+  readonly projects: ReadonlyArray<{ value: string; label: string }>
+  readonly authors: ReadonlyArray<{ value: string; label: string }>
+  readonly repositories: ReadonlyArray<{
+    value: string
+    label: string
+    host: string
+    owner: string
+    repoName: string
+  }>
+  readonly branches: ReadonlyArray<string>
+  readonly tags: ReadonlyArray<string>
+}
+
+const filtersRequest = async (db: Db, userId: string): Promise<Response> => {
+  const token = await signToken(env, { sub: userId, aud: "web" })
+  return buildApp(db, env).request("/api/sessions/filters", {
+    headers: { cookie: `session=${token}` },
+  })
+}
+
+const filtersAs = async (db: Db, userId: string): Promise<FilterOptionsBody> => {
+  const res = await filtersRequest(db, userId)
+  expect(res.status).toBe(200)
+  return (await res.json()) as FilterOptionsBody
+}
+
 /** Sessions whose row-touch time and message time disagree, so activity and updatedAt can be told apart. */
 const seedSpoken = async (
   db: Db,
@@ -236,13 +262,12 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     expect(sortedIdsOf(await listAs(db, owner, "?tags=a"))).toEqual(["st5-a", "st5-b"])
     expect(idsOf(await listAs(db, owner, "?tags=absent"))).toEqual([])
 
-    const body = (await (await request(db, owner, "")).json()) as {
-      filterOptions: { tags: ReadonlyArray<string> }
-      sessions: ReadonlyArray<SessionSummary>
-    }
-    expect(body.filterOptions.tags).toEqual(["a", "b", "c", "d"])
-    expect(body.sessions.find((row) => row.id === "st5-a")?.tags).toEqual(["a", "b", "c"])
-    expect(body.sessions.find((row) => row.id === "st5-c")?.tags).toEqual([])
+    const rows = await listAs(db, owner)
+    expect(rows.find((row) => row.id === "st5-a")?.tags).toEqual(["a", "b", "c"])
+    expect(rows.find((row) => row.id === "st5-c")?.tags).toEqual([])
+
+    const filters = await filtersAs(db, owner)
+    expect(filters.tags).toEqual(["a", "b", "c", "d"])
   })
 
   test("ST5: an empty or malformed tags filter is refused rather than ignored", async () => {
@@ -385,7 +410,7 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     expect(idsOf(await listAs(db, owner))).toEqual(["newest", "middle", "oldest"])
   })
 
-  test("SA1: the list orders by message activity, not by when the session row was last touched", async () => {
+  test("SA1, SC17: the list orders by message activity, not by when the session row was last touched - oldest is that order exactly reversed", async () => {
     const owner = await seedUser(db, 1290, "activity-order-owner")
     const projectId = await projectsRepo.upsert(db, {
       identity: { name: "Activity Order", slug: "activity-order" },
@@ -398,6 +423,8 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     ])
 
     expect(idsOf(await listAs(db, owner))).toEqual(["chatty", "middle", "quiet"])
+    expect(idsOf(await listAs(db, owner, "?sort=recent"))).toEqual(["chatty", "middle", "quiet"])
+    expect(idsOf(await listAs(db, owner, "?sort=oldest"))).toEqual(["quiet", "middle", "chatty"])
   })
 
   test("SA4: the date filter reads activity, so a stale row that spoke inside the window is kept and a freshly touched one that did not is dropped", async () => {
@@ -415,7 +442,7 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     expect(idsOf(rows)).toEqual(["spoke-inside"])
   })
 
-  test("SA3, SA6: one timestamped message reports a zero duration; no messages reports a null duration and lists by updatedAt", async () => {
+  test("SA3, SA6: one message reports its own start and a count of one; no messages reports a null start and lists by updatedAt", async () => {
     const owner = await seedUser(db, 1294, "duration-edge-owner")
     const projectId = await projectsRepo.upsert(db, {
       identity: { name: "Duration Edge", slug: "duration-edge" },
@@ -428,8 +455,10 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
 
     const byId = new Map((await listAs(db, owner)).map((row) => [row.id, row]))
 
-    expect(byId.get("one-message")?.durationMs).toBe(0)
-    expect(byId.get("no-messages")?.durationMs).toBeNull()
+    expect(byId.get("one-message")?.messageCount).toBe(1)
+    expect(byId.get("one-message")?.startedAt).toBe(new Date("2026-02-07T09:00:00Z").toISOString())
+    expect(byId.get("no-messages")?.messageCount).toBe(0)
+    expect(byId.get("no-messages")?.startedAt).toBeNull()
     expect(byId.get("no-messages")?.lastActiveAt).toBe(
       new Date("2026-02-07T10:00:00Z").toISOString(),
     )
@@ -483,13 +512,11 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     const body = (await response.json()) as {
       sessions: ReadonlyArray<SessionSummary & { match?: { sourceKind: string } }>
       pagination: { page: number; limit: number; total: number; totalPages: number }
-      filterOptions: { projects: ReadonlyArray<{ value: string }> }
     }
     expect(body.sessions).toHaveLength(1)
     expect(body.sessions[0]?.id).toBe("keyword-one")
     expect(body.sessions[0]?.match?.sourceKind).toBe("session")
     expect(body.pagination).toEqual({ page: 2, limit: 1, total: 2, totalPages: 2 })
-    expect(body.filterOptions.projects.map((option) => option.value)).toEqual([projectId])
 
     for (const query of [
       "?pr=01",
@@ -662,7 +689,7 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     expect(await res.json()).toEqual({ error: "invalidAiReview" })
   })
 
-  test("S20, SC29: a summary carries the project id, name, login, summed tokens, and a duration spanning the message timestamps", async () => {
+  test("SC13: a summary carries its message count, status and start, and nothing it no longer shows", async () => {
     const owner = await seedUser(db, 1301, "shape-owner")
     const projectId = await projectsRepo.upsert(db, {
       identity: { name: "Shape", slug: "shape" },
@@ -679,13 +706,11 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
       sessionId: "shaped",
       lineNumber: 1,
       timestamp: new Date("2026-02-05T10:00:00Z"),
-      tokens: 100,
     })
     await seedMessage(db, {
       sessionId: "shaped",
       lineNumber: 2,
       timestamp: new Date("2026-02-05T11:30:00Z"),
-      tokens: 250,
     })
 
     const [summary] = await listAs(db, owner)
@@ -697,60 +722,19 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
       projectName: "Shape",
       projectSlug: "shape",
       userLogin: "shape-owner",
-      repo: null,
-      durationMs: 5_400_000,
-      tokensTotal: 350,
+      messageCount: 2,
       status: "complete",
+      startedAt: new Date("2026-02-05T10:00:00Z").toISOString(),
       lastActiveAt: new Date("2026-02-05T11:30:00Z").toISOString(),
       tags: [],
       hasAiReview: false,
     })
+    expect(summary).not.toHaveProperty("repo")
+    expect(summary).not.toHaveProperty("durationMs")
+    expect(summary).not.toHaveProperty("tokensTotal")
   })
 
-  test("S20: a summary names the repo most of its messages ran in - a session spanning two repos reports the dominant one, not both", async () => {
-    const owner = await seedUser(db, 1501, "repo-owner")
-    const projectId = await projectsRepo.upsert(db, {
-      identity: { name: "Repo", slug: "repo" },
-      ownerId: owner,
-    })
-    const main = await reposRepo.upsertByIdentity(
-      db,
-      { host: "github.com", owner: "acme", repoName: "samskara" },
-      { kind: "user", userId: owner },
-    )
-    const vendored = await reposRepo.upsertByIdentity(
-      db,
-      { host: "github.com", owner: "acme", repoName: "vendor" },
-      { kind: "user", userId: owner },
-    )
-    await seedSession(db, {
-      id: "repo-session",
-      userId: owner,
-      projectId,
-      title: "Repo session",
-      updatedAt: new Date("2026-02-06T12:00:00Z"),
-    })
-    await seedMessage(db, {
-      sessionId: "repo-session",
-      lineNumber: 1,
-      timestamp: new Date("2026-02-06T10:00:00Z"),
-      repoId: vendored,
-    })
-    for (const lineNumber of [2, 3]) {
-      await seedMessage(db, {
-        sessionId: "repo-session",
-        lineNumber,
-        timestamp: new Date("2026-02-06T11:00:00Z"),
-        repoId: main,
-      })
-    }
-
-    const [summary] = await listAs(db, owner)
-
-    expect(summary?.repo).toEqual({ host: "github.com", owner: "acme", repoName: "samskara" })
-  })
-
-  test("S20: a session with no messages reports a null duration and zero tokens with status empty - not a zero duration", async () => {
+  test("SC14: a session with no messages reports zero, empty and a null start", async () => {
     const owner = await seedUser(db, 1401, "bare-owner")
     const projectId = await projectsRepo.upsert(db, {
       identity: { name: "Bare", slug: "bare" },
@@ -766,9 +750,73 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
 
     const [summary] = await listAs(db, owner)
 
-    expect(summary?.durationMs).toBeNull()
-    expect(summary?.tokensTotal).toBe(0)
+    expect(summary?.messageCount).toBe(0)
     expect(summary?.status).toBe("empty")
+    expect(summary?.startedAt).toBeNull()
+  })
+
+  test("SC15: sort=tokens is refused rather than silently ignored", async () => {
+    const owner = await seedUser(db, 1402, "sort-refusal-owner")
+
+    const res = await request(db, owner, "?sort=tokens")
+
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: "invalidSort" })
+  })
+
+  test("SC16 (regression): every surviving filter still narrows the list", async () => {
+    const owner = await seedUser(db, 1403, "sc16-owner")
+    const other = await seedUser(db, 1404, "sc16-other")
+    const projectA = await projectsRepo.upsert(db, {
+      identity: { name: "SC16 Alpha", slug: "sc16-alpha" },
+      ownerId: owner,
+    })
+    const projectB = await projectsRepo.upsert(db, {
+      identity: { name: "SC16 Beta", slug: "sc16-beta" },
+      ownerId: owner,
+    })
+    const repoA = await reposRepo.upsertByIdentity(
+      db,
+      { host: "github.com", owner: "acme", repoName: "sc16-repo" },
+      { kind: "user", userId: owner },
+    )
+    await seedSession(db, {
+      id: "sc16-a",
+      userId: owner,
+      projectId: projectA,
+      title: "SC16 needle",
+      updatedAt: new Date("2026-02-01T00:00:00Z"),
+    })
+    await seedMessage(db, {
+      sessionId: "sc16-a",
+      lineNumber: 1,
+      timestamp: new Date("2026-02-01T00:00:00Z"),
+      repoId: repoA,
+    })
+    await db
+      .update(messages)
+      .set({ gitBranch: "sc16-branch" })
+      .where(eq(messages.sessionId, "sc16-a"))
+    await db
+      .update(sessions)
+      .set({ tags: ["sc16"] })
+      .where(eq(sessions.id, "sc16-a"))
+
+    await seedSession(db, {
+      id: "sc16-b",
+      userId: other,
+      projectId: projectB,
+      title: "B",
+      updatedAt: new Date("2026-02-02T00:00:00Z"),
+    })
+
+    expect(sortedIdsOf(await listAs(db, owner))).toEqual(["sc16-a", "sc16-b"])
+    expect(idsOf(await listAs(db, owner, `?project=${projectA}`))).toEqual(["sc16-a"])
+    expect(idsOf(await listAs(db, owner, "?user=sc16-other"))).toEqual(["sc16-b"])
+    expect(idsOf(await listAs(db, owner, `?repo=${repoA}`))).toEqual(["sc16-a"])
+    expect(idsOf(await listAs(db, owner, "?branch=sc16-branch"))).toEqual(["sc16-a"])
+    expect(idsOf(await listAs(db, owner, "?tags=sc16"))).toEqual(["sc16-a"])
+    expect(idsOf(await listAs(db, owner, "?q=needle"))).toEqual(["sc16-a"])
   })
 
   test("S22, SC28: filtering by a project owned by someone else with no grant is 404 projectNotFound - not a 200 with an empty list", async () => {
@@ -872,11 +920,8 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
 
     expect(idsOf(await listAs(db, owner, `?project=${projectA}`))).toEqual(["sc27-a"])
 
-    const res = await request(db, owner, "")
-    const body = (await res.json()) as {
-      filterOptions: { projects: ReadonlyArray<{ value: string; label: string }> }
-    }
-    expect(body.filterOptions.projects).toEqual([
+    const filters = await filtersAs(db, owner)
+    expect(filters.projects).toEqual([
       { value: projectA, label: "Alpha" },
       { value: projectB, label: "Beta" },
     ])
@@ -914,15 +959,266 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
       updatedAt: new Date(),
     })
 
-    const res = await request(db, owner, "")
-    const body = (await res.json()) as {
-      filterOptions: { projects: ReadonlyArray<{ value: string; label: string }> }
-    }
-    const widgetOptions = body.filterOptions.projects.filter((option) => option.label === "widget")
+    const filters = await filtersAs(db, owner)
+    const widgetOptions = filters.projects.filter((option) => option.label === "widget")
     expect(widgetOptions.map((option) => option.value).sort()).toEqual([personal, orgOwned].sort())
 
     expect(idsOf(await listAs(db, owner, `?project=${personal}`))).toEqual(["sc30-personal"])
     expect(idsOf(await listAs(db, owner, `?project=${orgOwned}`))).toEqual(["sc30-org"])
+  })
+
+  test("SC4: the list response no longer carries filterOptions", async () => {
+    const owner = await seedUser(db, 1930, "sc4-filters-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "SC4", slug: "sc4-filters" },
+      ownerId: owner,
+    })
+    await seedSession(db, {
+      id: "sc4-filters-session",
+      userId: owner,
+      projectId,
+      title: "SC4",
+      updatedAt: new Date(),
+    })
+
+    const res = await request(db, owner, "")
+
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as Record<string, unknown>
+    expect(Object.keys(body).sort()).toEqual(["pagination", "sessions"])
+  })
+})
+
+describe.skipIf(!dockerAvailable())("GET /api/sessions/filters", () => {
+  let teardown: () => Promise<void>
+  let db: Db
+
+  beforeAll(async () => {
+    const started = await startTestDb()
+    db = started.db
+    teardown = started.teardown
+  }, 120_000)
+
+  afterAll(async () => {
+    await teardown?.()
+  })
+
+  beforeEach(async () => {
+    await db.delete(sessions)
+    await db.delete(userProjectGrant)
+    await db.delete(projects)
+    await db.delete(userOrgs)
+    await db.delete(orgs)
+    await db.delete(users)
+  })
+
+  test("SC1: the filters endpoint returns the five option lists for what the caller can see", async () => {
+    const owner = await seedUser(db, 4001, "sc1-owner")
+    const projectA = await projectsRepo.upsert(db, {
+      identity: { name: "SC1 Alpha", slug: "sc1-alpha" },
+      ownerId: owner,
+    })
+    const projectB = await projectsRepo.upsert(db, {
+      identity: { name: "SC1 Beta", slug: "sc1-beta" },
+      ownerId: owner,
+    })
+    const repoOne = await reposRepo.upsertByIdentity(
+      db,
+      { host: "github.com", owner: "acme", repoName: "one" },
+      { kind: "user", userId: owner },
+    )
+    const repoTwo = await reposRepo.upsertByIdentity(
+      db,
+      { host: "github.com", owner: "acme", repoName: "two" },
+      { kind: "user", userId: owner },
+    )
+    await seedSession(db, {
+      id: "sc1-a",
+      userId: owner,
+      projectId: projectA,
+      title: "A",
+      updatedAt: new Date(),
+    })
+    await seedSession(db, {
+      id: "sc1-b",
+      userId: owner,
+      projectId: projectB,
+      title: "B",
+      updatedAt: new Date(),
+    })
+    await seedMessage(db, {
+      sessionId: "sc1-a",
+      lineNumber: 1,
+      timestamp: new Date(),
+      repoId: repoOne,
+    })
+    await seedMessage(db, {
+      sessionId: "sc1-b",
+      lineNumber: 1,
+      timestamp: new Date(),
+      repoId: repoTwo,
+    })
+    await db
+      .update(sessions)
+      .set({ tags: ["alpha", "beta"] })
+      .where(eq(sessions.id, "sc1-a"))
+    await db.update(messages).set({ gitBranch: "main" }).where(eq(messages.sessionId, "sc1-a"))
+    await db.update(messages).set({ gitBranch: "dev" }).where(eq(messages.sessionId, "sc1-b"))
+
+    const body = await filtersAs(db, owner)
+
+    expect(body.projects.map((option) => option.value).sort()).toEqual([projectA, projectB].sort())
+    expect(body.authors.map((option) => option.value)).toEqual(["sc1-owner"])
+    expect(body.repositories).toHaveLength(2)
+    for (const repo of body.repositories) {
+      expect(repo).toMatchObject({ host: "github.com", owner: "acme" })
+      expect(["one", "two"]).toContain(repo.repoName)
+    }
+    expect(body.branches).toEqual(["dev", "main"])
+    expect(body.tags).toEqual(["alpha", "beta"])
+  })
+
+  test("SC2: a session the caller cannot see contributes nothing to the options", async () => {
+    const owner = await seedUser(db, 4101, "sc2-owner")
+    const stranger = await seedUser(db, 4102, "sc2-stranger")
+    const visibleProject = await projectsRepo.upsert(db, {
+      identity: { name: "SC2 Visible", slug: "sc2-visible" },
+      ownerId: owner,
+    })
+    const hiddenProject = await projectsRepo.upsert(db, {
+      identity: { name: "SC2 Hidden", slug: "sc2-hidden" },
+      ownerId: stranger,
+    })
+    const visibleRepo = await reposRepo.upsertByIdentity(
+      db,
+      { host: "github.com", owner: "acme", repoName: "visible" },
+      { kind: "user", userId: owner },
+    )
+    const hiddenRepo = await reposRepo.upsertByIdentity(
+      db,
+      { host: "github.com", owner: "acme", repoName: "hidden" },
+      { kind: "user", userId: stranger },
+    )
+    await seedSession(db, {
+      id: "sc2-visible-session",
+      userId: owner,
+      projectId: visibleProject,
+      title: "V",
+      updatedAt: new Date(),
+    })
+    await seedSession(db, {
+      id: "sc2-hidden-session",
+      userId: stranger,
+      projectId: hiddenProject,
+      title: "H",
+      updatedAt: new Date(),
+    })
+    await seedMessage(db, {
+      sessionId: "sc2-visible-session",
+      lineNumber: 1,
+      timestamp: new Date(),
+      repoId: visibleRepo,
+    })
+    await seedMessage(db, {
+      sessionId: "sc2-hidden-session",
+      lineNumber: 1,
+      timestamp: new Date(),
+      repoId: hiddenRepo,
+    })
+    await db
+      .update(messages)
+      .set({ gitBranch: "hidden-branch" })
+      .where(eq(messages.sessionId, "sc2-hidden-session"))
+    await db
+      .update(sessions)
+      .set({ tags: ["hidden-tag"] })
+      .where(eq(sessions.id, "sc2-hidden-session"))
+
+    const body = await filtersAs(db, owner)
+
+    expect(body.repositories.map((repo) => repo.repoName)).not.toContain("hidden")
+    expect(body.branches).not.toContain("hidden-branch")
+    expect(body.tags).not.toContain("hidden-tag")
+  })
+
+  test("SC3: a repo reachable only through a commit or a pull request is still offered", async () => {
+    const owner = await seedUser(db, 4201, "sc3-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "SC3", slug: "sc3" },
+      ownerId: owner,
+    })
+    const commitOnlyRepo = await reposRepo.upsertByIdentity(
+      db,
+      { host: "github.com", owner: "acme", repoName: "commit-only" },
+      { kind: "user", userId: owner },
+    )
+    const prOnlyRepo = await reposRepo.upsertByIdentity(
+      db,
+      { host: "github.com", owner: "acme", repoName: "pr-only" },
+      { kind: "user", userId: owner },
+    )
+    await seedSession(db, {
+      id: "sc3-commit-session",
+      userId: owner,
+      projectId,
+      title: "C",
+      updatedAt: new Date(),
+    })
+    await seedSession(db, {
+      id: "sc3-pr-session",
+      userId: owner,
+      projectId,
+      title: "P",
+      updatedAt: new Date(),
+    })
+    await db.insert(commits).values({
+      repoId: commitOnlyRepo,
+      sessionId: "sc3-commit-session",
+      sha: "abcdef0123456789",
+    })
+    const [pr] = await db
+      .insert(pullRequests)
+      .values({ repoId: prOnlyRepo, number: 5 })
+      .returning({ id: pullRequests.id })
+    if (!pr) throw new Error("pr not inserted")
+    await db.insert(sessionPullRequests).values({ sessionId: "sc3-pr-session", prId: pr.id })
+
+    const body = await filtersAs(db, owner)
+
+    const repoNames = body.repositories.map((repo) => repo.repoName)
+    expect(repoNames).toContain("commit-only")
+    expect(repoNames).toContain("pr-only")
+    for (const repoName of ["commit-only", "pr-only"]) {
+      const repo = body.repositories.find((candidate) => candidate.repoName === repoName)
+      expect(repo).toMatchObject({ host: "github.com", owner: "acme" })
+    }
+  })
+
+  test("SC5: /filters resolves as its own route rather than as a session id", async () => {
+    const owner = await seedUser(db, 4301, "sc5-owner")
+
+    const res = await filtersRequest(db, owner)
+
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as Record<string, unknown>
+    expect(body).not.toEqual({ error: "sessionNotFound" })
+    expect(Object.keys(body).sort()).toEqual(
+      ["authors", "branches", "projects", "repositories", "tags"].sort(),
+    )
+  })
+
+  test("SC6: the filters endpoint refuses an unauthenticated read and accepts a cli token", async () => {
+    const owner = await seedUser(db, 4401, "sc6-owner")
+    const app = buildApp(db, env)
+
+    const anonymous = await app.request("/api/sessions/filters")
+    expect(anonymous.status).toBe(401)
+
+    const cliToken = await signToken(env, { sub: owner, aud: "cli" })
+    const cli = await app.request("/api/sessions/filters", {
+      headers: { authorization: `Bearer ${cliToken}` },
+    })
+    expect(cli.status).toBe(200)
   })
 })
 
@@ -1236,6 +1532,52 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions/:id", () => {
       repoName: "samskara",
     })
     expect(await repoOf("without-repo")).toBeNull()
+  })
+
+  test("S39: the detail names the repo most of a session's messages ran in - a session spanning two repos reports the dominant one, not both", async () => {
+    const owner = await seedUser(db, 2152, "dominant-repo-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Dominant Repo", slug: "dominant-repo" },
+      ownerId: owner,
+    })
+    const main = await reposRepo.upsertByIdentity(
+      db,
+      { host: "github.com", owner: "acme", repoName: "samskara" },
+      { kind: "user", userId: owner },
+    )
+    const vendored = await reposRepo.upsertByIdentity(
+      db,
+      { host: "github.com", owner: "acme", repoName: "vendor" },
+      { kind: "user", userId: owner },
+    )
+    await seedSession(db, {
+      id: "dominant-repo-session",
+      userId: owner,
+      projectId,
+      title: "Dominant repo session",
+      updatedAt: new Date("2026-02-06T12:00:00Z"),
+    })
+    await insertMessage(db, {
+      sessionId: "dominant-repo-session",
+      lineNumber: 1,
+      msgType: "message",
+      timestamp: new Date("2026-02-06T10:00:00Z"),
+      repoId: vendored,
+    })
+    for (const lineNumber of [2, 3]) {
+      await insertMessage(db, {
+        sessionId: "dominant-repo-session",
+        lineNumber,
+        msgType: "message",
+        timestamp: new Date("2026-02-06T11:00:00Z"),
+        repoId: main,
+      })
+    }
+
+    const res = await detailRequest(db, owner, "dominant-repo-session")
+    const body = (await res.json()) as SessionDetailBody
+
+    expect(body.session.repo).toEqual({ host: "github.com", owner: "acme", repoName: "samskara" })
   })
 
   test("SC18, SC20: the detail reports startedAt as the earliest message time and lastActiveAt as the latest - the same lastActiveAt its list row shows", async () => {

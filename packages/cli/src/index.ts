@@ -187,7 +187,7 @@ program
   .option("--from <date>", "start of a custom range, as YYYY-MM-DD")
   .option("--to <date>", "end of a custom range, as YYYY-MM-DD")
   .option("--tz <zone>", "IANA time zone for today and custom ranges")
-  .option("--sort <sort>", "relevance, recent, oldest, tokens or project")
+  .option("--sort <sort>", "relevance, recent, oldest or project")
   .option("--page <number>", "which page of results to show")
   .option("--limit <number>", "results per page, up to 100")
   .option("--here", "take project, repo and branch from the current folder")

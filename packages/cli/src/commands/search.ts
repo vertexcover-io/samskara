@@ -133,15 +133,13 @@ export type SessionRow = {
   readonly title: string | null
   readonly projectName: string
   readonly userLogin: string
-  readonly repo: { readonly owner: string; readonly repoName: string } | null
-  readonly tokensTotal: number
+  readonly messageCount: number
   readonly lastActiveAt: string
 }
 
 const DOT = "·"
 
-const tokens = (total: number): string =>
-  total < 1000 ? `${total} tokens` : `${Math.round(total / 1000)}k tokens`
+const messages = (n: number): string => (n === 1 ? "1 message" : `${n} messages`)
 
 export const sessionUrl = (webBase: string, id: string): string => `${webBase}/sessions/${id}`
 
@@ -152,9 +150,8 @@ const searchUrl = (webBase: string, query: URLSearchParams): string => {
 
 const facts = (row: SessionRow, now: Date): ReadonlyArray<string> => [
   row.projectName,
-  ...(row.repo === null ? [] : [`${row.repo.owner}/${row.repo.repoName}`]),
   row.userLogin,
-  tokens(row.tokensTotal),
+  messages(row.messageCount),
   relativeTime(row.lastActiveAt, now),
 ]
 
@@ -210,19 +207,19 @@ const listingSchema = z.object({
         title: z.string().nullable(),
         projectName: z.string(),
         userLogin: z.string(),
-        repo: z.object({ owner: z.string(), repoName: z.string() }).loose().nullable(),
-        tokensTotal: z.number(),
+        messageCount: z.number(),
         lastActiveAt: z.string(),
       })
       .loose(),
   ),
   pagination: z.object({ total: z.number() }),
-  filterOptions: z.object({
-    projects: z.array(optionSchema),
-    authors: z.array(optionSchema),
-    repositories: z.array(optionSchema.extend({ repoName: z.string() })),
-    branches: z.array(z.string()),
-  }),
+})
+
+const filterOptionsSchema = z.object({
+  projects: z.array(optionSchema),
+  authors: z.array(optionSchema),
+  repositories: z.array(optionSchema.extend({ repoName: z.string() })),
+  branches: z.array(z.string()),
 })
 
 // The server refuses with codes like `invalidPrNumber`. Turn each one into a sentence that
@@ -237,7 +234,7 @@ const REFUSALS: Readonly<Record<string, string>> = {
   invalidCommit: "--commit takes 7 to 40 hex characters of a commit sha.",
   ambiguousCommit: "--commit matches several commits. Give more of it.",
   invalidRange: "--range takes all, hour, today, week, month or custom.",
-  invalidSort: "--sort takes relevance, recent, oldest, tokens or project.",
+  invalidSort: "--sort takes relevance, recent, oldest or project.",
   invalidTimeZone: "--tz takes an IANA time zone, like --tz Asia/Kolkata.",
   invalidPage: "--page takes a whole number from 1 up.",
   invalidLimit: "--limit takes a whole number from 1 to 100.",
@@ -258,36 +255,65 @@ type Listing = z.infer<typeof listingSchema>
 
 type Loaded = Outcome<{ readonly listing: Listing }>
 
-const load = async (params: {
+const getJson = async <T>(params: {
   readonly deps: SearchDeps
-  readonly query: URLSearchParams
   readonly token: string
-  readonly now: Date
-}): Promise<Loaded> => {
+  readonly path: string
+  readonly schema: z.ZodType<T>
+}): Promise<Outcome<{ readonly data: T }>> => {
   // A thrown fetch means the server could not be reached at all, which is different from a
   // server that answered with an error. Uncaught, it would surface as a stack trace.
   const res = await params.deps
-    .fetch(`${apiBase()}/api/sessions?${params.query.toString()}`, {
+    .fetch(`${apiBase()}${params.path}`, {
       headers: { authorization: `Bearer ${params.token}` },
     })
     .catch(() => null)
   if (res === null) return { ok: false, message: `Could not reach ${apiBase()}.` }
   if (!res.ok) return { ok: false, message: await refusal(res) }
 
-  const listing = listingSchema.parse(await res.json())
-  // Safe to cache from any response: the server builds filterOptions from the account asking, not
-  // from the filters asked for, so even a narrow search returns the whole list.
-  await atomicWriteJson(filterOptionsPath(), {
-    apiBase: apiBase(),
-    fetchedAt: params.now.getTime(),
-    filterOptions: listing.filterOptions,
-  }).catch(() => {})
-  return { ok: true, listing }
+  return { ok: true, data: params.schema.parse(await res.json()) }
+}
+
+const load = async (params: {
+  readonly deps: SearchDeps
+  readonly query: URLSearchParams
+  readonly token: string
+}): Promise<Loaded> => {
+  const result = await getJson({
+    deps: params.deps,
+    token: params.token,
+    path: `/api/sessions?${params.query.toString()}`,
+    schema: listingSchema,
+  })
+  return result.ok ? { ok: true, listing: result.data } : result
 }
 
 const needsLookup = (value: string | undefined): boolean => value !== undefined && !UUID.test(value)
 
-type FilterOptions = Listing["filterOptions"]
+type FilterOptions = z.infer<typeof filterOptionsSchema>
+
+const loadFilterOptions = async (params: {
+  readonly deps: SearchDeps
+  readonly token: string
+  readonly now: Date
+}): Promise<Outcome<{ readonly filterOptions: FilterOptions }>> => {
+  const result = await getJson({
+    deps: params.deps,
+    token: params.token,
+    path: "/api/sessions/filters",
+    schema: filterOptionsSchema,
+  })
+  if (!result.ok) return result
+
+  // Safe to cache from any response: the server builds filterOptions from the account asking,
+  // not from the filters asked for, so even a narrow search returns the whole list.
+  await atomicWriteJson(filterOptionsPath(), {
+    apiBase: apiBase(),
+    fetchedAt: params.now.getTime(),
+    filterOptions: result.data,
+  }).catch(() => {})
+  return { ok: true, filterOptions: result.data }
+}
 
 const namedProjects = (filterOptions: FilterOptions): ReadonlyArray<NamedOption> =>
   filterOptions.projects.map((option) => ({ value: option.value, names: [option.label] }))
@@ -333,7 +359,7 @@ const CACHE_TTL_MS = 5 * 60_000
 const cacheSchema = z.object({
   apiBase: z.string(),
   fetchedAt: z.number(),
-  filterOptions: listingSchema.shape.filterOptions,
+  filterOptions: filterOptionsSchema,
 })
 
 const cachedOptions = async (now: Date): Promise<FilterOptions | null> => {
@@ -362,11 +388,11 @@ const resolveNames = async (
     if (attempt.ok) return attempt
   }
 
-  // This request sends no filters, only `limit=1`. It exists to fetch the name-to-id list, and
-  // sending the unresolved name here is what the server would reject.
-  const probe = await load({ deps, query: new URLSearchParams({ limit: "1" }), token, now })
+  // This calls the filters endpoint and sends no query at all: it exists to fetch the
+  // name-to-id list, and sending the unresolved name here is what the server would reject.
+  const probe = await loadFilterOptions({ deps, token, now })
   if (!probe.ok) return probe
-  return resolveAgainst(options, probe.listing.filterOptions)
+  return resolveAgainst(options, probe.filterOptions)
 }
 
 // `open` on macOS, `xdg-open` on Linux, `start` through cmd on Windows.
@@ -399,7 +425,7 @@ export const searchCommand = async (options: SearchOptions, deps: SearchDeps): P
   }
 
   const query = searchQuery(resolved.flags)
-  const result = await load({ deps, query, token, now })
+  const result = await load({ deps, query, token })
   if (!result.ok) {
     stderr.write(`${result.message}\n`)
     return 1

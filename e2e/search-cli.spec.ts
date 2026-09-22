@@ -177,11 +177,11 @@ test("02: --repo resolves an owner/name label, a bare unambiguous repo name, a c
   expect(upper.stdout).toBe(`${WEB_BASE}/sessions/verify-free-hit\n`)
 
   const probe = await curl([
-    `${API_BASE}/api/sessions?limit=1`,
+    `${API_BASE}/api/sessions/filters`,
     "-H",
     `authorization: Bearer ${await mintCliToken()}`,
   ])
-  const repoId = JSON.parse(probe.body).filterOptions.repositories.find(
+  const repoId = JSON.parse(probe.body).repositories.find(
     (r: { label: string }) => r.label === "acme/samskara",
   ).value
   const byId = await runCli(["--repo", repoId, "--branch", "master", "--url"])
@@ -209,7 +209,7 @@ test("04: each filter the server rejects comes back naming the offending flag", 
     [["--pr", "abc"], "--pr takes a pull request number"],
     [["--commit", "zz"], "--commit takes 7 to 40 hex"],
     [["--range", "whenever"], "--range takes all, hour, today, week, month or custom"],
-    [["--sort", "random"], "--sort takes relevance, recent, oldest, tokens or project"],
+    [["--sort", "random"], "--sort takes relevance, recent, oldest or project"],
     // tz only reaches the server for today/custom (design's serialization rule) -- unadorned it
     // would never be sent, so the range is part of what this case is proving.
     [["--range", "today", "--tz", "Nowhere/Fake"], "--tz takes an IANA time zone"],

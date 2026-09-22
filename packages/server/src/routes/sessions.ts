@@ -8,6 +8,7 @@ import { validate } from "../lib/validate.js"
 import { listForSession } from "../repositories/artifacts.repo.js"
 import {
   AmbiguousCommitError,
+  filterOptionsFor,
   findVisibleProjectById,
   findVisibleSession,
   getDetail,
@@ -39,10 +40,9 @@ const serialize = (row: SessionSummaryRow) => ({
   projectName: row.projectName,
   projectSlug: row.projectSlug,
   userLogin: row.userLogin,
-  repo: row.repo,
-  durationMs: row.durationMs === null ? null : Number(row.durationMs),
-  tokensTotal: Number(row.tokensTotal),
+  messageCount: Number(row.messageCount),
   status: row.status,
+  startedAt: row.startedAt === null ? null : new Date(row.startedAt).toISOString(),
   lastActiveAt: new Date(row.lastActiveAt).toISOString(),
   tags: row.tags,
   hasAiReview: row.hasAiReview === true,
@@ -139,7 +139,6 @@ export const sessionsRoutes = ({ db, env }: Deps) =>
           {
             sessions: result.rows.map(serialize),
             pagination: paginate(result.total, page, limit),
-            filterOptions: result.filterOptions,
           },
           200,
         )
@@ -147,6 +146,12 @@ export const sessionsRoutes = ({ db, env }: Deps) =>
         if (error instanceof AmbiguousCommitError) return c.json({ error: "ambiguousCommit" }, 400)
         throw error
       }
+    })
+    // Declared before `/:id`: that route matches the literal string "filters" too, so this must
+    // come first or `GET /api/sessions/filters` answers 404 sessionNotFound instead.
+    .get("/filters", requireAuth({ db, env }, ["web", "cli"]), async (c) => {
+      const filterOptions = await filterOptionsFor(db, c.get("user").id)
+      return c.json(filterOptions, 200)
     })
     .get("/:id", requireAuth({ db, env }, ["web"]), async (c) => {
       const detail = await getDetail(db, c.get("user").id, c.req.param("id"))

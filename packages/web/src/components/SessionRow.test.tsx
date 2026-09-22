@@ -11,10 +11,9 @@ const populated: SessionSummary = {
   projectName: "Samskara",
   projectSlug: "samskara",
   userLogin: "maya",
-  repo: { host: "github.com", owner: "acme", repoName: "samskara" },
-  durationMs: 3_723_000,
-  tokensTotal: 128_400,
+  messageCount: 1_240,
   status: "complete",
+  startedAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
   lastActiveAt: "2026-02-01T09:30:00.000Z",
   hasAiReview: false,
   tags: ["harness"],
@@ -27,34 +26,40 @@ const renderRow = (session: SessionSummary) =>
     </TestRouter>,
   )
 
-test("S18: a row summarises the session on one line - title, who, duration, tokens, project", () => {
+test("SC8: the row names the session, who ran it, how many messages it holds and when it started", () => {
   renderRow(populated)
 
   const row = screen.getByRole("link")
-
   expect(row).toHaveTextContent("Port the session detail surface")
   expect(row).toHaveTextContent("Samskara")
   expect(row).toHaveTextContent("maya")
-  expect(row).toHaveTextContent("acme/samskara")
-  expect(row).toHaveTextContent("1h 2m")
-  expect(row).toHaveTextContent("128.4k tokens")
+  expect(row).toHaveTextContent("1240 messages")
+  expect(row).toHaveTextContent(/started 2 hours? ago/)
+  expect(row).not.toHaveTextContent("tokens")
 })
 
-test("S18: a session with no repo omits it rather than reserving a placeholder for it", () => {
-  renderRow({ ...populated, repo: null })
+test("SC9: a session with no messages reports a placeholder for its start, not a zero", () => {
+  renderRow({ ...populated, messageCount: 0, startedAt: null })
 
   const row = screen.getByRole("link")
-  expect(row).toHaveTextContent("maya · 1h 2m")
-  expect(row).not.toHaveTextContent("unavailable")
+  expect(row).toHaveTextContent("0 messages")
+  expect(screen.getByText("unavailable")).toBeInTheDocument()
+  expect(row).not.toHaveTextContent("null")
+  expect(row).not.toHaveTextContent("—")
 })
 
-test("S18: a remoteless repo reads as its own name - never the absolute path it is keyed by", () => {
-  const repo = { host: "local", owner: "/Users/maya/Projects/samskara", repoName: "samskara" }
-  renderRow({ ...populated, repo })
+test("SC10: a single-message session reads '1 message', not '1 messages'", () => {
+  renderRow({ ...populated, messageCount: 1 })
 
   const row = screen.getByRole("link")
-  expect(row).toHaveTextContent("samskara")
-  expect(row).not.toHaveTextContent("/Users/maya")
+  expect(row).toHaveTextContent("1 message")
+  expect(row).not.toHaveTextContent("1 messages")
+})
+
+test("S19: a null title reads as 'untitled session' rather than an empty heading", () => {
+  renderRow({ ...populated, title: null })
+
+  expect(screen.getByRole("link")).toHaveTextContent("untitled session")
 })
 
 test("S26: the row reports capture recency in relative terms rather than a raw timestamp", () => {
@@ -67,38 +72,6 @@ test("S26: the relative stamp carries the exact moment as a tooltip, so recency 
   renderRow(populated)
 
   expect(screen.getByRole("time")).toHaveAttribute("title", "Feb 1, 2026, 09:30")
-})
-
-test("S19: a null duration renders an explicit placeholder - never 0, an em dash, or a fabricated value", () => {
-  renderRow({ ...populated, durationMs: null })
-
-  expect(screen.getByText("unavailable")).toBeInTheDocument()
-
-  const row = screen.getByRole("link")
-  expect(row).toHaveTextContent("unavailable")
-  expect(row).not.toHaveTextContent("null")
-  expect(row).not.toHaveTextContent("—")
-})
-
-test("S19: a null title reads as 'untitled session' rather than an empty heading", () => {
-  renderRow({ ...populated, title: null })
-
-  expect(screen.getByRole("link")).toHaveTextContent("untitled session")
-})
-
-test("S26: a zero token total renders as 0 - the 'unavailable' path is reserved for genuinely absent data", () => {
-  renderRow({ ...populated, tokensTotal: 0 })
-
-  expect(screen.getByRole("link")).toHaveTextContent("0")
-  expect(screen.queryByText("unavailable")).not.toBeInTheDocument()
-})
-
-test("S26: token totals scale past thousands rather than reading as five-figure 'k'", () => {
-  renderRow({ ...populated, tokensTotal: 12_400_000 })
-  expect(screen.getByRole("link")).toHaveTextContent("12.4M tokens")
-
-  renderRow({ ...populated, tokensTotal: 2_500_000_000 })
-  expect(screen.getAllByRole("link")[1]).toHaveTextContent("2.5B tokens")
 })
 
 test("S26: the row is a link, so a session opens in a new tab the way any other link does", () => {
