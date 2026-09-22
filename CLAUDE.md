@@ -11,9 +11,12 @@ bun run dev
 ```
 
 `setup` installs, writes `.env` with a generated `JWT_SECRET`, starts Postgres, migrates, seeds and
-registers the org. It stops on the first run to have you paste the GitHub OAuth client id and
-secret into `.env` — the only manual step. Re-running is safe: it never rotates a secret that is
-already set and leaves a database that already has projects alone. Worktrees additionally need
+registers the org. It stops on the first run for the two secrets it cannot generate: the GitHub
+OAuth client id and secret, and the AI reviewer's key — `OPENCODE_API_KEY`, or
+`CLAUDE_CODE_OAUTH_TOKEN`/`ANTHROPIC_API_KEY` when `AI_REVIEW_HARNESS=claude`. The server refuses
+to boot without the configured harness's key, so `setup` asks rather than letting `bun run dev`
+fail later. Re-running is safe: it never rotates a secret that is already set and leaves a
+database that already has projects alone. Worktrees additionally need
 `brew install worktrunk && wt config shell install`.
 
 `.env` is gitignored, so nothing here is shared between machines: ports and database names are all

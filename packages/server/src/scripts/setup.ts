@@ -9,9 +9,24 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..
 
 export const REQUIRED_CREDENTIALS = ["GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET"] as const
 
+const REVIEW_CREDENTIALS: Readonly<Record<string, ReadonlyArray<string>>> = {
+  opencode: ["OPENCODE_API_KEY"],
+  claude: ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
+}
+
 export const missingCredentials = (text: string): ReadonlyArray<string> => {
-  if ((readEnvValue(text, "LOCAL_LOGIN_SECRET") ?? "").length > 0) return []
-  return REQUIRED_CREDENTIALS.filter((key) => (readEnvValue(text, key) ?? "").length === 0)
+  const signIn =
+    (readEnvValue(text, "LOCAL_LOGIN_SECRET") ?? "").length > 0
+      ? []
+      : REQUIRED_CREDENTIALS.filter((key) => (readEnvValue(text, key) ?? "").length === 0)
+  // The server will not boot without this one, so setup stops here rather than letting
+  // `bun run dev` fail with the same message later.
+  const harness = readEnvValue(text, "AI_REVIEW_HARNESS") ?? "opencode"
+  const accepted = REVIEW_CREDENTIALS[harness] ?? REVIEW_CREDENTIALS.opencode ?? []
+  const review = accepted.some((key) => (readEnvValue(text, key) ?? "").length > 0)
+    ? []
+    : [accepted.join(" or ")]
+  return [...signIn, ...review]
 }
 
 /** Only fills blanks: re-running setup must never rotate a secret that already signs live cookies. */

@@ -10,6 +10,7 @@ import {
   projects,
   pullRequests,
   sessionPullRequests,
+  sessionReviews,
   sessions,
   subagents,
   tokenUsage,
@@ -35,6 +36,9 @@ const env: Env = {
   jwtSecret: "test-secret-value",
   jwtExpiresIn: "7d",
   superAdminLogins: [],
+  aiReviewHarness: "opencode",
+  aiReviewModel: "zai-coding-plan/glm-5.3-flash",
+  aiReviewTimeoutMs: 600_000,
 }
 
 type SessionRepo = {
@@ -56,6 +60,7 @@ type SessionSummary = {
   readonly status: string
   readonly lastActiveAt: string
   readonly tags: ReadonlyArray<string>
+  readonly hasAiReview: boolean
 }
 
 const seedUser = (db: Db, githubId: number, login: string, isSuperAdmin = false): Promise<string> =>
@@ -606,6 +611,57 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     expect(await listAs(db, owner, "?q=commitneedle")).toEqual([])
   })
 
+  test("S28: hasAiReview and the aiReview filter follow the ai-v1 row, not any review row", async () => {
+    const owner = await seedUser(db, 1601, "ai-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "AI", slug: "ai" },
+      ownerId: owner,
+    })
+    for (const id of ["reviewed", "plain", "heuristic-only"]) {
+      await seedSession(db, {
+        id,
+        userId: owner,
+        projectId,
+        title: id,
+        updatedAt: new Date("2026-02-05T12:00:00Z"),
+      })
+    }
+    const review = async (sessionId: string, analyzer: string): Promise<void> => {
+      await db.insert(sessionReviews).values({
+        sessionId,
+        projectId,
+        analyzer,
+        outcome: "productive",
+        friction: "none",
+        summary: `${analyzer} review`,
+        signals: {},
+      })
+    }
+    await review("reviewed", "ai-v1")
+    // A heuristic review is not an AI review: the badge must not light up for it.
+    await review("heuristic-only", "heuristic-v1")
+
+    const badge = new Map(
+      (await listAs(db, owner)).map((session) => [session.id, session.hasAiReview]),
+    )
+    expect(badge.get("reviewed")).toBe(true)
+    expect(badge.get("plain")).toBe(false)
+    expect(badge.get("heuristic-only")).toBe(false)
+
+    expect(idsOf(await listAs(db, owner, "?aiReview=done"))).toEqual(["reviewed"])
+    expect([...idsOf(await listAs(db, owner, "?aiReview=missing"))].sort()).toEqual([
+      "heuristic-only",
+      "plain",
+    ])
+  })
+
+  test("S29: an unknown aiReview value is rejected rather than silently ignored", async () => {
+    const owner = await seedUser(db, 1602, "ai-filter-owner")
+    const res = await request(db, owner, "?aiReview=maybe")
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: "invalidAiReview" })
+  })
+
   test("S20, SC29: a summary carries the project id, name, login, summed tokens, and a duration spanning the message timestamps", async () => {
     const owner = await seedUser(db, 1301, "shape-owner")
     const projectId = await projectsRepo.upsert(db, {
@@ -647,6 +703,7 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
       status: "complete",
       lastActiveAt: new Date("2026-02-05T11:30:00Z").toISOString(),
       tags: [],
+      hasAiReview: false,
     })
   })
 

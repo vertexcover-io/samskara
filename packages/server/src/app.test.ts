@@ -17,6 +17,9 @@ const env: Env = {
   jwtSecret: "test-secret",
   jwtExpiresIn: "7d",
   superAdminLogins: [],
+  aiReviewHarness: "opencode",
+  aiReviewModel: "zai-coding-plan/glm-5.3-flash",
+  aiReviewTimeoutMs: 600_000,
   webDist: "tmp-web-dist-fixture",
 }
 

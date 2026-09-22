@@ -45,6 +45,7 @@ const serialize = (row: SessionSummaryRow) => ({
   status: row.status,
   lastActiveAt: new Date(row.lastActiveAt).toISOString(),
   tags: row.tags,
+  hasAiReview: row.hasAiReview === true,
   ...(row.match === null ? {} : { match: row.match }),
 })
 
@@ -92,6 +93,7 @@ export const sessionsRoutes = ({ db, env }: Deps) =>
           const codes: Record<string, string> = {
             pr: "invalidPrNumber",
             commit: "invalidCommit",
+            aiReview: "invalidAiReview",
             q: "invalidSearchQuery",
             repo: "invalidRepo",
             branch: "invalidBranch",
@@ -124,6 +126,7 @@ export const sessionsRoutes = ({ db, env }: Deps) =>
           tags: query.tags,
           prNumber: query.pr,
           commit: query.commit,
+          aiReview: query.aiReview,
           searchQuery: query.parsedQuery,
           ...dateWindowFor(query, new Date()),
           sort: query.sort,

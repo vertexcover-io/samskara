@@ -8,6 +8,7 @@ const complete = {
   WEB_BASE_URL: "http://localhost:8000",
   COOKIE_SECURE: "false",
   JWT_SECRET: "jwt",
+  OPENCODE_API_KEY: "oc-key",
 }
 
 describe("loadEnv", () => {
@@ -24,7 +25,40 @@ describe("loadEnv", () => {
       superAdminLogins: [],
       localLoginSecret: "",
       localLoginLogin: "samskara-dev",
+      aiReviewHarness: "opencode",
+      aiReviewModel: "opencode-go/glm-5.3-flash",
+      aiReviewTimeoutMs: 600_000,
     })
+  })
+
+  test("refuses to start when the configured harness has no credential", () => {
+    const { OPENCODE_API_KEY: _dropped, ...noKey } = complete
+    expect(() => loadEnv(noKey)).toThrow(/OPENCODE_API_KEY/)
+  })
+
+  test("requires the credential of the configured harness, not of every harness", () => {
+    const { OPENCODE_API_KEY: _dropped, ...noKey } = complete
+    // A claude-configured server needs claude's credential and nothing from opencode.
+    const env = loadEnv({
+      ...noKey,
+      AI_REVIEW_HARNESS: "claude",
+      CLAUDE_CODE_OAUTH_TOKEN: "tok",
+    })
+    expect(env.aiReviewHarness).toBe("claude")
+    expect(env.aiReviewModel).toBe("sonnet")
+  })
+
+  test("accepts ANTHROPIC_API_KEY as claude's credential", () => {
+    const { OPENCODE_API_KEY: _dropped, ...noKey } = complete
+    expect(() =>
+      loadEnv({ ...noKey, AI_REVIEW_HARNESS: "claude", ANTHROPIC_API_KEY: "sk-ant" }),
+    ).not.toThrow()
+  })
+
+  test("AI_REVIEW_MODEL overrides the harness default", () => {
+    expect(loadEnv({ ...complete, AI_REVIEW_MODEL: "opencode/glm-5.3" }).aiReviewModel).toBe(
+      "opencode/glm-5.3",
+    )
   })
 
   test("defaults the local login to off: empty LOCAL_LOGIN_SECRET, LOCAL_LOGIN_LOGIN samskara-dev", () => {
