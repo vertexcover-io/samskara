@@ -218,10 +218,9 @@ export type SessionSummaryRow = {
   readonly projectName: string
   readonly projectSlug: string
   readonly userLogin: string
-  readonly repo: SessionRepo | null
-  readonly durationMs: number | null
-  readonly tokensTotal: number
+  readonly messageCount: number
   readonly status: string
+  readonly startedAt: string | null
   readonly lastActiveAt: string
   readonly tags: ReadonlyArray<string>
   readonly hasAiReview: boolean
@@ -262,7 +261,7 @@ export type SessionListFilter = {
   readonly since?: Date
   /** Exclusive UTC boundary. */
   readonly until?: Date
-  readonly sort?: "recent" | "oldest" | "tokens" | "project" | "relevance"
+  readonly sort?: "recent" | "oldest" | "project" | "relevance"
   readonly page?: number
   readonly limit?: number
 }
@@ -270,7 +269,6 @@ export type SessionListFilter = {
 export type SessionListResult = {
   readonly rows: ReadonlyArray<SessionSummaryRow>
   readonly total: number
-  readonly filterOptions: SessionFilterOptions
 }
 
 export class AmbiguousCommitError extends Error {
@@ -288,23 +286,11 @@ const durationMs = sql<
   number | null
 >`(extract(epoch from ${sessions.lastMessageAt} - ${sessions.startedAt}) * 1000)::bigint`
 
-const tokensFor = (sessionId: SQL): SQL<number> => sql`(
-  select coalesce(sum(
-    "tokenUsage"."inputTokens"::bigint + "tokenUsage"."outputTokens"::bigint
-    + "tokenUsage"."cachedTokens"::bigint + "tokenUsage"."thinkingTokens"::bigint
-  ), 0)::bigint
-  from "tokenUsage"
-  join "messages" on "messages"."id" = "tokenUsage"."messageId"
-  where "messages"."sessionId" = ${sessionId}
-)`
-
 /** The badge's definition of "AI analysis ran": a landed ai-v1 row — the same test the analyze route applies. */
 const aiReviewExists = (sessionId: SQL): SQL => sql`exists (
   select 1 from "sessionReviews" sr
   where sr."sessionId" = ${sessionId} and sr."analyzer" = 'ai-v1'
 )`
-
-const status = sql<string>`case when ${messageCount} = 0 then 'empty' else 'complete' end`
 
 const dominantRepoId = sql`(
   select "messages"."repoId"
@@ -433,7 +419,6 @@ const SNIPPET_OPTIONS = `StartSel=${SNIPPET_START}, StopSel=${SNIPPET_STOP}, Max
 const ORDER_BY = {
   recent: sql`p."lastActiveAt" desc, p.id asc`,
   oldest: sql`p."lastActiveAt" asc, p.id desc`,
-  tokens: sql`p."tokensTotal" desc, p.id asc`,
   project: sql`p."projectName" asc, p.id asc`,
   relevance: sql`p.score desc, p."matchedRows" desc, p."lastActiveAt" desc, p.id asc`,
 } as const
@@ -561,7 +546,10 @@ const filterPredicates = (
   return clauses
 }
 
-const filterOptionsFor = async (db: Querier, userId: string): Promise<SessionFilterOptions> => {
+export const filterOptionsFor = async (
+  db: Querier,
+  userId: string,
+): Promise<SessionFilterOptions> => {
   const [projectsRows, authorRows, repoRows, branchRows, tagRows] = await Promise.all([
     db.execute(
       sql`with ${authorizationCte(db, userId)} select distinct "projectId" as value, "projectName" as label from authorized_sessions order by label, value`,
@@ -569,11 +557,40 @@ const filterOptionsFor = async (db: Querier, userId: string): Promise<SessionFil
     db.execute(
       sql`with ${authorizationCte(db, userId)} select distinct "userLogin" as value, "userLogin" as label from authorized_sessions order by value`,
     ),
+    // Collects the repo ids visible sessions touch once, then joins `repos` to that set -- asking
+    // all of `repos` whether any message points at it is a full scan of `messages` per repo row.
     db.execute(
-      sql`with ${authorizationCte(db, userId)} select distinct r.id as value, concat(r.owner, '/', r."repoName") as label, r.host, r.owner, r."repoName" as "repoName" from "repos" r where exists (select 1 from "messages" m where m."sessionId" in (select id from authorized_sessions) and m."repoId" = r.id) or exists (select 1 from "commits" c where c."sessionId" in (select id from authorized_sessions) and c."repoId" = r.id) or exists (select 1 from "pullRequests" pr join "sessionPullRequests" sp on sp."prId" = pr.id where sp."sessionId" in (select id from authorized_sessions) and pr."repoId" = r.id) order by label, value`,
+      sql`with ${authorizationCte(db, userId)}, used_repos as (
+        select distinct m."repoId" as id from "messages" m
+          join authorized_sessions a on a.id = m."sessionId" where m."repoId" is not null
+        union
+        select distinct c."repoId" from "commits" c
+          join authorized_sessions a on a.id = c."sessionId"
+        union
+        select distinct pr."repoId" from "pullRequests" pr
+          join "sessionPullRequests" sp on sp."prId" = pr.id
+          join authorized_sessions a on a.id = sp."sessionId"
+      )
+      select r.id as value, concat(r.owner, '/', r."repoName") as label,
+        r.host, r.owner, r."repoName" as "repoName"
+      from "repos" r join used_repos u on u.id = r.id
+      order by label, value`,
     ),
+    // Pushes `distinct` and the null test into each arm of the union so Postgres hashes each one
+    // away as it reads, instead of collecting every branch name across every session to sort.
     db.execute(
-      sql`with ${authorizationCte(db, userId)}, values_ as (select m."gitBranch" as branch from "messages" m join authorized_sessions a on a.id = m."sessionId" union select c.branch from "commits" c join authorized_sessions a on a.id = c."sessionId" union select pr."baseBranch" from "pullRequests" pr join "sessionPullRequests" sp on sp."prId" = pr.id join authorized_sessions a on a.id = sp."sessionId" union select pr."headBranch" from "pullRequests" pr join "sessionPullRequests" sp on sp."prId" = pr.id join authorized_sessions a on a.id = sp."sessionId") select distinct branch collate "C" as branch from values_ where branch is not null and branch <> '' order by branch`,
+      sql`with ${authorizationCte(db, userId)}, values_ as (
+        select distinct m."gitBranch" as branch from "messages" m
+          join authorized_sessions a on a.id = m."sessionId" where m."gitBranch" is not null
+        union select distinct c.branch from "commits" c
+          join authorized_sessions a on a.id = c."sessionId" where c.branch is not null
+        union select distinct pr."baseBranch" from "pullRequests" pr
+          join "sessionPullRequests" sp on sp."prId" = pr.id
+          join authorized_sessions a on a.id = sp."sessionId" where pr."baseBranch" is not null
+        union select distinct pr."headBranch" from "pullRequests" pr
+          join "sessionPullRequests" sp on sp."prId" = pr.id
+          join authorized_sessions a on a.id = sp."sessionId" where pr."headBranch" is not null
+      ) select distinct branch collate "C" as branch from values_ where branch <> '' order by branch`,
     ),
     db.execute(
       sql`with ${authorizationCte(db, userId)} select distinct tag collate "C" as tag from authorized_sessions a, unnest(a."tags") as tag order by tag`,
@@ -624,7 +641,6 @@ export const listAccessible = async (
   const requested = filter.sort ?? (query === undefined ? "recent" : "relevance")
   const sort = requested === "relevance" && query === undefined ? "recent" : requested
   const order = ORDER_BY[sort]
-  const isTokenSort = sort === "tokens"
   const countMatched = async (): Promise<number> => {
     const [row] = (await db.execute(
       sql`with ${authorizationCte(db, userId)}, ${filtered}, ${matches} select count(*)::int as total from matched_sessions`,
@@ -634,56 +650,50 @@ export const listAccessible = async (
   // A search already materialized matched_sessions for its union branches, so count(*) over()
   // reads the total off that set for free. Without one it would force the whole set to be built
   // before the limit, so the page carries null and the count runs beside it instead.
-  const [rows, filterOptions, countedAlongside] = await Promise.all([
+  const [rows, countedAlongside] = await Promise.all([
     db.execute(sql`
     with ${authorizationCte(db, userId)}, ${filtered}, ${matches}, ranked as (
-      select ms.*, ${isTokenSort ? tokensFor(sql`ms.id`) : sql`null::bigint`} as "tokensTotal", ${query === undefined ? sql`null::int` : sql`count(*) over()::int`} as total
+      select ms.*, ${query === undefined ? sql`null::int` : sql`count(*) over()::int`} as total
       from matched_sessions ms
     ), paged as (select * from ranked p order by ${order} limit ${limit} offset ${offset})
     select p.id, ${derivedTitle} as title, p."projectId", p."projectName", p."projectSlug", p."userLogin",
-      r.host as "repoHost", r.owner as "repoOwner", r."repoName" as "repoName", ${durationMs} as "durationMs",
-      ${isTokenSort ? sql`p."tokensTotal"` : tokensFor(sql`"sessions"."id"`)} as "tokensTotal", ${status} as status,
-      ${aiReviewExists(sql`p.id`)} as "hasAiReview",
+      mc.n as "messageCount", case when mc.n = 0 then 'empty' else 'complete' end as status,
+      "sessions"."startedAt", ${aiReviewExists(sql`p.id`)} as "hasAiReview",
       p."lastActiveAt", p."tags", p."sourceKind", p."sourceRowId", p.score, p.total, t."sourceText",
       case when t."sourceText" is null then null else ts_headline('simple'::regconfig, t."sourceText", ${query ?? sql`null::tsquery`}, ${SNIPPET_OPTIONS}) end as headline
-    from paged p join "sessions" on "sessions".id = p.id left join "repos" r on r.id = ${dominantRepoId}
+    from paged p join "sessions" on "sessions".id = p.id
+    cross join lateral (select count(*)::int as n from "messages" m where m."sessionId" = p.id) mc
     cross join lateral (select ${sourceTextSql} as "sourceText") t
     order by ${order}
   `) as Promise<ReadonlyArray<Record<string, unknown>>>,
-    filterOptionsFor(db, userId),
     query === undefined ? countMatched() : undefined,
   ])
   const total =
     countedAlongside ?? (rows.length > 0 ? Number(rows[0]?.total) : await countMatched())
-  const mapped = rows.map((row) =>
-    withRepo({
-      id: row.id as string,
-      title: row.title as string | null,
-      projectId: row.projectId as string,
-      projectName: row.projectName as string,
-      projectSlug: row.projectSlug as string,
-      userLogin: row.userLogin as string,
-      repoHost: row.repoHost as string | null,
-      repoOwner: row.repoOwner as string | null,
-      repoName: row.repoName as string | null,
-      durationMs: row.durationMs === null ? null : Number(row.durationMs),
-      tokensTotal: Number(row.tokensTotal),
-      status: row.status as string,
-      lastActiveAt: String(row.lastActiveAt),
-      tags: (row.tags as ReadonlyArray<string> | null) ?? [],
-      hasAiReview: row.hasAiReview === true,
-      match:
-        row.sourceKind === null
-          ? null
-          : {
-              sourceKind: row.sourceKind as SessionMatch["sourceKind"],
-              sourceRowId: String(row.sourceRowId),
-              score: Number(row.score),
-              snippet: safeSnippet(String(row.sourceText), String(row.headline)),
-            },
-    }),
-  )
-  return { rows: mapped, total, filterOptions }
+  const mapped = rows.map((row) => ({
+    id: row.id as string,
+    title: row.title as string | null,
+    projectId: row.projectId as string,
+    projectName: row.projectName as string,
+    projectSlug: row.projectSlug as string,
+    userLogin: row.userLogin as string,
+    messageCount: Number(row.messageCount),
+    status: row.status as string,
+    startedAt: row.startedAt === null ? null : String(row.startedAt),
+    lastActiveAt: String(row.lastActiveAt),
+    tags: (row.tags as ReadonlyArray<string> | null) ?? [],
+    hasAiReview: row.hasAiReview === true,
+    match:
+      row.sourceKind === null
+        ? null
+        : {
+            sourceKind: row.sourceKind as SessionMatch["sourceKind"],
+            sourceRowId: String(row.sourceRowId),
+            score: Number(row.score),
+            snippet: safeSnippet(String(row.sourceText), String(row.headline)),
+          },
+  }))
+  return { rows: mapped, total }
 }
 
 export const findVisibleProjectById = async (

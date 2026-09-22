@@ -179,6 +179,14 @@ const REVIEWER_OPTIONS: Reply = {
   },
 }
 
+const jsonResponse = (status: number, body: unknown): Response =>
+  new Response(JSON.stringify(body), { status })
+
+// The tag editor probes this on every mount regardless of what a test is asserting, so both
+// render helpers answer it unconditionally rather than making every test's fetch impl handle it.
+const filtersResponse = (): Response =>
+  jsonResponse(200, { projects: [], authors: [], repositories: [], branches: [], tags: [] })
+
 const renderDetail = (
   payload: SessionDetailPayload = PAYLOAD,
   artifacts: Reply = OK_EMPTY,
@@ -235,6 +243,7 @@ const renderDetail = (
     Promise.resolve(new Response(JSON.stringify(reply.body), { status: reply.status }))
   vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
     const url = typeof input === "string" ? input : String(input)
+    if (url.includes("/api/sessions/filters")) return Promise.resolve(filtersResponse())
     // Job status comes as GET /analyze/:jobId — before the POST /analyze branch, whose
     // substring would swallow it. A succeeded job is what lands the AI row in the refreshed
     // review list.
@@ -299,9 +308,6 @@ const renderDetail = (
 
 type FetchImpl = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
-const jsonResponse = (status: number, body: unknown): Response =>
-  new Response(JSON.stringify(body), { status })
-
 const isPatch = (init: RequestInit | undefined): boolean => init?.method === "PATCH"
 
 /**
@@ -312,6 +318,7 @@ const isPatch = (init: RequestInit | undefined): boolean => init?.method === "PA
 const renderDetailWithFetch = (impl: FetchImpl, entry = "/sessions/s-1") => {
   const withReviewLists: FetchImpl = (input, init) => {
     const url = typeof input === "string" ? input : String(input)
+    if (url.includes("/api/sessions/filters")) return Promise.resolve(filtersResponse())
     if (url.includes("/review") && !isPatch(init)) {
       return Promise.resolve(jsonResponse(200, { reviews: [] }))
     }

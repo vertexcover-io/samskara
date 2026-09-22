@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { useSearchParams } from "react-router-dom"
 import { type ApiError, client, request } from "../api/client.js"
-import type { FilterOption, SessionListPayload } from "../api/types.js"
+import type { FilterOption, SessionFilterOptions, SessionListPayload } from "../api/types.js"
 import { SessionExpired } from "../auth/SessionExpired.js"
 import { optionFor } from "../components/combobox.js"
 import { FilterBar, inertClass } from "../components/FilterBar.js"
@@ -15,6 +15,7 @@ import {
   type SessionFilters,
   serializeFilters,
 } from "../sessions/filters.js"
+import { useFilterOptions } from "../sessions/useFilterOptions.js"
 import { LoadingShell } from "../shell/LoadingShell.js"
 
 // `query` is the URL the answer belongs to. A settled state outlives the URL that asked for it by
@@ -126,15 +127,17 @@ const labelFor = (value: string | null, options: ReadonlyArray<FilterOption>): s
 
 const ResultSummary = ({
   payload,
+  filterOptions,
   filters,
 }: {
   readonly payload: SessionListPayload
+  readonly filterOptions: SessionFilterOptions
   readonly filters: SessionFilters
 }) => {
   const scope = [
-    labelFor(filters.project, payload.filterOptions.projects),
-    labelFor(filters.user, payload.filterOptions.authors),
-    labelFor(filters.repo, payload.filterOptions.repositories),
+    labelFor(filters.project, filterOptions.projects),
+    labelFor(filters.user, filterOptions.authors),
+    labelFor(filters.repo, filterOptions.repositories),
     filters.branch,
     filters.pr === null ? null : `PR #${filters.pr}`,
     filters.commit === null ? null : filters.commit,
@@ -228,6 +231,7 @@ export const Sessions = () => {
     [effectiveFilters],
   )
   const [state, setState] = useState<State>({ phase: "loading", previous: null })
+  const filterOptions = useFilterOptions()
 
   const applyFilters = (next: SessionFilters) => setSearchParams(serializeFilters(next))
   const resetFilters = () => applyFilters(EMPTY_FILTERS)
@@ -279,15 +283,7 @@ export const Sessions = () => {
       <div className="mt-4">
         <FilterBar
           filters={filters}
-          options={
-            (payload ?? previous)?.filterOptions ?? {
-              projects: [],
-              authors: [],
-              repositories: [],
-              branches: [],
-              tags: [],
-            }
-          }
+          options={filterOptions}
           onChange={applyFilters}
           onClear={resetFilters}
         />
@@ -304,7 +300,7 @@ export const Sessions = () => {
           <NoResults hasFilters={hasFilters} onClear={resetFilters} />
         ) : (
           <>
-            <ResultSummary payload={payload} filters={filters} />
+            <ResultSummary payload={payload} filterOptions={filterOptions} filters={filters} />
             <ul className="grid grid-cols-1 gap-1.5">
               {payload.sessions.map((session) => (
                 <li key={session.id}>

@@ -132,8 +132,24 @@ test("SC65 (regression): Last active and Sort by are still native dropdowns", as
   expect(screen.getByRole("combobox", { name: "Last active" })).toBeInstanceOf(HTMLSelectElement)
   expect(screen.getByRole("combobox", { name: "Sort by" })).toBeInstanceOf(HTMLSelectElement)
 
-  await user.selectOptions(screen.getByRole("combobox", { name: "Sort by" }), "tokens")
-  expect(onChange).toHaveBeenLastCalledWith({ ...EMPTY_FILTERS, sort: "tokens" })
+  await user.selectOptions(screen.getByRole("combobox", { name: "Sort by" }), "project")
+  expect(onChange).toHaveBeenLastCalledWith({ ...EMPTY_FILTERS, sort: "project" })
+})
+
+test("SC11: the sort control no longer offers Most tokens", () => {
+  render(
+    <FilterBar
+      filters={{ ...EMPTY_FILTERS, q: "auth", sort: "relevance" }}
+      options={options}
+      onChange={vi.fn()}
+      onClear={vi.fn()}
+    />,
+  )
+
+  for (const label of ["Relevance", "Most recent", "Oldest first", "Project name"]) {
+    expect(screen.getByRole("option", { name: label })).toBeInTheDocument()
+  }
+  expect(screen.queryByRole("option", { name: "Most tokens" })).not.toBeInTheDocument()
 })
 
 test("Search stays inert until submitting it would change the results", async () => {

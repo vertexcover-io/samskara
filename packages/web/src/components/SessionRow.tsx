@@ -1,5 +1,4 @@
 import { Link } from "react-router-dom"
-import { repoLabel } from "../api/repo.js"
 import type { SearchSourceKind, SessionSummary } from "../api/types.js"
 import { absoluteTime, relativeTime } from "../time.js"
 import { Chip } from "./Chip.js"
@@ -8,26 +7,7 @@ const Unavailable = () => (
   <span className="text-faded italic underline decoration-dotted">unavailable</span>
 )
 
-const formatDuration = (ms: number): string => {
-  const totalMinutes = Math.round(ms / 60_000)
-  if (totalMinutes < 1) return "under a minute"
-  const hours = Math.floor(totalMinutes / 60)
-  const minutes = totalMinutes % 60
-  if (hours === 0) return `${minutes}m`
-  return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`
-}
-
-const TOKEN_UNITS = [
-  { scale: 1_000_000_000, suffix: "B" },
-  { scale: 1_000_000, suffix: "M" },
-  { scale: 1_000, suffix: "k" },
-] as const
-
-const formatTokens = (total: number): string => {
-  const unit = TOKEN_UNITS.find(({ scale }) => total >= scale)
-  if (unit === undefined) return `${total} tokens`
-  return `${(total / unit.scale).toFixed(1)}${unit.suffix} tokens`
-}
+const formatMessages = (n: number): string => (n === 1 ? "1 message" : `${n} messages`)
 
 const SOURCE_LABEL: Readonly<Record<SearchSourceKind, string>> = {
   session: "Session",
@@ -48,8 +28,7 @@ type Props = {
 export const rowFrameClass = "border border-rule bg-panel-2 px-4 py-2"
 
 export const SessionRow = ({ session, to, showProject = true }: Props) => {
-  const { title, projectName, userLogin, repo, durationMs, tokensTotal, lastActiveAt, tags } =
-    session
+  const { title, projectName, userLogin, messageCount, startedAt, lastActiveAt, tags } = session
   const match = session.match ?? null
 
   return (
@@ -72,9 +51,8 @@ export const SessionRow = ({ session, to, showProject = true }: Props) => {
           ) : null}
         </span>
         <span className="block truncate font-mono text-[0.72rem] text-ink-soft">
-          {userLogin} · {repo === null ? null : `${repoLabel(repo)} · `}
-          {durationMs === null ? <Unavailable /> : formatDuration(durationMs)} ·{" "}
-          {formatTokens(tokensTotal)}
+          {userLogin} · {formatMessages(messageCount)} ·{" "}
+          {startedAt === null ? <Unavailable /> : `started ${relativeTime(startedAt)}`}
         </span>
         {tags.length === 0 ? null : (
           <span className="mt-1 flex flex-wrap gap-1 font-mono text-[0.68rem] text-ink-soft">

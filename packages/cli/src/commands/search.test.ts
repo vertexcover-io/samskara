@@ -35,7 +35,7 @@ describe("searchQuery", () => {
   })
 
   test("an explicit sort wins over the query-derived default, and recent stays out the way the UI leaves it out", () => {
-    expect(searchQuery({ query: "auth", sort: "tokens" }).toString()).toBe("q=auth&sort=tokens")
+    expect(searchQuery({ query: "auth", sort: "project" }).toString()).toBe("q=auth&sort=project")
     expect(searchQuery({ query: "auth", sort: "recent" }).toString()).toBe("q=auth")
   })
 
@@ -155,12 +155,11 @@ describe("renderResults", () => {
     title: "Fixing the auth redirect loop",
     projectName: "Samskara Web",
     userLogin: "kgritesh",
-    repo: { owner: "vertexcover-io", repoName: "samskara" },
-    tokensTotal: 142_000,
+    messageCount: 1_240,
     lastActiveAt: "2026-08-24T10:00:00.000Z",
   }
 
-  test("a hit shows its title, its facts and its own url, under a footer counting it against the total", () => {
+  test("SC12: a hit shows its title, project, user, message count and recency, under a footer counting it against the total", () => {
     expect(
       renderResults({
         rows: [ROW],
@@ -173,7 +172,7 @@ describe("renderResults", () => {
       [
         "",
         "  Fixing the auth redirect loop",
-        "  Samskara Web \u00b7 vertexcover-io/samskara \u00b7 kgritesh \u00b7 142k tokens \u00b7 2h ago",
+        "  Samskara Web \u00b7 kgritesh \u00b7 1240 messages \u00b7 2h ago",
         "  http://localhost:8000/sessions/a1b2c3d4-0000-4000-8000-000000000001",
         "",
         "  1 of 7 \u00b7 http://localhost:8000/sessions?q=auth",
@@ -202,9 +201,9 @@ describe("renderResults", () => {
     )
   })
 
-  test("a session with no title and no repo still renders, dropping the repo fact rather than a blank one", () => {
+  test("a session with no title still renders as untitled", () => {
     const lines = renderResults({
-      rows: [{ ...ROW, title: null, repo: null }],
+      rows: [{ ...ROW, title: null }],
       total: 1,
       webBase: "http://localhost:8000",
       query: new URLSearchParams(),
@@ -212,19 +211,16 @@ describe("renderResults", () => {
     }).split("\n")
 
     expect(lines[1]).toBe("  (untitled)")
-    expect(lines[2]).toBe("  Samskara Web \u00b7 kgritesh \u00b7 142k tokens \u00b7 2h ago")
+    expect(lines[2]).toBe("  Samskara Web \u00b7 kgritesh \u00b7 1240 messages \u00b7 2h ago")
   })
 })
-
-const NO_OPTIONS = { projects: [], authors: [], repositories: [], branches: [] }
 
 const PAYLOAD_ROW = {
   id: "a1b2c3d4-0000-4000-8000-000000000001",
   title: "Fixing the auth redirect loop",
   projectName: "Samskara Web",
   userLogin: "kgritesh",
-  repo: { host: "github.com", owner: "vertexcover-io", repoName: "samskara" },
-  tokensTotal: 142_000,
+  messageCount: 1_240,
   lastActiveAt: "2026-08-24T10:00:00.000Z",
 }
 
@@ -238,22 +234,18 @@ const stubFetch = (calls: string[], replies: ReadonlyArray<Reply>): typeof globa
     return new Response(JSON.stringify(reply.body), { status: reply.status })
   }) as typeof globalThis.fetch
 
-const listing = (
-  rows: ReadonlyArray<unknown>,
-  total: number,
-  filterOptions: unknown = NO_OPTIONS,
-): Reply => ({
+const listing = (rows: ReadonlyArray<unknown>, total: number): Reply => ({
   status: 200,
   body: {
     sessions: rows,
     pagination: { page: 1, limit: 50, total, totalPages: 1 },
-    filterOptions,
   },
 })
 
 describe("searchCommand", () => {
   const NOW = new Date("2026-08-24T12:00:00.000Z")
   const API = `${apiBase}/api/sessions`
+  const FILTERS_API = `${apiBase}/api/sessions/filters`
   let home: string
   let out: string
   let err: string
@@ -396,20 +388,16 @@ describe("searchCommand", () => {
   const probe = {
     status: 200,
     body: {
-      sessions: [],
-      pagination: { page: 1, limit: 1, total: 0, totalPages: 0 },
-      filterOptions: {
-        projects: [{ value: "11111111-1111-4111-8111-111111111111", label: "Samskara Web" }],
-        authors: [],
-        repositories: [
-          {
-            value: "22222222-2222-4222-8222-222222222222",
-            label: "vertexcover-io/samskara",
-            repoName: "samskara",
-          },
-        ],
-        branches: [],
-      },
+      projects: [{ value: "11111111-1111-4111-8111-111111111111", label: "Samskara Web" }],
+      authors: [],
+      repositories: [
+        {
+          value: "22222222-2222-4222-8222-222222222222",
+          label: "vertexcover-io/samskara",
+          repoName: "samskara",
+        },
+      ],
+      branches: [],
     },
   }
 
@@ -421,7 +409,7 @@ describe("searchCommand", () => {
       deps(stubFetch(calls, [probe, listing([PAYLOAD_ROW], 1)])),
     )
 
-    expect(calls).toEqual([`${API}?limit=1`, `${API}?repo=22222222-2222-4222-8222-222222222222`])
+    expect(calls).toEqual([FILTERS_API, `${API}?repo=22222222-2222-4222-8222-222222222222`])
     expect(code).toBe(0)
   })
 
@@ -430,7 +418,7 @@ describe("searchCommand", () => {
 
     const code = await searchCommand({ project: "nope" }, deps(stubFetch(calls, [probe])))
 
-    expect(calls).toEqual([`${API}?limit=1`])
+    expect(calls).toEqual([FILTERS_API])
     expect(err).toContain("Samskara Web")
     expect(code).toBe(1)
   })
@@ -456,7 +444,7 @@ describe("searchCommand", () => {
     )
 
     expect(calls).toEqual([
-      `${API}?limit=1`,
+      FILTERS_API,
       `${API}?project=11111111-1111-4111-8111-111111111111&repo=22222222-2222-4222-8222-222222222222&branch=release`,
     ])
     expect(code).toBe(0)
@@ -493,7 +481,7 @@ describe("searchCommand", () => {
     atomicWriteJson(filterOptionsPath(), { apiBase, fetchedAt, filterOptions })
 
   test("cached filter options resolve a name without asking the server for them a second time", async () => {
-    await writeCache(NOW.getTime() - 60_000, probe.body.filterOptions)
+    await writeCache(NOW.getTime() - 60_000, probe.body)
     const calls: string[] = []
 
     await searchCommand(
@@ -518,38 +506,38 @@ describe("searchCommand", () => {
       deps(stubFetch(calls, [probe, listing([PAYLOAD_ROW], 1)])),
     )
 
-    expect(calls).toEqual([`${API}?limit=1`, `${API}?repo=22222222-2222-4222-8222-222222222222`])
+    expect(calls).toEqual([FILTERS_API, `${API}?repo=22222222-2222-4222-8222-222222222222`])
     expect(code).toBe(0)
   })
 
   test("options older than the window are ignored, and what replaces them is written back", async () => {
-    await writeCache(NOW.getTime() - 6 * 60_000, probe.body.filterOptions)
+    await writeCache(NOW.getTime() - 6 * 60_000, probe.body)
     const calls: string[] = []
 
     await searchCommand(
       { repo: "vertexcover-io/samskara" },
-      deps(stubFetch(calls, [probe, listing([PAYLOAD_ROW], 1, probe.body.filterOptions)])),
+      deps(stubFetch(calls, [probe, listing([PAYLOAD_ROW], 1)])),
     )
 
-    expect(calls[0]).toBe(`${API}?limit=1`)
+    expect(calls[0]).toBe(FILTERS_API)
     expect(await readJson(filterOptionsPath())).toEqual({
       apiBase,
       fetchedAt: NOW.getTime(),
-      filterOptions: probe.body.filterOptions,
+      filterOptions: probe.body,
     })
   })
 
-  test("an ordinary search leaves the names behind, so the next search by name needs no probe", async () => {
+  test("a repo resolved once is cached, so a second search naming it again needs no repeat probe", async () => {
     const calls: string[] = []
-    const fetch = stubFetch(calls, [listing([PAYLOAD_ROW], 1, probe.body.filterOptions)])
+    const fetch = stubFetch(calls, [probe, listing([PAYLOAD_ROW], 1), listing([PAYLOAD_ROW], 1)])
 
-    // No name filters, so this search resolves nothing -- it just carries the list home.
-    await searchCommand({ query: "auth" }, deps(fetch))
-    expect(calls).toHaveLength(1)
+    await searchCommand({ repo: "vertexcover-io/samskara" }, deps(fetch))
+    expect(calls).toEqual([FILTERS_API, `${API}?repo=22222222-2222-4222-8222-222222222222`])
 
     await searchCommand({ repo: "vertexcover-io/samskara" }, deps(fetch))
 
-    expect(calls[1]).toBe(`${API}?repo=22222222-2222-4222-8222-222222222222`)
+    expect(calls).toHaveLength(3)
+    expect(calls[2]).toBe(`${API}?repo=22222222-2222-4222-8222-222222222222`)
   })
 
   test("a cache that cannot be written does not lose a search the server already answered", async () => {

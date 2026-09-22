@@ -83,7 +83,7 @@ describe("session filter URLs", () => {
   test("every result predicate and sort change resets the page", () => {
     const pageThree = { ...EMPTY_FILTERS, q: "auth", page: 3 }
     expect(changedFilters(pageThree, { branch: "main" }).page).toBe(1)
-    expect(changedFilters(pageThree, { sort: "tokens" }).page).toBe(1)
+    expect(changedFilters(pageThree, { sort: "oldest" }).page).toBe(1)
   })
 
   test("uses a safe first page for malformed page values", () => {
@@ -98,5 +98,5 @@ test("hasActiveFilters ignores the page, which is navigation rather than narrowi
   expect(hasActiveFilters({ ...EMPTY_FILTERS, page: 4 })).toBe(false)
   expect(hasActiveFilters({ ...EMPTY_FILTERS, project: "samskara" })).toBe(true)
   expect(hasActiveFilters({ ...EMPTY_FILTERS, tags: ["harness"] })).toBe(true)
-  expect(hasActiveFilters({ ...EMPTY_FILTERS, sort: "tokens" })).toBe(true)
+  expect(hasActiveFilters({ ...EMPTY_FILTERS, sort: "oldest" })).toBe(true)
 })

@@ -21,11 +21,10 @@ const session: SessionSummary = {
   projectName: "Samskara",
   projectSlug: "samskara",
   userLogin: "maya",
-  repo: null,
   tags: [],
-  durationMs: 900_000,
-  tokensTotal: 4200,
+  messageCount: 42,
   status: "complete",
+  startedAt: "2026-02-01T08:30:00.000Z",
   lastActiveAt: "2026-02-01T09:30:00.000Z",
   hasAiReview: false,
 }
@@ -40,20 +39,6 @@ type SessionsHandler = (url: URL) => Promise<Response>
 const isSessionsList = (path: string): boolean =>
   path === "/api/sessions" || path.startsWith("/api/sessions?")
 
-const stubFetch = (sessions: SessionsHandler): ReadonlyArray<string> => {
-  const calls: Array<string> = []
-  vi.stubGlobal("fetch", (input: RequestInfo | URL) => {
-    const path = typeof input === "string" ? input : input.toString()
-    if (path.endsWith("/api/auth/me")) return Promise.resolve(jsonResponse(200, user))
-    if (isSessionsList(path)) {
-      calls.push(path)
-      return sessions(new URL(path, "http://localhost"))
-    }
-    return Promise.reject(new Error(`unstubbed fetch: ${path}`))
-  })
-  return calls
-}
-
 const filterOptions = {
   projects: [{ value: "samskara", label: "Samskara" }],
   authors: [
@@ -65,10 +50,28 @@ const filterOptions = {
   tags: ["harness", "demo"],
 }
 
+const stubFetch = (
+  sessions: SessionsHandler,
+  options: unknown = filterOptions,
+): ReadonlyArray<string> => {
+  const calls: Array<string> = []
+  vi.stubGlobal("fetch", (input: RequestInfo | URL) => {
+    const path = typeof input === "string" ? input : input.toString()
+    if (path.endsWith("/api/auth/me")) return Promise.resolve(jsonResponse(200, user))
+    if (path === "/api/sessions/filters") return Promise.resolve(jsonResponse(200, options))
+    if (isSessionsList(path)) {
+      calls.push(path)
+      return sessions(new URL(path, "http://localhost"))
+    }
+    return Promise.reject(new Error(`unstubbed fetch: ${path}`))
+  })
+  return calls
+}
+
 const payload = (
   rows: ReadonlyArray<SessionSummary>,
   pagination = { page: 1, limit: 50, total: rows.length, totalPages: rows.length === 0 ? 0 : 1 },
-) => ({ sessions: rows, pagination, filterOptions })
+) => ({ sessions: rows, pagination })
 
 const okWith =
   (rows: ReadonlyArray<SessionSummary>): SessionsHandler =>
@@ -128,9 +131,9 @@ test("SC66 (S23): loading /sessions?project=p&user=u&range=week seeds every cont
 
   await screen.findByRole("link", { name: /port the session detail surface/i })
 
-  // The box seeds from the raw query value and only acquires its label once the response's
-  // filterOptions land, so this is a wait, not a read: asserting straight through raced the
-  // upgrade and read back "samskara" on a loaded runner.
+  // The box seeds from the raw query value and only acquires its label once the filters
+  // endpoint's response lands, so this is a wait, not a read: asserting straight through raced
+  // the upgrade and read back "samskara" on a loaded runner.
   await waitFor(() => expect(filterBox("Project").value).toBe("Samskara"))
   expect(filterBox("User").value).toBe("maya")
   expect(control(/last active/i).value).toBe("week")
@@ -197,9 +200,9 @@ test("S25: an empty result keeps the filter values and offers a clear-filters ac
   renderAt("/sessions?project=samskara&user=maya&range=week")
 
   expect(await screen.findByText(/no sessions match/i)).toBeInTheDocument()
-  // The box seeds from the raw query value and only acquires its label once the response's
-  // filterOptions land, so this is a wait, not a read: asserting straight through raced the
-  // upgrade and read back "samskara" on a loaded runner.
+  // The box seeds from the raw query value and only acquires its label once the filters
+  // endpoint's response lands, so this is a wait, not a read: asserting straight through raced
+  // the upgrade and read back "samskara" on a loaded runner.
   await waitFor(() => expect(filterBox("Project").value).toBe("Samskara"))
   expect(filterBox("User").value).toBe("maya")
   expect(control(/last active/i).value).toBe("week")
@@ -337,22 +340,15 @@ test("S26: activating the row for s-1 navigates to /sessions/s-1", async () => {
   await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("/sessions/s-1"))
 })
 
-test("S25: when the vocabulary request fails, the controls still offer the values on screen rather than collapsing to no options at all", async () => {
+test("S25: when the filters request fails, the session list still renders and the dropdowns fall back to empty rather than crashing", async () => {
   const ravi = { ...session, id: "s-2", title: "Trim the ingest pipeline", userLogin: "ravi" }
 
   vi.stubGlobal("fetch", (input: RequestInfo | URL) => {
     const path = typeof input === "string" ? input : input.toString()
     if (path.endsWith("/api/auth/me")) return Promise.resolve(jsonResponse(200, user))
-    if (path === "/api/sessions") return Promise.resolve(jsonResponse(503, { error: "down" }))
-    if (path.startsWith("/api/sessions")) {
-      return Promise.resolve(
-        jsonResponse(200, {
-          sessions: [session, ravi],
-          pagination: { page: 1, limit: 50, total: 2, totalPages: 1 },
-          filterOptions,
-        }),
-      )
-    }
+    if (path === "/api/sessions/filters")
+      return Promise.resolve(jsonResponse(503, { error: "down" }))
+    if (isSessionsList(path)) return Promise.resolve(jsonResponse(200, payload([session, ravi])))
     return Promise.reject(new Error(`unstubbed fetch: ${path}`))
   })
 
@@ -361,10 +357,7 @@ test("S25: when the vocabulary request fails, the controls still offer the value
   await screen.findByRole("link", { name: /port the session detail surface/i })
 
   await openMenu("User")
-  await waitFor(() => expect(offered()).toEqual(["maya", "ravi"]))
-
-  await openMenu("Project")
-  await waitFor(() => expect(offered()).toEqual(["Samskara"]))
+  expect(offered()).toEqual([])
 })
 
 test("SC69 (S25, regression): with user=maya applied, ravi is still offered - options come from the unfiltered vocabulary, not the filtered rows", async () => {
@@ -375,16 +368,15 @@ test("SC69 (S25, regression): with user=maya applied, ravi is still offered - op
     const login = url.searchParams.get("user")
     const rows = login === null ? all : all.filter((row) => row.userLogin === login)
     return Promise.resolve(
-      jsonResponse(200, {
-        sessions: rows,
-        pagination: {
+      jsonResponse(
+        200,
+        payload(rows, {
           page: 1,
           limit: 50,
           total: rows.length,
           totalPages: rows.length === 0 ? 0 : 1,
-        },
-        filterOptions,
-      }),
+        }),
+      ),
     )
   })
 
@@ -406,8 +398,8 @@ test("SC15: the sessions page renders each row the inferred list payload returns
     title: "Trim the ingest pipeline",
     projectName: "Andromeda",
     userLogin: "ravi",
-    tokensTotal: 12_400_000,
-    durationMs: null,
+    messageCount: 0,
+    startedAt: null,
   }
   stubFetch(okWith([first, second]))
 
@@ -416,12 +408,12 @@ test("SC15: the sessions page renders each row the inferred list payload returns
   const firstRow = await screen.findByRole("link", { name: /port the session detail surface/i })
   expect(firstRow).toHaveTextContent("Samskara")
   expect(firstRow).toHaveTextContent("maya")
-  expect(firstRow).toHaveTextContent("4.2k tokens")
+  expect(firstRow).toHaveTextContent("42 messages")
 
   const secondRow = screen.getByRole("link", { name: /trim the ingest pipeline/i })
   expect(secondRow).toHaveTextContent("Andromeda")
   expect(secondRow).toHaveTextContent("ravi")
-  expect(secondRow).toHaveTextContent("12.4M tokens")
+  expect(secondRow).toHaveTextContent("0 messages")
   expect(secondRow).toHaveTextContent("unavailable")
 })
 
@@ -448,18 +440,9 @@ test("SC16: a search match decorates its row, and a row without one still render
 })
 
 test("the active-filter summary names the project by label when the option list carries it", async () => {
-  vi.stubGlobal("fetch", (input: RequestInfo | URL) => {
-    const path = typeof input === "string" ? input : input.toString()
-    if (path.endsWith("/api/auth/me")) return Promise.resolve(jsonResponse(200, user))
-    if (isSessionsList(path)) {
-      return Promise.resolve(
-        jsonResponse(200, {
-          ...payload([session]),
-          filterOptions: { ...filterOptions, projects: [{ value: "p-uuid", label: "Samskara" }] },
-        }),
-      )
-    }
-    return Promise.reject(new Error(`unstubbed fetch: ${path}`))
+  stubFetch(okWith([session]), {
+    ...filterOptions,
+    projects: [{ value: "p-uuid", label: "Samskara" }],
   })
 
   renderAt("/sessions?project=p-uuid")
@@ -470,24 +453,12 @@ test("the active-filter summary names the project by label when the option list 
 })
 
 test("the active-filter summary names each filter from its own option list", async () => {
-  vi.stubGlobal("fetch", (input: RequestInfo | URL) => {
-    const path = typeof input === "string" ? input : input.toString()
-    if (path.endsWith("/api/auth/me")) return Promise.resolve(jsonResponse(200, user))
-    if (isSessionsList(path)) {
-      return Promise.resolve(
-        jsonResponse(200, {
-          ...payload([session]),
-          filterOptions: {
-            projects: [{ value: "p-uuid", label: "Samskara" }],
-            authors: [{ value: "u-uuid", label: "maya" }],
-            repositories: [{ value: "r-uuid", label: "acme/samskara" }],
-            branches: ["release/search"],
-            tags: [],
-          },
-        }),
-      )
-    }
-    return Promise.reject(new Error(`unstubbed fetch: ${path}`))
+  stubFetch(okWith([session]), {
+    projects: [{ value: "p-uuid", label: "Samskara" }],
+    authors: [{ value: "u-uuid", label: "maya" }],
+    repositories: [{ value: "r-uuid", label: "acme/samskara" }],
+    branches: ["release/search"],
+    tags: [],
   })
 
   renderAt("/sessions?project=p-uuid&user=u-uuid&repo=r-uuid&branch=release/search")
@@ -503,14 +474,7 @@ test("the active-filter summary names each filter from its own option list", asy
 })
 
 test("the active-filter summary falls back to the raw value when the option list cannot name it", async () => {
-  vi.stubGlobal("fetch", (input: RequestInfo | URL) => {
-    const path = typeof input === "string" ? input : input.toString()
-    if (path.endsWith("/api/auth/me")) return Promise.resolve(jsonResponse(200, user))
-    if (isSessionsList(path)) {
-      return Promise.resolve(jsonResponse(200, payload([session])))
-    }
-    return Promise.reject(new Error(`unstubbed fetch: ${path}`))
-  })
+  stubFetch(okWith([session]))
 
   renderAt("/sessions?project=orphan-uuid")
 

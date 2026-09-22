@@ -134,10 +134,10 @@ describe.skipIf(!dockerAvailable())("session data model", () => {
     const repo = await seedRepo(session.userId, "raw-sql-probe")
     await seedMessage(session.id, repo.id)
 
-    const { rows, filterOptions } = await sessionsRepo.listAccessible(db, session.userId)
+    const { rows } = await sessionsRepo.listAccessible(db, session.userId)
+    const filterOptions = await sessionsRepo.filterOptionsFor(db, session.userId)
 
     const row = rows.find((candidate) => candidate.id === session.id)
-    expect(row?.repo?.repoName).toBe("raw-sql-probe")
     expect(row?.userLogin).toMatch(/^user-/)
     expect(filterOptions.repositories.map((option) => option.repoName)).toContain("raw-sql-probe")
     expect(filterOptions.authors.map((option) => option.value)).toContain(row?.userLogin)

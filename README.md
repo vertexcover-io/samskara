@@ -273,7 +273,7 @@ migrat*                  prefix match
 
 Filters you can combine with it: `project`, `user`, `repo`, `branch`, `pr`, `commit`,
 `range` (`hour` / `today` / `week` / `month` / `custom` with `from` and `to`), and
-`sort` (`recent`, `oldest`, `tokens`, `project`, `relevance`).
+`sort` (`recent`, `oldest`, `project`, `relevance`).
 
 The same query and filters are available from the terminal with `samskara search` (see
 [CLI reference](#cli-reference)).

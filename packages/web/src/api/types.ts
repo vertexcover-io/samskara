@@ -18,15 +18,15 @@ export type SessionListPayload = Ok<Client["api"]["sessions"]["$get"]>
 export type ReviewerOptions = Ok<Client["api"]["reviewer-options"]["$get"]>
 export type ReviewerHarnessOptions = ReviewerOptions["harnesses"][number]
 export type SessionSummary = SessionListPayload["sessions"][number]
-export type SessionFilterOptions = SessionListPayload["filterOptions"]
+export type SessionFilterOptions = Ok<Client["api"]["sessions"]["filters"]["$get"]>
 export type FilterOption = SessionFilterOptions["projects"][number]
-export type SessionRepo = NonNullable<SessionSummary["repo"]>
 type SessionSearchMatch = NonNullable<SessionSummary["match"]>
 export type SearchSourceKind = SessionSearchMatch["sourceKind"]
 
 type DetailBody = Ok<Client["api"]["sessions"][":id"]["$get"]>
 
 export type SessionFacts = DetailBody["session"]
+export type SessionRepo = NonNullable<SessionFacts["repo"]>
 export type RawMessage = DetailBody["messages"][number]
 export type RawToolCall = DetailBody["toolCalls"][number]
 export type RawSubagent = DetailBody["subagents"][number]
