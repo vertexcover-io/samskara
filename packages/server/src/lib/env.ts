@@ -1,4 +1,23 @@
+import {
+  CREDENTIAL_ENV,
+  DEFAULT_REVIEW_MODEL,
+  hasCredential,
+  REVIEW_HARNESSES,
+  type ReviewHarness,
+} from "@samskara/core"
 import { z } from "zod"
+
+// The harness enum, the model pattern and the per-harness default model live in core beside
+// the runner that consumes them, so the CLI can drive a harness without the server package.
+// Re-exported here because every server caller reads its review config from env.
+export {
+  CREDENTIAL_ENV,
+  DEFAULT_REVIEW_MODEL,
+  hasCredential,
+  REVIEW_HARNESSES,
+  REVIEW_MODEL_PATTERN,
+  type ReviewHarness,
+} from "@samskara/core"
 
 export const DEFAULT_LOCAL_LOGIN = "samskara-dev"
 
@@ -22,6 +41,17 @@ const BaseEnvSchema = z.object({
     ),
   LOCAL_LOGIN_SECRET: z.string().default(""),
   LOCAL_LOGIN_LOGIN: z.string().min(1).default(DEFAULT_LOCAL_LOGIN),
+  /**
+   * Which CLI runs the reviewer agent. Each harness carries its own default model; an
+   * explicit AI_REVIEW_MODEL overrides either default.
+   */
+  AI_REVIEW_HARNESS: z.enum(REVIEW_HARNESSES).default("opencode"),
+  AI_REVIEW_MODEL: z.string().min(1).optional(),
+  AI_REVIEW_TIMEOUT_MS: z
+    .string()
+    .regex(/^\d+$/, "AI_REVIEW_TIMEOUT_MS must be digits (milliseconds)")
+    .default("600000")
+    .transform((value) => Number(value)),
 })
 
 const requireSignInMethod = (data: z.infer<typeof BaseEnvSchema>, ctx: z.RefinementCtx): void => {
@@ -36,7 +66,26 @@ const requireSignInMethod = (data: z.infer<typeof BaseEnvSchema>, ctx: z.Refinem
   }
 }
 
-const EnvSchema = BaseEnvSchema.superRefine(requireSignInMethod)
+/**
+ * The reviewer's credential is configuration, not something the pipeline discovers at run
+ * time, so a server whose own harness cannot authenticate refuses to start rather than
+ * accepting analyze requests that are all going to fail minutes in.
+ *
+ * Only the *configured* harness is required. A request may override the harness per run, and
+ * that case is caught by the pipeline with a named error — making both credentials mandatory
+ * would force a single-harness deployment to hold a second provider's secret.
+ */
+const requireHarnessCredential =
+  (source: Source) =>
+  (data: z.infer<typeof BaseEnvSchema>, ctx: z.RefinementCtx): void => {
+    const harness = data.AI_REVIEW_HARNESS
+    if (hasCredential(harness, source)) return
+    ctx.addIssue({
+      code: "custom",
+      path: [CREDENTIAL_ENV[harness][0] as string],
+      message: `${CREDENTIAL_ENV[harness].join(" or ")} is required for AI_REVIEW_HARNESS=${harness}`,
+    })
+  }
 
 export type Env = {
   readonly githubClientId: string
@@ -50,12 +99,17 @@ export type Env = {
   readonly webDist?: string | undefined
   readonly localLoginSecret?: string | undefined
   readonly localLoginLogin?: string | undefined
+  readonly aiReviewHarness: ReviewHarness
+  readonly aiReviewModel: string
+  readonly aiReviewTimeoutMs: number
 }
 
 type Source = Record<string, string | undefined>
 
 export const loadEnv = (source: Source = process.env): Env => {
-  const parsed = EnvSchema.safeParse(source)
+  const parsed = BaseEnvSchema.superRefine(requireSignInMethod)
+    .superRefine(requireHarnessCredential(source))
+    .safeParse(source)
   if (!parsed.success) {
     const keys = parsed.error.issues.map((issue) => issue.path.join(".")).join(", ")
     throw new Error(`Invalid environment configuration: ${keys}`)
@@ -75,5 +129,9 @@ export const loadEnv = (source: Source = process.env): Env => {
     webDist: parsed.data.WEB_DIST,
     localLoginSecret: parsed.data.LOCAL_LOGIN_SECRET,
     localLoginLogin: parsed.data.LOCAL_LOGIN_LOGIN,
+    aiReviewHarness: parsed.data.AI_REVIEW_HARNESS,
+    aiReviewModel:
+      parsed.data.AI_REVIEW_MODEL ?? DEFAULT_REVIEW_MODEL[parsed.data.AI_REVIEW_HARNESS],
+    aiReviewTimeoutMs: parsed.data.AI_REVIEW_TIMEOUT_MS,
   }
 }
