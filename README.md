@@ -308,8 +308,10 @@ bun run db:verify                      # read-only: assert it already is
 ```
 
 `db:migrate` is the only supported way to change a database's shape — it runs drizzle-kit's
-migrations and then the post-migrate steps in `packages/server/src/db/steps.ts` (today, the
-full-text search indexes, which cannot be built inside a migration's transaction).
+migrations and then the post-migrate steps in `packages/server/src/db/steps.ts`. Today those are
+the full-text search indexes, which cannot be built inside a migration's transaction, and the
+autovacuum setting on `messages`, which a migration would apply once where the step re-asserts it
+on every run.
 
 The server's tests need Docker and start exactly one Postgres for the whole run, copying a golden
 database per test file rather than migrating each one. Without Docker those tests skip and the run

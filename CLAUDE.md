@@ -102,7 +102,10 @@ Main checkout uses `samskara`; a worktree uses `samskara_BRANCH_SLUG`.
 
 **Post-migrate steps.** Some database work cannot live in a migration: `create index
 concurrently` is rejected inside a migration's transaction, so the full-text search indexes are
-built outside the migration journal. `db:migrate` runs drizzle-kit and then every step registered
+built outside the migration journal. Work a migration could run but should not also belongs here —
+the `messages` autovacuum setting is a storage parameter `schema.ts` cannot express, so a migration
+for it would be hand-written and outside the naming plugin's reach, and would apply once where the
+step re-asserts it and `db:verify` catches it drifting. `db:migrate` runs drizzle-kit and then every step registered
 in `MIGRATION_STEPS` (`packages/server/src/db/steps.ts`), under one advisory lock. Never migrate a
 database any other way — a setup path that runs only `drizzle-kit migrate` yields a schema-correct
 database with no search indexes, and search then scans and re-tokenizes all of `messages` on every
