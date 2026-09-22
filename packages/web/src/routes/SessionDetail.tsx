@@ -355,7 +355,7 @@ const Masthead = ({ session, tokens }: { session: SessionFacts; tokens: TokenTot
     <dl
       role="group"
       aria-label="Session facts"
-      className="mt-4 grid w-fit max-w-full grid-cols-2 gap-x-6 gap-y-3 border-t border-rule pt-3 min-[560px]:grid-cols-3 min-[900px]:grid-cols-4 min-[1200px]:grid-cols-7"
+      className="mt-4 grid w-fit max-w-full grid-cols-2 gap-x-6 gap-y-3 border-t border-rule pt-3 min-[560px]:grid-cols-3 min-[900px]:grid-cols-4 min-[1200px]:grid-cols-5 min-[1400px]:grid-cols-9"
     >
       <Fact
         label="Started"
@@ -370,6 +370,10 @@ const Masthead = ({ session, tokens }: { session: SessionFacts; tokens: TokenTot
       <Fact label="Subagents" value={session.subagentCount.toLocaleString("en-US")} />
       <Fact label="Tokens in" value={tokens.inputTokens.toLocaleString("en-US")} />
       <Fact label="Tokens out" value={tokens.outputTokens.toLocaleString("en-US")} />
+      <Fact label="Tokens cached" value={tokens.cachedTokens.toLocaleString("en-US")} />
+      {tokens.thinkingTokens === 0 ? null : (
+        <Fact label="Tokens thinking" value={tokens.thinkingTokens.toLocaleString("en-US")} />
+      )}
     </dl>
   </div>
 )

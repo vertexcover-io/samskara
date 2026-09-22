@@ -135,3 +135,49 @@ test("SC65 (regression): Last active and Sort by are still native dropdowns", as
   await user.selectOptions(screen.getByRole("combobox", { name: "Sort by" }), "tokens")
   expect(onChange).toHaveBeenLastCalledWith({ ...EMPTY_FILTERS, sort: "tokens" })
 })
+
+test("Search stays inert until submitting it would change the results", async () => {
+  const user = userEvent.setup()
+  renderBar()
+
+  const search = screen.getByRole("button", { name: "Search" })
+  expect(search).toBeDisabled()
+
+  await user.type(screen.getByRole("searchbox", { name: /search session evidence/i }), "timeout")
+  expect(search).toBeEnabled()
+})
+
+test("emptying the box still submits, so an active search can be cleared from it", async () => {
+  const user = userEvent.setup()
+  renderBar({ ...EMPTY_FILTERS, q: "timeout" })
+
+  await user.clear(screen.getByRole("searchbox", { name: /search session evidence/i }))
+  expect(screen.getByRole("button", { name: "Search" })).toBeEnabled()
+})
+
+test("Reset is inert when there is nothing to reset", async () => {
+  renderBar()
+  expect(screen.getByRole("button", { name: "Reset search & filters" })).toBeDisabled()
+})
+
+test("Reset wakes up once any filter is set", async () => {
+  renderBar({ ...EMPTY_FILTERS, project: "samskara" })
+  expect(screen.getByRole("button", { name: "Reset search & filters" })).toBeEnabled()
+})
+
+test("Apply is inert until its own draft differs from the filter it applies", async () => {
+  const user = userEvent.setup()
+  renderBar()
+
+  const [pr] = screen.getAllByRole("button", { name: "Apply" })
+  expect(pr).toBeDisabled()
+
+  await user.type(screen.getByRole("textbox", { name: /pr number/i }), "42")
+  expect(pr).toBeEnabled()
+})
+
+test("Apply is inert again when the draft matches the applied filter", async () => {
+  renderBar({ ...EMPTY_FILTERS, pr: "42" })
+  const [pr] = screen.getAllByRole("button", { name: "Apply" })
+  expect(pr).toBeDisabled()
+})

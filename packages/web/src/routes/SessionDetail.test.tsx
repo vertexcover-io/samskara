@@ -574,6 +574,38 @@ test("SC25: an unknown start time reads as unavailable, as does a null duration"
   expect(factValue("Duration")?.textContent).toMatch(/unavailable/i)
 })
 
+test("S79: the facts report every token bucket the payload carries, so the strip agrees with the list page", async () => {
+  renderDetail(
+    buildPayload({
+      ...PAYLOAD,
+      tokenUsage: {
+        inputTokens: 49_284,
+        outputTokens: 5_145_110,
+        cachedTokens: 2_118_565_132,
+        thinkingTokens: 12_400,
+      },
+    }),
+  )
+
+  await waitFor(() => expect(tabs()).toHaveLength(5))
+
+  expect(factValue("Tokens in")?.textContent).toBe("49,284")
+  expect(factValue("Tokens out")?.textContent).toBe("5,145,110")
+  expect(factValue("Tokens cached")?.textContent).toBe("2,118,565,132")
+  expect(factValue("Tokens thinking")?.textContent).toBe("12,400")
+})
+
+test("S79: a session that did no thinking keeps the cached entry and drops the thinking one", async () => {
+  renderDetail(
+    buildPayload({ ...PAYLOAD, tokenUsage: { cachedTokens: 900_000, thinkingTokens: 0 } }),
+  )
+
+  await waitFor(() => expect(tabs()).toHaveLength(5))
+
+  expect(factValue("Tokens cached")?.textContent).toBe("900,000")
+  expect(within(sessionFacts()).queryByText("Tokens thinking")).not.toBeInTheDocument()
+})
+
 const metaLineOf = async (): Promise<string> => {
   await screen.findByRole("heading", { name: "Make ingest idempotent" })
   // The title is pinned in its own bar now, so the meta line is found from the facts it sits above.

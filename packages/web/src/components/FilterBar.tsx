@@ -2,6 +2,7 @@ import { useEffect, useId, useState } from "react"
 import type { SessionFilterOptions } from "../api/types.js"
 import {
   changedFilters,
+  hasActiveFilters,
   RANGE_LABEL,
   RANGES,
   type Range,
@@ -19,8 +20,15 @@ const asRange = (value: string): Range => RANGES.find((range) => range === value
 const asSort = (value: string): Sort => SORTS.find((sort) => sort === value) ?? "recent"
 
 const selectClass = `${controlClass} mt-0 cursor-pointer appearance-none pr-7`
-const buttonClass =
-  "h-9 rounded-xs border border-ink bg-ink px-4 text-[0.78rem] font-semibold text-panel-2 transition-colors hover:bg-ink-2"
+
+/**
+ * A control that cannot act must not read as one that can. `text-faded` alone clears 4.5:1 against
+ * the panel, so it still looks like live body text; the fade is what carries the meaning.
+ */
+export const inertClass =
+  "disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:no-underline"
+
+const buttonClass = `h-9 rounded-xs border border-ink bg-ink px-4 text-[0.78rem] font-semibold text-panel-2 transition-colors hover:bg-ink-2 disabled:hover:bg-ink ${inertClass}`
 
 /** Its two callers map over client constants, so this shape is not the server's to change. */
 type Choosable = { readonly value: string; readonly label: string }
@@ -73,13 +81,14 @@ const TextFilter = ({
 }) => {
   const [draft, setDraft] = useState(value ?? "")
   useEffect(() => setDraft(value ?? ""), [value])
+  const submitted = draft === "" ? null : draft
 
   return (
     <form
       className="min-w-0"
       onSubmit={(event) => {
         event.preventDefault()
-        onSubmit(draft === "" ? null : draft)
+        onSubmit(submitted)
       }}
     >
       <TextField
@@ -91,7 +100,8 @@ const TextFilter = ({
         trailing={
           <button
             type="submit"
-            className="shrink-0 rounded-xs border border-rule bg-panel-2 px-2 font-mono text-[0.72rem] font-semibold hover:border-ink"
+            disabled={submitted === value}
+            className={`shrink-0 rounded-xs border border-rule bg-panel-2 px-2 font-mono text-[0.72rem] font-semibold hover:border-ink disabled:hover:border-rule ${inertClass}`}
           >
             Apply
           </button>
@@ -248,7 +258,11 @@ export const FilterBar = ({ filters, options, onChange, onClear }: Props) => {
             to read.
           </span>
         </div>
-        <button type="submit" className={buttonClass}>
+        <button
+          type="submit"
+          disabled={query.trim() === "" && filters.q === null}
+          className={buttonClass}
+        >
           Search
         </button>
       </form>
@@ -258,7 +272,8 @@ export const FilterBar = ({ filters, options, onChange, onClear }: Props) => {
         <button
           type="button"
           onClick={onClear}
-          className="text-[0.68rem] font-semibold text-custody hover:underline"
+          disabled={!hasActiveFilters(filters)}
+          className={`text-[0.68rem] font-semibold text-custody hover:underline ${inertClass}`}
         >
           Reset search &amp; filters
         </button>

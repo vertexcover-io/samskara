@@ -1,5 +1,11 @@
 import { describe, expect, test } from "vitest"
-import { changedFilters, EMPTY_FILTERS, parseFilters, serializeFilters } from "./filters.js"
+import {
+  changedFilters,
+  EMPTY_FILTERS,
+  hasActiveFilters,
+  parseFilters,
+  serializeFilters,
+} from "./filters.js"
 
 const roundTrip = (filters = EMPTY_FILTERS) => parseFilters(serializeFilters(filters))
 
@@ -76,4 +82,12 @@ describe("session filter URLs", () => {
     expect(parseFilters(new URLSearchParams("page=1.5")).page).toBe(1)
     expect(parseFilters(new URLSearchParams("page=4")).page).toBe(4)
   })
+})
+
+test("hasActiveFilters ignores the page, which is navigation rather than narrowing", () => {
+  expect(hasActiveFilters(EMPTY_FILTERS)).toBe(false)
+  expect(hasActiveFilters({ ...EMPTY_FILTERS, page: 4 })).toBe(false)
+  expect(hasActiveFilters({ ...EMPTY_FILTERS, project: "samskara" })).toBe(true)
+  expect(hasActiveFilters({ ...EMPTY_FILTERS, tags: ["harness"] })).toBe(true)
+  expect(hasActiveFilters({ ...EMPTY_FILTERS, sort: "tokens" })).toBe(true)
 })
