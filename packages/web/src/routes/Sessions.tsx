@@ -4,11 +4,12 @@ import { type ApiError, client, request } from "../api/client.js"
 import type { FilterOption, SessionListPayload } from "../api/types.js"
 import { SessionExpired } from "../auth/SessionExpired.js"
 import { optionFor } from "../components/combobox.js"
-import { FilterBar } from "../components/FilterBar.js"
+import { FilterBar, inertClass } from "../components/FilterBar.js"
 import { SessionListSkeleton } from "../components/SessionListSkeleton.js"
 import { SessionRow } from "../components/SessionRow.js"
 import {
   EMPTY_FILTERS,
+  hasActiveFilters,
   localTimeZone,
   parseFilters,
   type SessionFilters,
@@ -184,7 +185,7 @@ const Pagination = ({
         type="button"
         onClick={() => onPage(page - 1)}
         disabled={page <= 1}
-        className="h-9 rounded-xs border border-ink bg-panel-2 px-3 font-semibold disabled:cursor-not-allowed disabled:border-rule disabled:bg-panel disabled:text-faded min-[600px]:justify-self-start"
+        className={`h-9 rounded-xs border border-ink bg-panel-2 px-3 font-semibold disabled:border-rule disabled:bg-panel min-[600px]:justify-self-start ${inertClass}`}
       >
         Previous
       </button>
@@ -200,7 +201,7 @@ const Pagination = ({
         type="button"
         onClick={() => onPage(page + 1)}
         disabled={totalPages === 0 || page >= totalPages}
-        className="h-9 rounded-xs border border-ink bg-panel-2 px-3 font-semibold disabled:cursor-not-allowed disabled:border-rule disabled:bg-panel disabled:text-faded min-[600px]:col-start-3 min-[600px]:justify-self-end"
+        className={`h-9 rounded-xs border border-ink bg-panel-2 px-3 font-semibold disabled:border-rule disabled:bg-panel min-[600px]:col-start-3 min-[600px]:justify-self-end ${inertClass}`}
       >
         Next
       </button>
@@ -270,7 +271,7 @@ export const Sessions = () => {
   const error = answered && state.phase === "failed" ? state.error : null
   const previous = lastPayload(state)
   const loading = payload === null && error === null
-  const hasFilters = serializeFilters({ ...filters, page: 1 }).toString() !== ""
+  const hasFilters = hasActiveFilters(filters)
 
   return (
     <section>

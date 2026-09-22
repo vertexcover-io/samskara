@@ -181,3 +181,7 @@ export const clearFilter = <K extends keyof SessionFilters>(
     [key]: defaults[key as keyof typeof defaults],
   } as Partial<SessionFilters>)
 }
+
+/** Page is navigation, not narrowing: a reader on page 3 of an unfiltered list has nothing to reset. */
+export const hasActiveFilters = (filters: SessionFilters): boolean =>
+  serializeFilters({ ...filters, page: 1 }).toString() !== ""
