@@ -1542,11 +1542,23 @@ const useAiAnalysis = (
         })
         return
       }
-      // Joined a run without its job id (another tab started it): the review appearing is
-      // the only landed signal, and there is no old verdict to confuse it with.
+      // Joined a run without its job id: adopt the id so job status decides the outcome. On a
+      // redo the old verdict is still there, so a review alone only counts once no job remains.
       fetchAiReview(sessionId).then((result) => {
-        if (!active || !result.ok || result.data.review === null) return
-        landed()
+        if (!active || !result.ok) return
+        const { review, job } = result.data
+        if (job !== null) {
+          setAnalysis({ phase: "running", startedAt: Date.parse(job.startedAt), jobId: job.jobId })
+          return
+        }
+        if (review !== null) {
+          landed()
+          return
+        }
+        setAnalysis({
+          phase: "failed",
+          message: "the run ended without a review, so its outcome is unknown.",
+        })
       })
     }
     const timer = setInterval(probe, AI_POLL_INTERVAL_MS)

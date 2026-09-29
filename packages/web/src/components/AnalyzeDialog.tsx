@@ -55,8 +55,9 @@ export const AnalyzeDialog = ({ open, onClose, onRun, restoreFocusTo }: Props) =
       if (!result.ok) return
       const options = result.data
       const wanted =
-        options.harnesses.find((entry) => entry.harness === options.defaultHarness) ??
-        options.harnesses.find((entry) => entry.available)
+        options.harnesses.find(
+          (entry) => entry.harness === options.defaultHarness && entry.available,
+        ) ?? options.harnesses.find((entry) => entry.available)
       if (wanted === undefined) return
       setHarness(wanted.harness)
       setModel(

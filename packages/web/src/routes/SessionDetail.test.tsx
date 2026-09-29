@@ -193,6 +193,7 @@ const renderDetail = (
     readonly aireview?: Reply | ReadonlyArray<Reply>
     /** What GET /review answers once an aireview reply landed 200: analyze writes the ai-v1 row. */
     readonly reviewAfterAi?: Reply
+    readonly reviewerOptions?: Reply
   } = {},
 ) => {
   const review = extras.review ?? { status: 200, body: { reviews: [] } }
@@ -269,7 +270,7 @@ const renderDetail = (
     }
     // Before the /review branch: "/reviewer-options" contains "/review" as a substring.
     if (url.includes("/reviewer-options")) {
-      return respond(REVIEWER_OPTIONS)
+      return respond(extras.reviewerOptions ?? REVIEWER_OPTIONS)
     }
     if (url.includes("/review")) {
       const after = aiLanded || existsConflict ? extras.reviewAfterAi : undefined
@@ -1712,6 +1713,74 @@ test("AI review: the modal offers the server's reviewer choices and posts the pi
   expect(view.analyzeBodies.at(-1)).toEqual({ harness: "claude", model: "sonnet" })
 })
 
+test("AI review: an unavailable default harness is not preselected; the first usable one is", async () => {
+  const user = userEvent.setup()
+  const view = renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1", {
+    reviewerOptions: {
+      status: 200,
+      body: {
+        defaultHarness: "opencode",
+        defaultModel: "zai-coding-plan/glm-5.3-flash",
+        harnesses: [
+          {
+            harness: "opencode",
+            defaultModel: "zai-coding-plan/glm-5.3-flash",
+            available: false,
+            models: ["zai-coding-plan/glm-5.3-flash"],
+          },
+          { harness: "claude", defaultModel: "sonnet", available: true, models: ["sonnet"] },
+        ],
+      },
+    },
+  })
+
+  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await user.click(screen.getByRole("tab", { name: /Review/ }))
+  await user.click(await within(panelOf()).findByRole("button", { name: /analyze with ai/i }))
+
+  expect(await screen.findByLabelText("Reviewer harness")).toHaveValue("claude")
+  expect(screen.getByLabelText("Model")).toHaveValue("sonnet")
+
+  await user.click(screen.getByRole("button", { name: "Run analysis" }))
+  expect(view.analyzeBodies.at(-1)).toEqual({ harness: "claude", model: "sonnet" })
+})
+
+test("AI review: a joined run that fails surfaces the failure instead of analyzing forever", async () => {
+  const user = userEvent.setup()
+  renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1", {
+    analyze: { status: 409, body: { error: "analysisAlreadyRunning" } },
+    aireview: [
+      { status: 404, body: { error: "noAiReview" } },
+      { status: 200, body: { review: null, job: RUNNING_JOB } },
+      { status: 404, body: { error: "noAiReview" } },
+    ],
+    analyzeJob: {
+      status: 200,
+      body: { job: { status: "failed", jobId: RUNNING_JOB.jobId, code: "unparseable" } },
+    },
+  })
+
+  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await user.click(screen.getByRole("tab", { name: /Review/ }))
+  const analyze = await within(panelOf()).findByRole("button", { name: /analyze with ai/i })
+
+  fireEvent.click(analyze)
+  fireEvent.click(await screen.findByRole("button", { name: "Run analysis" }))
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] })
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0)
+  })
+  expect(within(panelOf()).getByText(/Analyzing… \(started/)).toBeInTheDocument()
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(3000)
+    await vi.advanceTimersByTimeAsync(3000)
+    await vi.advanceTimersByTimeAsync(0)
+  })
+  expect(within(panelOf()).getByRole("alert")).toHaveTextContent(/Analysis failed/)
+  expect(analyze).toBeEnabled()
+})
+
 test("AI review: a failed job surfaces its reason, re-enables Analyze, and stops saying Analyzing", async () => {
   const user = userEvent.setup()
   renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1", {
@@ -1761,10 +1830,14 @@ test("AI review: 409 analysisAlreadyRunning joins the existing run and polls it 
     aireview: [
       // Mount probe: nothing running yet from this tab's point of view.
       { status: 404, body: { error: "noAiReview" } },
-      // The click's conflict said someone else is running; the poll reads the job, then the verdict.
+      // The click's conflict said someone else is running; the poll adopts that job's id.
       { status: 200, body: { review: null, job: RUNNING_JOB } },
       { status: 200, body: { review: AI_REVIEW_ROW } },
     ],
+    analyzeJob: {
+      status: 200,
+      body: { job: { status: "succeeded", jobId: RUNNING_JOB.jobId, reviewId: AI_REVIEW_ROW.id } },
+    },
     reviewAfterAi: { status: 200, body: { reviews: [AI_REVIEW_ROW, REVIEW] } },
   })
 
@@ -1781,7 +1854,7 @@ test("AI review: 409 analysisAlreadyRunning joins the existing run and polls it 
   expect(analyze).toBeDisabled()
   expect(within(panelOf()).getByText(/Analyzing… \(started/)).toBeInTheDocument()
 
-  // Tick 1 reads the running job; tick 2 reads the landed verdict and refetches the list.
+  // Tick 1 adopts the running job; tick 2 reads it succeeded and refetches the list.
   await act(async () => {
     await vi.advanceTimersByTimeAsync(3000)
     await vi.advanceTimersByTimeAsync(3000)
