@@ -13,21 +13,31 @@ import {
   DEFAULT_REVIEW_MODEL,
   type HarnessRunner,
   type HarnessRunnerResult,
+  idsLabel,
   missingCredentialMessage,
   type NormalizedMessage,
+  type PreparedProblems,
+  type ProblemReview,
   parseReviewXml,
+  prepareProblems,
+  problemReviewFiles,
   REVIEW_HARNESSES,
   REVIEW_MODEL_PATTERN,
   type ReviewHarness,
+  readProblemWorkspace,
   reviewContractMd,
+  reviewMdSkeleton,
   reviewXmlTemplate,
+  type SessionExport,
   sessionIndexFrom,
   validateGrounding,
   withDerivedTracks,
 } from "@samskara/core"
+import { configHome } from "../config/paths.js"
 import { errorMessage, reportError, resolveIo, type Writer } from "../io.js"
 import { globAll, nodeFs } from "../watcher/index.js"
 import { belongsToSession } from "./replay.js"
+import { resolveReviewInstructions } from "./review-prompt.js"
 
 /**
  * The session id the reviewer is shown. The real one is withheld on purpose: a harness that
@@ -36,7 +46,13 @@ import { belongsToSession } from "./replay.js"
  */
 const ALIAS = "session-under-review"
 
-/** The legacy v1 contract: the review as a fenced XML block in stdout, no file written. */
+/**
+ * The harness wall clock. The problems review reads every message whole, in several stages, so
+ * it gets far longer than the lens review's ten minutes.
+ */
+const DEFAULT_TIMEOUT_MS = { problems: 1_800_000, lenses: 600_000 }
+
+/** The legacy v1 lens contract: the review as a fenced XML block in stdout, no file written. */
 const STDOUT_REVIEW_RE = /<review[\s>]/
 
 export type ReviewSessionOptions = {
@@ -49,6 +65,10 @@ export type ReviewSessionOptions = {
   /** Commander sets this false for `--no-sandbox-home`; claude only. */
   readonly sandboxHome?: boolean
   readonly dryRun?: boolean
+  /** --lenses: the lens review (review.xml) instead of the problems review. */
+  readonly lenses?: boolean
+  /** --prompt FILE: the user's own prompt. --no-prompt sets false: ours only, this run. */
+  readonly prompt?: string | false
   readonly stdout?: Writer
   readonly stderr?: Writer
   /** Test seams. */
@@ -75,6 +95,7 @@ type Settings = {
   readonly keep: boolean
   readonly sandboxHome: boolean
   readonly dryRun: boolean
+  readonly lenses: boolean
 }
 
 const isHarness = (value: string): value is ReviewHarness =>
@@ -95,7 +116,14 @@ const settingsFrom = (
   // Same narrow charset the server enforces at its request boundary: a model id reaches the
   // harness command line, so it is validated rather than quoted and hoped for.
   if (!REVIEW_MODEL_PATTERN.test(model)) throw new Error(`--model "${model}" is not a model id`)
-  const timeoutMs = Number(options.timeout ?? env.AI_REVIEW_TIMEOUT_MS ?? 600_000)
+  const lenses = options.lenses === true
+  if (lenses && typeof options.prompt === "string")
+    throw new Error("--prompt applies to the problems review only, not to --lenses")
+  const timeoutMs = Number(
+    options.timeout ??
+      env.AI_REVIEW_TIMEOUT_MS ??
+      DEFAULT_TIMEOUT_MS[lenses ? "lenses" : "problems"],
+  )
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error("--timeout must be a number")
   const key = target.replace(/^.*\//, "").replace(/\.jsonl$/, "")
   return {
@@ -107,6 +135,7 @@ const settingsFrom = (
     keep: options.keep === true,
     sandboxHome: options.sandboxHome !== false,
     dryRun: options.dryRun === true,
+    lenses,
   }
 }
 
@@ -152,6 +181,26 @@ const messagesFor = async (
   }
 }
 
+/** The session as records: excerpts for the lens review, every message whole for problems. */
+const exportSession = async (
+  files: ReadonlyArray<string>,
+  log: ReturnType<typeof createLogger>,
+  full: boolean,
+): Promise<SessionExport> => {
+  const { messages, title, source } = await messagesFor(files, log)
+  const first = messages[0]?.timestamp
+  const last = messages.at(-1)?.timestamp
+  return buildSessionExport({
+    sessionId: ALIAS,
+    title,
+    source,
+    ...(first === undefined ? {} : { startedAt: first }),
+    ...(last === undefined ? {} : { endedAt: last }),
+    messages,
+    full,
+  })
+}
+
 const defaultRunner = (spec: RunnerSpec): HarnessRunner => {
   const byHarness: Readonly<Record<ReviewHarness, () => HarnessRunner>> = {
     claude: () =>
@@ -170,6 +219,29 @@ const defaultRunner = (spec: RunnerSpec): HarnessRunner => {
 
 const writeJson = (path: string, value: unknown): Promise<void> =>
   writeFile(path, `${JSON.stringify(value, null, 2)}\n`, "utf8")
+
+/**
+ * A harness that will not start, times out or exits non-zero throws. It is the common failure
+ * on a first run -- the CLI is missing, or the provider refuses -- so it reads as a message
+ * with the harness's own stderr under it, not as a stack trace.
+ */
+const harnessFailed = (stderr: Writer, error: unknown): number => {
+  stderr.write(`\nHARNESS FAILED: ${errorMessage(error)}\n`)
+  const harnessStderr = (error as { stderr?: string }).stderr
+  if (harnessStderr !== undefined && harnessStderr.trim() !== "")
+    stderr.write(`${harnessStderr.trim()}\n`)
+  return 1
+}
+
+/** What both reviews share once the session is found, exported and a runner can be built. */
+type ReviewContext = {
+  readonly settings: Settings
+  readonly sessionExport: SessionExport
+  readonly makeRunner: () => HarnessRunner
+  readonly step: (name: string) => void
+  readonly stdout: Writer
+  readonly stderr: Writer
+}
 
 /**
  * Reviews one locally captured Claude Code session end to end on this machine: export the
@@ -210,33 +282,197 @@ export const reviewSessionCommand = async (
   }
   step(`found ${files.length} transcript file(s)`)
 
-  if (!settings.dryRun) {
-    const missing = missingCredentialMessage(settings.harness, env)
-    if (missing !== null) {
-      stderr.write(`${missing}\n`)
-      return 1
-    }
+  // Checked here, reported after the prompt is resolved: a missing or empty --prompt file
+  // is the clearer error. claude with the real HOME signs in with the machine's own login,
+  // which is what --no-sandbox-home is for, so it needs no key.
+  const missingCredential =
+    settings.dryRun || (settings.harness === "claude" && !settings.sandboxHome)
+      ? null
+      : missingCredentialMessage(settings.harness, env)
+
+  // The run's model settings, used for the merge agent and the reviewer alike.
+  const makeRunner = (): HarnessRunner => {
+    if (missingCredential !== null) throw new Error(missingCredential)
+    return (options.createRunner ?? defaultRunner)({
+      harness: settings.harness,
+      model: settings.model,
+      timeoutMs: settings.timeoutMs,
+      sandboxHome: settings.sandboxHome,
+      log,
+    })
   }
 
-  let exported: Awaited<ReturnType<typeof messagesFor>>
+  let instructions: string | undefined
+  if (!settings.lenses) {
+    const resolved = await resolveReviewInstructions({
+      prompt: options.prompt,
+      cwd: options.cwd ?? process.cwd(),
+      configDir: join(configHome(), "review"),
+      stderr,
+      createRunner: makeRunner,
+      dryRun: settings.dryRun,
+    })
+    if (resolved.kind === "error") {
+      stderr.write(`${resolved.message}\n`)
+      return 1
+    }
+    instructions = resolved.instructions
+    step(
+      resolved.source === "base"
+        ? "using the default prompt"
+        : `using your prompt (${resolved.promptPath})${resolved.source === "merged" ? ", merged and saved as the default" : ""}`,
+    )
+    if (resolved.changes !== undefined && resolved.changes !== "")
+      stderr.write(`What your prompt changed:\n${resolved.changes}\n`)
+  }
+  if (missingCredential !== null) {
+    stderr.write(`${missingCredential}\n`)
+    return 1
+  }
+
+  let sessionExport: SessionExport
   try {
-    exported = await messagesFor(files, log)
+    sessionExport = await exportSession(files, log, !settings.lenses)
   } catch (error) {
     return reportError(stderr, error)
   }
-  const { messages, title, source } = exported
-  const first = messages[0]?.timestamp
-  const last = messages.at(-1)?.timestamp
-  const sessionExport = buildSessionExport({
-    sessionId: ALIAS,
-    title,
-    source,
-    ...(first === undefined ? {} : { startedAt: first }),
-    ...(last === undefined ? {} : { endedAt: last }),
-    messages,
-  })
-  step(`exported ${sessionExport.records.length} records from ${messages.length} messages`)
+  step(`exported ${sessionExport.records.length} records`)
 
+  const context = { settings, sessionExport, makeRunner, step, stdout, stderr }
+  return instructions === undefined ? lensReview(context) : problemsReview(context, instructions)
+}
+
+/**
+ * The problems review: readers read every piece and find leads, and the reviewer checks each
+ * lead against the session and writes the real problems as review.md. A dry run calls no
+ * model, so it stages the reviewer with only the leads code finds.
+ */
+const problemsReview = async (
+  { settings, sessionExport, makeRunner, step, stdout, stderr }: ReviewContext,
+  instructions: string,
+): Promise<number> => {
+  let prepared: PreparedProblems | undefined
+  if (!settings.dryRun) {
+    step("reading the session in pieces")
+    try {
+      prepared = await prepareProblems({
+        exported: sessionExport,
+        instructions,
+        runner: makeRunner(),
+        run: { harness: settings.harness, model: settings.model },
+      })
+    } catch (error) {
+      return harnessFailed(stderr, error)
+    }
+    const { found } = prepared
+    step(
+      `readers done: ${found.pieceCount} pieces, ${found.leads.length} leads, ${found.failedPieces.length} failed`,
+    )
+  }
+  const { files: staged, prompt } = problemReviewFiles(
+    sessionExport,
+    instructions,
+    prepared?.leadsMd,
+  )
+
+  const workspaceDir = await mkdtemp(join(tmpdir(), "samskara-review-"))
+  try {
+    for (const [name, text] of Object.entries(staged))
+      await writeFile(join(workspaceDir, name), text, "utf8")
+    step(`workspace staged at ${workspaceDir}`)
+
+    await mkdir(settings.outDir, { recursive: true })
+    for (const [name, text] of Object.entries(staged))
+      if (name !== "review.md") await writeFile(join(settings.outDir, name), text, "utf8")
+
+    // Only a dry run skips the readers.
+    if (prepared === undefined) {
+      await writeFile(join(settings.outDir, "review.md"), reviewMdSkeleton(), "utf8")
+      await writeFile(join(settings.outDir, "prompt.txt"), prompt, "utf8")
+      step(`dry run: what the reviewer is handed is in ${settings.outDir}`)
+      return 0
+    }
+
+    step(`running ${settings.harness} (${settings.model}) — this takes minutes`)
+    let run: HarnessRunnerResult
+    try {
+      run = await makeRunner().run({
+        prompt,
+        workspaceDir,
+        harness: settings.harness,
+        model: settings.model,
+      })
+    } catch (error) {
+      return harnessFailed(stderr, error)
+    }
+    step(`harness finished, first byte at ${run.firstByteMs ?? "never"}ms`)
+
+    const read = await readProblemWorkspace({
+      workspaceDir,
+      records: sessionExport.records,
+      instructions,
+      prepared,
+    })
+    await writeFile(join(settings.outDir, "leads-answered.md"), read.leadAnswers, "utf8")
+    await writeFile(
+      join(settings.outDir, "agent.log"),
+      capAgentLog(run.agentLog ?? run.stdout),
+      "utf8",
+    )
+    if (read.markdown === null) {
+      stderr.write("\nMISSING: the reviewer left review.md missing or untouched\n")
+      return 1
+    }
+    await writeFile(join(settings.outDir, "review.md"), read.markdown, "utf8")
+    const { result } = read
+    if (!result.ok) {
+      stderr.write("\nUNPARSEABLE: review.md does not follow the format:\n")
+      for (const error of result.errors.slice(0, 10)) stderr.write(`  ${error}\n`)
+      stderr.write(`review.md kept at ${join(settings.outDir, "review.md")}\n`)
+      return 1
+    }
+
+    // The runner, not the reviewer, knows which model it drove.
+    const payload = {
+      ...result.review,
+      dropped: result.dropped,
+      unaccountedLeads: result.unaccountedLeads,
+      readers: read.readers,
+      model: settings.model,
+      harness: settings.harness,
+    }
+    await writeJson(join(settings.outDir, "review.json"), payload)
+    if (result.dropped.length > 0) {
+      stderr.write(
+        `\nDROPPED ${result.dropped.length} — problems that broke the format or cited what is not in the session:\n`,
+      )
+      for (const reason of result.dropped.slice(0, 10)) stderr.write(`  ${reason}\n`)
+    }
+    const skipped = result.unaccountedLeads
+    if (skipped.length > 0)
+      stderr.write(
+        `\nSKIPPED ${skipped.length} of ${prepared.leadIds.length} leads the reviewer never answered: ${skipped.slice(0, 20).join(", ")}\n`,
+      )
+    report(result.review, settings.outDir, stdout)
+    return 0
+  } finally {
+    if (settings.keep) stderr.write(`workspace kept at ${workspaceDir}\n`)
+    else await rm(workspaceDir, { recursive: true, force: true })
+  }
+}
+
+/**
+ * The lens review: one harness run fills review.xml from the excerpt export, and the result
+ * is parsed and ground-checked against it.
+ */
+const lensReview = async ({
+  settings,
+  sessionExport,
+  makeRunner,
+  step,
+  stdout,
+  stderr,
+}: ReviewContext): Promise<number> => {
   const workspaceDir = await mkdtemp(join(tmpdir(), "samskara-review-"))
   try {
     await writeJson(join(workspaceDir, "session.json"), sessionExport)
@@ -259,31 +495,16 @@ export const reviewSessionCommand = async (
     }
 
     step(`running ${settings.harness} (${settings.model}) — this takes minutes`)
-    const runner = (options.createRunner ?? defaultRunner)({
-      harness: settings.harness,
-      model: settings.model,
-      timeoutMs: settings.timeoutMs,
-      sandboxHome: settings.sandboxHome,
-      log,
-    })
-    // A harness that will not start, times out or exits non-zero throws. It is the common
-    // failure on a first run -- the CLI is missing, or the provider refuses -- so it reads as
-    // a message with the harness's own stderr under it, not as a stack trace.
     let run: HarnessRunnerResult
     try {
-      run = await runner.run({
+      run = await makeRunner().run({
         prompt,
         workspaceDir,
         harness: settings.harness,
         model: settings.model,
       })
     } catch (error) {
-      stderr.write(`\nHARNESS FAILED: ${errorMessage(error)}\n`)
-      const harnessStderr = (error as { stderr?: string }).stderr
-      if (harnessStderr !== undefined && harnessStderr.trim() !== "") {
-        stderr.write(`${harnessStderr.trim()}\n`)
-      }
-      return 1
+      return harnessFailed(stderr, error)
     }
     step(`harness finished, first byte at ${run.firstByteMs ?? "never"}ms`)
 
@@ -322,7 +543,7 @@ export const reviewSessionCommand = async (
       return 1
     }
     step("grounded")
-    report(payload, settings.outDir, stdout)
+    lensReport(payload, settings.outDir, stdout)
     return 0
   } finally {
     if (settings.keep) stderr.write(`workspace kept at ${workspaceDir}\n`)
@@ -332,7 +553,22 @@ export const reviewSessionCommand = async (
 
 const RULE = "─".repeat(72)
 
-const report = (payload: AiReviewPayload, outDir: string, stdout: Writer): void => {
+const report = (review: ProblemReview, outDir: string, stdout: Writer): void => {
+  stdout.write(`\n${RULE}\n`)
+  stdout.write(`outcome: ${review.outcome}   friction: ${review.friction}\n`)
+  stdout.write(`\n${review.summary}\n\n`)
+  stdout.write(`${RULE}\nPROBLEMS (${review.problems.length})\n`)
+  for (const problem of review.problems) {
+    stdout.write(`  [${problem.severity}] ${problem.class}, ${problem.fixType}: ${problem.title}\n`)
+    stdout.write(`      ${problem.description}\n`)
+    stdout.write(`      learning: ${problem.learning}\n`)
+    const refs = problem.evidence.map(idsLabel).join(", ")
+    stdout.write(`      evidence: ${refs}\n`)
+  }
+  stdout.write(`${RULE}\nwritten to ${outDir}\n`)
+}
+
+const lensReport = (payload: AiReviewPayload, outDir: string, stdout: Writer): void => {
   stdout.write(`\n${RULE}\n`)
   stdout.write(`outcome: ${payload.outcome}   friction: ${payload.friction}\n`)
   stdout.write(`\n${payload.summary}\n\n`)
