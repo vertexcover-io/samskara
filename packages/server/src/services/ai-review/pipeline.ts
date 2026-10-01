@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
   type AiReviewPayload,
+  BASE_REVIEW_INSTRUCTIONS,
   buildReviewPrompt,
   buildSessionExport,
   capAgentLog,
@@ -13,9 +14,15 @@ import {
   type HarnessRunner,
   type LearningCandidate,
   type LearningCategory,
+  mergeReviewPrompt,
   missingCredentialMessage,
   type NormalizedMessage,
+  type PreparedProblems,
+  type ProblemReview,
   parseReviewXml,
+  prepareProblems,
+  problemReviewFiles,
+  readProblemWorkspace,
   reviewContractMd,
   reviewXmlTemplate,
   sessionIndexFrom,
@@ -26,15 +33,27 @@ import type pino from "pino"
 import type { Db } from "../../db/client.js"
 import type { Env, ReviewHarness } from "../../lib/env.js"
 import { canWrite } from "../../repositories/projects.repo.js"
+import { replaceReviewProblems } from "../../repositories/reviewProblems.repo.js"
 import * as reviewsRepo from "../../repositories/reviews.repo.js"
 import { getDetail } from "../../repositories/sessions.repo.js"
 import { persistCandidates } from "../review.js"
 import { transcriptFromClaudeConfigDir, transcriptFromOpencodeDataDir } from "./transcript.js"
 
+/**
+ * `problems` is the full-session review that writes review.md and saves each problem to
+ * `reviewProblems`; `lenses` is the excerpt review that writes review.xml into `learnings`.
+ */
+export const REVIEWERS = ["problems", "lenses"] as const
+export type Reviewer = (typeof REVIEWERS)[number]
+
 /** Per-run reviewer choice: absent fields fall back to the env-driven defaults. */
 export type AiReviewOptions = {
   readonly harness?: ReviewHarness
   readonly model?: string
+  /** Which review to run; `problems` when absent. */
+  readonly reviewer?: Reviewer
+  /** The user's own prompt, any shape, merged into the problems review's base. */
+  readonly prompt?: string
 }
 
 export type AiReviewDeps = {
@@ -64,9 +83,16 @@ export type AiReviewErrorCode =
   | "unparseable"
   | "invalidSchema"
   | "ungrounded"
+  | "promptMergeFailed"
 
 export type AiReviewResult =
-  | { readonly kind: "ok"; readonly reviewId: string; readonly payload: AiReviewPayload }
+  | {
+      readonly kind: "ok"
+      readonly reviewId: string
+      /** What was saved: `payload` from the lens review, `review` from the problems review. */
+      readonly payload?: AiReviewPayload
+      readonly review?: ProblemReview
+    }
   | { readonly kind: "error"; readonly code: AiReviewErrorCode; readonly detail?: unknown }
 
 export type AiReviewRun = typeof runAiReview
@@ -77,6 +103,13 @@ export type AiReviewRun = typeof runAiReview
  */
 export const AI_ANALYZER = "ai-v1"
 
+/** The analyzer id the problems review writes, beside — never over — the lens review's. */
+export const PROBLEMS_ANALYZER = "ai-problems-v2"
+
+/** The analyzer a reviewer writes, which is also what a re-run is checked against. */
+export const analyzerFor = (reviewer: Reviewer): string =>
+  reviewer === "problems" ? PROBLEMS_ANALYZER : AI_ANALYZER
+
 /** Stdout excerpt length carried on an `unparseable` result — enough to debug, not to leak. */
 const STDOUT_EXCERPT_CHARS = 400
 
@@ -84,12 +117,15 @@ const STDOUT_EXCERPT_CHARS = 400
 const MAX_DELIVERABLE_BYTES = 8 * 1024 * 1024
 
 /** Reads at most `MAX_DELIVERABLE_BYTES`, or null when the file is absent or unreadable. */
-const readDeliverable = async (path: string): Promise<Buffer | null> => {
+const readDeliverable = async (
+  path: string,
+  maxBytes: number = MAX_DELIVERABLE_BYTES,
+): Promise<Buffer | null> => {
   try {
     const handle = await open(path, "r")
     try {
-      const buffer = Buffer.alloc(MAX_DELIVERABLE_BYTES)
-      const { bytesRead } = await handle.read(buffer, 0, MAX_DELIVERABLE_BYTES, 0)
+      const buffer = Buffer.alloc(maxBytes)
+      const { bytesRead } = await handle.read(buffer, 0, maxBytes, 0)
       return buffer.subarray(0, bytesRead)
     } finally {
       await handle.close()
@@ -115,6 +151,7 @@ export const runAiReview = async (
   const { db, runner, env, log } = deps
   const harness = options.harness ?? env.aiReviewHarness
   const model = options.model ?? env.aiReviewModel
+  const reviewer = options.reviewer ?? "problems"
   const mkdtemp = deps.mkdtemp ?? defaultMkdtemp
   const now = deps.now ?? (() => new Date())
   // Three consumers: the server log, the persisted run record, and the CLI's progress line.
@@ -159,27 +196,84 @@ export const runAiReview = async (
     // sessions have no true endedAt column; lastActiveAt is the honest approximation.
     endedAt: detail.session.lastActiveAt,
     messages,
+    // The problems review reads every message whole; the lens review keeps its excerpts.
+    full: reviewer === "problems",
   })
 
+  // The problems review's instructions: ours, or the user's prompt merged into ours first.
+  let instructions = BASE_REVIEW_INSTRUCTIONS
+  let promptChanges: string | undefined
+  if (reviewer === "problems" && options.prompt !== undefined) {
+    milestone("prompt_merging")
+    try {
+      const merged = await mergeReviewPrompt(options.prompt, runner, { harness, model })
+      instructions = merged.merged
+      promptChanges = merged.changes
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      log.warn({ sessionId, message }, "ai review prompt merge failed")
+      return { kind: "error", code: "promptMergeFailed", detail: { message } }
+    }
+    milestone("prompt_merged")
+  }
+  // Before the review: readers read every piece of the session and find leads. The reviewer
+  // below checks each lead against the session and writes up the real ones.
+  let problems: {
+    readonly prepared: PreparedProblems
+    readonly staged: ReturnType<typeof problemReviewFiles>
+  } | null = null
+  if (reviewer === "problems") {
+    milestone("readers_started")
+    try {
+      const prepared = await prepareProblems({
+        exported: sessionExport,
+        instructions,
+        runner,
+        run: { harness, model },
+      })
+      milestone("readers_done", {
+        pieces: prepared.found.pieceCount,
+        leads: prepared.found.leads.length,
+        failed: prepared.found.failedPieces.length,
+      })
+      problems = {
+        prepared,
+        staged: problemReviewFiles(sessionExport, instructions, prepared.leadsMd),
+      }
+    } catch (error) {
+      // A reader that fails only leaves its piece unread; anything else failing here
+      // fails the run like any other harness failure.
+      const message = error instanceof Error ? error.message : String(error)
+      log.warn({ sessionId, message }, "ai review problem stages failed")
+      milestone("harness_failed")
+      return { kind: "error", code: "harnessFailed", detail: { message } }
+    }
+  }
   let workspaceDir: string | undefined
   try {
     // Both runners read this same directory: the soft one directly, the microVM at /work.
     workspaceDir = await mkdtemp(join(tmpdir(), "samskara-ai-review-"))
     milestone("workspace_ready")
-    await writeFile(
-      join(workspaceDir, "session.json"),
-      `${JSON.stringify(sessionExport, null, 2)}\n`,
-    )
-    milestone("export_written")
-    // A file, not a reply: the agent fills the skeleton in incrementally.
-    await writeFile(join(workspaceDir, "review.xml"), reviewXmlTemplate())
-    milestone("template_staged")
-    // In the workspace rather than the prompt, so the agent re-reads rules instead of
-    // spending its starting context on the whole spec.
-    await writeFile(join(workspaceDir, "CONTRACT.md"), reviewContractMd())
-    milestone("contract_staged")
+    if (problems !== null) {
+      for (const [name, text] of Object.entries(problems.staged.files))
+        await writeFile(join(workspaceDir, name), text)
+      milestone("workspace_staged")
+    } else {
+      await writeFile(
+        join(workspaceDir, "session.json"),
+        `${JSON.stringify(sessionExport, null, 2)}\n`,
+      )
+      milestone("export_written")
+      // A file, not a reply: the agent fills the skeleton in incrementally.
+      await writeFile(join(workspaceDir, "review.xml"), reviewXmlTemplate())
+      milestone("template_staged")
+      // In the workspace rather than the prompt, so the agent re-reads rules instead of
+      // spending its starting context on the whole spec.
+      await writeFile(join(workspaceDir, "CONTRACT.md"), reviewContractMd())
+      milestone("contract_staged")
+    }
 
-    const prompt = buildReviewPrompt({ sessionMeta: sessionExport.meta })
+    const prompt = problems?.staged.prompt ?? buildReviewPrompt({ sessionMeta: sessionExport.meta })
 
     milestone("harness_spawning")
     let stdout: string
@@ -230,6 +324,86 @@ export const runAiReview = async (
     const reviewerTranscript = await readTranscript[harness](
       join(workspaceDir, HARNESS_STATE_DIR[harness]),
     )
+
+    if (problems !== null) {
+      const { staged } = problems
+      const read = await readProblemWorkspace({
+        workspaceDir,
+        records: sessionExport.records,
+        instructions,
+        prepared: problems.prepared,
+      })
+      if (read.markdown === null) {
+        milestone("deliverable_missing")
+        log.warn({ sessionId, workspaceDir }, "ai review deliverable missing: no review.md")
+        return {
+          kind: "error",
+          code: "deliverableMissing",
+          detail: { stdoutStart: stdout.slice(0, STDOUT_EXCERPT_CHARS) },
+        }
+      }
+      const { markdown, leadAnswers, result } = read
+      milestone("deliverable_read", { bytes: Buffer.byteLength(markdown) })
+      if (!result.ok) {
+        log.warn({ sessionId, errors: result.errors }, "ai review unparseable: review.md")
+        milestone("review_unparseable")
+        return {
+          kind: "error",
+          code: "unparseable",
+          detail: { errors: result.errors, start: markdown.slice(0, STDOUT_EXCERPT_CHARS) },
+        }
+      }
+      if (result.dropped.length > 0)
+        log.info({ sessionId, dropped: result.dropped }, "ai review dropped problems")
+      milestone("grounded")
+
+      const finishedAt = now()
+      const signals = {
+        model,
+        harness,
+        reviewMd: markdown,
+        dropped: [...result.dropped],
+        unaccountedLeads: [...result.unaccountedLeads],
+        leadCount: problems.prepared.leadIds.length,
+        // Kept apart from the problems: what was looked at, and what the reviewer decided.
+        leads: staged.files["leads.md"],
+        leadAnswers,
+        readers: read.readers,
+        contract: staged.files["CONTRACT.md"],
+        prompt: options.prompt === undefined ? "base" : "custom",
+        ...(promptChanges === undefined ? {} : { promptChanges }),
+        run: {
+          startedAt: startedAt.toISOString(),
+          finishedAt: finishedAt.toISOString(),
+          milestones: [...milestones],
+          agentLog: capAgentLog(runnerAgentLog ?? stdout),
+          ...(reviewerTranscript === null ? {} : { transcript: reviewerTranscript }),
+          recordIds: sessionExport.records.map((record) => record.sourceId ?? null),
+        },
+      }
+      // One transaction: a review row whose problems failed to save would read as a
+      // review that found nothing.
+      const reviewRow = await db.transaction(async (tx) => {
+        const row = await reviewsRepo.upsertReview(tx, {
+          sessionId,
+          projectId: detail.session.projectId,
+          analyzer: PROBLEMS_ANALYZER,
+          outcome: result.review.outcome,
+          friction: result.review.friction,
+          summary: result.review.summary,
+          signals: signals as unknown as object,
+        })
+        await replaceReviewProblems(tx, {
+          reviewId: row.id,
+          sessionId,
+          projectId: detail.session.projectId,
+          problems: result.review.problems,
+        })
+        return row
+      })
+      milestone("persisted")
+      return { kind: "ok", reviewId: reviewRow.id, review: result.review }
+    }
 
     // The deliverable is the file the agent filled in. The workspace is a local dir that
     // survives until cleanup, so it is read back directly; byte count is logged on the

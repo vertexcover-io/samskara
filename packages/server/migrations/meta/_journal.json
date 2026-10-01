@@ -218,6 +218,13 @@
       "when": 1790062674569,
       "tag": "0030_old_shooting_star",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1790768957763,
+      "tag": "0031_strong_changeling",
+      "breakpoints": true
     }
   ]
 }

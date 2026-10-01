@@ -433,3 +433,152 @@ describe("withDerivedTracks", () => {
     })
   })
 })
+
+describe("buildSessionExport with full: true", () => {
+  test("EF1: text is kept whole, and a tool record carries its input and output", () => {
+    const long = "x".repeat(USER_TEXT_EXCERPT_CHARS * 3)
+    const exported = buildSessionExport({
+      sessionId: "s1",
+      title: "t",
+      source: "claude_code",
+      full: true,
+      messages: [
+        message({ subIndex: 0, content: { type: "text", value: long } }),
+        toolCall("t1", "Bash", {
+          subIndex: 1,
+          details: { callId: "t1", name: "Bash", input: { command: "bun test" } },
+        }),
+        toolResult("t1", "failure", {
+          subIndex: 2,
+          details: { callId: "t1", output: "3 tests failed", status: "failure" },
+        }),
+      ],
+    })
+    expect(exported.records[0]?.text).toBe(long)
+    expect(exported.records[1]).toMatchObject({
+      toolName: "Bash",
+      status: "failure",
+      input: '{"command":"bun test"}',
+      output: "3 tests failed",
+    })
+  })
+
+  test("EF2: without full, nothing changes — excerpts stay capped and tools carry no text", () => {
+    const long = "x".repeat(USER_TEXT_EXCERPT_CHARS * 3)
+    const exported = buildSessionExport({
+      sessionId: "s1",
+      title: "t",
+      source: "claude_code",
+      messages: [
+        message({ subIndex: 0, content: { type: "text", value: long } }),
+        toolCall("t1", "Bash", { subIndex: 1 }),
+        toolResult("t1", "success", { subIndex: 2 }),
+      ],
+    })
+    expect(exported.records[0]?.text).toHaveLength(USER_TEXT_EXCERPT_CHARS)
+    expect(exported.records[1]).not.toHaveProperty("input")
+    expect(exported.records[1]).not.toHaveProperty("output")
+  })
+})
+
+describe("hook output in a full export", () => {
+  const hook = (overrides: Partial<Record<string, unknown>> = {}) =>
+    message({
+      subIndex: 0,
+      msgType: "hookCall",
+      details: {
+        type: "hook_success",
+        phase: "result",
+        status: "failure",
+        hookEvent: "Stop",
+        hookName: "notify-slack",
+        command: "node notify.js",
+        exitCode: 1,
+        stdout: "posting to #deploys",
+        stderr: "missing run-state file",
+        timedOut: false,
+      },
+      ...overrides,
+    })
+
+  test("EF3: a hook's event, name and command become its input, stdout and stderr its output", () => {
+    const exported = buildSessionExport({
+      sessionId: "s1",
+      title: "t",
+      source: "claude_code",
+      full: true,
+      messages: [hook()],
+    })
+    expect(exported.records[0]).toMatchObject({
+      msgType: "hookCall",
+      status: "failure",
+      input: "Stop notify-slack: node notify.js",
+      output: "posting to #deploys\nmissing run-state file\nexit 1",
+    })
+  })
+
+  test("EF4: without full, a hook record carries no content, as before", () => {
+    const exported = buildSessionExport({
+      sessionId: "s1",
+      title: "t",
+      source: "claude_code",
+      messages: [hook()],
+    })
+    expect(exported.records[0]).not.toHaveProperty("input")
+    expect(exported.records[0]).not.toHaveProperty("output")
+  })
+
+  test("EF5: a hook summary that stopped the agent says so and reads as a failure", () => {
+    const exported = buildSessionExport({
+      sessionId: "s1",
+      title: "t",
+      source: "claude_code",
+      full: true,
+      messages: [
+        hook({
+          details: {
+            phase: "summary",
+            type: "stop_hook_summary",
+            hookCount: 1,
+            hookInfos: [{ command: "node gate.js" }],
+            hookErrors: ["gate.js: run state missing"],
+            preventedContinuation: true,
+            stopReason: "verify has not run",
+          },
+        }),
+      ],
+    })
+    expect(exported.records[0]).toMatchObject({
+      status: "failure",
+      input: "1 hook(s): node gate.js",
+      output: "gate.js: run state missing\nstopped the agent: verify has not run",
+    })
+  })
+})
+
+describe("where a message came from, in a full export", () => {
+  test("EF6: a message's origin or type is kept, so a helper notice is not mistaken for the person", () => {
+    const exported = buildSessionExport({
+      sessionId: "s1",
+      title: "t",
+      source: "claude_code",
+      full: true,
+      messages: [
+        message({ subIndex: 0, details: { origin: "human" } }),
+        message({
+          subIndex: 1,
+          subType: "taskNotification",
+          details: { origin: "task-notification" },
+        }),
+        message({ subIndex: 2, subType: "systemReminder" }),
+        message({ subIndex: 3 }),
+      ],
+    })
+    expect(exported.records.map((record) => record.origin)).toEqual([
+      "human",
+      "task-notification",
+      "systemReminder",
+      undefined,
+    ])
+  })
+})

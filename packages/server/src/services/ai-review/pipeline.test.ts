@@ -2,7 +2,12 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { mkdtemp as realMkdtemp, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import type { HarnessRunner, NormalizedMessage, ReviewCounts, SessionExport } from "@samskara/core"
-import { buildSessionExport, reviewContractMd, reviewXmlTemplate } from "@samskara/core"
+import {
+  buildSessionExport,
+  MAX_REVIEW_MD_BYTES,
+  reviewContractMd,
+  reviewXmlTemplate,
+} from "@samskara/core"
 import Database from "better-sqlite3"
 import { eq, sql } from "drizzle-orm"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
@@ -11,6 +16,7 @@ import {
   learnings as learningsTable,
   messages,
   projects,
+  reviewProblems as reviewProblemsTable,
   sessionReviews,
   sessions,
   tokenUsage,
@@ -474,11 +480,11 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
 
   test("P1: ok path persists the ai-v1 review, candidate learnings, and cleans the workspace", async () => {
     const { runner, runs } = fakeRunner(() => okBehaviour())
-    const result = await runAiReview(depsWith(runner), userId, sessionId)
+    const result = await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
 
     expect(result).toMatchObject({ kind: "ok" })
     if (result.kind !== "ok") return
-    expect(result.payload.analyzer).toBe("ai-v1")
+    expect(result.payload?.analyzer).toBe("ai-v1")
 
     const reviewRows = await db
       .select()
@@ -530,7 +536,7 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
 
   test("P1b: the workspace stages the exact core template and contract beside session.json before the harness runs", async () => {
     const { runner, runs } = fakeRunner(() => okBehaviour())
-    const result = await runAiReview(depsWith(runner), userId, sessionId)
+    const result = await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
     expect(result.kind).toBe("ok")
     expect(runs[0]?.templateXml).toBe(reviewXmlTemplate())
     expect(runs[0]?.contractMd).toBe(reviewContractMd())
@@ -542,10 +548,11 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
       depsWith(runner, { env: { ...env, aiReviewHarness: "claude", aiReviewModel: "sonnet" } }),
       userId,
       sessionId,
+      { reviewer: "lenses" },
     )
     expect(result.kind).toBe("ok")
     if (result.kind !== "ok") return
-    expect(result.payload.harness).toBe("claude")
+    expect(result.payload?.harness).toBe("claude")
     expect(await persistedSignals()).toMatchObject({ model: "sonnet", harness: "claude" })
   })
 
@@ -578,6 +585,7 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
       depsWith(runner, { env: { ...env, aiReviewHarness: "claude" } }),
       userId,
       sessionId,
+      { reviewer: "lenses" },
     )
     expect(result.kind).toBe("ok")
     const run = (await persistedSignals()).run as {
@@ -616,7 +624,7 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
       db.close()
       return okBehaviour()
     })
-    const result = await runAiReview(depsWith(runner), userId, sessionId)
+    const result = await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
     expect(result.kind).toBe("ok")
     const run = (await persistedSignals()).run as {
       transcript?: ReadonlyArray<{ role: string; text?: string }>
@@ -635,7 +643,7 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
       depsWith(runner, { credentialEnv: { OPENCODE_API_KEY: "oc-key" } }),
       userId,
       sessionId,
-      { harness: "claude" },
+      { reviewer: "lenses", harness: "claude" },
     )
     expect(result).toMatchObject({ kind: "error", code: "harnessUnauthenticated" })
     expect(calls).toBe(0)
@@ -649,6 +657,7 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
       depsWith(runner, { onMilestone: (name) => seen.push(name) }),
       userId,
       sessionId,
+      { reviewer: "lenses" },
     )
     expect(result).toMatchObject({ kind: "ok" })
     // The hook is what the registry installs so a watching human sees where a run is; the
@@ -661,8 +670,8 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
 
   test("P2: re-analysis supersedes — one ai-v1 row, same reviewId, learnings re-upserted", async () => {
     const { runner } = fakeRunner(() => okBehaviour())
-    const first = await runAiReview(depsWith(runner), userId, sessionId)
-    const second = await runAiReview(depsWith(runner), userId, sessionId)
+    const first = await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
+    const second = await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
     expect(first.kind).toBe("ok")
     expect(second.kind).toBe("ok")
     if (first.kind !== "ok" || second.kind !== "ok") return
@@ -688,7 +697,9 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
     )
     try {
       const { runner } = fakeRunner(() => okBehaviour())
-      await expect(runAiReview(depsWith(runner), userId, sessionId)).rejects.toThrow()
+      await expect(
+        runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" }),
+      ).rejects.toThrow()
     } finally {
       await db.execute(sql`drop trigger if exists fail_learning_trigger on learnings`)
     }
@@ -723,8 +734,10 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
 
     // Twice: the magnitude comparison lives in ON CONFLICT DO UPDATE, so the cast is only
     // evaluated when the fingerprint is seen a second time.
-    expect(await runAiReview(depsWith(runner), userId, sessionId)).toMatchObject({ kind: "ok" })
-    const second = await runAiReview(depsWith(runner), userId, sessionId)
+    expect(
+      await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" }),
+    ).toMatchObject({ kind: "ok" })
+    const second = await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
     expect(second).toMatchObject({ kind: "ok" })
 
     const titles = (await db.select().from(learningsTable)).map((row) => row.title)
@@ -735,9 +748,9 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
     // The index depends only on the normalized messages, and both sessions below carry the
     // same fixtures, so one statically grounded payload serves both.
     const { runner } = fakeRunner(() => okBehaviour())
-    await runAiReview(depsWith(runner), userId, sessionId)
+    await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
     // Re-analysis of the SAME session: same fingerprints, and occurrences must not inflate.
-    await runAiReview(depsWith(runner), userId, sessionId)
+    await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
 
     let rows = await db.select().from(learningsTable)
     expect(rows).toHaveLength(2)
@@ -771,7 +784,9 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
         timestamp: message.timestamp === undefined ? null : new Date(message.timestamp),
       })
     }
-    const elsewhere = await runAiReview(depsWith(runner), userId, secondSessionId)
+    const elsewhere = await runAiReview(depsWith(runner), userId, secondSessionId, {
+      reviewer: "lenses",
+    })
     expect(elsewhere.kind).toBe("ok")
 
     rows = await db.select().from(learningsTable)
@@ -781,7 +796,9 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
 
   test("P3: unknown session -> sessionNotFound", async () => {
     const { runner, runs } = fakeRunner(() => okBehaviour())
-    const result = await runAiReview(depsWith(runner), userId, "does-not-exist")
+    const result = await runAiReview(depsWith(runner), userId, "does-not-exist", {
+      reviewer: "lenses",
+    })
     expect(result).toEqual({ kind: "error", code: "sessionNotFound" })
     expect(runs).toHaveLength(0)
   })
@@ -797,7 +814,9 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
       scope: "viewer",
     })
     const { runner, runs } = fakeRunner(() => okBehaviour())
-    const result = await runAiReview(depsWith(runner), viewer?.id as string, sessionId)
+    const result = await runAiReview(depsWith(runner), viewer?.id as string, sessionId, {
+      reviewer: "lenses",
+    })
     expect(result).toEqual({ kind: "error", code: "notEditable" })
     expect(runs).toHaveLength(0)
   })
@@ -806,7 +825,7 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
     const { runner } = fakeRunner(() => {
       throw new Error("opencode exited 1")
     })
-    const result = await runAiReview(depsWith(runner), userId, sessionId)
+    const result = await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
     expect(result.kind).toBe("error")
     if (result.kind !== "error") return
     expect(result.code).toBe("harnessFailed")
@@ -819,7 +838,7 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
   test("P6: deliverable present but with no recoverable XML -> unparseable with the parser's error and source excerpt", async () => {
     const file = "I could not read session.json, sorry."
     const { runner } = fakeRunner(() => ({ stdout: "review.xml ready", file }))
-    const result = await runAiReview(depsWith(runner), userId, sessionId)
+    const result = await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
     expect(result.kind).toBe("error")
     if (result.kind !== "error") return
     expect(result.code).toBe("unparseable")
@@ -831,7 +850,7 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
     const bad = validPayload(sessionExport.index)
     const xml = xmlOf(bad).replace('outcome="productive"', 'outcome="banana"')
     const { runner } = fakeRunner(() => ({ stdout: "ready", file: xml }))
-    const result = await runAiReview(depsWith(runner), userId, sessionId)
+    const result = await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
     expect(result.kind).toBe("error")
     if (result.kind !== "error") return
     expect(result.code).toBe("unparseable")
@@ -848,7 +867,7 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
     if (entry === undefined) throw new Error("fixture shape changed")
     entry.messageIds = ["msg-9999"]
     const { runner } = fakeRunner(() => ({ stdout: "ready", file: xmlOf(payload) }))
-    const result = await runAiReview(depsWith(runner), userId, sessionId)
+    const result = await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
     expect(result.kind).toBe("error")
     if (result.kind !== "error") return
     expect(result.code).toBe("ungrounded")
@@ -863,7 +882,7 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
       stdout: stdoutWith(validPayload(sessionExport.index)),
       removeFile: true,
     }))
-    const result = await runAiReview(depsWith(runner), userId, sessionId)
+    const result = await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
     expect(result.kind).toBe("ok")
 
     const signals = await persistedSignals()
@@ -886,7 +905,7 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
       stdout: stdoutWith(validPayload(sessionExport.index)),
       file: "",
     }))
-    const result = await runAiReview(depsWith(runner), userId, sessionId)
+    const result = await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
     expect(result.kind).toBe("ok")
     await persistedSignals()
   })
@@ -896,7 +915,7 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
       stdout: "review.xml ready: 7 timeline entries",
       removeFile: true,
     }))
-    const result = await runAiReview(depsWith(runner), userId, sessionId)
+    const result = await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
     expect(result.kind).toBe("error")
     if (result.kind !== "error") return
     expect(result.code).toBe("deliverableMissing")
@@ -912,7 +931,7 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
     const payload = validPayload(sessionExport.index)
     const xml = xmlOf(payload, { timeline: 5, human: 2, agent: 1, breadcrumbs: 1 })
     const { runner } = fakeRunner(() => ({ stdout: "ready", file: xml }))
-    const result = await runAiReview(depsWith(runner), userId, sessionId)
+    const result = await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
     expect(result.kind).toBe("ok")
 
     const signals = await persistedSignals()
@@ -939,7 +958,7 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
     })
 
     const { runner } = fakeRunner(() => okBehaviour())
-    const result = await runAiReview(depsWith(runner), userId, sessionId)
+    const result = await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
     expect(result.kind).toBe("ok")
 
     const signals = await persistedSignals()
@@ -980,7 +999,7 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
       firstByteMs: 4_200,
       agentLog: "x".repeat(60_000),
     }))
-    const result = await runAiReview(depsWith(runner), userId, sessionId)
+    const result = await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
     expect(result.kind).toBe("ok")
 
     const signals = await persistedSignals()
@@ -1032,7 +1051,9 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
     const capture = captureLogger()
     const file = xmlOf(validPayload(sessionExport.index))
     const { runner } = fakeRunner(() => ({ stdout: "ready", file }))
-    const result = await runAiReview(depsWith(runner, { log: capture.log }), userId, sessionId)
+    const result = await runAiReview(depsWith(runner, { log: capture.log }), userId, sessionId, {
+      reviewer: "lenses",
+    })
     expect(result.kind).toBe("ok")
     const line = capture.lines.find(
       (candidate) => (candidate as { milestone?: string }).milestone === "deliverable_read",
@@ -1062,7 +1083,7 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
     } as FixturePayload
     const { runner } = fakeRunner(() => ({ stdout: "review.xml ready", file: xmlOf(invented) }))
 
-    const result = await runAiReview(depsWith(runner), userId, sessionId)
+    const result = await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
 
     expect(result).toMatchObject({ kind: "ok" })
     const signals = await persistedSignals()
@@ -1072,5 +1093,286 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
     }>
     const entries = lenses.find((lens) => lens.lens === "timeline")?.entries ?? []
     expect(entries.map((entry) => entry.tracks)).toEqual([["main"], ["main"]])
+  })
+
+  describe("the problems reviewer", () => {
+    const problemsMd = (quote: string) => `# Review
+
+- **Outcome:** struggled
+- **Friction:** moderate
+
+## Summary
+
+The agent claimed the build was fixed after the tests failed.
+
+## Problems
+
+### Said the build was fixed after the tests failed
+
+- **Class:** missed
+- **Severity:** high — a broken build would have shipped
+- **Fix type:** skill
+- **Description:** The agent was expected to rerun the tests after a failure. It said the build was fixed instead.
+- **Evidence:** msg-2 — "${quote}" — this is wrong: the only test run, msg-1, failed.
+- **Learning:** Rerun the failing tests and read the result before saying the build works.
+- **Extra:** stage: coder
+`
+
+    /** Answers as every agent the problems review runs: reader, merger, reviewer. */
+    const problemsRunner = (
+      reviewMd: string,
+      merged = "# How to review\n\nmerged by agent",
+      readerLeads = "Nothing found.",
+      leadAnswers = "",
+    ) => {
+      const seen: Array<{ files: string[]; contract?: string; user?: string; leads?: string }> = []
+      const runner: HarnessRunner = {
+        run: async ({ workspaceDir }) => {
+          const has = (name: string) => existsSync(join(workspaceDir, name))
+          if (has("READER.md")) {
+            writeFileSync(join(workspaceDir, "leads.md"), readerLeads)
+            return { stdout: "read", firstByteMs: 1 }
+          }
+          if (has("USER.md")) {
+            seen.push({
+              files: ["USER.md"],
+              user: readFileSync(join(workspaceDir, "USER.md"), "utf8"),
+            })
+            if (merged !== "") writeFileSync(join(workspaceDir, "MERGED.md"), merged)
+            return { stdout: "merged", firstByteMs: 1 }
+          }
+          seen.push({
+            files: ["session.json", "leads.md", "CONTRACT.md"].filter((name) => has(name)),
+            contract: readFileSync(join(workspaceDir, "CONTRACT.md"), "utf8"),
+            leads: readFileSync(join(workspaceDir, "leads.md"), "utf8"),
+          })
+          writeFileSync(join(workspaceDir, "review.md"), reviewMd)
+          writeFileSync(join(workspaceDir, "leads-answered.md"), leadAnswers)
+          return { stdout: "review.md ready", firstByteMs: 1 }
+        },
+      }
+      return { runner, seen }
+    }
+
+    const savedProblems = () =>
+      db.select().from(reviewProblemsTable).where(eq(reviewProblemsTable.sessionId, sessionId))
+
+    test("PR1: the review reads the full session and saves the review row and each problem", async () => {
+      const { runner, seen } = problemsRunner(problemsMd("the build is fixed"))
+      const result = await runAiReview(depsWith(runner), userId, sessionId, {
+        reviewer: "problems",
+      })
+
+      expect(result).toMatchObject({ kind: "ok" })
+      expect(seen[0]?.files).toEqual(["session.json", "leads.md", "CONTRACT.md"])
+      const [row] = await db
+        .select()
+        .from(sessionReviews)
+        .where(eq(sessionReviews.sessionId, sessionId))
+      expect(row).toMatchObject({
+        analyzer: "ai-problems-v2",
+        outcome: "struggled",
+        friction: "moderate",
+      })
+      expect(row?.signals).toMatchObject({ prompt: "base", dropped: [], model: "fake-model" })
+      const problems = await savedProblems()
+      expect(problems).toHaveLength(1)
+      expect(problems[0]).toMatchObject({
+        reviewId: row?.id,
+        title: "Said the build was fixed after the tests failed",
+        class: "missed",
+        severity: "high",
+        fixType: "skill",
+        extra: { stage: "coder" },
+      })
+      // The lens review's table is untouched.
+      expect(await db.select().from(learningsTable)).toEqual([])
+    })
+
+    test("PR2: a problem quoting what is not in the session is dropped, and the drop is recorded", async () => {
+      const { runner } = problemsRunner(problemsMd("tests are all green"))
+      const result = await runAiReview(depsWith(runner), userId, sessionId, {
+        reviewer: "problems",
+      })
+
+      expect(result).toMatchObject({ kind: "ok" })
+      expect(await savedProblems()).toEqual([])
+      expect(await persistedSignals()).toMatchObject({
+        dropped: [
+          '"Said the build was fixed after the tests failed": "tests are all green" is not in msg-2',
+        ],
+      })
+    })
+
+    test("PR3: a custom prompt is merged first, and the reviewer's contract is the merge plus the fixed output", async () => {
+      const { runner, seen } = problemsRunner(problemsMd("the build is fixed"))
+      const result = await runAiReview(depsWith(runner), userId, sessionId, {
+        reviewer: "problems",
+        prompt: "After plan approval every human message is a problem.",
+      })
+
+      expect(result).toMatchObject({ kind: "ok" })
+      expect(seen[0]?.user).toBe("After plan approval every human message is a problem.")
+      expect(seen[1]?.contract?.startsWith("# How to review\n\nmerged by agent")).toBe(true)
+      expect(seen[1]?.contract).toContain("# Files and output (fixed)")
+      expect(await persistedSignals()).toMatchObject({ prompt: "custom" })
+    })
+
+    test("PR4: a merge that writes nothing stops the run before any review", async () => {
+      const { runner, seen } = problemsRunner(problemsMd("the build is fixed"), "")
+      const result = await runAiReview(depsWith(runner), userId, sessionId, {
+        reviewer: "problems",
+        prompt: "anything",
+      })
+
+      expect(result).toMatchObject({ kind: "error", code: "promptMergeFailed" })
+      expect(seen).toHaveLength(1)
+      expect(await db.select().from(sessionReviews)).toEqual([])
+    })
+
+    test("PR5: a review.md that is not a review saves nothing", async () => {
+      const { runner } = problemsRunner("not a review")
+      const result = await runAiReview(depsWith(runner), userId, sessionId, {
+        reviewer: "problems",
+      })
+
+      expect(result).toMatchObject({ kind: "error", code: "unparseable" })
+      expect(await db.select().from(sessionReviews)).toEqual([])
+    })
+
+    test("PR6: an extra field the merged prompt asks for is required on every problem", async () => {
+      const merged = "# How to review\n\n## Extra fields\n\n- topic: what the person asked about\n"
+      const { runner } = problemsRunner(problemsMd("the build is fixed"), merged)
+      const result = await runAiReview(depsWith(runner), userId, sessionId, {
+        reviewer: "problems",
+        prompt: "Add a topic field.",
+      })
+
+      expect(result).toMatchObject({ kind: "ok" })
+      expect(await savedProblems()).toEqual([])
+      expect(await persistedSignals()).toMatchObject({
+        dropped: ['"Said the build was fixed after the tests failed": missing Extra "topic"'],
+      })
+    })
+
+    test("PR7: a problem write that fails rolls the review row back", async () => {
+      await db.execute(
+        sql`create or replace function fail_problem() returns trigger language plpgsql as $$
+          begin raise exception 'problem write refused'; end $$`,
+      )
+      await db.execute(
+        sql`create trigger fail_problem_trigger before insert on "reviewProblems"
+          for each row execute function fail_problem()`,
+      )
+      try {
+        const { runner } = problemsRunner(problemsMd("the build is fixed"))
+        await expect(
+          runAiReview(depsWith(runner), userId, sessionId, { reviewer: "problems" }),
+        ).rejects.toThrow()
+      } finally {
+        await db.execute(sql`drop trigger if exists fail_problem_trigger on "reviewProblems"`)
+      }
+      expect(await db.select().from(sessionReviews)).toEqual([])
+    })
+
+    test("PR8: a redo keeps the review's id and replaces its problems", async () => {
+      const first = await runAiReview(
+        depsWith(problemsRunner(problemsMd("the build is fixed")).runner),
+        userId,
+        sessionId,
+        {
+          reviewer: "problems",
+        },
+      )
+      const second = await runAiReview(
+        depsWith(
+          problemsRunner(
+            problemsMd("the build is fixed").replace("Said the build", "Claimed the build"),
+          ).runner,
+        ),
+        userId,
+        sessionId,
+        { reviewer: "problems" },
+      )
+      expect(second).toMatchObject({
+        kind: "ok",
+        reviewId: first.kind === "ok" ? first.reviewId : "",
+      })
+      expect((await savedProblems()).map((row) => row.title)).toEqual([
+        "Claimed the build was fixed after the tests failed",
+      ])
+    })
+
+    test("PR9: no review.md is deliverableMissing, and one past the size cap saves nothing", async () => {
+      const missing: HarnessRunner = { run: async () => ({ stdout: "", firstByteMs: null }) }
+      expect(
+        await runAiReview(depsWith(missing), userId, sessionId, { reviewer: "problems" }),
+      ).toMatchObject({
+        kind: "error",
+        code: "deliverableMissing",
+      })
+
+      const huge = problemsMd("the build is fixed") + "x".repeat(MAX_REVIEW_MD_BYTES)
+      const { runner } = problemsRunner(huge)
+      expect(
+        await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "problems" }),
+      ).toMatchObject({
+        kind: "error",
+        code: "unparseable",
+      })
+      expect(await db.select().from(sessionReviews)).toEqual([])
+    })
+
+    test("PR10: leads the review never answered are saved with it", async () => {
+      const { runner } = problemsRunner(
+        problemsMd("the build is fixed"),
+        undefined,
+        undefined,
+        "- L1: dropped — the opening request\n",
+      )
+      await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "problems" })
+      const signals = (await persistedSignals()) as {
+        unaccountedLeads: string[]
+        leadCount: number
+      }
+      expect(signals.leadCount).toBeGreaterThan(0)
+      expect(signals.unaccountedLeads).not.toContain("L1")
+      expect(signals.unaccountedLeads).toHaveLength(signals.leadCount - 1)
+    })
+
+    test("PR11: what the readers find becomes a lead the reviewer must answer, and their counts are saved", async () => {
+      const { runner } = problemsRunner(
+        problemsMd("the build is fixed"),
+        undefined,
+        '- msg-2 — "the build is fixed" — said after the only test run failed',
+      )
+      await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "problems" })
+      const signals = (await persistedSignals()) as {
+        readers: { pieces: number; leads: number; failedPieces: string[] }
+        unaccountedLeads: string[]
+        leads: string
+      }
+      expect(signals.readers).toMatchObject({ pieces: 1, leads: 1, failedPieces: [] })
+      expect(signals.leads).toContain("said after the only test run failed")
+      // L1 is the reader's lead, and this review never answered it.
+      expect(signals.unaccountedLeads).toContain("L1")
+    })
+
+    test("PR13: a reviewer whose harness fails after the readers ends the run as harnessFailed, and saves nothing", async () => {
+      const runner: HarnessRunner = {
+        run: async ({ workspaceDir }) => {
+          if (existsSync(join(workspaceDir, "READER.md"))) {
+            writeFileSync(join(workspaceDir, "leads.md"), "Nothing found.")
+            return { stdout: "read", firstByteMs: 1 }
+          }
+          throw new Error("claude exited with code 1")
+        },
+      }
+      const result = await runAiReview(depsWith(runner), userId, sessionId, {
+        reviewer: "problems",
+      })
+      expect(result).toMatchObject({ kind: "error", code: "harnessFailed" })
+      expect(await db.select().from(sessionReviews)).toEqual([])
+    })
   })
 })

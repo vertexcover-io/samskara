@@ -256,7 +256,7 @@ export type SessionListFilter = {
   readonly tags?: ReadonlyArray<string>
   readonly prNumber?: number
   readonly commit?: string
-  /** "done" keeps only sessions with a landed ai-v1 review; "missing" the rest. */
+  /** "done" keeps only sessions with a landed AI review (ai-v1 or ai-problems-v2); "missing" the rest. */
   readonly aiReview?: "done" | "missing"
   readonly searchQuery?: ParsedSessionQuery
   readonly since?: Date
@@ -298,10 +298,10 @@ const tokensFor = (sessionId: SQL): SQL<number> => sql`(
   where "messages"."sessionId" = ${sessionId}
 )`
 
-/** The badge's definition of "AI analysis ran": a landed ai-v1 row — the same test the analyze route applies. */
+/** The badge's definition of "AI analysis ran": a landed row from either AI reviewer. */
 const aiReviewExists = (sessionId: SQL): SQL => sql`exists (
   select 1 from "sessionReviews" sr
-  where sr."sessionId" = ${sessionId} and sr."analyzer" = 'ai-v1'
+  where sr."sessionId" = ${sessionId} and sr."analyzer" in ('ai-v1', 'ai-problems-v2')
 )`
 
 const status = sql<string>`case when ${messageCount} = 0 then 'empty' else 'complete' end`

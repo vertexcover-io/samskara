@@ -111,9 +111,33 @@ const okXml = [
 ].join("\n")
 
 /** The v2 contract: the deliverable is the review.xml FILE, and the reply is one line. */
+/** A problems review of the fixture session: one problem, quoting the agent's "done". */
+const okReviewMd = `# Review
+
+- **Outcome:** productive
+- **Friction:** none
+
+## Summary
+
+Clean two-message session.
+
+## Problems
+
+### Said done without showing the build passing
+
+- **Class:** missed
+- **Severity:** medium — the build may still be broken
+- **Fix type:** skill
+- **Description:** The agent was expected to show the build passing. It only said done.
+- **Evidence:** msg-1 — "done" — this is the whole reply; no build ran.
+- **Learning:** Run the build and show its result before saying done.
+`
+
+/** Writes both deliverables, so the one runner serves either reviewer. */
 const fakeRunner: HarnessRunner = {
   run: async ({ workspaceDir }) => {
     await writeFile(join(workspaceDir, "review.xml"), okXml)
+    await writeFile(join(workspaceDir, "review.md"), okReviewMd)
     return {
       stdout: "review.xml ready: 1 timeline entry",
       firstByteMs: 250,
@@ -211,7 +235,10 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
   }
 
   test("A1: POST /:id/analyze returns 202 with a jobId that lands the ai-v1 review", async () => {
-    const res = await request(`/api/sessions/${sessionId}/analyze`, { method: "POST" })
+    const res = await request(`/api/sessions/${sessionId}/analyze`, {
+      method: "POST",
+      body: { reviewer: "lenses" },
+    })
     expect(res.status).toBe(202)
     const body = (await res.json()) as { jobId: string }
     expect(typeof body.jobId).toBe("string")
@@ -355,7 +382,10 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
       summary: "already reviewed",
       signals: {},
     })
-    const res = await request(`/api/sessions/${sessionId}/analyze`, { method: "POST" })
+    const res = await request(`/api/sessions/${sessionId}/analyze`, {
+      method: "POST",
+      body: { reviewer: "lenses" },
+    })
     expect(res.status).toBe(409)
     expect(await res.json()).toEqual({ error: "analysisAlreadyExists" })
   })
@@ -415,7 +445,7 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
     }).request(`/api/sessions/${sessionId}/analyze`, {
       method: "POST",
       headers: { cookie: `session=${token}`, "content-type": "application/json" },
-      body: JSON.stringify({ harness: "claude", model: "opus" }),
+      body: JSON.stringify({ reviewer: "lenses", harness: "claude", model: "opus" }),
     })
     expect(res.status).toBe(202)
     const body = (await res.json()) as { jobId: string }
@@ -457,7 +487,7 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
     })
     const res = await request(`/api/sessions/${sessionId}/analyze`, {
       method: "POST",
-      body: { force: true },
+      body: { reviewer: "lenses", force: true },
     })
     expect(res.status).toBe(202)
     const body = (await res.json()) as { jobId: string }
@@ -627,5 +657,104 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
     const statuses = [first.status, second.status].sort()
     expect(statuses).toEqual([202, 409])
     expect(starts).toBe(1)
+  })
+
+  test("A20: analyze with no reviewer runs the problems review, readable from v2/aireview", async () => {
+    const res = await request(`/api/sessions/${sessionId}/analyze`, { method: "POST" })
+    expect(res.status).toBe(202)
+    const job = await waitForJob(((await res.json()) as { jobId: string }).jobId)
+    expect(job).toMatchObject({ status: "succeeded" })
+
+    const reviews = await db.select().from(sessionReviews)
+    expect(reviews.map((row) => row.analyzer)).toEqual(["ai-problems-v2"])
+    const v2 = await request(`/api/sessions/${sessionId}/v2/aireview`)
+    expect(v2.status).toBe(200)
+    const body = (await v2.json()) as { review: Record<string, unknown>; job?: unknown }
+    expect(body.job).toBeUndefined()
+    expect(body.review).toMatchObject({
+      id: job.status === "succeeded" ? job.reviewId : undefined,
+      outcome: "productive",
+      friction: "none",
+      summary: "Clean two-message session.",
+      problems: [
+        {
+          title: "Said done without showing the build passing",
+          class: "missed",
+          severity: "medium",
+          fixType: "skill",
+          evidence: [{ from: "msg-1", to: "msg-1", quote: "done" }],
+        },
+      ],
+    })
+    // The old endpoint still reads only the lens review.
+    expect((await request(`/api/sessions/${sessionId}/aireview`)).status).toBe(404)
+  })
+
+  test("A21: a problems review already there blocks a second one unless forced; a lens review does not", async () => {
+    await db.insert(sessionReviews).values({
+      sessionId,
+      projectId,
+      analyzer: "ai-v1",
+      outcome: "productive",
+      friction: "none",
+      summary: "lens review",
+      signals: {},
+    })
+    const first = await request(`/api/sessions/${sessionId}/analyze`, { method: "POST" })
+    expect(first.status).toBe(202)
+    await waitForJob(((await first.json()) as { jobId: string }).jobId)
+
+    const again = await request(`/api/sessions/${sessionId}/analyze`, { method: "POST" })
+    expect(again.status).toBe(409)
+    expect(await again.json()).toEqual({ error: "analysisAlreadyExists" })
+    const forced = await request(`/api/sessions/${sessionId}/analyze`, {
+      method: "POST",
+      body: { force: true },
+    })
+    expect(forced.status).toBe(202)
+  })
+
+  test("A22: an unknown reviewer, an empty prompt, or a prompt for the lens reviewer is 400", async () => {
+    const badReviewer = await request(`/api/sessions/${sessionId}/analyze`, {
+      method: "POST",
+      body: { reviewer: "other" },
+    })
+    expect(await badReviewer.json()).toEqual({ error: "invalidReviewer" })
+    const badPrompt = await request(`/api/sessions/${sessionId}/analyze`, {
+      method: "POST",
+      body: { prompt: "   " },
+    })
+    expect(await badPrompt.json()).toEqual({ error: "invalidPrompt" })
+    const promptForLenses = await request(`/api/sessions/${sessionId}/analyze`, {
+      method: "POST",
+      body: { reviewer: "lenses", prompt: "use my rules" },
+    })
+    expect(promptForLenses.status).toBe(400)
+    expect(await promptForLenses.json()).toEqual({ error: "invalidPrompt" })
+  })
+
+  test("A23: v2/aireview is 404 for a user who cannot see the session, and when nothing ran", async () => {
+    const [stranger] = await db
+      .insert(users)
+      .values({ githubId: 77, githubLogin: "stranger" })
+      .returning({ id: users.id })
+    const hidden = await request(`/api/sessions/${sessionId}/v2/aireview`, {
+      asUserId: stranger?.id as string,
+    })
+    expect(hidden.status).toBe(404)
+    const none = await request(`/api/sessions/${sessionId}/v2/aireview`)
+    expect(none.status).toBe(404)
+    expect(await none.json()).toEqual({ error: "noAiReview" })
+  })
+
+  test("A24: v2/aireview carries a running job before the review lands", async () => {
+    registry = createAiReviewJobRegistry({
+      run: () => new Promise<AiReviewResult>(() => {}),
+      now: () => new Date("2026-08-26T20:00:00Z"),
+    })
+    await request(`/api/sessions/${sessionId}/analyze`, { method: "POST" })
+    const res = await request(`/api/sessions/${sessionId}/v2/aireview`)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ review: null, job: { status: "running" } })
   })
 })

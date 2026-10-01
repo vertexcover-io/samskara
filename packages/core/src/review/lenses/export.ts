@@ -24,6 +24,15 @@ export type SessionExportRecord = {
   readonly status?: string
   readonly track: string
   readonly text?: string
+  /**
+   * Where a message came from, when it was not simply typed: `human`, `task-notification`,
+   * `coordinator`, or its type such as `systemReminder` or `toolInjection`. Only in a `full`
+   * export — it is what tells the person apart from a helper's notice.
+   */
+  readonly origin?: string
+  /** A tool call's input and its result's output, as text. Only in a `full` export. */
+  readonly input?: string
+  readonly output?: string
   /** Epoch milliseconds from the message's own timestamp, so durations derive from seq ranges. */
   readonly ts?: number
 }
@@ -54,6 +63,62 @@ export const messageIdOf = (position: number): string => `msg-${position}`
 const excerpt = (text: string | undefined, maxChars: number): string | undefined =>
   text === undefined ? undefined : text.slice(0, maxChars)
 
+/** A message's recorded origin, else its type (a notice, a reminder, an injected skill). */
+const originOf = (
+  message: Extract<NormalizedMessage, { msgType: "message" }>,
+): string | undefined => message.details?.origin ?? message.subType
+
+/** A tool's input or output as text: strings stay as they are, anything else is JSON. */
+const asText = (value: unknown): string =>
+  typeof value === "string" ? value : (JSON.stringify(value) ?? "")
+
+/**
+ * A hook as a record: what ran (event, name, command) as its input, what it printed as its
+ * output. Hooks post to Slack and Asana and check setup, so their failures are often the
+ * only trace of a notification that never went out.
+ */
+const hookContent = (
+  details: Extract<NormalizedMessage, { msgType: "hookCall" }>["details"],
+): { input?: string; output?: string; status?: string } => {
+  const lines = (parts: ReadonlyArray<string | undefined>): string =>
+    parts.filter((part) => part !== undefined && part !== "").join("\n")
+  const content = (input: string, output: string, status?: string) => ({
+    ...(input === "" ? {} : { input }),
+    ...(output === "" ? {} : { output }),
+    ...(status === undefined ? {} : { status }),
+  })
+  if (details.phase === "summary") {
+    // One line per hook batch: its errors, and whether it stopped the agent from going on.
+    const stopped = details.preventedContinuation
+    return content(
+      `${details.hookCount} hook(s): ${details.hookInfos.map((info) => info.command ?? "?").join(", ")}`,
+      lines([
+        ...details.hookErrors.map((error) => asText(error)),
+        stopped
+          ? `stopped the agent${details.stopReason ? `: ${details.stopReason}` : ""}`
+          : undefined,
+      ]),
+      stopped || details.hookErrors.length > 0 ? "failure" : undefined,
+    )
+  }
+  const who = [details.hookEvent, details.hookName].filter(Boolean).join(" ")
+  if (details.phase === "context") return content(who, asText(details.additionalContext))
+  const input = [who, details.command].filter(Boolean).join(": ")
+  if (details.phase === "progress") return content(input, "")
+  return content(
+    input,
+    lines([
+      details.stdout,
+      details.stderr,
+      details.exitCode !== undefined && details.exitCode !== 0
+        ? `exit ${details.exitCode}`
+        : undefined,
+      details.timedOut === true ? "timed out" : undefined,
+    ]),
+    details.status,
+  )
+}
+
 /** Epoch ms from a normalized timestamp; undefined when absent or unparseable. */
 const tsOf = (message: NormalizedMessage): number | undefined => {
   if (message.timestamp === undefined) return undefined
@@ -61,8 +126,9 @@ const tsOf = (message: NormalizedMessage): number | undefined => {
   return Number.isNaN(ms) ? undefined : ms
 }
 
-const textOf = (message: NormalizedMessage): string | undefined => {
+const textOf = (message: NormalizedMessage, full: boolean): string | undefined => {
   if (message.msgType !== "message") return undefined
+  if (full) return message.content.type === "image" ? undefined : message.content.value
   if (message.content.type === "reasoning") {
     return excerpt(message.content.value, REASONING_TEXT_EXCERPT_CHARS)
   }
@@ -98,7 +164,14 @@ export const buildSessionExport = (input: {
   readonly startedAt?: string
   readonly endedAt?: string
   readonly messages: ReadonlyArray<NormalizedMessage>
+  /**
+   * Keep every message's whole text and each tool's input and output, instead of the short
+   * excerpts. Slower to review, but the reviewer sees what actually happened: a question the
+   * agent asked, a traceback, the command that failed.
+   */
+  readonly full?: boolean
 }): SessionExport => {
+  const full = input.full === true
   /** Records are assembled mutably: a result patches status into its call's record later. */
   type WritableRecord = { -readonly [K in keyof SessionExportRecord]: SessionExportRecord[K] }
   const callRecordByCallId = new Map<string, WritableRecord>()
@@ -142,9 +215,16 @@ export const buildSessionExport = (input: {
       const call = callRecordByCallId.get(message.details.callId)
       if (call !== undefined) {
         // First result wins: a duplicate result for the same call is absorbed, not recorded.
-        if (call.status === undefined) call.status = message.details.status
+        if (call.status === undefined) {
+          call.status = message.details.status
+          if (full) call.output = asText(message.details.output)
+        }
       } else {
-        pushRecord({ ...baseRecord(message), status: message.details.status })
+        pushRecord({
+          ...baseRecord(message),
+          status: message.details.status,
+          ...(full ? { output: asText(message.details.output) } : {}),
+        })
       }
       continue
     }
@@ -153,16 +233,24 @@ export const buildSessionExport = (input: {
       const record: WritableRecord = {
         ...baseRecord(message),
         toolName: message.details.name,
+        ...(full ? { input: asText(message.details.input) } : {}),
       }
       callRecordByCallId.set(message.details.callId, record)
       pushRecord(record)
       continue
     }
 
-    const text = textOf(message)
+    if (full && message.msgType === "hookCall") {
+      pushRecord({ ...baseRecord(message), ...hookContent(message.details) })
+      continue
+    }
+
+    const text = textOf(message, full)
+    const origin = full && message.msgType === "message" ? originOf(message) : undefined
     pushRecord({
       ...baseRecord(message),
       ...(message.msgType === "message" ? { role: message.role } : {}),
+      ...(origin !== undefined ? { origin } : {}),
       ...(text !== undefined ? { text } : {}),
     })
   }
