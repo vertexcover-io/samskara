@@ -15,6 +15,7 @@ import {
 import { type AuthVariables, requireAuth } from "../lib/require-auth.js"
 import { validate } from "../lib/validate.js"
 import { canWrite } from "../repositories/projects.repo.js"
+import { listProblemsForSession } from "../repositories/reviewProblems.repo.js"
 import {
   getLearning,
   type LearningRow,
@@ -26,7 +27,12 @@ import {
   visibleSessionProjectId,
 } from "../repositories/reviews.repo.js"
 import type { AiReviewJobRegistry, RunningAiReviewJob } from "../services/ai-review/jobs.js"
-import { AI_ANALYZER } from "../services/ai-review/pipeline.js"
+import {
+  AI_ANALYZER,
+  analyzerFor,
+  PROBLEMS_ANALYZER,
+  REVIEWERS,
+} from "../services/ai-review/pipeline.js"
 import { reviewAndPersist } from "../services/review.js"
 
 type Deps = {
@@ -84,14 +90,21 @@ const learningsQuerySchema = z
   })
   .strict()
 
+/** A user prompt is instructions, not a document: this is room for a long one. */
+const MAX_USER_PROMPT_CHARS = 20_000
+
 const analyzeBodySchema = z
   .object({
     harness: z.enum(REVIEW_HARNESSES).optional(),
     // The charset is the guard, not just the quoting: this value reaches the msb runner's
     // in-guest shell command, and the guest has the workspace mounted at /work.
     model: z.string().trim().min(1).max(100).regex(REVIEW_MODEL_PATTERN).optional(),
-    /** Replace an existing ai-v1 review — the Redo path. The upsert supersedes in place. */
+    /** Replace an existing review of the same kind — the Redo path. Supersedes in place. */
     force: z.boolean().optional(),
+    /** Which review: `problems` (the default) or the older `lenses`. */
+    reviewer: z.enum(REVIEWERS).optional(),
+    /** The user's own review prompt, any shape; merged into the problems review's base. */
+    prompt: z.string().trim().min(1).max(MAX_USER_PROMPT_CHARS).optional(),
   })
   .strict()
   .optional()
@@ -286,7 +299,7 @@ export const reviewRoutes = ({
      * Start a harness-run AI review. Editor-gated, then refused synchronously when the chosen
      * harness has no credential. A job already running for this session answers 409
      * analysisAlreadyRunning (join it via GET /:id/aireview's `job` field rather than spawn a
-     * duplicate); a landed ai-v1 review answers 409 analysisAlreadyExists unless the body
+     * duplicate); a landed review of the same kind answers 409 analysisAlreadyExists unless the body
      * sets `force`, which supersedes the row in place. Otherwise 202, and the caller polls.
      */
     .post(
@@ -303,6 +316,8 @@ export const reviewRoutes = ({
           harness: "invalidHarness",
           model: "invalidModel",
           force: "invalidForce",
+          reviewer: "invalidReviewer",
+          prompt: "invalidPrompt",
         }
         return c.json({ error: codes[String(field)] ?? "invalidAnalyzeBody" }, 400)
       }),
@@ -320,10 +335,16 @@ export const reviewRoutes = ({
         if (aiReviewJobs.activeJobForSession(sessionId) !== undefined)
           return c.json({ error: "analysisAlreadyRunning" }, 409)
         const rows = await listReviewsForSession(db, userId, sessionId)
-        const hasReview = rows.some((review) => review.analyzer === AI_ANALYZER)
+        const body = c.req.valid("json")
+        // Only the problems review takes a prompt; accepting one for the lens review would
+        // run without it and say nothing.
+        if (body?.prompt !== undefined && body.reviewer === "lenses")
+          return c.json({ error: "invalidPrompt" }, 400)
+        const analyzer = analyzerFor(body?.reviewer ?? "problems")
+        const hasReview = rows.some((review) => review.analyzer === analyzer)
         // A landed review blocks a re-run unless the caller asked to redo — the pipeline's
         // upsert supersedes the old row in place, so a redo replaces rather than duplicates.
-        if (hasReview && c.req.valid("json")?.force !== true)
+        if (hasReview && body?.force !== true)
           return c.json({ error: "analysisAlreadyExists" }, 409)
         const started = aiReviewJobs.startAiReviewJob(
           {
@@ -370,6 +391,54 @@ export const reviewRoutes = ({
             ? { status: job.status, jobId: job.jobId, code: job.code as string, detail: job.detail }
             : { ...serializeRunningJob(job), sessionId: job.sessionId }
       return c.json({ job: body }, 200)
+    })
+    /**
+     * The problems review (ai-problems-v2) with every problem it saved, in the same shape as
+     * GET /:id/aireview — plus `problems` — so a client reads either the same way, including
+     * rejoining a running job after a reload.
+     */
+    .get("/:id/v2/aireview", requireAuth({ db, env }, ["web", "cli"]), async (c) => {
+      const sessionId = c.req.param("id")
+      const userId = c.get("user").id
+      // Gated before the registry lookup, for the same reason as GET /:id/aireview.
+      if ((await visibleSessionProjectId(db, userId, sessionId)) === null)
+        return c.json({ error: "noAiReview" }, 404)
+      const rows = await listReviewsForSession(db, userId, sessionId)
+      const row = rows.find((review) => review.analyzer === PROBLEMS_ANALYZER)
+      const job = aiReviewJobs.activeJobForSession(sessionId)
+      if (row === undefined && job === undefined) return c.json({ error: "noAiReview" }, 404)
+      const problems =
+        row === undefined ? [] : await listProblemsForSession(db, userId, sessionId, row.id)
+      return c.json(
+        {
+          review:
+            row === undefined
+              ? null
+              : {
+                  id: row.id,
+                  createdAt: new Date(row.createdAt).toISOString(),
+                  analyzedAt: new Date(row.updatedAt).toISOString(),
+                  outcome: row.outcome,
+                  friction: row.friction,
+                  summary: row.summary,
+                  signals: row.signals,
+                  problems: problems.map((problem) => ({
+                    id: problem.id,
+                    title: problem.title,
+                    class: problem.class,
+                    severity: problem.severity,
+                    severityReason: problem.severityReason,
+                    fixType: problem.fixType,
+                    description: problem.description,
+                    evidence: problem.evidence,
+                    learning: problem.learning,
+                    extra: problem.extra,
+                  })),
+                },
+          ...(job === undefined ? {} : { job: serializeRunningJob(job) }),
+        },
+        200,
+      )
     })
     /**
      * The persisted ai-v1 review, visibility-scoped by the same join as GET /:id/review; the
