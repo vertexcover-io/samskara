@@ -122,7 +122,7 @@ const thinkingOf = (value: unknown): string | null => {
   return parts.length === 0 ? null : parts.join("\n\n")
 }
 
-const proseOf = (value: unknown): string =>
+export const proseOf = (value: unknown): string =>
   (Array.isArray(value) ? value : [value])
     .filter((part) => !isThinking(part))
     .map(collectText)

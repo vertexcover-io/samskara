@@ -14,6 +14,7 @@ import type { Env } from "./lib/env.js"
 import { loggingMiddleware } from "./lib/logging-middleware.js"
 import { artifactRoutes } from "./routes/artifacts.js"
 import { authRoutes } from "./routes/auth.js"
+import { compoundLearningsRoutes } from "./routes/compound-learnings.js"
 import { ingestRoutes } from "./routes/ingest.js"
 import { orgsRoutes } from "./routes/orgs.js"
 import { projectsRoutes } from "./routes/projects.js"
@@ -132,6 +133,7 @@ export const buildApp = (db: Db, env: Env, deps: Deps = {}) => {
     )
     .route("/api/sync-status", syncStatusRoutes({ db, env }))
     .route("/api/learnings", learningsRoutes({ db, env }))
+    .route("/api/compound-learnings", compoundLearningsRoutes({ db, env }))
 
   if (env.webDist) {
     const webDist = env.webDist
