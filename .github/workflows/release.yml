@@ -127,12 +127,11 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: latest
           registry-url: https://registry.npmjs.org
 
-      # Trusted publishing needs npm 11.5.1 or later, newer than the one Node 22 ships. Pinned to
-      # 11 because npm 12 drops support for older Node 22 releases.
-      - run: npm install -g npm@11
+      # Trusted publishing needs npm 11.5.1 or later.
+      - run: npm install -g npm@latest
 
       # A pre-release goes to the "next" dist-tag, so it never becomes what `npm i -g` installs.
       - name: Publish to npm
