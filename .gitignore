@@ -26,3 +26,6 @@ e2e/fixtures/p12-outside-*/
 
 # Local deploy script — machine specific, never committed.
 scripts/deploy.sh
+
+# Local secrets for deploy/ provisioning, never committed
+/samskara-deploy.env
