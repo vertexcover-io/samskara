@@ -1,0 +1,153 @@
+name: Deploy
+
+# Continuous deployment to a single VPS.
+#
+#   test ──► build-and-publish ──► deploy (pull, restart, health check)
+#
+# The runner tests and builds. The image goes to GitHub Container Registry. The
+# server only pulls and restarts: it needs Docker, /opt/samskara/docker-compose.yml
+# and /opt/samskara/.env, all of which provisioning (deploy/deploy.py) puts there.
+#
+# Triggers:
+#   - release.yml dispatches this with the tag it just published. It has to: a release
+#     created with GITHUB_TOKEN never fires `release: published` (GitHub suppresses
+#     workflow runs for events its own token creates, except workflow_dispatch).
+#   - `release: published` still covers a release someone creates by hand in the UI.
+#   - "Run workflow" with a tag deploys that tag by hand; pass an older tag to roll back
+#
+# Required in the `production` environment:
+#   secrets  SSH_PRIVATE_KEY   deploy key for DEPLOY_USER@HOST
+#            SSH_HOST_KEY      server's public host key, one line as in known_hosts
+#   vars     DEPLOY_HOST       ip or hostname of the VPS
+#            DOMAIN            public domain the app is served on
+#            DEPLOY_USER       optional, default samskara; exedev on exe.dev
+#
+# Once, after the first publish: set the ghcr.io package to public in the repo's
+# Packages settings, or the server cannot pull it without a login.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to deploy (e.g. v0.4.1)"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  REF: ${{ inputs.tag || github.event.release.tag_name }}
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.REF }}
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.2.19
+
+      - run: bun install --frozen-lockfile
+      - run: bun run lint
+      - run: bun run typecheck
+      - run: bun run test:scripts
+      # The server suite starts a real pgvector container through testcontainers.
+      - run: bun run test
+
+  build-and-publish:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.REF }}
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Turns the tag into image tags: v0.4.1 -> 0.4.1, 0.4 and latest. Also attaches
+      # OCI labels that record the source commit on the image.
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ env.REF }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ env.REF }}
+            type=raw,value=latest
+
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build-and-publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: production
+      url: https://${{ vars.DOMAIN }}
+    env:
+      HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER || 'samskara' }}
+      VERSION: ${{ needs.build-and-publish.outputs.version }}
+    steps:
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          HOST_KEY: ${{ secrets.SSH_HOST_KEY }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$HOST_KEY" > ~/.ssh/known_hosts
+
+      # The tag is written to a file so the server remembers which version is running
+      # and a reboot brings the same one back. The app container runs migrations on
+      # start (see Dockerfile CMD), so there is no separate migrate step.
+      - name: Pull and restart
+        run: |
+          ssh "$DEPLOY_USER@$HOST" bash -s "$VERSION" <<'EOF'
+            set -euo pipefail
+            VERSION=$1
+            cd /opt/samskara
+            exec 9>/var/lock/samskara-deploy && flock -w 300 9
+            printf 'SAMSKARA_TAG=%s\n' "$VERSION" > .deploy.env
+            docker compose --env-file .env --env-file .deploy.env pull app
+            docker compose --env-file .env --env-file .deploy.env up -d app
+            docker image prune -f
+          EOF
+
+      # Runs in this job, not a separate one: environment variables like DOMAIN are only
+      # visible to a job that declares `environment: production`.
+      - name: Health check
+        env:
+          DOMAIN: ${{ vars.DOMAIN }}
+        run: curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-all-errors "https://$DOMAIN/api/health"
