@@ -1,6 +1,14 @@
 #!/usr/bin/env bun
 import { execFileSync } from "node:child_process"
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -28,10 +36,11 @@ type CoreManifest = {
 type ReleaseManifest = {
   name: string
   version: string
-  private: true
   type: "module"
   description: string
   license: string
+  repository: { type: "git"; url: string }
+  publishConfig: { access: "public" }
   bin: Record<string, string>
   engines: { node: string }
   dependencies: Dependencies
@@ -65,16 +74,19 @@ export const releaseManifest = (
   return {
     name: cli.name,
     version,
-    private: true,
     type: "module",
     description: "Capture and search AI coding-agent session logs",
     license: "MIT",
+    repository: { type: "git", url: "git+https://github.com/vertexcover-io/samskara.git" },
+    publishConfig: { access: "public" },
     bin: cli.bin,
     engines: { node: ">=22" },
     dependencies,
     bundleDependencies: [CORE],
   }
 }
+
+export const tarballName = (version: string): string => `samskara-cli-${version}.tgz`
 
 export const bundledCoreManifest = (core: CoreManifest, version: string): BundledCoreManifest => ({
   name: core.name,
@@ -108,7 +120,7 @@ const notSourceMap = (path: string): boolean => !path.endsWith(".map")
 const main = (): void => {
   const cliDir = join(repoRoot, "packages/cli")
   const coreDir = join(repoRoot, "packages/core")
-  requireBuild(join(cliDir, "dist"), "@samskara/cli")
+  requireBuild(join(cliDir, "dist"), "packages/cli")
   requireBuild(join(coreDir, "dist"), CORE)
 
   const cli = readManifest<CliManifest>(join(cliDir, "package.json"))
@@ -136,8 +148,10 @@ const main = (): void => {
     .at(-1)
   if (packed === undefined) throw new Error("npm pack did not report a tarball")
 
+  const tarball = join(outDir, tarballName(version))
+  renameSync(join(outDir, packed), tarball)
   rmSync(stageDir, { recursive: true, force: true })
-  console.log(join(outDir, packed))
+  console.log(tarball)
 }
 
 if (import.meta.main) {
