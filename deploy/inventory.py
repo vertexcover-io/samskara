@@ -18,6 +18,9 @@ Optional:
                         app to localhost. external: a platform proxy (e.g. exe.dev) already
                         terminates TLS for DOMAIN and forwards to port 3000; skip Caddy and
                         the firewall and bind the app on all interfaces
+  APP_BIND              interface docker publishes port 3000 on. Default 127.0.0.1 behind
+                        Caddy, 0.0.0.0 behind an external proxy; set the proxy-facing
+                        address instead when the platform has a fixed one
   APP_USER              user the Deploy workflow logs in as (default: samskara, created).
                         On exe.dev the proxy always lands on exedev, so set it to that
   AI_REVIEW_HARNESS     opencode (default) or claude
@@ -77,7 +80,7 @@ vps = [
             "_sudo": _admin_user != "root",
             "domain": os.environ["DOMAIN"],
             "proxy": proxy,
-            "app_bind": "127.0.0.1" if proxy == "caddy" else "0.0.0.0",
+            "app_bind": os.environ.get("APP_BIND", "127.0.0.1" if proxy == "caddy" else "0.0.0.0"),
             "app_user": os.environ.get("APP_USER", "samskara"),
             "org_slug": org_slug,
             "client_id": os.environ["GITHUB_CLIENT_ID"],
