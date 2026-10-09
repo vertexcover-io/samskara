@@ -12,8 +12,6 @@ on:
 
 permissions:
   contents: write
-  # Lets the release job dispatch deploy.yml once the release is published.
-  actions: write
 
 jobs:
   # Runs first, so a manual release never tags code that fails its tests.
@@ -85,6 +83,11 @@ jobs:
     if: ${{ !cancelled() && needs.test.result == 'success' && needs.cut.result != 'failure' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # `actions: write` only here: it lets the last step dispatch deploy.yml, and no other
+    # job needs it.
+    permissions:
+      contents: write
+      actions: write
     env:
       TAG: ${{ needs.cut.outputs.tag || github.ref_name }}
     steps:
