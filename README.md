@@ -120,6 +120,7 @@ npm i -g @vertexcover/samskara
 Or with Homebrew:
 
 ```sh
+brew trust vertexcover-io/tap
 brew install vertexcover-io/tap/samskara
 ```
 
