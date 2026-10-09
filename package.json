@@ -15,7 +15,7 @@
     "test": "turbo run test",
     "test:core": "turbo run test --filter=@samskara/core",
     "test:server": "turbo run test --filter=@samskara/server",
-    "test:cli": "turbo run test --filter=@samskara/cli",
+    "test:cli": "turbo run test --filter=@vertexcover/samskara",
     "test:web": "turbo run test --filter=@samskara/web",
     "test:scripts": "cd scripts && bun test",
     "test:claude-session": "bun run scripts/claude-session-coverage.ts",
@@ -37,7 +37,7 @@
     "seed": "bun run --cwd packages/server seed",
     "seed:capture": "bun run --cwd packages/server seed:capture",
     "release:version": "bun scripts/version.ts",
-    "release:pack": "bun run build --filter=@samskara/cli && bun scripts/pack-cli.ts",
+    "release:pack": "bun run build --filter=@vertexcover/samskara && bun scripts/pack-cli.ts",
     "release": "bun scripts/release.ts"
   },
   "devDependencies": {

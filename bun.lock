@@ -13,8 +13,8 @@
       },
     },
     "packages/cli": {
-      "name": "@samskara/cli",
-      "version": "0.4.1",
+      "name": "@vertexcover/samskara",
+      "version": "0.5.0",
       "bin": {
         "samskara": "./dist/index.js",
       },
@@ -35,7 +35,7 @@
     },
     "packages/core": {
       "name": "@samskara/core",
-      "version": "0.4.1",
+      "version": "0.5.0",
       "dependencies": {
         "better-sqlite3": "^13",
         "pino": "^9",
@@ -49,7 +49,7 @@
     },
     "packages/server": {
       "name": "@samskara/server",
-      "version": "0.4.1",
+      "version": "0.5.0",
       "dependencies": {
         "@hono/node-server": "1.13.8",
         "@hono/zod-validator": "0.7.6",
@@ -73,7 +73,7 @@
     },
     "packages/web": {
       "name": "@samskara/web",
-      "version": "0.4.1",
+      "version": "0.5.0",
       "dependencies": {
         "downshift": "9.4.0",
         "fflate": "^0.8.3",
@@ -332,8 +332,6 @@
 
     "@rollup/rollup-win32-x64-msvc": ["@rollup/rollup-win32-x64-msvc@4.62.2", "", { "os": "win32", "cpu": "x64" }, "sha512-BfzEnDJOt9T8M989/lA37EcJgat01wLRnoi5dQf3QzOH7jzpqTAzdDbVfRljVr5r+jzKqpbHeyOfAaXxAd0PAA=="],
 
-    "@samskara/cli": ["@samskara/cli@workspace:packages/cli"],
-
     "@samskara/core": ["@samskara/core@workspace:packages/core"],
 
     "@samskara/server": ["@samskara/server@workspace:packages/server"],
@@ -511,6 +509,8 @@
     "@ungap/structured-clone": ["@ungap/structured-clone@1.3.3", "", {}, "sha512-60YRaenCQcVjYEKOcG824+DRGGIQ3VKErcBoAEDJZz5bKIs2ZG+X/H9Nk+Q6EVkwJk5QNApxbrc5QtBSwtrXAg=="],
 
     "@upsetjs/venn.js": ["@upsetjs/venn.js@2.0.0", "", { "optionalDependencies": { "d3-selection": "^3.0.0", "d3-transition": "^3.0.1" } }, "sha512-WbBhLrooyePuQ1VZxrJjtLvTc4NVfpOyKx0sKqioq9bX1C1m7Jgykkn8gLrtwumBioXIqam8DLxp88Adbue6Hw=="],
+
+    "@vertexcover/samskara": ["@vertexcover/samskara@workspace:packages/cli"],
 
     "@vitejs/plugin-react": ["@vitejs/plugin-react@4.3.4", "", { "dependencies": { "@babel/core": "^7.26.0", "@babel/plugin-transform-react-jsx-self": "^7.25.9", "@babel/plugin-transform-react-jsx-source": "^7.25.9", "@types/babel__core": "^7.20.5", "react-refresh": "^0.14.2" }, "peerDependencies": { "vite": "^4.2.0 || ^5.0.0 || ^6.0.0" } }, "sha512-SCCPBJtYLdE8PX/7ZQAs1QAZ8Jqwih+0VBLum1EGqmCCQal+MIUqLCzj3ZUy8ufbC0cAM4LRlSTm7IQJwWT4ug=="],
 

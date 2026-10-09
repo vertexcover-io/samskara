@@ -83,11 +83,12 @@ jobs:
     if: ${{ !cancelled() && needs.test.result == 'success' && needs.cut.result != 'failure' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # `actions: write` only here: it lets the last step dispatch deploy.yml, and no other
-    # job needs it.
+    # `actions: write` lets a step dispatch deploy.yml; `id-token: write` lets npm publish
+    # through trusted publishing, so there is no NPM_TOKEN secret. No other job needs either.
     permissions:
       contents: write
       actions: write
+      id-token: write
     env:
       TAG: ${{ needs.cut.outputs.tag || github.ref_name }}
     steps:
@@ -123,3 +124,19 @@ jobs:
         run: |
           case "$TAG" in *-*) echo "pre-release, not deploying"; exit 0 ;; esac
           gh workflow run deploy.yml --ref "$TAG" -f "tag=$TAG"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing needs npm 11.5.1 or later, newer than the one Node 22 ships. Pinned to
+      # 11 because npm 12 drops support for older Node 22 releases.
+      - run: npm install -g npm@11
+
+      # A pre-release goes to the "next" dist-tag, so it never becomes what `npm i -g` installs.
+      - name: Publish to npm
+        run: |
+          flags=""
+          case "$TAG" in *-*) flags="--tag next" ;; esac
+          npm publish "./dist/samskara-cli-${TAG#v}.tgz" $flags

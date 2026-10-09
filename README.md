@@ -111,7 +111,27 @@ guesses it.
 
 ## Install the CLI
 
-The CLI is not on npm. Every release attaches an installable tarball to its
+The CLI is published to npm as `@vertexcover/samskara` and needs Node 22+:
+
+```sh
+npm i -g @vertexcover/samskara
+```
+
+Or with Homebrew:
+
+```sh
+brew install vertexcover-io/tap/samskara
+```
+
+Installed it before it moved to npm, under the old `@samskara/cli` name? Remove that once first —
+both packages install a `samskara` command, so npm refuses to put the new one over the old (and
+`samskara upgrade` from an old install fails the same way):
+
+```sh
+npm uninstall -g @samskara/cli
+```
+
+Every release also attaches the same installable tarball to its
 [GitHub release](https://github.com/vertexcover-io/samskara/releases), under a name with no version
 in it, so this URL always resolves to the newest one:
 
@@ -120,14 +140,14 @@ npm i -g https://github.com/vertexcover-io/samskara/releases/latest/download/sam
 ```
 
 To pin a release instead, take its own versioned asset — replace `VERSION` with the release you
-want, for example `v0.2.0` and `0.2.0`:
+want, for example `v0.2.0` and `0.2.0` (or `npm i -g @vertexcover/samskara@VERSION`):
 
 ```sh
 npm i -g https://github.com/vertexcover-io/samskara/releases/download/vVERSION/samskara-cli-VERSION.tgz
 ```
 
 The tarball carries `@samskara/core` inside it, so nothing else has to be fetched from a registry.
-It needs Node 22+. To remove it later: `npm uninstall -g @samskara/cli`.
+To remove it later: `npm uninstall -g @vertexcover/samskara`.
 
 To upgrade, run `samskara upgrade`. It asks GitHub for the newest release, and if that is newer
 than the CLI you are running it installs that release's tarball over this one — the same
@@ -139,12 +159,12 @@ Working on the CLI itself, or want an unreleased build:
 
 ```sh
 bun install
-bun run build --filter=@samskara/cli
+bun run build --filter=@vertexcover/samskara
 cd packages/cli && npm link
 ```
 
 That puts a `samskara` command on your PATH pointing at `packages/cli/dist/index.js`. Rebuild after
-pulling changes; the link keeps working. To remove it later: `npm unlink -g @samskara/cli`.
+pulling changes; the link keeps working. To remove it later: `npm unlink -g @vertexcover/samskara`.
 
 ### First run
 
@@ -283,7 +303,7 @@ The same query and filters are available from the terminal with `samskara search
 | Package | What it holds |
 |---|---|
 | `@samskara/core` | Shared types, the collector framework (`AgentPlugin` + the Claude Code and OpenCode plugins), the logging factory |
-| `@samskara/cli` | The `samskara` binary — pairing, capture opt-in, the watcher |
+| `@vertexcover/samskara` (`packages/cli`) | The `samskara` binary — pairing, capture opt-in, the watcher |
 | `@samskara/server` | Hono API on Node, Drizzle + postgres-js + pgvector |
 | `@samskara/web` | Vite + React + Tailwind UI |
 
@@ -332,10 +352,19 @@ bun run release patch --watch    # …and stream the run until it finishes
 
 That dispatches `.github/workflows/release.yml` against the branch you are on. The workflow runs
 lint, typecheck and the tests first; only then does it bump every manifest, commit
-`chore(release): vX.Y.Z`, tag it, push both, build the CLI tarball and create the GitHub release
-with it attached. Nothing is tagged until the tests are green, so a failed release leaves no
-version behind to clean up. A tag ending in a pre-release suffix (`v1.4.0-rc.1`) publishes as a
-pre-release and never becomes "Latest".
+`chore(release): vX.Y.Z`, tag it, push both, build the CLI tarball, create the GitHub release
+with it attached, and publish that same tarball to npm as `@vertexcover/samskara`. Nothing is
+tagged until the tests are green, so a failed release leaves no version behind to clean up. A tag
+ending in a pre-release suffix (`v1.4.0-rc.1`) publishes as a GitHub pre-release and to npm's
+`next` dist-tag, so it never becomes "Latest" on either.
+
+The npm publish uses [trusted publishing](https://docs.npmjs.com/trusted-publishers): npm trusts
+this repo's `release.yml` through GitHub's OIDC token, so there is no `NPM_TOKEN` secret to rotate.
+A trusted publisher can only be configured on a package that already exists, so the first publish
+of `@vertexcover/samskara` is manual: `bun run release:pack`, then
+`npm publish ./dist/samskara-cli-VERSION.tgz` from a maintainer's machine, then add the trusted
+publisher (repository `vertexcover-io/samskara`, workflow `release.yml`) in the package's npm
+settings.
 
 `bun run release` refuses to dispatch a branch whose local tip differs from `origin`'s — the
 workflow builds from what origin has, so an unpushed commit would silently be left out. Pass
@@ -355,6 +384,8 @@ git push origin master --follow-tags
 
 Only the CLI ships an artifact; the server and web UI are deployed from source. To build the
 tarball without releasing anything, `bun run release:pack` writes `dist/samskara-cli-VERSION.tgz`.
+The tarball's own manifest is the published one: it is public and names this repository, while
+`packages/cli/package.json` stays `private` so the workspace itself can never be published.
 
 The CLI depends on `@samskara/core` as `workspace:*`, which means nothing outside this repo, and
 core is never published, so the tarball carries core inside it as an npm

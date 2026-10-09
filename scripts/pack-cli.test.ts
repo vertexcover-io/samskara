@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test"
-import { bundledCoreManifest, releaseManifest } from "./pack-cli.ts"
+import { readFileSync } from "node:fs"
+import { bundledCoreManifest, releaseManifest, tarballName } from "./pack-cli.ts"
 
 const cliPackage = {
-  name: "@samskara/cli",
+  name: "@vertexcover/samskara",
   version: "0.0.0",
   private: true,
   type: "module",
@@ -64,8 +65,22 @@ describe("releaseManifest", () => {
     expect(manifest.version).toBe("1.4.0")
   })
 
-  test("stays private so it can never be published by accident", () => {
-    expect(manifest.private).toBe(true)
+  test("publishes under the cli's own scoped name", () => {
+    expect(manifest.name).toBe("@vertexcover/samskara")
+  })
+
+  test("is public, so npm publishes a scoped package without --access", () => {
+    expect(manifest.private).toBeUndefined()
+    expect(manifest.publishConfig).toEqual({ access: "public" })
+  })
+
+  /** Trusted publishing and provenance reject a package whose repository is not the repo the
+   * workflow runs in. */
+  test("names the GitHub repository the release workflow publishes from", () => {
+    expect(manifest.repository).toEqual({
+      type: "git",
+      url: "git+https://github.com/vertexcover-io/samskara.git",
+    })
   })
 
   test("drops build-time fields the installed package has no use for", () => {
@@ -77,6 +92,28 @@ describe("releaseManifest", () => {
     expect(() =>
       releaseManifest({ ...cliPackage, dependencies: {} }, corePackage, "1.4.0"),
     ).toThrow()
+  })
+})
+
+describe("the workspace cli manifest", () => {
+  const workspace = JSON.parse(
+    readFileSync(new URL("../packages/cli/package.json", import.meta.url), "utf8"),
+  ) as { name: string; private?: boolean }
+
+  test("is the package the release publishes", () => {
+    expect(workspace.name).toBe("@vertexcover/samskara")
+  })
+
+  test("stays private, so only the packed tarball can ever be published", () => {
+    expect(workspace.private).toBe(true)
+  })
+})
+
+describe("tarballName", () => {
+  /** npm pack names the file after the package, but the release asset keeps its original name:
+   * the Homebrew formula and the README's versioned download link fetch it by that name. */
+  test("keeps the release asset name independent of the package name", () => {
+    expect(tarballName("1.4.0")).toBe("samskara-cli-1.4.0.tgz")
   })
 })
 
