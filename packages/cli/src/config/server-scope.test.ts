@@ -7,6 +7,7 @@ import {
   artifactQueuePath,
   artifactStatePath,
   filterOptionsPath,
+  learningEventsStatePath,
   projectsPath,
   statePath,
   tokenPath,
@@ -163,6 +164,10 @@ describe("resetServerScope", () => {
       JSON.stringify({ version: 1, apiBase: "https://one.example", entries: [] }),
     )
     await writeFile(filterOptionsPath(), JSON.stringify({ apiBase: "https://one.example" }))
+    await writeFile(
+      learningEventsStatePath(),
+      JSON.stringify({ version: 1, apiBase: "https://one.example", files: {} }),
+    )
     await writeFile(tokenPath(), "sometoken")
 
     let stopped = 0
@@ -179,7 +184,13 @@ describe("resetServerScope", () => {
     expect(backupsExistedAtStop).toBe(false)
     expect(report.projects).toBe(1)
     expect([...report.cleared].sort()).toEqual(
-      [statePath(), artifactStatePath(), artifactQueuePath(), filterOptionsPath()].sort(),
+      [
+        statePath(),
+        artifactStatePath(),
+        artifactQueuePath(),
+        filterOptionsPath(),
+        learningEventsStatePath(),
+      ].sort(),
     )
 
     for (const file of ALL_SCOPED_PATHS()) {
@@ -195,6 +206,7 @@ describe("resetServerScope", () => {
     expect(existsSync(artifactStatePath())).toBe(false)
     expect(existsSync(artifactQueuePath())).toBe(false)
     expect(existsSync(filterOptionsPath())).toBe(false)
+    expect(existsSync(learningEventsStatePath())).toBe(false)
     expect(existsSync(tokenPath())).toBe(false)
 
     const projects = JSON.parse(await readFile(projectsPath(), "utf8"))

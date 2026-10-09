@@ -9,6 +9,7 @@ import {
   artifactStatePath,
   configHome,
   filterOptionsPath,
+  learningEventsStatePath,
   projectsPath,
   statePath,
   tokenPath,
@@ -57,6 +58,7 @@ export const ALL_SCOPED_PATHS = (): ReadonlyArray<string> => [
   artifactStatePath(),
   artifactQueuePath(),
   filterOptionsPath(),
+  learningEventsStatePath(),
 ]
 
 export const mismatchFact = (mismatch: Mismatch): string =>
@@ -96,6 +98,7 @@ const DERIVED_PATHS = (): ReadonlyArray<string> => [
   artifactStatePath(),
   artifactQueuePath(),
   filterOptionsPath(),
+  learningEventsStatePath(),
 ]
 
 // Direct, not via `projects.ts`: that module imports from here, so calling back would be circular.
