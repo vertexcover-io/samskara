@@ -79,6 +79,7 @@ anything required that is missing.
 | `AI_REVIEW_HARNESS` | no | `opencode` (default) or `claude`, which switches the key to `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` |
 | `ADMIN_USER` | no | user provisioning logs in as; `root` by default |
 | `SUPER_ADMIN_LOGINS` | no | comma-separated GitHub logins with access to every project |
+| `SAMSKARA_IMAGE` | no | image to run; `ghcr.io/vertexcover-io/samskara` by default. A fork sets its own `ghcr.io/OWNER/REPO`, which is what its Deploy workflow publishes |
 | `SAMSKARA_TAG` | no | image tag to start with; `latest` by default |
 | `PROXY` | no | `caddy` (default) installs Caddy for TLS; `external` skips it when the platform already terminates TLS and forwards to port 3000 |
 | `APP_USER` | no | user the workflow deploys as; `samskara` by default, created by provisioning |
@@ -100,14 +101,15 @@ create an environment named `production` and add:
 | variable | `DOMAIN` | the public domain |
 | variable | `DEPLOY_USER` | only when `APP_USER` was changed from the default |
 
-From the command line:
+From the command line, in a checkout of the repository and with `DEPLOY_HOST` and `DOMAIN`
+still exported from provisioning:
 
 ```sh
-gh api -X PUT repos/ORG/samskara/environments/production
+gh api -X PUT "repos/{owner}/{repo}/environments/production"
 gh secret set SSH_PRIVATE_KEY --env production < ~/.ssh/samskara_deploy
-ssh-keyscan -t ed25519 DEPLOY_HOST | gh secret set SSH_HOST_KEY --env production
-gh variable set DEPLOY_HOST --env production --body DEPLOY_HOST
-gh variable set DOMAIN --env production --body DOMAIN
+ssh-keyscan -t ed25519 "$DEPLOY_HOST" | gh secret set SSH_HOST_KEY --env production
+gh variable set DEPLOY_HOST --env production --body "$DEPLOY_HOST"
+gh variable set DOMAIN --env production --body "$DOMAIN"
 ```
 
 Repository-level secrets and variables work too; the environment only adds the option of
@@ -132,5 +134,15 @@ and the last step checks `https://DOMAIN/api/health`.
   the machine is up to you.
 - **Rotate the deploy key**: generate a new pair, rerun provisioning with the new public half, and
   update `SSH_PRIVATE_KEY`.
-- **New server**: provision it, update `DEPLOY_HOST` and `SSH_HOST_KEY`, and copy the latest
-  backup across before switching DNS.
+- **Restore a backup**: a backup is a plain SQL dump, so it goes into an empty database. In
+  `/opt/samskara`, with `COMPOSE="docker compose --env-file .env --env-file .deploy.env"`:
+  ```sh
+  $COMPOSE stop app
+  $COMPOSE exec -T db psql -U samskara -d postgres -c 'drop database samskara' -c 'create database samskara'
+  gunzip -c backups/samskara-YYYY-MM-DD.sql.gz | $COMPOSE exec -T db psql -U samskara -d samskara
+  $COMPOSE up -d app
+  ```
+  Then sign in and check a project you know before trusting it.
+- **New server**: provision it, copy the latest backup across and restore it as above, confirm
+  the data in the browser against the new server's IP, then switch DNS and update `DEPLOY_HOST`
+  and `SSH_HOST_KEY`.

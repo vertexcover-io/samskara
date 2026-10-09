@@ -13,8 +13,23 @@ projects, machines and people.
 
 Nothing leaves a machine until someone runs `samskara enable` in a folder.
 
+## Quick start
+
+With a server already running for your team:
+
+```sh
+npm i -g https://github.com/vertexcover-io/samskara/releases/latest/download/samskara-cli.tgz
+samskara init          # choose the server, pair with a code from the web UI
+cd ~/code/my-project
+samskara enable        # start capturing this folder
+```
+
+Every session you run in that folder from now on appears in the web UI. The rest of this file
+explains each step and how to run a server of your own.
+
 ## Contents
 
+- [Quick start](#quick-start)
 - [How it works](#how-it-works)
 - [What gets captured](#what-gets-captured)
 - [Development](#development)
@@ -105,7 +120,7 @@ Later, `samskara upgrade` installs the newest release over the current one, and
 
 ## Pair the CLI with the server
 
-Pairing links the CLI on your machine to your account on the server. It happens once.
+Pairing links the CLI on your machine to your account on the server.
 
 1. Run `samskara init`. It asks for the server URL and the web URL, then for a pairing code.
 2. Open the web URL in a browser and sign in with GitHub.
@@ -115,6 +130,10 @@ Pairing links the CLI on your machine to your account on the server. It happens 
 `init` then installs the Claude Code hook and starts the watcher. The token it receives is stored
 at `~/.samskara/token`, readable only by you. A code works once and never expires, but it is
 invalidated if the server restarts before it is used.
+
+The token expires after the server's `JWT_EXPIRES_IN`, seven days by default. Uploading then
+stops, and the Claude Code hook reports it on the next session start. Run `samskara login` and
+generate a new code to pair again.
 
 To finish, turn capture on in a project:
 
@@ -167,7 +186,11 @@ fully separate install at `~/.samskara-NAME`.
    ```
    It installs dependencies, writes `.env`, starts Postgres, migrates, seeds and registers the
    org. On the first run it stops and asks for the OAuth client id and secret and the AI
-   reviewer's key. Add them to `.env` and run it again. Re-running is always safe.
+   reviewer's key. Add them to `.env` and run it again.
+
+   Re-running never rotates a secret or touches a database that already has projects. Passing
+   the org slug again does reset that org's automatic membership to on, so leave the slug off on
+   later runs unless that is what you want.
 3. Start everything:
    ```sh
    bun run dev    # API on :3000, web UI on :8000

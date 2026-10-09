@@ -4,6 +4,7 @@
 #   docker compose --env-file .env --env-file .deploy.env <command>
 #
 #   POSTGRES_PASSWORD  from .env         generated once by provisioning
+#   SAMSKARA_IMAGE     from .env         ghcr.io/OWNER/REPO, this repo's image by default
 #   APP_BIND           from .env         127.0.0.1 behind Caddy, 0.0.0.0 behind a platform proxy
 #   SAMSKARA_TAG       from .deploy.env  written by every deploy
 
@@ -26,7 +27,7 @@ services:
       retries: 10
 
   app:
-    image: ghcr.io/vertexcover-io/samskara:${SAMSKARA_TAG}
+    image: ${SAMSKARA_IMAGE:-ghcr.io/vertexcover-io/samskara}:${SAMSKARA_TAG}
     restart: unless-stopped
     env_file: .env
     ports:

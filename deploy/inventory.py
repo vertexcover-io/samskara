@@ -26,6 +26,8 @@ Optional:
   AI_REVIEW_HARNESS     opencode (default) or claude
   ADMIN_USER            user with sudo for provisioning (default: root)
   SUPER_ADMIN_LOGINS    comma-separated GitHub logins with access to every project
+  SAMSKARA_IMAGE        image to run (default: ghcr.io/vertexcover-io/samskara); a fork sets
+                        its own ghcr.io/OWNER/REPO, which is what its Deploy workflow publishes
   SAMSKARA_TAG          image tag to start with (default: latest)
 """
 
@@ -87,6 +89,7 @@ vps = [
             "client_secret": os.environ["GITHUB_CLIENT_SECRET"],
             "deploy_pubkey": pubkey_path.read_text().strip(),
             "super_admins": os.environ.get("SUPER_ADMIN_LOGINS", ""),
+            "image": os.environ.get("SAMSKARA_IMAGE", "ghcr.io/vertexcover-io/samskara"),
             "tag": os.environ.get("SAMSKARA_TAG", "latest"),
             "review_harness": harness,
             "review_keys": review_keys,
