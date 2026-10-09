@@ -12,15 +12,32 @@ import {
 } from "@samskara/core"
 import type pino from "pino"
 import { readToken } from "../config/credentials.js"
-import { artifactQueuePath, artifactStatePath, statePath } from "../config/paths.js"
-import { getProject, isProjectEnabled, syncFromFor } from "../config/projects.js"
-import { ALL_SCOPED_PATHS, mismatchFact, scopeMismatch } from "../config/server-scope.js"
+import {
+  artifactQueuePath,
+  artifactStatePath,
+  learningEventsStatePath,
+  statePath,
+} from "../config/paths.js"
+import { getProject, isProjectEnabled, listProjects, syncFromFor } from "../config/projects.js"
+import {
+  ALL_SCOPED_PATHS,
+  mismatchFact,
+  persistedApiUrl,
+  scopeMismatch,
+} from "../config/server-scope.js"
 import { parseConfig } from "../config.js"
 import { sleep } from "../io.js"
 import { runArtifactWorkers } from "./artifact-worker.js"
 import { runCycle, type WatcherConfig, type WatcherDeps } from "./driver.js"
+import {
+  listEventSources,
+  nodeLearningEventsDeps,
+  runLearningEventsStep,
+  startLearningEventsTicker,
+  worktreeFolders,
+} from "./learning-events.js"
 import { resolveProject } from "./resolveProject.js"
-import { createArtifactSink, createHttpSink } from "./sink.js"
+import { createArtifactSink, createHttpSink, createLearningEventsSink } from "./sink.js"
 
 const CYCLE_MS = 10_000
 const SHUTDOWN_GRACE_MS = 5_000
@@ -169,6 +186,25 @@ export const watch = async (options: WatchOptions): Promise<void> => {
     log.error({ err }, "Artifact workers stopped")
   })
 
+  // Same consent rule as transcripts: enabled project, and not before its sync-from cutoff. The
+  // projects file is read per tick, so enabling or disabling a folder applies on the next one.
+  const learningEventsSink = createLearningEventsSink({
+    apiBase: resolved.apiUrl,
+    readToken,
+    fetch: globalThis.fetch,
+  })
+  const learningEventsDeps = nodeLearningEventsDeps({
+    listSources: async () => listEventSources(await listProjects(), worktreeFolders),
+    hasToken: async () => (await readToken()) !== null,
+    send: learningEventsSink.send,
+    apiBase: persistedApiUrl(),
+    log,
+  })
+  const tickLearningEvents = startLearningEventsTicker(
+    () => runLearningEventsStep({ statePath: learningEventsStatePath() }, learningEventsDeps),
+    log,
+  )
+
   // Stop claiming new entries, give in-flight uploads their grace, then exit. Unfinished
   // entries persist in the queue file and resume on the next start.
   const shutdown = (signal: NodeJS.Signals) => {
@@ -181,6 +217,7 @@ export const watch = async (options: WatchOptions): Promise<void> => {
 
   for (;;) {
     if (stopping) return
+    tickLearningEvents()
     await runCycle(config, deps).catch((err: unknown) => {
       log.error({ err }, "Watch cycle failed")
     })

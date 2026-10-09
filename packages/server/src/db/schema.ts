@@ -1,4 +1,4 @@
-import { MSG_TYPES } from "@samskara/core"
+import { type LearnOutcome, type LearnStatus, type LearnTrigger, MSG_TYPES } from "@samskara/core"
 import { sql } from "drizzle-orm"
 import {
   type AnyPgColumn,
@@ -559,5 +559,53 @@ export const learningSessions = pgTable(
   (t) => [
     primaryKey({ columns: [t.learningId, t.sessionId] }),
     index("learningSessions_sessionId_idx").on(t.sessionId),
+  ],
+)
+
+/**
+ * One proposal from the `/learn` skill (harness or yok plugin). The samskara watcher uploads these
+ * from `.harness/learning-events/*.jsonl` and `.yok/learning-events/*.jsonl` inside
+ * samskara-enabled folders, after that project's sync-from cutoff. Unrelated to `learnings`, which
+ * are extracted from session reviews. Rows are append-only: one per proposal, never updated. A
+ * learning that superseded another carries the old file's path in `replaces`.
+ *
+ * Unique on (userId, eventId), eventId being the skill's own random id, so a re-upload is a no-op.
+ * trigger, outcome and status have no CHECK constraints on purpose: the zod contract in core is the
+ * one place they are validated, so a new outcome needs no migration. sessionId has no foreign key
+ * because the event can arrive before, or without, its session's transcript. userId is the
+ * uploader's, taken from the CLI token rather than the payload.
+ */
+export const compoundLearnings = pgTable(
+  "compoundLearnings",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("userId")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    eventId: text("eventId").notNull(),
+    sessionId: text("sessionId").notNull(),
+    occurredAt: timestamp("occurredAt", { withTimezone: true }).notNull(),
+    cwd: text("cwd"),
+    trigger: text("trigger").$type<LearnTrigger>().notNull(),
+    whyTriggered: text("whyTriggered").notNull(),
+    // Transcript line uuids (messages.lineUuid in this session) bounding the exchange the learning
+    // came from; null when the skill could not find them.
+    evidenceFromMessage: text("evidenceFromMessage"),
+    evidenceToMessage: text("evidenceToMessage"),
+    skillVersion: text("skillVersion"),
+    optionsShown: jsonb("optionsShown").$type<string[]>(),
+    proposedLearning: text("proposedLearning").notNull(),
+    optionUserPicked: text("optionUserPicked"),
+    outcome: text("outcome").$type<LearnOutcome>().notNull(),
+    status: text("status").$type<LearnStatus>(),
+    finalLearning: text("finalLearning"),
+    rejectionReason: text("rejectionReason"),
+    learningFile: text("learningFile"),
+    replaces: text("replaces"),
+    createdAt,
+  },
+  (t) => [
+    unique("compoundLearnings_user_eventId_unique").on(t.userId, t.eventId),
+    index("compoundLearnings_user_occurred_idx").on(t.userId, t.occurredAt),
   ],
 )
