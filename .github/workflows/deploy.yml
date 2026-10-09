@@ -16,10 +16,11 @@ name: Deploy
 #   - "Run workflow" with a tag deploys that tag by hand; pass an older tag to roll back
 #
 # Required in the `production` environment:
-#   secrets  SSH_PRIVATE_KEY   deploy key for samskara@HOST
+#   secrets  SSH_PRIVATE_KEY   deploy key for DEPLOY_USER@HOST
 #            SSH_HOST_KEY      server's public host key, one line as in known_hosts
 #   vars     DEPLOY_HOST       ip or hostname of the VPS
-#            DOMAIN            public domain Caddy serves
+#            DOMAIN            public domain the app is served on
+#            DEPLOY_USER       optional, default samskara; exedev on exe.dev
 #
 # Once, after the first publish: set the ghcr.io package to public in the repo's
 # Packages settings, or the server cannot pull it without a login.
@@ -115,6 +116,7 @@ jobs:
       url: https://${{ vars.DOMAIN }}
     env:
       HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER || 'samskara' }}
       VERSION: ${{ needs.build-and-publish.outputs.version }}
     steps:
       - name: Configure SSH
@@ -132,7 +134,7 @@ jobs:
       # start (see Dockerfile CMD), so there is no separate migrate step.
       - name: Pull and restart
         run: |
-          ssh "samskara@$HOST" bash -s "$VERSION" <<'EOF'
+          ssh "$DEPLOY_USER@$HOST" bash -s "$VERSION" <<'EOF'
             set -euo pipefail
             VERSION=$1
             cd /opt/samskara

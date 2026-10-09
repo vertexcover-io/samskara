@@ -6,6 +6,7 @@ Usage, from the deploy/ directory (templates are resolved relative to the cwd):
   pip install -r requirements.txt
   export DEPLOY_HOST=... DOMAIN=... ORG_SLUG=... GITHUB_CLIENT_ID=... \
          GITHUB_CLIENT_SECRET=... OPENCODE_API_KEY=... DEPLOY_PUBKEY=~/.ssh/samskara_deploy.pub
+  # behind a platform proxy such as exe.dev, add: PROXY=external APP_USER=exedev ADMIN_USER=exedev
   pyinfra inventory.py deploy.py --dry     # show what would change
   pyinfra inventory.py deploy.py -y        # apply
 """
@@ -17,16 +18,17 @@ from pyinfra.facts.files import File
 from pyinfra.facts.server import Which
 from pyinfra.operations import apt, files, server, systemd
 
+d = host.data
+
 APP_DIR = "/opt/samskara"
-APP_USER = "samskara"
+APP_USER = d.app_user
 COMPOSE = f"docker compose --env-file {APP_DIR}/.env --env-file {APP_DIR}/.deploy.env"
 CADDY_KEYRING = "/usr/share/keyrings/caddy-stable-archive-keyring.gpg"
-
-d = host.data
+CADDY = d.proxy == "caddy"
 
 apt.packages(
     name="Base packages",
-    packages=["ca-certificates", "curl", "gnupg", "ufw"],
+    packages=["ca-certificates", "curl", "gnupg"] + (["ufw"] if CADDY else []),
     update=True,
     cache_time=3600,
 )
@@ -44,7 +46,7 @@ systemd.service(
     enabled=True,
 )
 
-if not host.get_fact(File, path=CADDY_KEYRING):
+if CADDY and not host.get_fact(File, path=CADDY_KEYRING):
     server.shell(
         name="Caddy signing key",
         commands=[
@@ -53,17 +55,18 @@ if not host.get_fact(File, path=CADDY_KEYRING):
         ],
     )
 
-files.download(
-    name="Caddy apt source",
-    src="https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt",
-    dest="/etc/apt/sources.list.d/caddy-stable.list",
-)
+if CADDY:
+    files.download(
+        name="Caddy apt source",
+        src="https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt",
+        dest="/etc/apt/sources.list.d/caddy-stable.list",
+    )
 
-apt.packages(
-    name="Caddy",
-    packages=["caddy"],
-    update=True,
-)
+    apt.packages(
+        name="Caddy",
+        packages=["caddy"],
+        update=True,
+    )
 
 server.user(
     name="Service user",
@@ -93,6 +96,7 @@ if not host.get_fact(File, path=f"{APP_DIR}/.env"):
         group=APP_USER,
         mode="600",
         domain=d.domain,
+        app_bind=d.app_bind,
         client_id=d.client_id,
         client_secret=d.client_secret,
         super_admins=d.super_admins,
@@ -122,31 +126,32 @@ files.put(
     mode="640",
 )
 
-files.template(
-    name="Caddyfile",
-    src="templates/Caddyfile.j2",
-    dest="/etc/caddy/Caddyfile",
-    mode="644",
-    domain=d.domain,
-)
+if CADDY:
+    files.template(
+        name="Caddyfile",
+        src="templates/Caddyfile.j2",
+        dest="/etc/caddy/Caddyfile",
+        mode="644",
+        domain=d.domain,
+    )
 
-systemd.service(
-    name="Caddy running",
-    service="caddy",
-    running=True,
-    enabled=True,
-    reloaded=True,
-)
+    systemd.service(
+        name="Caddy running",
+        service="caddy",
+        running=True,
+        enabled=True,
+        reloaded=True,
+    )
 
-server.shell(
-    name="Firewall: allow ssh, http, https; enable",
-    commands=[
-        "ufw allow 22/tcp",
-        "ufw allow 80/tcp",
-        "ufw allow 443/tcp",
-        "ufw --force enable",
-    ],
-)
+    server.shell(
+        name="Firewall: allow ssh, http, https; enable",
+        commands=[
+            "ufw allow 22/tcp",
+            "ufw allow 80/tcp",
+            "ufw allow 443/tcp",
+            "ufw --force enable",
+        ],
+    )
 
 files.put(
     name="Backup script",

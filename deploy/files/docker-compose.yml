@@ -4,6 +4,7 @@
 #   docker compose --env-file .env --env-file .deploy.env <command>
 #
 #   POSTGRES_PASSWORD  from .env         generated once by provisioning
+#   APP_BIND           from .env         127.0.0.1 behind Caddy, 0.0.0.0 behind a platform proxy
 #   SAMSKARA_TAG       from .deploy.env  written by every deploy
 
 name: samskara
@@ -28,9 +29,8 @@ services:
     image: ghcr.io/vertexcover-io/samskara:${SAMSKARA_TAG}
     restart: unless-stopped
     env_file: .env
-    # Published on loopback only; Caddy is the public entry point.
     ports:
-      - "127.0.0.1:3000:3000"
+      - "${APP_BIND:-127.0.0.1}:3000:3000"
     depends_on:
       db:
         condition: service_healthy

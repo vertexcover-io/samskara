@@ -39,6 +39,29 @@ pyinfra inventory.py deploy.py -y       # apply
 Rerunning is safe. `.env` and `.deploy.env` are written only when absent, so the generated
 `JWT_SECRET` and database password never change. Everything else converges.
 
+### Behind a platform proxy (exe.dev)
+
+On a VM whose platform already terminates TLS and forwards to port 3000, such as
+`NAME.exe.xyz`, Caddy has no public ports to bind and the platform's SSH proxy decides who
+gets in, not the VM's `authorized_keys`. Three differences:
+
+```sh
+export PROXY=external APP_USER=exedev ADMIN_USER=exedev DEPLOY_HOST=NAME.exe.xyz DOMAIN=NAME.exe.xyz
+```
+
+- `PROXY=external` skips Caddy and ufw and publishes the app on `0.0.0.0:3000`, which is
+  where the exe.dev proxy forwards `https://NAME.exe.xyz/`. Check with
+  `ssh exe.dev share show NAME`: port 3000, mode PUBLIC.
+- `APP_USER=exedev`: the exe.dev SSH proxy ignores the username and always lands on
+  `exedev`, so the workflow has to deploy as that user. Set `DEPLOY_USER=exedev` in the
+  `production` environment too.
+- The deploy key must be registered with the exe.dev account, scoped to this VM by tag:
+  ```sh
+  ssh exe.dev tag NAME samskara-deploy
+  ssh exe.dev ssh-key add --tag=samskara-deploy "$(cat ~/.ssh/samskara_deploy.pub)"
+  ```
+- `SSH_HOST_KEY` is the proxy's key, which is RSA: `ssh-keyscan -t rsa NAME.exe.xyz`.
+
 ## Wire up the workflow
 
 In the repo, create an environment named `production` and add:
@@ -49,6 +72,7 @@ In the repo, create an environment named `production` and add:
 | secret | `SSH_HOST_KEY` | one line from `ssh-keyscan -t ed25519 DEPLOY_HOST` |
 | variable | `DEPLOY_HOST` | the VPS ip or hostname |
 | variable | `DOMAIN` | the public domain |
+| variable | `DEPLOY_USER` | only behind a platform proxy: the user it lands on (`exedev`) |
 
 Add required reviewers to the environment if a deploy should wait for approval.
 
