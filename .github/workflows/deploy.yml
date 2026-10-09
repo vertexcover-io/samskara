@@ -2,14 +2,17 @@ name: Deploy
 
 # Continuous deployment to a single VPS.
 #
-#   test ──► build-and-publish ──► deploy ──► verify
+#   test ──► build-and-publish ──► deploy (pull, restart, health check)
 #
 # The runner tests and builds. The image goes to GitHub Container Registry. The
 # server only pulls and restarts: it needs Docker, /opt/samskara/docker-compose.yml
 # and /opt/samskara/.env, all of which provisioning (deploy/deploy.py) puts there.
 #
 # Triggers:
-#   - a published release deploys that release's tag
+#   - release.yml dispatches this with the tag it just published. It has to: a release
+#     created with GITHUB_TOKEN never fires `release: published` (GitHub suppresses
+#     workflow runs for events its own token creates, except workflow_dispatch).
+#   - `release: published` still covers a release someone creates by hand in the UI.
 #   - "Run workflow" with a tag deploys that tag by hand; pass an older tag to roll back
 #
 # Required in the `production` environment:
@@ -140,12 +143,9 @@ jobs:
             docker image prune -f
           EOF
 
-  verify:
-    needs: deploy
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    env:
-      DOMAIN: ${{ vars.DOMAIN }}
-    steps:
+      # Runs in this job, not a separate one: environment variables like DOMAIN are only
+      # visible to a job that declares `environment: production`.
       - name: Health check
+        env:
+          DOMAIN: ${{ vars.DOMAIN }}
         run: curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-all-errors "https://$DOMAIN/api/health"

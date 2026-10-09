@@ -19,6 +19,7 @@ Optional:
 """
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -46,6 +47,10 @@ review_keys = {key: os.environ[key] for key in HARNESS_KEYS[harness] if os.envir
 if not review_keys:
     sys.exit(f"inventory.py: {harness} needs one of {', '.join(HARNESS_KEYS[harness])} set")
 
+org_slug = os.environ["ORG_SLUG"]
+if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?", org_slug):
+    sys.exit(f"inventory.py: ORG_SLUG is not a valid GitHub org slug: {org_slug}")
+
 pubkey_path = Path(os.environ["DEPLOY_PUBKEY"]).expanduser()
 if not pubkey_path.is_file():
     sys.exit(f"inventory.py: DEPLOY_PUBKEY is not a file: {pubkey_path}")
@@ -57,7 +62,7 @@ vps = [
             "ssh_user": os.environ.get("ADMIN_USER", "root"),
             "_sudo": True,
             "domain": os.environ["DOMAIN"],
-            "org_slug": os.environ["ORG_SLUG"],
+            "org_slug": org_slug,
             "client_id": os.environ["GITHUB_CLIENT_ID"],
             "client_secret": os.environ["GITHUB_CLIENT_SECRET"],
             "deploy_pubkey": pubkey_path.read_text().strip(),

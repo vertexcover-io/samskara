@@ -176,10 +176,16 @@ server.shell(
     commands=[f"cd {APP_DIR} && {COMPOSE} pull && {COMPOSE} up -d --wait"],
 )
 
+ORG_EXISTS = (
+    f"{COMPOSE} exec -T db psql -U samskara -d samskara -Atc"
+    f" \"select 1 from orgs where \\\"githubSlug\\\" = '{d.org_slug}'\" | grep -q 1"
+)
+REGISTER_ORG = (
+    f"{COMPOSE} run --rm --no-deps app"
+    f" node packages/server/dist/scripts/seed-org.js {d.org_slug}"
+)
+
 server.shell(
-    name=f"Register org {d.org_slug}",
-    commands=[
-        f"cd {APP_DIR} && {COMPOSE} run --rm --no-deps app"
-        f" node packages/server/dist/scripts/seed-org.js {d.org_slug}",
-    ],
+    name=f"Register org {d.org_slug} (only if absent)",
+    commands=[f"cd {APP_DIR} && ({ORG_EXISTS} || {REGISTER_ORG})"],
 )
