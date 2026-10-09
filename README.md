@@ -18,7 +18,7 @@ Nothing leaves a machine until someone runs `samskara enable` in a folder.
 With a server already running for your team:
 
 ```sh
-npm i -g https://github.com/vertexcover-io/samskara/releases/latest/download/samskara-cli.tgz
+npm i -g @vertexcover/samskara
 samskara init          # choose the server, pair with a code from the web UI
 cd ~/code/my-project
 samskara enable        # start capturing this folder
@@ -80,7 +80,7 @@ Requirements: [Bun](https://bun.sh) 1.2.19+, Node 22+, Docker.
 | Package | Holds |
 |---|---|
 | `@samskara/core` | Shared types and the collector plugins for Claude Code and OpenCode |
-| `@samskara/cli` | The `samskara` binary |
+| `@vertexcover/samskara` (`packages/cli`) | The `samskara` binary |
 | `@samskara/server` | Hono API, Drizzle, Postgres with pgvector |
 | `@samskara/web` | React and Vite UI |
 
@@ -94,7 +94,7 @@ bun run cli -- status # the CLI from source, on its own profile
 bun run db:migrate    # bring the local database up to date
 ```
 
-To work on the CLI from a checkout, `bun run build --filter=@samskara/cli` then
+To work on the CLI from a checkout, `bun run build --filter=@vertexcover/samskara` then
 `cd packages/cli && npm link`.
 
 [CLAUDE.md](CLAUDE.md) covers contributor detail: worktrees, the database naming rule, migration
@@ -102,21 +102,29 @@ steps, message transformers and logging.
 
 ## Install the CLI
 
-Needs Node 22 or newer. The CLI is not on npm; every release attaches a tarball and this URL
-always points at the newest one:
+Needs Node 22 or newer.
 
 ```sh
-npm i -g https://github.com/vertexcover-io/samskara/releases/latest/download/samskara-cli.tgz
+npm i -g @vertexcover/samskara
 ```
 
-To pin a version, use its own asset, for example `v0.5.0`:
+Or with Homebrew:
 
 ```sh
-npm i -g https://github.com/vertexcover-io/samskara/releases/download/v0.5.0/samskara-cli-0.5.0.tgz
+brew trust vertexcover-io/tap
+brew install vertexcover-io/tap/samskara
 ```
+
+To pin a version, `npm i -g @vertexcover/samskara@0.5.1`. Every release also attaches the same
+tarball to its [GitHub release](https://github.com/vertexcover-io/samskara/releases) for
+installs without registry access.
 
 Later, `samskara upgrade` installs the newest release over the current one, and
-`npm uninstall -g @samskara/cli` removes it.
+`npm uninstall -g @vertexcover/samskara` removes it.
+
+If you installed the CLI before it moved to npm, under the old `@samskara/cli` name, remove
+that first with `npm uninstall -g @samskara/cli`. Both install a `samskara` command, so npm
+refuses to put the new one over the old.
 
 ## Pair the CLI with the server
 
@@ -224,8 +232,10 @@ bun run release patch --watch  # stream the run
 ```
 
 The workflow tests first, then bumps the manifests, tags, publishes the GitHub release with the
-CLI tarball, and dispatches the deploy. A failed release leaves no tag behind. A tag with a
-pre-release suffix, such as `v1.4.0-rc.1`, publishes as a pre-release and is not deployed.
+CLI tarball, publishes the same tarball to npm as `@vertexcover/samskara`, and dispatches the
+deploy. A failed release leaves no tag behind. A tag with a pre-release suffix, such as
+`v1.4.0-rc.1`, publishes as a pre-release on GitHub and under npm's `next` tag, and is not
+deployed.
 
 ## License
 
