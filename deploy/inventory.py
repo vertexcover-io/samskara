@@ -10,9 +10,9 @@ Required:
   DEPLOY_PUBKEY         path to the public key the Deploy workflow will log in with
                         (on exe.dev the proxy checks the account's keys instead, so also
                         `ssh exe.dev ssh-key add` it; see README)
-  CLAUDE_CODE_OAUTH_TOKEN  a credential for the AI reviewer; any AI_REVIEW_* variable and any
-                        *_API_KEY / *_OAUTH_TOKEN in the shell is written to .env verbatim and
-                        the server validates the combination when it boots
+  CLAUDE_CODE_OAUTH_TOKEN  a credential for the AI reviewer, or ANTHROPIC_API_KEY or
+                        OPENCODE_API_KEY. These and any AI_REVIEW_* variable are written to
+                        .env verbatim; the server validates the combination when it boots
 
 Optional:
   PROXY                 caddy (default): install Caddy, serve DOMAIN with auto TLS, bind the
@@ -47,13 +47,18 @@ _missing = [key for key in _REQUIRED if not os.environ.get(key)]
 if _missing:
     sys.exit(f"inventory.py: missing environment variables: {', '.join(_missing)}")
 
-# Passed through by shape rather than by a table of harness -> credential names: the server
-# owns that table (packages/core/src/review/harness.ts) and refuses to boot on a bad
-# combination, so the only check worth making here is the one that fails fast.
-_REVIEW_ENV = re.compile(r"^(AI_REVIEW_.*|.*_API_KEY|.*_OAUTH_TOKEN)$")
-review_env = {k: v for k, v in os.environ.items() if _REVIEW_ENV.fullmatch(k) and v}
-if not any(not k.startswith("AI_REVIEW_") for k in review_env):
-    sys.exit("inventory.py: the AI reviewer needs a credential, e.g. CLAUDE_CODE_OAUTH_TOKEN")
+# Exact credential names, not a pattern: an operator's shell often holds unrelated *_API_KEY
+# values that must not end up on the server. Which credential goes with which harness is the
+# server's table (packages/core/src/review/harness.ts), and it refuses to boot on a bad
+# combination, so the only check made here is the one that fails fast.
+_REVIEW_CREDENTIALS = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "OPENCODE_API_KEY")
+review_env = {
+    k: v
+    for k, v in os.environ.items()
+    if v and (k in _REVIEW_CREDENTIALS or k.startswith("AI_REVIEW_"))
+}
+if not any(k in _REVIEW_CREDENTIALS for k in review_env):
+    sys.exit(f"inventory.py: the AI reviewer needs one of {', '.join(_REVIEW_CREDENTIALS)}")
 
 proxy = os.environ.get("PROXY", "caddy")
 if proxy not in ("caddy", "external"):
