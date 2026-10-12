@@ -22,9 +22,8 @@ name: Deploy
 #            DOMAIN            public domain the app is served on
 #            DEPLOY_USER       optional, default samskara; exedev on exe.dev
 #
-# Those names, and github_token, are the workflow's own. Every other variable and secret in
-# the environment is application configuration and is merged into /opt/samskara/.env on
-# each deploy (see deploy/README.md). A new workflow-only name goes on the list in "Deploy".
+# Every other variable and secret is app configuration: each deploy merges it into
+# /opt/samskara/.env (see deploy/README.md).
 #
 # Once, after the first publish: set the ghcr.io package to public in the repo's
 # Packages settings, or the server cannot pull it without a login.
@@ -134,15 +133,6 @@ jobs:
       DEPLOY_USER: ${{ vars.DEPLOY_USER || 'samskara' }}
       VERSION: ${{ needs.build-and-publish.outputs.version }}
     steps:
-      # Only deploy/files/env-merge.sh is needed from the checkout; it is shipped to the
-      # server below so a deploy never depends on provisioning having run since the script
-      # last changed.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ env.REF }}
-          sparse-checkout: deploy/files/env-merge.sh
-          sparse-checkout-cone-mode: false
-
       - name: Configure SSH
         env:
           SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
@@ -153,14 +143,9 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           printf '%s\n' "$HOST_KEY" > ~/.ssh/known_hosts
 
-      - name: Ship env-merge.sh
-        run: ssh "$DEPLOY_USER@$HOST" 'cat > /opt/samskara/env-merge.sh && chmod 755 /opt/samskara/env-merge.sh' < deploy/files/env-merge.sh
-
-      # One ssh session does the whole deploy under a lock. The environment's vars and
-      # secrets become KEY=VALUE lines piped over ssh stdin into env-merge.sh, so no secret
-      # reaches a command line or the job log. A secret wins over a variable of the same name; a multi-line value
-      # cannot be a dotenv line and is skipped with a warning. SAMSKARA_TAG is one more key
-      # the workflow owns. The app container runs migrations on start (see Dockerfile CMD).
+      # Vars and secrets go over ssh stdin as KEY=VALUE lines into samskara-env-merge
+      # (installed by provisioning), so no secret reaches a command line or the log. A secret
+      # wins over a variable of the same name. The container runs migrations on start.
       - name: Deploy
         env:
           VARS: ${{ toJSON(vars) }}
@@ -170,17 +155,9 @@ jobs:
           jq -rn --argjson v "$VARS" --argjson s "$SECRETS" --arg tag "$VERSION" '
               ($v + $s + {SAMSKARA_TAG: $tag}) | to_entries[]
               | select(.key | IN("github_token", "SSH_PRIVATE_KEY", "SSH_HOST_KEY", "DEPLOY_HOST", "DEPLOY_USER", "DOMAIN") | not)
-              | if (.value | test("\n")) then ("::warning::\(.key) is multi-line and was not written to .env\n" | stderr) | empty
-                else "\(.key)=\(.value)" end' \
-          | ssh "$DEPLOY_USER@$HOST" '
-              set -euo pipefail
-              cd /opt/samskara
-              exec 9>/var/lock/samskara-deploy && flock -w 300 9
-              ./env-merge.sh
-              docker compose pull app
-              docker compose up -d app
-              docker image prune -f
-            '
+              | "\(.key)=\(.value)"' \
+          | ssh "$DEPLOY_USER@$HOST" 'cd /opt/samskara && flock -w 300 /var/lock/samskara-deploy sh -euc "
+              samskara-env-merge && docker compose pull app && docker compose up -d app && docker image prune -f"'
 
       # Runs in this job, not a separate one: environment variables like DOMAIN are only
       # visible to a job that declares `environment: production`.

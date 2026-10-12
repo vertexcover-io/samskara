@@ -142,12 +142,13 @@ if CADDY:
         ],
     )
 
-files.put(
-    name="Backup script",
-    src="files/pg-backup.sh",
-    dest="/usr/local/bin/samskara-pg-backup",
-    mode="755",
-)
+for script in ("pg-backup", "env-merge"):
+    files.put(
+        name=f"Script samskara-{script}",
+        src=f"files/{script}.sh",
+        dest=f"/usr/local/bin/samskara-{script}",
+        mode="755",
+    )
 
 for unit in ("samskara-pg-backup.service", "samskara-pg-backup.timer"):
     files.put(
