@@ -32,14 +32,14 @@ ENV PORT=3000
 ENV WEB_DIST=packages/web/dist
 
 # The AI reviewer shells out to a coding-agent CLI (see packages/core/src/review/runner.ts),
-# so both harnesses are installed into the image. Each release build takes the current CLI;
-# the image a tag produces is immutable, so a deploy never changes reviewer version on its
-# own. Pass --build-arg CLAUDE_CODE_VERSION=x.y.z to pin one. git is there because Claude Code
-# probes the workspace for a repository on start; ca-certificates for the provider APIs.
+# so both harnesses are installed into the image. The release workflow resolves the current
+# npm version of each and passes it as a build arg, so this layer's cache key changes exactly
+# when a new CLI version exists; `latest` is only the fallback for a bare `docker build`.
+# git is there because Claude Code probes the workspace for a repository on start.
 ARG CLAUDE_CODE_VERSION=latest
 ARG OPENCODE_VERSION=latest
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git ca-certificates \
+    && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g --no-fund --no-audit \
         "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
@@ -47,9 +47,6 @@ RUN apt-get update \
     && npm cache clean --force \
     && claude --version \
     && opencode --version
-
-# Review harness configuration (AI_REVIEW_HARNESS, AI_REVIEW_HARDEN, credentials) comes from
-# the deployment environment, not the image.
 
 COPY --from=builder /app/package.json /app/bun.lock ./
 COPY --from=builder /app/node_modules ./node_modules

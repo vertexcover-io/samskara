@@ -22,12 +22,9 @@ name: Deploy
 #            DOMAIN            public domain the app is served on
 #            DEPLOY_USER       optional, default samskara; exedev on exe.dev
 #
-# Every OTHER variable and secret in that environment is application configuration: on each
-# deploy it is merged into /opt/samskara/.env, replacing the key of the same name or appended
-# when absent. So AI_REVIEW_HARNESS, CLAUDE_CODE_OAUTH_TOKEN, SUPER_ADMIN_LOGINS, LOG_LEVEL
-# and anything the server reads are set in the repo's environment settings, not over ssh.
-# The names above are the only ones held back; add to the list in "Deploy" if a new
-# workflow-only setting appears.
+# Those names, and github_token, are the workflow's own. Every other variable and secret in
+# the environment is application configuration and is merged into /opt/samskara/.env on
+# each deploy (see deploy/README.md). A new workflow-only name goes on the list in "Deploy".
 #
 # Once, after the first publish: set the ghcr.io package to public in the repo's
 # Packages settings, or the server cannot pull it without a login.
@@ -94,6 +91,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # The image installs the AI reviewer CLIs. Resolving their current versions here and
+      # passing them as build args makes the Docker layer cache miss exactly when a new CLI
+      # version exists; with `latest` baked in, the cached layer would never notice one.
+      - id: cli
+        run: |
+          echo "claude=$(npm view @anthropic-ai/claude-code version)" >> "$GITHUB_OUTPUT"
+          echo "opencode=$(npm view opencode-ai version)" >> "$GITHUB_OUTPUT"
+
       # Turns the tag into image tags: v0.4.1 -> 0.4.1, 0.4 and latest. Also attaches
       # OCI labels that record the source commit on the image.
       - id: meta
@@ -111,6 +116,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            CLAUDE_CODE_VERSION=${{ steps.cli.outputs.claude }}
+            OPENCODE_VERSION=${{ steps.cli.outputs.opencode }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -137,46 +145,31 @@ jobs:
           printf '%s\n' "$HOST_KEY" > ~/.ssh/known_hosts
 
       # One ssh session does the whole deploy under a lock. The environment's vars and
-      # secrets are rendered to KEY=VALUE lines and merged into .env on the server; they
-      # travel over ssh stdin, so no secret reaches a command line or the job log. Secrets
-      # win over a variable of the same name. A multi-line value cannot be a dotenv line and
-      # is skipped with a warning. SAMSKARA_TAG rides along so the server remembers which
-      # version runs and a reboot brings the same one back. The app container runs
-      # migrations on start (see Dockerfile CMD), so there is no separate migrate step.
+      # secrets become KEY=VALUE lines piped over ssh stdin into samskara-env-merge (installed
+      # by provisioning from deploy/files/env-merge.sh), so no secret reaches a command line
+      # or the job log. A secret wins over a variable of the same name; a multi-line value
+      # cannot be a dotenv line and is skipped with a warning. SAMSKARA_TAG is one more key
+      # the workflow owns. The app container runs migrations on start (see Dockerfile CMD).
       - name: Deploy
         env:
           VARS: ${{ toJSON(vars) }}
           SECRETS: ${{ toJSON(secrets) }}
         run: |
           set -euo pipefail
-          HELD_BACK='["github_token","SSH_PRIVATE_KEY","SSH_HOST_KEY","DEPLOY_HOST","DEPLOY_USER"]'
-          jq -r --argjson held "$HELD_BACK" '
-              to_entries[]
-              | select(.key | IN($held[]) | not)
-              | if (.value | test("\n")) then ("::warning::" + .key + " is multi-line and was not written to .env\n" | stderr) | empty
+          jq -rn --argjson v "$VARS" --argjson s "$SECRETS" --arg tag "$VERSION" '
+              ($v + $s + {SAMSKARA_TAG: $tag}) | to_entries[]
+              | select(.key | IN("github_token", "SSH_PRIVATE_KEY", "SSH_HOST_KEY", "DEPLOY_HOST", "DEPLOY_USER", "DOMAIN") | not)
+              | if (.value | test("\n")) then ("::warning::\(.key) is multi-line and was not written to .env\n" | stderr) | empty
                 else "\(.key)=\(.value)" end' \
-            <<< "$(jq -n --argjson v "$VARS" --argjson s "$SECRETS" '$v + $s')" > overrides.env
-          printf 'SAMSKARA_TAG=%s\n' "$VERSION" >> overrides.env
-          echo "merging $(wc -l < overrides.env) keys into .env"
-          ssh "$DEPLOY_USER@$HOST" '
-            set -euo pipefail
-            cd /opt/samskara
-            exec 9>/var/lock/samskara-deploy && flock -w 300 9
-            umask 077
-            cat > .env.overrides
-            awk -F= '"'"'
-              NR == FNR { if (!($1 in ov)) order[n++] = $1; ov[$1] = $0; next }
-              /^[A-Za-z_][A-Za-z0-9_]*=/ && ($1 in ov) { print ov[$1]; delete ov[$1]; next }
-              { print }
-              END { for (i = 0; i < n; i++) if (order[i] in ov) print ov[order[i]] }
-            '"'"' .env.overrides .env > .env.next
-            mv -f .env.next .env
-            rm -f .env.overrides
-            docker compose pull app
-            docker compose up -d app
-            docker image prune -f
-          ' < overrides.env
-          rm -f overrides.env
+          | ssh "$DEPLOY_USER@$HOST" '
+              set -euo pipefail
+              cd /opt/samskara
+              exec 9>/var/lock/samskara-deploy && flock -w 300 9
+              samskara-env-merge
+              docker compose pull app
+              docker compose up -d app
+              docker image prune -f
+            '
 
       # Runs in this job, not a separate one: environment variables like DOMAIN are only
       # visible to a job that declares `environment: production`.
