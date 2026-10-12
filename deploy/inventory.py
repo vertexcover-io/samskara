@@ -10,8 +10,9 @@ Required:
   DEPLOY_PUBKEY         path to the public key the Deploy workflow will log in with
                         (on exe.dev the proxy checks the account's keys instead, so also
                         `ssh exe.dev ssh-key add` it; see README)
-  OPENCODE_API_KEY      the AI reviewer's key (or, with AI_REVIEW_HARNESS=claude, one of
-                        CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY)
+  CLAUDE_CODE_OAUTH_TOKEN  a credential for the AI reviewer, or ANTHROPIC_API_KEY or
+                        OPENCODE_API_KEY. These and any AI_REVIEW_* variable are written to
+                        .env verbatim; the server validates the combination when it boots
 
 Optional:
   PROXY                 caddy (default): install Caddy, serve DOMAIN with auto TLS, bind the
@@ -23,7 +24,6 @@ Optional:
                         address instead when the platform has a fixed one
   APP_USER              user the Deploy workflow logs in as (default: samskara, created).
                         On exe.dev the proxy always lands on exedev, so set it to that
-  AI_REVIEW_HARNESS     opencode (default) or claude
   ADMIN_USER            user with sudo for provisioning (default: root)
   SUPER_ADMIN_LOGINS    comma-separated GitHub logins with access to every project
   SAMSKARA_TAG          image tag to start with (default: latest)
@@ -47,16 +47,18 @@ _missing = [key for key in _REQUIRED if not os.environ.get(key)]
 if _missing:
     sys.exit(f"inventory.py: missing environment variables: {', '.join(_missing)}")
 
-HARNESS_KEYS = {
-    "opencode": ("OPENCODE_API_KEY",),
-    "claude": ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"),
+# Exact credential names, not a pattern: an operator's shell often holds unrelated *_API_KEY
+# values that must not end up on the server. Which credential goes with which harness is the
+# server's table (packages/core/src/review/harness.ts), and it refuses to boot on a bad
+# combination, so the only check made here is the one that fails fast.
+_REVIEW_CREDENTIALS = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "OPENCODE_API_KEY")
+review_env = {
+    k: v
+    for k, v in os.environ.items()
+    if v and (k in _REVIEW_CREDENTIALS or k.startswith("AI_REVIEW_"))
 }
-harness = os.environ.get("AI_REVIEW_HARNESS", "opencode")
-if harness not in HARNESS_KEYS:
-    sys.exit(f"inventory.py: AI_REVIEW_HARNESS must be one of {', '.join(HARNESS_KEYS)}")
-review_keys = {key: os.environ[key] for key in HARNESS_KEYS[harness] if os.environ.get(key)}
-if not review_keys:
-    sys.exit(f"inventory.py: {harness} needs one of {', '.join(HARNESS_KEYS[harness])} set")
+if not any(k in _REVIEW_CREDENTIALS for k in review_env):
+    sys.exit(f"inventory.py: the AI reviewer needs one of {', '.join(_REVIEW_CREDENTIALS)}")
 
 proxy = os.environ.get("PROXY", "caddy")
 if proxy not in ("caddy", "external"):
@@ -88,8 +90,7 @@ vps = [
             "deploy_pubkey": pubkey_path.read_text().strip(),
             "super_admins": os.environ.get("SUPER_ADMIN_LOGINS", ""),
             "tag": os.environ.get("SAMSKARA_TAG", "latest"),
-            "review_harness": harness,
-            "review_keys": review_keys,
+            "review_env": review_env,
         },
     )
 ]

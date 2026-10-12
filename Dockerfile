@@ -31,6 +31,23 @@ ENV NODE_ENV=production
 ENV PORT=3000
 ENV WEB_DIST=packages/web/dist
 
+# The AI reviewer shells out to a coding-agent CLI (see packages/core/src/review/runner.ts),
+# so both harnesses are installed into the image. The release workflow resolves the current
+# npm version of each and passes it as a build arg, so this layer's cache key changes exactly
+# when a new CLI version exists; `latest` is only the fallback for a bare `docker build`.
+# git is there because Claude Code probes the workspace for a repository on start.
+ARG CLAUDE_CODE_VERSION=latest
+ARG OPENCODE_VERSION=latest
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install -g --no-fund --no-audit \
+        "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+        "opencode-ai@${OPENCODE_VERSION}" \
+    && npm cache clean --force \
+    && claude --version \
+    && opencode --version
+
 COPY --from=builder /app/package.json /app/bun.lock ./
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/packages/core/package.json packages/core/package.json
@@ -41,5 +58,10 @@ COPY --from=builder /app/packages/server/migrations packages/server/migrations
 COPY --from=builder /app/packages/web/dist packages/web/dist
 
 EXPOSE 3000
+
+# Claude Code refuses --dangerously-skip-permissions as root, and the runner always passes it.
+# `node` is the uid 1000 user the base image ships. Nothing under /app is written at runtime;
+# review workspaces go to the tmpdir, which is world-writable.
+USER node
 
 CMD ["sh", "-c", "node packages/server/dist/scripts/migrateRuntime.js && exec node packages/server/dist/index.js"]

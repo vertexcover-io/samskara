@@ -5,7 +5,8 @@ Usage, from the deploy/ directory (templates are resolved relative to the cwd):
 
   pip install -r requirements.txt
   export DEPLOY_HOST=... DOMAIN=... ORG_SLUG=... GITHUB_CLIENT_ID=... \
-         GITHUB_CLIENT_SECRET=... OPENCODE_API_KEY=... DEPLOY_PUBKEY=~/.ssh/samskara_deploy.pub
+         GITHUB_CLIENT_SECRET=... AI_REVIEW_HARNESS=claude CLAUDE_CODE_OAUTH_TOKEN=... \\
+         DEPLOY_PUBKEY=~/.ssh/samskara_deploy.pub
   # behind a platform proxy such as exe.dev, add: PROXY=external APP_USER=exedev ADMIN_USER=exedev
   pyinfra inventory.py deploy.py --dry     # show what would change
   pyinfra inventory.py deploy.py -y        # apply
@@ -22,7 +23,6 @@ d = host.data
 
 APP_DIR = "/opt/samskara"
 APP_USER = d.app_user
-COMPOSE = f"docker compose --env-file {APP_DIR}/.env --env-file {APP_DIR}/.deploy.env"
 CADDY_KEYRING = "/usr/share/keyrings/caddy-stable-archive-keyring.gpg"
 CADDY = d.proxy == "caddy"
 
@@ -100,21 +100,10 @@ if not host.get_fact(File, path=f"{APP_DIR}/.env"):
         client_id=d.client_id,
         client_secret=d.client_secret,
         super_admins=d.super_admins,
-        review_harness=d.review_harness,
-        review_keys=d.review_keys,
+        review_env=d.review_env,
+        tag=d.tag,
         jwt_secret=secrets.token_hex(32),
         pg_password=secrets.token_hex(24),
-    )
-
-if not host.get_fact(File, path=f"{APP_DIR}/.deploy.env"):
-    files.template(
-        name="Seed .deploy.env (first run only)",
-        src="templates/deploy-env.j2",
-        dest=f"{APP_DIR}/.deploy.env",
-        user=APP_USER,
-        group=APP_USER,
-        mode="640",
-        tag=d.tag,
     )
 
 files.put(
@@ -153,12 +142,13 @@ if CADDY:
         ],
     )
 
-files.put(
-    name="Backup script",
-    src="files/pg-backup.sh",
-    dest="/usr/local/bin/samskara-pg-backup",
-    mode="755",
-)
+for script in ("pg-backup", "env-merge"):
+    files.put(
+        name=f"Script samskara-{script}",
+        src=f"files/{script}.sh",
+        dest=f"/usr/local/bin/samskara-{script}",
+        mode="755",
+    )
 
 for unit in ("samskara-pg-backup.service", "samskara-pg-backup.timer"):
     files.put(
@@ -178,15 +168,15 @@ systemd.service(
 
 server.shell(
     name="Pull and start the stack",
-    commands=[f"cd {APP_DIR} && {COMPOSE} pull && {COMPOSE} up -d --wait"],
+    commands=[f"cd {APP_DIR} && docker compose pull && docker compose up -d --wait"],
 )
 
 ORG_EXISTS = (
-    f"{COMPOSE} exec -T db psql -U samskara -d samskara -Atc"
+    f"docker compose exec -T db psql -U samskara -d samskara -Atc"
     f" \"select 1 from orgs where \\\"githubSlug\\\" = '{d.org_slug}'\" | grep -q 1"
 )
 REGISTER_ORG = (
-    f"{COMPOSE} run --rm --no-deps app"
+    f"docker compose run --rm --no-deps app"
     f" node packages/server/dist/scripts/seed-org.js {d.org_slug}"
 )
 

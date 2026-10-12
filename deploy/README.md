@@ -8,8 +8,10 @@ Two pieces, run at different times:
 | `.github/workflows/deploy.yml` | every release, by GitHub | Actions + SSH | tests, builds the image, pushes to ghcr.io, pulls and restarts on the server |
 
 The contract between them is small: provisioning leaves `/opt/samskara` with
-`docker-compose.yml`, `.env` and `.deploy.env`, and a `samskara` user in the `docker` group
-that the workflow's key can log in as. The workflow touches nothing else.
+`docker-compose.yml` and `.env`, and a `samskara` user in the `docker` group that the
+workflow's key can log in as. The workflow owns `.env` from then on: every deploy merges the
+repo's variables and secrets into it, replacing keys of the same name and appending new ones.
+Only the generated `JWT_SECRET` and `POSTGRES_PASSWORD` live solely on the server.
 
 ## Before provisioning
 
@@ -17,8 +19,11 @@ that the workflow's key can log in as. The workflow touches nothing else.
 2. DNS: an A record for your domain pointing at that IP. Caddy fetches the TLS certificate
    on first start and fails without it.
 3. A GitHub OAuth app for your org with callback `https://DOMAIN/api/auth/github/callback`.
-   And a key for the AI reviewer: `OPENCODE_API_KEY`, or with `AI_REVIEW_HARNESS=claude` one of
-   `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY`. The server will not boot without it.
+   And a credential for the AI reviewer. The image ships both the Claude Code and opencode
+   CLIs. `AI_REVIEW_HARNESS=claude` needs `CLAUDE_CODE_OAUTH_TOKEN` (run `claude setup-token`
+   on your machine) or `ANTHROPIC_API_KEY`; `AI_REVIEW_HARNESS=opencode` needs
+   `OPENCODE_API_KEY`. The server will not boot without a matching pair. Provisioning writes
+   whatever `AI_REVIEW_*`, `*_API_KEY` and `*_OAUTH_TOKEN` variables are in your shell.
 4. A deploy key pair: `ssh-keygen -t ed25519 -f ~/.ssh/samskara_deploy -N ""`. The public
    half goes to provisioning, the private half to the workflow.
 5. At least one release published by the Deploy workflow, so the image exists on ghcr.io,
@@ -30,14 +35,15 @@ that the workflow's key can log in as. The workflow touches nothing else.
 cd deploy
 pip install -r requirements.txt
 export DEPLOY_HOST=1.2.3.4 DOMAIN=samskara.example.org ORG_SLUG=example-org \
-       GITHUB_CLIENT_ID=... GITHUB_CLIENT_SECRET=... OPENCODE_API_KEY=... \
+       GITHUB_CLIENT_ID=... GITHUB_CLIENT_SECRET=... \
+       AI_REVIEW_HARNESS=claude CLAUDE_CODE_OAUTH_TOKEN=... \
        DEPLOY_PUBKEY=~/.ssh/samskara_deploy.pub
 pyinfra inventory.py deploy.py --dry    # plan
 pyinfra inventory.py deploy.py -y       # apply
 ```
 
-Rerunning is safe. `.env` and `.deploy.env` are written only when absent, so the generated
-`JWT_SECRET` and database password never change. Everything else converges.
+Rerunning is safe. `.env` is written only when absent, so the generated `JWT_SECRET` and
+database password never change. Everything else converges.
 
 ### Behind a platform proxy (exe.dev)
 
@@ -80,8 +86,10 @@ Add required reviewers to the environment if a deploy should wait for approval.
 
 - **Release**: `bun run release patch` publishes a release, which triggers Deploy.
 - **Deploy a specific tag, or roll back**: Actions, Deploy, Run workflow, enter the tag.
-- **See what is running**: `cat /opt/samskara/.deploy.env` on the server.
-- **Change a setting**: edit `/opt/samskara/.env`, then
-  `docker compose --env-file .env --env-file .deploy.env up -d app`.
+- **See what is running**: `grep SAMSKARA_TAG /opt/samskara/.env` on the server.
+- **Change a setting**: add or edit the variable or secret in the repo's `production`
+  environment and re-run Deploy with the current tag. For a quick change on the box,
+  `printf 'LOG_LEVEL=debug\n' | samskara-env-merge && docker compose up -d app` in
+  `/opt/samskara` does the same merge; the next deploy puts the GitHub value back.
 - **Backups**: nightly at 03:00 into `/opt/samskara/backups`, last seven kept. Copying them
   off the machine is up to you.
