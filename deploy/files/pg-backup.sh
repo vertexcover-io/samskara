@@ -13,8 +13,7 @@ TMP="$(mktemp "$BACKUPS/.samskara-XXXXXX.sql.gz.part")"
 trap 'rm -f "$TMP"' EXIT
 
 cd "$APP_DIR"
-docker compose --env-file .env --env-file .deploy.env \
-  exec -T db pg_dump -U samskara --no-owner samskara | gzip > "$TMP"
+docker compose exec -T db pg_dump -U samskara --no-owner samskara | gzip > "$TMP"
 
 gzip -t "$TMP"
 mv -f "$TMP" "$OUT"

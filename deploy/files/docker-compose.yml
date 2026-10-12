@@ -1,11 +1,10 @@
 # Production stack. Installed to /opt/samskara by deploy/deploy.py.
 #
-# Always invoke with both env files, so compose can resolve the variables below:
-#   docker compose --env-file .env --env-file .deploy.env <command>
-#
-#   POSTGRES_PASSWORD  from .env         generated once by provisioning
-#   APP_BIND           from .env         127.0.0.1 behind Caddy, 0.0.0.0 behind a platform proxy
-#   SAMSKARA_TAG       from .deploy.env  written by every deploy
+# Run from /opt/samskara: compose reads the .env there, both to resolve the variables below
+# and (via env_file) as the app's environment.
+#   POSTGRES_PASSWORD  generated once by provisioning
+#   APP_BIND           127.0.0.1 behind Caddy, 0.0.0.0 behind a platform proxy
+#   SAMSKARA_TAG       written by every deploy
 
 name: samskara
 
@@ -28,13 +27,7 @@ services:
   app:
     image: ghcr.io/vertexcover-io/samskara:${SAMSKARA_TAG}
     restart: unless-stopped
-    # .review.env holds the AI reviewer's harness and credential. Provisioning seeds it; the
-    # Deploy workflow rewrites it from GitHub secrets/vars on every deploy, so changing the
-    # reviewer is a repo-settings change, not an ssh session. Later files win.
-    env_file:
-      - .env
-      - path: .review.env
-        required: false
+    env_file: .env
     ports:
       - "${APP_BIND:-127.0.0.1}:3000:3000"
     depends_on:

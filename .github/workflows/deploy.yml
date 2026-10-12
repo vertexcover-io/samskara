@@ -18,18 +18,16 @@ name: Deploy
 # Required in the `production` environment:
 #   secrets  SSH_PRIVATE_KEY   deploy key for DEPLOY_USER@HOST
 #            SSH_HOST_KEY      server's public host key, one line as in known_hosts
-#            CLAUDE_CODE_OAUTH_TOKEN   AI reviewer credential (`claude setup-token`), or
-#            ANTHROPIC_API_KEY         ...this; or OPENCODE_API_KEY for the opencode harness
 #   vars     DEPLOY_HOST       ip or hostname of the VPS
 #            DOMAIN            public domain the app is served on
 #            DEPLOY_USER       optional, default samskara; exedev on exe.dev
-#            AI_REVIEW_HARNESS optional, default claude; or opencode
-#            AI_REVIEW_HARDEN  optional, default 0. 1 runs the opencode reviewer in an msb
-#                              microVM, which needs KVM and the msb binary; neither is in
-#                              the container, so only set it on a host that provides both
 #
-# The AI reviewer settings are written to /opt/samskara/.review.env on every deploy, so
-# rotating the token or switching harness is a change here followed by a re-run.
+# Every OTHER variable and secret in that environment is application configuration: on each
+# deploy it is merged into /opt/samskara/.env, replacing the key of the same name or appended
+# when absent. So AI_REVIEW_HARNESS, CLAUDE_CODE_OAUTH_TOKEN, SUPER_ADMIN_LOGINS, LOG_LEVEL
+# and anything the server reads are set in the repo's environment settings, not over ssh.
+# The names above are the only ones held back; add to the list in "Deploy" if a new
+# workflow-only setting appears.
 #
 # Once, after the first publish: set the ghcr.io package to public in the repo's
 # Packages settings, or the server cannot pull it without a login.
@@ -138,43 +136,47 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           printf '%s\n' "$HOST_KEY" > ~/.ssh/known_hosts
 
-      # The reviewer's env file travels over ssh stdin: it never appears in a command line
-      # or in the job log. Only the credentials that are set are written, so a single-harness
-      # deployment holds a single secret. Compose recreates the app container when this
-      # file's content changes, so `up -d app` below applies it.
-      - name: Write AI review env
+      # One ssh session does the whole deploy under a lock. The environment's vars and
+      # secrets are rendered to KEY=VALUE lines and merged into .env on the server; they
+      # travel over ssh stdin, so no secret reaches a command line or the job log. Secrets
+      # win over a variable of the same name. A multi-line value cannot be a dotenv line and
+      # is skipped with a warning. SAMSKARA_TAG rides along so the server remembers which
+      # version runs and a reboot brings the same one back. The app container runs
+      # migrations on start (see Dockerfile CMD), so there is no separate migrate step.
+      - name: Deploy
         env:
-          AI_REVIEW_HARNESS: ${{ vars.AI_REVIEW_HARNESS || 'claude' }}
-          AI_REVIEW_HARDEN: ${{ vars.AI_REVIEW_HARDEN || '0' }}
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          VARS: ${{ toJSON(vars) }}
+          SECRETS: ${{ toJSON(secrets) }}
         run: |
           set -euo pipefail
-          {
-            printf 'AI_REVIEW_HARNESS=%s\n' "$AI_REVIEW_HARNESS"
-            printf 'AI_REVIEW_HARDEN=%s\n' "$AI_REVIEW_HARDEN"
-            for key in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY OPENCODE_API_KEY; do
-              [ -n "${!key}" ] && printf '%s=%s\n' "$key" "${!key}"
-            done
-            true
-          } | ssh "$DEPLOY_USER@$HOST" 'umask 077 && cat > /opt/samskara/.review.env'
-
-      # The tag is written to a file so the server remembers which version is running
-      # and a reboot brings the same one back. The app container runs migrations on
-      # start (see Dockerfile CMD), so there is no separate migrate step.
-      - name: Pull and restart
-        run: |
-          ssh "$DEPLOY_USER@$HOST" bash -s "$VERSION" <<'EOF'
+          HELD_BACK='["github_token","SSH_PRIVATE_KEY","SSH_HOST_KEY","DEPLOY_HOST","DEPLOY_USER"]'
+          jq -r --argjson held "$HELD_BACK" '
+              to_entries[]
+              | select(.key | IN($held[]) | not)
+              | if (.value | test("\n")) then ("::warning::" + .key + " is multi-line and was not written to .env\n" | stderr) | empty
+                else "\(.key)=\(.value)" end' \
+            <<< "$(jq -n --argjson v "$VARS" --argjson s "$SECRETS" '$v + $s')" > overrides.env
+          printf 'SAMSKARA_TAG=%s\n' "$VERSION" >> overrides.env
+          echo "merging $(wc -l < overrides.env) keys into .env"
+          ssh "$DEPLOY_USER@$HOST" '
             set -euo pipefail
-            VERSION=$1
             cd /opt/samskara
             exec 9>/var/lock/samskara-deploy && flock -w 300 9
-            printf 'SAMSKARA_TAG=%s\n' "$VERSION" > .deploy.env
-            docker compose --env-file .env --env-file .deploy.env pull app
-            docker compose --env-file .env --env-file .deploy.env up -d app
+            umask 077
+            cat > .env.overrides
+            awk -F= '"'"'
+              NR == FNR { if (!($1 in ov)) order[n++] = $1; ov[$1] = $0; next }
+              /^[A-Za-z_][A-Za-z0-9_]*=/ && ($1 in ov) { print ov[$1]; delete ov[$1]; next }
+              { print }
+              END { for (i = 0; i < n; i++) if (order[i] in ov) print ov[order[i]] }
+            '"'"' .env.overrides .env > .env.next
+            mv -f .env.next .env
+            rm -f .env.overrides
+            docker compose pull app
+            docker compose up -d app
             docker image prune -f
-          EOF
+          ' < overrides.env
+          rm -f overrides.env
 
       # Runs in this job, not a separate one: environment variables like DOMAIN are only
       # visible to a job that declares `environment: production`.

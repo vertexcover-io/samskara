@@ -22,7 +22,7 @@ d = host.data
 
 APP_DIR = "/opt/samskara"
 APP_USER = d.app_user
-COMPOSE = f"docker compose --env-file {APP_DIR}/.env --env-file {APP_DIR}/.deploy.env"
+COMPOSE = "docker compose"  # run from APP_DIR, which has the .env compose reads
 CADDY_KEYRING = "/usr/share/keyrings/caddy-stable-archive-keyring.gpg"
 CADDY = d.proxy == "caddy"
 
@@ -100,33 +100,11 @@ if not host.get_fact(File, path=f"{APP_DIR}/.env"):
         client_id=d.client_id,
         client_secret=d.client_secret,
         super_admins=d.super_admins,
-        jwt_secret=secrets.token_hex(32),
-        pg_password=secrets.token_hex(24),
-    )
-
-# Seeded so a freshly provisioned box boots before any deploy has run; from then on the
-# Deploy workflow owns this file.
-if not host.get_fact(File, path=f"{APP_DIR}/.review.env"):
-    files.template(
-        name="Seed .review.env (first run only)",
-        src="templates/review-env.j2",
-        dest=f"{APP_DIR}/.review.env",
-        user=APP_USER,
-        group=APP_USER,
-        mode="600",
         review_harness=d.review_harness,
         review_keys=d.review_keys,
-    )
-
-if not host.get_fact(File, path=f"{APP_DIR}/.deploy.env"):
-    files.template(
-        name="Seed .deploy.env (first run only)",
-        src="templates/deploy-env.j2",
-        dest=f"{APP_DIR}/.deploy.env",
-        user=APP_USER,
-        group=APP_USER,
-        mode="640",
         tag=d.tag,
+        jwt_secret=secrets.token_hex(32),
+        pg_password=secrets.token_hex(24),
     )
 
 files.put(
