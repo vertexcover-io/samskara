@@ -22,8 +22,9 @@ name: Deploy
 #            DOMAIN            public domain the app is served on
 #            DEPLOY_USER       optional, default samskara; exedev on exe.dev
 #
-# Every other variable and secret is app configuration: each deploy merges it into
-# /opt/samskara/.env (see deploy/README.md).
+# Every other variable is app configuration and is merged into /opt/samskara/.env on each
+# deploy (see deploy/README.md). App secrets are named one by one in the "Deploy" step: a
+# blanket toJSON(secrets) is what GitHub's workflow scanner flags as exfiltration.
 #
 # Once, after the first publish: set the ghcr.io package to public in the repo's
 # Packages settings, or the server cannot pull it without a login.
@@ -143,19 +144,22 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           printf '%s\n' "$HOST_KEY" > ~/.ssh/known_hosts
 
-      # Vars and secrets go over ssh stdin as KEY=VALUE lines into samskara-env-merge
-      # (installed by provisioning), so no secret reaches a command line or the log. A secret
-      # wins over a variable of the same name. The container runs migrations on start.
+      # Vars and the named secrets go over ssh stdin as KEY=VALUE lines into
+      # samskara-env-merge (installed by provisioning), so no secret reaches a command line
+      # or the log. An unset secret is skipped. The container runs migrations on start.
       - name: Deploy
         env:
           VARS: ${{ toJSON(vars) }}
-          SECRETS: ${{ toJSON(secrets) }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
         run: |
           set -euo pipefail
-          jq -rn --argjson v "$VARS" --argjson s "$SECRETS" --arg tag "$VERSION" '
-              ($v + $s + {SAMSKARA_TAG: $tag}) | to_entries[]
-              | select(.key | IN("github_token", "SSH_PRIVATE_KEY", "SSH_HOST_KEY", "DEPLOY_HOST", "DEPLOY_USER", "DOMAIN") | not)
-              | "\(.key)=\(.value)"' \
+          jq -rn --argjson v "$VARS" --arg tag "$VERSION" '
+              ($v | del(.DEPLOY_HOST, .DEPLOY_USER, .DOMAIN))
+              + ($ENV | {CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY, OPENCODE_API_KEY} | with_entries(select(.value != null and .value != "")))
+              + {SAMSKARA_TAG: $tag}
+              | to_entries[] | "\(.key)=\(.value)"' \
           | ssh "$DEPLOY_USER@$HOST" 'cd /opt/samskara && flock -w 300 /var/lock/samskara-deploy sh -euc "
               samskara-env-merge && docker compose pull app && docker compose up -d app && docker image prune -f"'
 
