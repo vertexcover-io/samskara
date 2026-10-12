@@ -28,7 +28,13 @@ services:
   app:
     image: ghcr.io/vertexcover-io/samskara:${SAMSKARA_TAG}
     restart: unless-stopped
-    env_file: .env
+    # .review.env holds the AI reviewer's harness and credential. Provisioning seeds it; the
+    # Deploy workflow rewrites it from GitHub secrets/vars on every deploy, so changing the
+    # reviewer is a repo-settings change, not an ssh session. Later files win.
+    env_file:
+      - .env
+      - path: .review.env
+        required: false
     ports:
       - "${APP_BIND:-127.0.0.1}:3000:3000"
     depends_on:

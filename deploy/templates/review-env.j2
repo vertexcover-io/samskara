@@ -1,0 +1,11 @@
+# AI reviewer. Seeded once by deploy/deploy.py, then REWRITTEN by .github/workflows/deploy.yml
+# on every deploy from the repo's `production` environment (AI_REVIEW_HARNESS variable,
+# CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY / OPENCODE_API_KEY secrets). Edit those, not
+# this file. The server refuses to start unless the configured harness has a credential.
+AI_REVIEW_HARNESS={{ review_harness }}
+# The opencode lane's microVM (msb) needs KVM, which the container cannot reach, so opencode
+# runs in-process. claude is always in-process.
+AI_REVIEW_HARDEN=0
+{% for key, value in review_keys.items() -%}
+{{ key }}={{ value }}
+{% endfor %}

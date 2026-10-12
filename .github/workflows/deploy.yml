@@ -18,9 +18,18 @@ name: Deploy
 # Required in the `production` environment:
 #   secrets  SSH_PRIVATE_KEY   deploy key for DEPLOY_USER@HOST
 #            SSH_HOST_KEY      server's public host key, one line as in known_hosts
+#            CLAUDE_CODE_OAUTH_TOKEN   AI reviewer credential (`claude setup-token`), or
+#            ANTHROPIC_API_KEY         ...this; or OPENCODE_API_KEY for the opencode harness
 #   vars     DEPLOY_HOST       ip or hostname of the VPS
 #            DOMAIN            public domain the app is served on
 #            DEPLOY_USER       optional, default samskara; exedev on exe.dev
+#            AI_REVIEW_HARNESS optional, default claude; or opencode
+#            AI_REVIEW_HARDEN  optional, default 0. 1 runs the opencode reviewer in an msb
+#                              microVM, which needs KVM and the msb binary; neither is in
+#                              the container, so only set it on a host that provides both
+#
+# The AI reviewer settings are written to /opt/samskara/.review.env on every deploy, so
+# rotating the token or switching harness is a change here followed by a re-run.
 #
 # Once, after the first publish: set the ghcr.io package to public in the repo's
 # Packages settings, or the server cannot pull it without a login.
@@ -128,6 +137,28 @@ jobs:
           printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           printf '%s\n' "$HOST_KEY" > ~/.ssh/known_hosts
+
+      # The reviewer's env file travels over ssh stdin: it never appears in a command line
+      # or in the job log. Only the credentials that are set are written, so a single-harness
+      # deployment holds a single secret. Compose recreates the app container when this
+      # file's content changes, so `up -d app` below applies it.
+      - name: Write AI review env
+        env:
+          AI_REVIEW_HARNESS: ${{ vars.AI_REVIEW_HARNESS || 'claude' }}
+          AI_REVIEW_HARDEN: ${{ vars.AI_REVIEW_HARDEN || '0' }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+        run: |
+          set -euo pipefail
+          {
+            printf 'AI_REVIEW_HARNESS=%s\n' "$AI_REVIEW_HARNESS"
+            printf 'AI_REVIEW_HARDEN=%s\n' "$AI_REVIEW_HARDEN"
+            for key in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY OPENCODE_API_KEY; do
+              [ -n "${!key}" ] && printf '%s=%s\n' "$key" "${!key}"
+            done
+            true
+          } | ssh "$DEPLOY_USER@$HOST" 'umask 077 && cat > /opt/samskara/.review.env'
 
       # The tag is written to a file so the server remembers which version is running
       # and a reboot brings the same one back. The app container runs migrations on

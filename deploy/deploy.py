@@ -5,7 +5,7 @@ Usage, from the deploy/ directory (templates are resolved relative to the cwd):
 
   pip install -r requirements.txt
   export DEPLOY_HOST=... DOMAIN=... ORG_SLUG=... GITHUB_CLIENT_ID=... \
-         GITHUB_CLIENT_SECRET=... OPENCODE_API_KEY=... DEPLOY_PUBKEY=~/.ssh/samskara_deploy.pub
+         GITHUB_CLIENT_SECRET=... CLAUDE_CODE_OAUTH_TOKEN=... DEPLOY_PUBKEY=~/.ssh/samskara_deploy.pub
   # behind a platform proxy such as exe.dev, add: PROXY=external APP_USER=exedev ADMIN_USER=exedev
   pyinfra inventory.py deploy.py --dry     # show what would change
   pyinfra inventory.py deploy.py -y        # apply
@@ -100,10 +100,22 @@ if not host.get_fact(File, path=f"{APP_DIR}/.env"):
         client_id=d.client_id,
         client_secret=d.client_secret,
         super_admins=d.super_admins,
-        review_harness=d.review_harness,
-        review_keys=d.review_keys,
         jwt_secret=secrets.token_hex(32),
         pg_password=secrets.token_hex(24),
+    )
+
+# Seeded so a freshly provisioned box boots before any deploy has run; from then on the
+# Deploy workflow owns this file.
+if not host.get_fact(File, path=f"{APP_DIR}/.review.env"):
+    files.template(
+        name="Seed .review.env (first run only)",
+        src="templates/review-env.j2",
+        dest=f"{APP_DIR}/.review.env",
+        user=APP_USER,
+        group=APP_USER,
+        mode="600",
+        review_harness=d.review_harness,
+        review_keys=d.review_keys,
     )
 
 if not host.get_fact(File, path=f"{APP_DIR}/.deploy.env"):

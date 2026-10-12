@@ -17,8 +17,13 @@ that the workflow's key can log in as. The workflow touches nothing else.
 2. DNS: an A record for your domain pointing at that IP. Caddy fetches the TLS certificate
    on first start and fails without it.
 3. A GitHub OAuth app for your org with callback `https://DOMAIN/api/auth/github/callback`.
-   And a key for the AI reviewer: `OPENCODE_API_KEY`, or with `AI_REVIEW_HARNESS=claude` one of
-   `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY`. The server will not boot without it.
+   And a credential for the AI reviewer. The image ships both the Claude Code and opencode
+   CLIs; the default harness is claude, which needs `CLAUDE_CODE_OAUTH_TOKEN` (run
+   `claude setup-token` on your machine) or `ANTHROPIC_API_KEY`. With
+   `AI_REVIEW_HARNESS=opencode` it needs `OPENCODE_API_KEY` instead. The server will not boot
+   without one. Provisioning seeds it from your shell; after that it lives in the repo's
+   `production` environment (secret `CLAUDE_CODE_OAUTH_TOKEN`, variable `AI_REVIEW_HARNESS`)
+   and the Deploy workflow writes `/opt/samskara/.review.env` from there on every deploy.
 4. A deploy key pair: `ssh-keygen -t ed25519 -f ~/.ssh/samskara_deploy -N ""`. The public
    half goes to provisioning, the private half to the workflow.
 5. At least one release published by the Deploy workflow, so the image exists on ghcr.io,
@@ -30,7 +35,7 @@ that the workflow's key can log in as. The workflow touches nothing else.
 cd deploy
 pip install -r requirements.txt
 export DEPLOY_HOST=1.2.3.4 DOMAIN=samskara.example.org ORG_SLUG=example-org \
-       GITHUB_CLIENT_ID=... GITHUB_CLIENT_SECRET=... OPENCODE_API_KEY=... \
+       GITHUB_CLIENT_ID=... GITHUB_CLIENT_SECRET=... CLAUDE_CODE_OAUTH_TOKEN=... \
        DEPLOY_PUBKEY=~/.ssh/samskara_deploy.pub
 pyinfra inventory.py deploy.py --dry    # plan
 pyinfra inventory.py deploy.py -y       # apply
