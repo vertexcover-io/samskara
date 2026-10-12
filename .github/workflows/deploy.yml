@@ -134,6 +134,15 @@ jobs:
       DEPLOY_USER: ${{ vars.DEPLOY_USER || 'samskara' }}
       VERSION: ${{ needs.build-and-publish.outputs.version }}
     steps:
+      # Only deploy/files/env-merge.sh is needed from the checkout; it is shipped to the
+      # server below so a deploy never depends on provisioning having run since the script
+      # last changed.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.REF }}
+          sparse-checkout: deploy/files/env-merge.sh
+          sparse-checkout-cone-mode: false
+
       - name: Configure SSH
         env:
           SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
@@ -144,10 +153,12 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           printf '%s\n' "$HOST_KEY" > ~/.ssh/known_hosts
 
+      - name: Ship env-merge.sh
+        run: ssh "$DEPLOY_USER@$HOST" 'cat > /opt/samskara/env-merge.sh && chmod 755 /opt/samskara/env-merge.sh' < deploy/files/env-merge.sh
+
       # One ssh session does the whole deploy under a lock. The environment's vars and
-      # secrets become KEY=VALUE lines piped over ssh stdin into samskara-env-merge (installed
-      # by provisioning from deploy/files/env-merge.sh), so no secret reaches a command line
-      # or the job log. A secret wins over a variable of the same name; a multi-line value
+      # secrets become KEY=VALUE lines piped over ssh stdin into env-merge.sh, so no secret
+      # reaches a command line or the job log. A secret wins over a variable of the same name; a multi-line value
       # cannot be a dotenv line and is skipped with a warning. SAMSKARA_TAG is one more key
       # the workflow owns. The app container runs migrations on start (see Dockerfile CMD).
       - name: Deploy
@@ -165,7 +176,7 @@ jobs:
               set -euo pipefail
               cd /opt/samskara
               exec 9>/var/lock/samskara-deploy && flock -w 300 9
-              samskara-env-merge
+              ./env-merge.sh
               docker compose pull app
               docker compose up -d app
               docker image prune -f

@@ -9,8 +9,8 @@ Two pieces, run at different times:
 
 The contract between them is small: provisioning leaves `/opt/samskara` with
 `docker-compose.yml` and `.env`, and a `samskara` user in the `docker` group that the
-workflow's key can log in as. The workflow touches nothing else, but it does own `.env` from
-then on: every deploy merges the `production` environment's variables and secrets into it,
+workflow's key can log in as. The workflow owns `.env` from then on: every deploy ships
+`env-merge.sh` and merges the `production` environment's variables and secrets into the file,
 replacing keys of the same name and appending new ones. Only the generated `JWT_SECRET` and
 `POSTGRES_PASSWORD` live solely on the server.
 
@@ -90,7 +90,7 @@ Add required reviewers to the environment if a deploy should wait for approval.
 - **See what is running**: `grep SAMSKARA_TAG /opt/samskara/.env` on the server.
 - **Change a setting**: add or edit the variable or secret in the repo's `production`
   environment and re-run Deploy with the current tag. For a quick change on the box,
-  `printf 'LOG_LEVEL=debug\n' | samskara-env-merge && docker compose up -d app` does the same
-  merge; the next deploy puts the GitHub value back.
+  `printf 'LOG_LEVEL=debug\n' | ./env-merge.sh && docker compose up -d app` in
+  `/opt/samskara` does the same merge; the next deploy puts the GitHub value back.
 - **Backups**: nightly at 03:00 into `/opt/samskara/backups`, last seven kept. Copying them
   off the machine is up to you.

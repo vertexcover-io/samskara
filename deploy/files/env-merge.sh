@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # Merge KEY=VALUE lines from stdin into a dotenv file, in place.
 #
-#   samskara-env-merge [FILE]        default FILE: /opt/samskara/.env
-#   printf 'LOG_LEVEL=debug\n' | samskara-env-merge && docker compose up -d app
+#   /opt/samskara/env-merge.sh [FILE]        default FILE: /opt/samskara/.env
+#   printf 'LOG_LEVEL=debug\n' | ./env-merge.sh && docker compose up -d app
 #
 # A key that already has an assignment line is replaced on that line; a key the file lacks is
 # appended. Comments, blank lines and every other key are left exactly as they were, which is
 # the point: the file also holds generated secrets nothing else knows. The key match tolerates
 # the same shapes as applyEnv in packages/server/src/scripts/env-file.ts (leading whitespace,
 # spaces around `=`). The Deploy workflow pipes the repo's environment through this on every
-# deploy; it is installed by deploy/deploy.py alongside the backup script.
+# deploy, and ships this file to /opt/samskara first, so the server always runs the version
+# the deployed commit carries.
 set -euo pipefail
 
 FILE="${1:-/opt/samskara/.env}"
