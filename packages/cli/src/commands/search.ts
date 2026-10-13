@@ -108,18 +108,18 @@ export const resolveOption = (params: {
   const exact = params.options.filter((option) =>
     option.names.some((name) => name.toLowerCase() === wanted),
   )
-  const first = exact[0]
-  if (first !== undefined) return { ok: true, value: first.value }
-
-  const partial = params.options.filter((option) =>
-    option.names.some((name) => name.toLowerCase().includes(wanted)),
-  )
-  const only = partial[0]
-  if (only !== undefined && partial.length === 1) return { ok: true, value: only.value }
-  if (partial.length > 1) {
+  const matches =
+    exact.length > 0
+      ? exact
+      : params.options.filter((option) =>
+          option.names.some((name) => name.toLowerCase().includes(wanted)),
+        )
+  const only = matches[0]
+  if (only !== undefined && matches.length === 1) return { ok: true, value: only.value }
+  if (matches.length > 1) {
     return {
       ok: false,
-      message: `${params.flag} ${params.input} matches more than one: ${labels(partial)}. Use a more exact name.`,
+      message: `${params.flag} ${params.input} matches more than one: ${labels(matches)}. Use a more exact name.`,
     }
   }
   return {
