@@ -114,6 +114,23 @@ describe("resolveOption", () => {
     })
   })
 
+  test("a bare repo name shared by two owners refuses instead of silently picking one, and names both", () => {
+    const repos = [
+      { value: "id-acme", names: ["acme/samskara", "samskara"] },
+      { value: "id-vertexcover", names: ["vertexcover-io/samskara", "samskara"] },
+    ]
+
+    expect(resolveOption({ flag: "--repo", input: "samskara", options: repos })).toEqual({
+      ok: false,
+      message:
+        "--repo samskara matches more than one: acme/samskara, vertexcover-io/samskara. Use a more exact name.",
+    })
+    expect(resolveOption({ flag: "--repo", input: "acme/samskara", options: repos })).toEqual({
+      ok: true,
+      value: "id-acme",
+    })
+  })
+
   test("the names offered after a miss are the ones closest to what was typed, not the alphabetical first", () => {
     const many = [
       ...Array.from({ length: 8 }, (_, index) => ({
