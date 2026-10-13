@@ -899,4 +899,29 @@ describe.skipIf(!dockerAvailable())("auth routes (methods + local login)", () =>
 
     expect(res.status).toBe(404)
   })
+
+  test("L11: /methods reports github false when the client id is set but the secret is blank - the code exchange would fail", async () => {
+    const app = buildApp(
+      db,
+      { ...localEnabled, githubClientSecret: "" },
+      { githubClient: noopClient },
+    )
+
+    const res = await app.request("/api/auth/methods")
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ github: false, local: true })
+  })
+
+  test("L12: /github/start is 404 when the client id is set but the secret is blank", async () => {
+    const app = buildApp(
+      db,
+      { ...localEnabled, githubClientSecret: "" },
+      { githubClient: noopClient },
+    )
+
+    const res = await app.request("/api/auth/github/start")
+
+    expect(res.status).toBe(404)
+  })
 })
