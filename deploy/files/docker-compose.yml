@@ -1,12 +1,11 @@
 # Production stack. Installed to /opt/samskara by deploy/deploy.py.
 #
-# Always invoke with both env files, so compose can resolve the variables below:
-#   docker compose --env-file .env --env-file .deploy.env <command>
-#
-#   POSTGRES_PASSWORD  from .env         generated once by provisioning
-#   SAMSKARA_IMAGE     from .env         ghcr.io/OWNER/REPO, this repo's image by default
-#   APP_BIND           from .env         127.0.0.1 behind Caddy, 0.0.0.0 behind a platform proxy
-#   SAMSKARA_TAG       from .deploy.env  written by every deploy
+# Run from /opt/samskara: compose reads the .env there, both to resolve the variables below
+# and (via env_file) as the app's environment.
+#   POSTGRES_PASSWORD  generated once by provisioning
+#   APP_BIND           127.0.0.1 behind Caddy, 0.0.0.0 behind a platform proxy
+#   SAMSKARA_IMAGE     ghcr.io/OWNER/REPO, this repo's image by default
+#   SAMSKARA_TAG       written by every deploy
 
 name: samskara
 

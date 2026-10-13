@@ -58,6 +58,9 @@ const localLoginSchema = z.object({ secret: z.string().min(1) })
 
 const localSecret = (env: Env): string => env.localLoginSecret ?? ""
 
+const githubConfigured = (env: Env): boolean =>
+  env.githubClientId.length > 0 && env.githubClientSecret.length > 0
+
 /** Both sides are hashed to equal-length digests so timingSafeEqual never leaks by length. */
 const secretsMatch = (configured: string, presented: string): boolean => {
   const digest = (value: string) => createHash("sha256").update(value).digest()
@@ -77,7 +80,7 @@ const publicUser = (user: User): PublicUser =>
 export const authRoutes = ({ db, env, githubClient, pairingStore }: Deps) =>
   new Hono<{ Variables: AuthVariables }>()
     .get("/github/start", (c) => {
-      if (env.githubClientId.length === 0) return c.json({ error: "not_found" }, 404)
+      if (!githubConfigured(env)) return c.json({ error: "not_found" }, 404)
 
       const state = randomBytes(16).toString("hex")
       setStateCookie(c, state, env)
@@ -147,7 +150,7 @@ export const authRoutes = ({ db, env, githubClient, pairingStore }: Deps) =>
       return c.json({ token }, 200)
     })
     .get("/methods", (c) =>
-      c.json({ github: env.githubClientId.length > 0, local: localSecret(env).length > 0 }, 200),
+      c.json({ github: githubConfigured(env), local: localSecret(env).length > 0 }, 200),
     )
     .post("/local", validate("json", localLoginSchema), async (c) => {
       const configured = localSecret(env)

@@ -22,6 +22,10 @@ name: Deploy
 #            DOMAIN            public domain the app is served on
 #            DEPLOY_USER       optional, default samskara; exedev on exe.dev
 #
+# Every other variable is app configuration and is merged into /opt/samskara/.env on each
+# deploy (see deploy/README.md). App secrets are named one by one in the "Deploy" step: a
+# blanket toJSON(secrets) is what GitHub's workflow scanner flags as exfiltration.
+#
 # Once, after the first publish: set the ghcr.io package to public in the repo's
 # Packages settings, or the server cannot pull it without a login.
 
@@ -58,7 +62,7 @@ jobs:
         with:
           bun-version: 1.2.19
 
-      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile --ignore-scripts
       - run: bun run lint
       - run: bun run typecheck
       - run: bun run test:scripts
@@ -87,6 +91,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # The image installs the AI reviewer CLIs. Resolving their current versions here and
+      # passing them as build args makes the Docker layer cache miss exactly when a new CLI
+      # version exists; with `latest` baked in, the cached layer would never notice one.
+      - id: cli
+        run: |
+          echo "claude=$(npm view @anthropic-ai/claude-code version)" >> "$GITHUB_OUTPUT"
+          echo "opencode=$(npm view opencode-ai version)" >> "$GITHUB_OUTPUT"
+
       # Turns the tag into image tags: v0.4.1 -> 0.4.1, 0.4 and latest. Also attaches
       # OCI labels that record the source commit on the image.
       - id: meta
@@ -104,6 +116,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            CLAUDE_CODE_VERSION=${{ steps.cli.outputs.claude }}
+            OPENCODE_VERSION=${{ steps.cli.outputs.opencode }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -129,21 +144,24 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           printf '%s\n' "$HOST_KEY" > ~/.ssh/known_hosts
 
-      # The tag is written to a file so the server remembers which version is running
-      # and a reboot brings the same one back. The app container runs migrations on
-      # start (see Dockerfile CMD), so there is no separate migrate step.
-      - name: Pull and restart
+      # Vars and the named secrets go over ssh stdin as KEY=VALUE lines into
+      # samskara-env-merge (installed by provisioning), so no secret reaches a command line
+      # or the log. An unset secret is skipped. The container runs migrations on start.
+      - name: Deploy
+        env:
+          VARS: ${{ toJSON(vars) }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
         run: |
-          ssh "$DEPLOY_USER@$HOST" bash -s "$VERSION" <<'EOF'
-            set -euo pipefail
-            VERSION=$1
-            cd /opt/samskara
-            exec 9>/var/lock/samskara-deploy && flock -w 300 9
-            printf 'SAMSKARA_TAG=%s\n' "$VERSION" > .deploy.env
-            docker compose --env-file .env --env-file .deploy.env pull app
-            docker compose --env-file .env --env-file .deploy.env up -d app
-            docker image prune -f
-          EOF
+          set -euo pipefail
+          jq -rn --argjson v "$VARS" --arg tag "$VERSION" '
+              ($v | del(.DEPLOY_HOST, .DEPLOY_USER, .DOMAIN))
+              + ($ENV | {CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY, OPENCODE_API_KEY} | with_entries(select(.value != null and .value != "")))
+              + {SAMSKARA_TAG: $tag}
+              | to_entries[] | "\(.key)=\(.value)"' \
+          | ssh "$DEPLOY_USER@$HOST" 'cd /opt/samskara && flock -w 300 /var/lock/samskara-deploy sh -euc "
+              samskara-env-merge && docker compose pull app && docker compose up -d app && docker image prune -f"'
 
       # Runs in this job, not a separate one: environment variables like DOMAIN are only
       # visible to a job that declares `environment: production`.

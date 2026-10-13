@@ -27,7 +27,7 @@ jobs:
         with:
           bun-version: 1.2.19
 
-      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile --ignore-scripts
 
       # A hand-pushed tag already exists, so the earliest a mismatch can stop it is here.
       # A manual run has no tag yet; cut builds one from the manifests it just wrote.
@@ -101,7 +101,7 @@ jobs:
         with:
           bun-version: 1.2.19
 
-      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile --ignore-scripts
 
       - run: bun run release:pack
 

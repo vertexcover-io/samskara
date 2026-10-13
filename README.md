@@ -4,238 +4,267 @@
 [![Release](https://img.shields.io/github/v/release/vertexcover-io/samskara?label=release)](https://github.com/vertexcover-io/samskara/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-Samskara records what your AI coding agent did and makes it searchable for the whole team.
+Samskara is a shared, searchable record of the work your team does with AI coding agents.
 
-Claude Code and OpenCode keep a transcript of every session on the machine they ran on. Those
-transcripts are local, scattered and hard to read. Samskara watches them, sends the sessions you
-opt into to a server your team runs, and gives everyone a web UI to browse and search them across
-projects, machines and people.
+When a developer works with Claude Code or OpenCode, the full conversation is stored only on
+their machine. After the pull request is merged, the rest of the team has no way to see what was
+asked, which approaches were tried, or why the final change looks the way it does. Samskara
+collects those sessions on a server the team operates and provides a web interface for browsing
+and searching them.
 
-Nothing leaves a machine until someone runs `samskara enable` in a folder.
-
-## Quick start
-
-With a server already running for your team:
-
-```sh
-npm i -g @vertexcover/samskara
-samskara init          # choose the server, pair with a code from the web UI
-cd ~/code/my-project
-samskara enable        # start capturing this folder
-```
-
-Every session you run in that folder from now on appears in the web UI. The rest of this file
-explains each step and how to run a server of your own.
+Samskara supports Claude Code and OpenCode. It captures sessions only from folders a developer
+has explicitly enabled, and no data leaves a machine until `samskara enable` has been run there.
 
 ## Contents
 
-- [Quick start](#quick-start)
+- [Overview](#overview)
+- [What is captured](#what-is-captured)
 - [How it works](#how-it-works)
-- [What gets captured](#what-gets-captured)
-- [Development](#development)
-- [Install the CLI](#install-the-cli)
-- [Pair the CLI with the server](#pair-the-cli-with-the-server)
-- [CLI commands](#cli-commands)
-- [Run the server locally](#run-the-server-locally)
+- [Getting started](#getting-started)
+- [Installing the CLI](#installing-the-cli)
+- [Connecting the CLI to your account](#connecting-the-cli-to-your-account)
+- [CLI reference](#cli-reference)
+- [Running the server locally](#running-the-server-locally)
 - [Deployment](#deployment)
 - [Releases](#releases)
+- [Contributing](#contributing)
 - [License](#license)
+
+## Overview
+
+The web interface lists every captured session, grouped by project and by person. Opening a
+session shows the conversation as it happened: each prompt, each response, each file the agent
+changed, and the branch and pull request the work belonged to. Full-text search covers all
+sessions, so a phrase from a conversation or a pull request number locates the relevant session
+directly.
+
+Sessions can be tagged for later retrieval, additional files can be attached to them, and an AI
+reviewer can be run against a session to produce a written assessment.
+
+## What is captured
+
+Samskara stores four kinds of information for each session.
+
+**Conversation.** Every prompt, every response, and every tool invocation in between, including
+work delegated to sub-agents.
+
+**Changed files.** Each file the agent created or edited, stored as it was before the change, as
+it was after, and as a diff.
+
+**Git context.** The branch, commits and pull request associated with the session, so that a
+session can be located from the code it produced.
+
+**Usage.** Token consumption and session duration.
 
 ## How it works
 
-```
-  Developer machine                              Team server
- ┌──────────────────────────────────────┐       ┌─────────────────────────────┐
- │  Claude Code      OpenCode           │       │                             │
- │  ~/.claude/…      opencode.db        │       │   API  ──▶  Postgres        │
- │        │              │              │ HTTPS │    ▲          + pgvector    │
- │        ▼              ▼              │ ────▶ │    │                        │
- │   samskara watcher (background)      │       │   Web UI: browse & search   │
- │   reads only enabled folders         │       │                             │
- └──────────────────────────────────────┘       └─────────────────────────────┘
-```
+1. On each developer's machine, the `samskara` CLI runs a small background process. It monitors
+   the enabled folders, detects new session activity, records what it has already sent, and
+   uploads only the remainder. It reads nothing outside the enabled folders.
+2. The server receives the sessions and stores them in a Postgres database.
+3. The web interface reads from that database and is what the team uses in a browser.
 
-1. A developer installs the CLI once and pairs it with the server.
-2. They run `samskara enable` in each project folder they want captured.
-3. A background watcher reads new session activity, remembers what it has already sent, and
-   uploads only the rest.
-4. The server stores sessions in Postgres and serves the web UI where the team reads and searches
-   them.
+Claude Code notifies Samskara at the start of each session. Samskara uses that notification to
+restart the background process if it is not running, so capture continues after a reboot
+without manual intervention.
 
-A Claude Code hook restarts the watcher whenever a session starts, so capture keeps working after
-reboots without anyone thinking about it.
+## Getting started
 
-## What gets captured
-
-- **The conversation**: prompts, replies and every tool call in between, including subagent
-  branches.
-- **Artifacts**: files the agent created or edited, stored as before, after and diff.
-- **Git context**: the branch, commits and pull requests a session touched.
-- **Usage**: tokens consumed and session duration.
-
-## Development
-
-Requirements: [Bun](https://bun.sh) 1.2.19+, Node 22+, Docker.
-
-| Package | Holds |
-|---|---|
-| `@samskara/core` | Shared types and the collector plugins for Claude Code and OpenCode |
-| `@vertexcover/samskara` (`packages/cli`) | The `samskara` binary |
-| `@samskara/server` | Hono API, Drizzle, Postgres with pgvector |
-| `@samskara/web` | React and Vite UI |
+Adoption has two parts. One person sets up a server for the team, following
+[Deployment](#deployment). Each team member then installs the CLI, connects it to their account,
+and enables capture in the folders they want to share:
 
 ```sh
-bun run dev           # API and web in watch mode
-bun run test          # unit tests; the server's need Docker
-bun run e2e           # Playwright, on a throwaway database
-bun run lint          # biome
-bun run typecheck
-bun run cli -- status # the CLI from source, on its own profile
-bun run db:migrate    # bring the local database up to date
+npm i -g @vertexcover/samskara
+samskara init          # choose the server and connect with a code from the web interface
+cd ~/code/my-project
+samskara enable        # begin capturing this folder
 ```
 
-To work on the CLI from a checkout, `bun run build --filter=@vertexcover/samskara` then
-`cd packages/cli && npm link`.
+From that point, every session run in the folder appears in the web interface. The three
+sections that follow describe each step in detail.
 
-[CLAUDE.md](CLAUDE.md) covers contributor detail: worktrees, the database naming rule, migration
-steps, message transformers and logging.
+## Installing the CLI
 
-## Install the CLI
-
-Needs Node 22 or newer.
+Node 22 or newer is required.
 
 ```sh
 npm i -g @vertexcover/samskara
 ```
 
-Or with Homebrew:
+Alternatively, with Homebrew:
 
 ```sh
 brew trust vertexcover-io/tap
 brew install vertexcover-io/tap/samskara
 ```
 
-To pin a version, `npm i -g @vertexcover/samskara@0.5.1`. Every release also attaches the same
-tarball to its [GitHub release](https://github.com/vertexcover-io/samskara/releases) for
-installs without registry access.
+To install a specific version, name it: `npm i -g @vertexcover/samskara@0.5.1`. For machines
+without access to the npm registry, each
+[GitHub release](https://github.com/vertexcover-io/samskara/releases) includes the same package
+as a downloadable file.
 
-Later, `samskara upgrade` installs the newest release over the current one, and
+`samskara upgrade` replaces the installed version with the newest release.
 `npm uninstall -g @vertexcover/samskara` removes it.
 
-If you installed the CLI before it moved to npm, under the old `@samskara/cli` name, remove
-that first with `npm uninstall -g @samskara/cli`. Both install a `samskara` command, so npm
-refuses to put the new one over the old.
+Before the move to npm, the CLI was published as `@samskara/cli`. If that package is installed,
+remove it first with `npm uninstall -g @samskara/cli`. Both packages provide a command named
+`samskara`, and npm will not install the new package over the old one.
 
-## Pair the CLI with the server
+## Connecting the CLI to your account
 
-Pairing links the CLI on your machine to your account on the server.
+The CLI must be told which server to send sessions to and which account the sessions belong to.
+This is done once, with a single-use code generated in the web interface.
 
-1. Run `samskara init`. It asks for the server URL and the web URL, then for a pairing code.
-2. Open the web URL in a browser and sign in with GitHub.
-3. From the account menu choose **Pair the CLI**, then **Generate code**.
-4. Paste the code into the terminal.
+1. Run `samskara init`. It prompts for the server address and the web interface address, then
+   for a code.
+2. Open the web interface in a browser and sign in with GitHub.
+3. From the account menu, select **Pair the CLI**, then **Generate code**.
+4. Enter the code in the terminal.
 
-`init` then installs the Claude Code hook and starts the watcher. The token it receives is stored
-at `~/.samskara/token`, readable only by you. A code works once and never expires, but it is
-invalidated if the server restarts before it is used.
+`init` also installs the Claude Code hook and starts the background process. The server issues
+the CLI a token, stored at `~/.samskara/token` with permissions that allow only the current user
+to read it. A code can be used once and has no expiry, but it is invalidated if the server
+restarts before it is used.
 
-The token expires after the server's `JWT_EXPIRES_IN`, seven days by default. Uploading then
-stops, and the Claude Code hook reports it on the next session start. Run `samskara login` and
-generate a new code to pair again.
+The token expires after seven days by default; the server setting is `JWT_EXPIRES_IN`. When it
+expires, uploads stop and Claude Code reports the condition at the next session start. Running
+`samskara login` with a new code restores the connection.
 
-To finish, turn capture on in a project:
+Capture is then enabled per project:
 
 ```sh
 cd ~/code/my-project
 samskara enable
 ```
 
-To move an already configured CLI to a different server, run `samskara init --force`. It backs up
-local state, signs out and disables every project, after which you log in and enable again.
+To move an already configured CLI to a different server, run `samskara init --force`. It backs
+up local state, signs out, and disables capture in every folder. Log in and enable the folders
+again afterwards.
 
-## CLI commands
+## CLI reference
 
-| Command | What it does | Example |
+| Command | Purpose | Example |
 |---|---|---|
-| `init` | Choose a server, pair, install the hook, start the watcher | `samskara init --server https://samskara.example.org --web https://samskara.example.org` |
-| `login` | Pair again and store a new token | `samskara login --code 4F7K2Q` |
-| `logout` | Stop the watcher and delete the token | `samskara logout` |
-| `enable [path]` | Start capturing a folder. Sessions before now are skipped unless asked for | `samskara enable --all` |
-| `disable [path]` | Stop capturing a folder. Uploaded sessions stay on the server | `samskara disable ~/code/old-project` |
-| `reassign [path]` | Move a folder's sessions to another project | `samskara reassign --to 42 --yes` |
-| `status` | Server URLs, projects, capture state, last sync, watcher state | `samskara status` |
-| `search [query]` | Search sessions from the terminal and print their URLs | `samskara search "rate limit" --here --open` |
-| `tags add\|rm\|ls` | Read or change a session's tags | `samskara tags add bug hotfix --session-id abc123` |
-| `artifacts upload` | Attach files or directories to a session | `samskara artifacts upload abc123 ./dist --base-dir .` |
-| `review-session` | Run an AI review of a local session, without the server | `samskara review-session abc123 --harness claude` |
-| `replay SESSION_ID` | Delete a session on both sides and capture it again | `samskara replay abc123` |
-| `logs` | Show the watcher log | `samskara logs -f` |
-| `restart` | Restart the watcher | `samskara restart` |
-| `upgrade` | Install the newest release | `samskara upgrade --check` |
-| `watch` | Start the watcher by hand | `samskara watch --foreground` |
-| `install-hooks` / `uninstall-hooks` | Manage the Claude Code hook by hand | `samskara install-hooks` |
+| `init` | Select a server, connect to an account, install the Claude Code hook and start the background process. | `samskara init --server https://samskara.example.org --web https://samskara.example.org` |
+| `login` | Connect again and obtain a new token. | `samskara login --code 4F7K2Q` |
+| `logout` | Stop the background process and delete the token. | `samskara logout` |
+| `enable [path]` | Begin capturing a folder. Sessions recorded before this point are skipped unless requested. | `samskara enable --all` |
+| `disable [path]` | Stop capturing a folder. Sessions already uploaded remain on the server. | `samskara disable ~/code/old-project` |
+| `reassign [path]` | Move a folder's sessions to a different project on the server. | `samskara reassign --to 42 --yes` |
+| `status` | Report the connected server, the captured folders, their last sync time, and whether the background process is running. | `samskara status` |
+| `search [query]` | Search sessions from the terminal and print links to the results. | `samskara search "rate limit" --here --open` |
+| `tags add\|rm\|ls` | Add, remove or list the tags on a session. | `samskara tags add bug hotfix --session-id abc123` |
+| `artifacts upload` | Attach files or directories to a session. | `samskara artifacts upload abc123 ./dist --base-dir .` |
+| `review-session` | Run an AI review of a local session. Runs on the developer's machine, not the server. | `samskara review-session abc123 --harness claude` |
+| `replay SESSION_ID` | Delete a session locally and on the server, then capture it again. | `samskara replay abc123` |
+| `logs` | Show the background process log. | `samskara logs -f` |
+| `restart` | Restart the background process. | `samskara restart` |
+| `upgrade` | Install the newest release. | `samskara upgrade --check` |
+| `watch` | Start the background process manually. | `samskara watch --foreground` |
+| `install-hooks` / `uninstall-hooks` | Install or remove the Claude Code hook manually. | `samskara install-hooks` |
 
-Add `--verbose` to any command for debug output. `samskara COMMAND --help` lists every flag.
+`--verbose` on any command prints diagnostic output. `samskara COMMAND --help` lists every flag.
 
-`search` takes filters such as `--project`, `--user`, `--repo`, `--branch`, `--pr`, `--commit`,
-`--range` and `--tags`, and `--here` fills project, repo and branch from the current checkout.
+`search` accepts the filters `--project`, `--user`, `--repo`, `--branch`, `--pr`, `--commit`,
+`--range` and `--tags`. `--here` fills in the project, repository and branch from the current
+folder.
 
-Everything the CLI stores lives in `~/.samskara`. Set `SAMSKARA_PROFILE=NAME` to keep a second,
-fully separate install at `~/.samskara-NAME`.
+All CLI state is stored under `~/.samskara`. Setting `SAMSKARA_PROFILE=NAME` switches to a fully
+separate installation under `~/.samskara-NAME`, for keeping two configurations on one machine.
 
-## Run the server locally
+## Running the server locally
 
-1. Create a GitHub OAuth app under **Settings, Developer settings, OAuth Apps** with homepage
+This section covers running Samskara on a development machine for evaluation or development.
+For a server the team will use, see [Deployment](#deployment).
+
+Sign-in is through GitHub, which requires a GitHub OAuth app: a registration that allows a
+website to authenticate users with their GitHub accounts.
+
+1. On GitHub, under **Settings, Developer settings, OAuth Apps**, create an app with homepage
    `http://localhost:8000` and callback `http://localhost:3000/api/auth/github/callback`.
-   Generate a client secret.
-2. Run setup with your GitHub org slug:
+   Generate a client secret and retain both the client id and the secret.
+2. Run setup with the slug of your GitHub organisation:
    ```sh
    bun run setup YOUR_GITHUB_ORG_SLUG
    ```
-   It installs dependencies, writes `.env`, starts Postgres, migrates, seeds and registers the
-   org. On the first run it stops and asks for the OAuth client id and secret and the AI
-   reviewer's key. Add them to `.env` and run it again.
+   Setup installs dependencies, writes `.env`, starts Postgres, prepares the database and
+   registers the organisation. On the first run it stops and requests two values it cannot
+   generate: the OAuth client id and secret from step 1, and the AI reviewer's key. Add them to
+   `.env` and run setup again.
 
-   Re-running never rotates a secret or touches a database that already has projects. Passing
-   the org slug again does reset that org's automatic membership to on, so leave the slug off on
-   later runs unless that is what you want.
-3. Start everything:
+   Setup is safe to repeat. It never replaces a secret that is already set, and it does not
+   modify a database that already contains projects. Note that passing the organisation slug
+   again re-enables automatic membership for that organisation, so omit the slug on later runs
+   unless that is the intent.
+3. Start the application:
    ```sh
-   bun run dev    # API on :3000, web UI on :8000
+   bun run dev    # API on :3000, web interface on :8000
    ```
 
-Open http://localhost:8000 and sign in with GitHub. Only members of a registered GitHub org can
-sign in; a super admin can register more orgs from the web UI.
+Open http://localhost:8000 and sign in with GitHub. Only members of a registered GitHub
+organisation can sign in. A super admin, a user with access to every project, can register
+additional organisations from the web interface.
 
-For development without an OAuth app, set `LOCAL_LOGIN_SECRET` in `.env` and the sign-in page
-offers a local login. Never set it on a real deployment.
+For development without an OAuth app, set `LOCAL_LOGIN_SECRET` in `.env`; the sign-in page then
+offers a local login. This must never be set on a production deployment.
 
 ## Deployment
 
-Production is two containers on one Linux machine: the app and Postgres. A provisioning script
-sets a machine up once, and after that every release deploys itself through GitHub Actions:
+A production deployment consists of two containers on one Linux machine: the application and its
+Postgres database. A provisioning script sets up the machine once. Thereafter, every release
+deploys itself through GitHub Actions: the release is tested, built into a container image,
+published to GitHub's container registry, pulled by the server, and verified with a health
+check.
 
-```
-test  ──▶  build image, push to ghcr.io  ──▶  server pulls and restarts  ──▶  health check
-```
-
-Prerequisites, the provisioning command, every input, the GitHub secrets and variables, and
-day-to-day operations are in [deploy/README.md](deploy/README.md).
+Prerequisites, the provisioning command, every configuration setting, and the GitHub secrets
+and variables are documented in [deploy/README.md](deploy/README.md).
 
 ## Releases
 
-Every package shares one version. One command cuts a release, and nothing runs on your machine:
+All packages in this repository share a single version number. A release is cut with one command
+and runs entirely on GitHub:
 
 ```sh
-bun run release patch          # or minor, major, or 1.4.0
-bun run release patch --watch  # stream the run
+bun run release patch          # or minor, major, or an exact version such as 1.4.0
+bun run release patch --watch  # follow the run from the terminal
 ```
 
-The workflow tests first, then bumps the manifests, tags, publishes the GitHub release with the
-CLI tarball, publishes the same tarball to npm as `@vertexcover/samskara`, and dispatches the
-deploy. A failed release leaves no tag behind. A tag with a pre-release suffix, such as
-`v1.4.0-rc.1`, publishes as a pre-release on GitHub and under npm's `next` tag, and is not
-deployed.
+The workflow runs the tests, increments the version in every package, tags the commit, publishes
+the GitHub release with the CLI package attached, publishes the same package to npm as
+`@vertexcover/samskara`, and triggers the deployment. A failed release leaves no tag behind.
+
+A version with a pre-release suffix, such as `v1.4.0-rc.1`, is published as a pre-release on
+GitHub and under npm's `next` tag. Pre-releases are not deployed.
+
+## Contributing
+
+Requirements: [Bun](https://bun.sh) 1.2.19 or newer, Node 22 or newer, and Docker.
+
+The repository contains four packages.
+
+| Package | Contents |
+|---|---|
+| `@samskara/core` | Shared types and the collectors that read sessions from Claude Code and OpenCode |
+| `@vertexcover/samskara` (`packages/cli`) | The `samskara` command |
+| `@samskara/server` | The API and database layer (Hono, Drizzle, Postgres with pgvector) |
+| `@samskara/web` | The web interface (React and Vite) |
+
+```sh
+bun run dev           # API and web interface, rebuilding on change
+bun run test          # unit tests; the server's tests require Docker
+bun run e2e           # browser tests with Playwright, against a throwaway database
+bun run lint          # biome
+bun run typecheck
+bun run cli -- status # run the CLI from source, with its own separate profile
+bun run db:migrate    # bring the local database up to date
+```
+
+To use the CLI from a checkout as if it were installed, build it with
+`bun run build --filter=@vertexcover/samskara`, then run `cd packages/cli && npm link`.
+
+[CLAUDE.md](CLAUDE.md) covers contributor detail: worktrees, the column naming rule, migration
+steps, message transformers and logging.
 
 ## License
 
