@@ -2,50 +2,30 @@ import { describe, expect, test } from "bun:test"
 import { dispatchArgs, parseArgs } from "./release.ts"
 
 describe("parseArgs", () => {
-  test("takes a bump keyword and defaults the rest", () => {
-    expect(parseArgs(["patch"])).toEqual({ bump: "patch", ref: null, watch: false })
-    expect(parseArgs(["minor"])).toEqual({ bump: "minor", ref: null, watch: false })
-    expect(parseArgs(["major"])).toEqual({ bump: "major", ref: null, watch: false })
+  test.each([
+    [["patch"], { bump: "patch", ref: null, watch: false }],
+    [["minor"], { bump: "minor", ref: null, watch: false }],
+    [["major"], { bump: "major", ref: null, watch: false }],
+    [["1.4.0"], { bump: "1.4.0", ref: null, watch: false }],
+    [["1.4.0-rc.1"], { bump: "1.4.0-rc.1", ref: null, watch: false }],
+    [["patch", "--ref", "release/next"], { bump: "patch", ref: "release/next", watch: false }],
+    [["patch", "--ref=release/next"], { bump: "patch", ref: "release/next", watch: false }],
+    [["patch", "--watch"], { bump: "patch", ref: null, watch: true }],
+    [["--watch", "patch"], { bump: "patch", ref: null, watch: true }],
+  ])("reads %j", (args, expected) => {
+    expect(parseArgs(args)).toEqual(expected)
   })
 
-  test("takes an explicit version", () => {
-    expect(parseArgs(["1.4.0"]).bump).toBe("1.4.0")
-    expect(parseArgs(["1.4.0-rc.1"]).bump).toBe("1.4.0-rc.1")
-  })
-
-  test("rejects a bump the workflow's own bumper would reject", () => {
-    expect(() => parseArgs(["sideways"])).toThrow()
-    expect(() => parseArgs(['1.4.0-"rc"'])).toThrow()
-  })
-
-  test("reads --ref in both spellings", () => {
-    expect(parseArgs(["patch", "--ref", "release/next"]).ref).toBe("release/next")
-    expect(parseArgs(["patch", "--ref=release/next"]).ref).toBe("release/next")
-  })
-
-  test("reads --watch", () => {
-    expect(parseArgs(["patch", "--watch"]).watch).toBe(true)
-  })
-
-  test("takes the flags before the bump too", () => {
-    expect(parseArgs(["--watch", "patch"])).toEqual({ bump: "patch", ref: null, watch: true })
-  })
-
-  test("rejects a --ref with nothing after it", () => {
-    expect(() => parseArgs(["patch", "--ref"])).toThrow()
-    expect(() => parseArgs(["patch", "--ref="])).toThrow()
-  })
-
-  test("rejects an unknown flag rather than silently ignoring it", () => {
-    expect(() => parseArgs(["patch", "--dry-run"])).toThrow()
-  })
-
-  test("rejects a second bump, which would otherwise be dropped", () => {
-    expect(() => parseArgs(["patch", "minor"])).toThrow()
-  })
-
-  test("rejects no bump at all", () => {
-    expect(() => parseArgs([])).toThrow()
+  test.each([
+    ["a bump the workflow's own bumper would reject", ["sideways"]],
+    ["an explicit version that would corrupt JSON", ['1.4.0-"rc"']],
+    ["a --ref with nothing after it", ["patch", "--ref"]],
+    ["an empty --ref=", ["patch", "--ref="]],
+    ["an unknown flag rather than silently ignoring it", ["patch", "--dry-run"]],
+    ["a second bump, which would otherwise be dropped", ["patch", "minor"]],
+    ["no bump at all", []],
+  ])("rejects %s", (_case, args) => {
+    expect(() => parseArgs(args)).toThrow()
   })
 })
 

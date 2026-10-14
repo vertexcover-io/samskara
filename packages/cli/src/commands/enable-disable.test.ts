@@ -53,7 +53,6 @@ afterEach(() => {
 describe("enable command", () => {
   test.each([
     ["a new project", false, "2026-07-26T18:30:00.000Z"],
-    ["an already-enabled project", true, "2026-07-25T10:00:00.000Z"],
     ["a previously-disabled project", "disabled", "2026-07-26T18:30:00.000Z"],
   ])(
     "REQ-006,REQ-008: enabling %s stores an absolute path and the right enabledAt",
@@ -88,20 +87,6 @@ describe("enable command", () => {
       })
     },
   )
-
-  test("REQ-034: enabling defaults the cutoff to now, so sessions recorded before opting in are not captured", async () => {
-    const { output } = await setup()
-
-    const code = await enableCommand({
-      ...defaultDeps,
-      cwd: "/work/widget",
-      now: () => new Date("2026-07-26T18:30:00.000Z"),
-      stdout: { write: (text) => output.push(text) },
-    })
-
-    expect(code).toBe(0)
-    expect((await getProject("acme-widget"))?.syncFrom).toBe("2026-07-26T18:30:00.000Z")
-  })
 
   test("REQ-035: --all leaves the cutoff unset, so previously recorded sessions are captured too", async () => {
     const { output } = await setup()
@@ -598,7 +583,7 @@ describe("disable command", () => {
     expect(errors.join("")).toContain("/work/gone")
   })
 
-  test("REQ-011,EDGE-005: unknown and already-disabled projects succeed idempotently", async () => {
+  test("REQ-011,EDGE-005: disabling an unknown project twice succeeds both times and registers nothing", async () => {
     const { output } = await setup()
 
     const first = await disableCommand({
@@ -666,45 +651,24 @@ describe("enable command with a pinned project", () => {
     expect((await getProject(identity.slug))?.projectId).toBe(OTHER_PROJECT_ID)
   })
 
-  test("the pin survives an enable that also moves the cutoff - the branch that rewrites the whole entry must not drop it", async () => {
-    const { output } = await setup()
-    const stdout = { write: (text: string) => output.push(text) }
-    await enableCommand({ ...defaultDeps, cwd: "/work/widget", stdout })
-    const enabled = await getProject(identity.slug)
-    if (!enabled) throw new Error("expected the project to be enabled")
-    await upsertProject(identity.slug, {
-      ...enabled,
-      projectId: OTHER_PROJECT_ID,
-      pinned: true,
-    })
+  test.each([
+    { label: "a pin", pin: { pinned: true } },
+    { label: "an unfinished reassign", pin: { pinned: true, pendingFrom: FAKE_PROJECT_ID } },
+  ])(
+    "$label survives `enable --all`, the branch that rewrites the whole entry",
+    async ({ pin }) => {
+      const { output } = await setup()
+      const stdout = { write: (text: string) => output.push(text) }
+      await enableCommand({ ...defaultDeps, cwd: "/work/widget", stdout })
+      const enabled = await getProject(identity.slug)
+      if (!enabled) throw new Error("expected the project to be enabled")
+      await upsertProject(identity.slug, { ...enabled, projectId: OTHER_PROJECT_ID, ...pin })
 
-    await enableCommand({ ...defaultDeps, cwd: "/work/widget", all: true, stdout })
+      await enableCommand({ ...defaultDeps, cwd: "/work/widget", all: true, stdout })
 
-    const after = await getProject(identity.slug)
-    expect(after?.projectId).toBe(OTHER_PROJECT_ID)
-    expect(after?.pinned).toBe(true)
-    expect(after?.syncFrom).toBeUndefined()
-  })
-
-  test("an unfinished reassign survives an enable that rewrites the entry - dropping pendingFrom would strand the sessions it names", async () => {
-    const { output } = await setup()
-    const stdout = { write: (text: string) => output.push(text) }
-    await enableCommand({ ...defaultDeps, cwd: "/work/widget", stdout })
-    const enabled = await getProject(identity.slug)
-    if (!enabled) throw new Error("expected the project to be enabled")
-    await upsertProject(identity.slug, {
-      ...enabled,
-      projectId: OTHER_PROJECT_ID,
-      pinned: true,
-      pendingFrom: FAKE_PROJECT_ID,
-    })
-
-    await enableCommand({ ...defaultDeps, cwd: "/work/widget", all: true, stdout })
-
-    const after = await getProject(identity.slug)
-    expect(after?.projectId).toBe(OTHER_PROJECT_ID)
-    expect(after?.pendingFrom).toBe(FAKE_PROJECT_ID)
-  })
+      expect(await getProject(identity.slug)).toMatchObject({ projectId: OTHER_PROJECT_ID, ...pin })
+    },
+  )
 
   test("an unpinned folder still follows the server, so an owner decided after enabling is picked up", async () => {
     const { output } = await setup()

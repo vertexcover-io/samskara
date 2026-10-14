@@ -10,6 +10,9 @@ const ConfigSchema = z.object({
 const url = z.string().min(1)
 const dial = z.coerce.number().int().positive()
 const POSITIVE_WHOLE = "a positive whole number"
+// setTimeout fires at once past 2^31-1 ms, which would turn the watch loop into a busy loop.
+const cycle = dial.min(100).max(2 ** 31 - 1)
+const CYCLE_RANGE = "a whole number of milliseconds from 100 to 2147483647"
 
 export const DEFAULT_API_URL = "http://localhost:3000"
 export const DEFAULT_WEB_URL = "http://localhost:8000"
@@ -25,10 +28,13 @@ export const DEFAULT_MESSAGE_CAP = 500
  */
 export const DEFAULT_SESSION_CONCURRENCY = 4
 
+export const DEFAULT_WATCH_CYCLE_MS = 10_000
+
 export const API_URL_ENV = "SAMSKARA_API_URL"
 export const WEB_URL_ENV = "SAMSKARA_WEB_URL"
 export const MESSAGE_CAP_ENV = "SAMSKARA_MESSAGE_CAP"
 export const SESSION_CONCURRENCY_ENV = "SAMSKARA_SESSION_CONCURRENCY"
+export const WATCH_CYCLE_MS_ENV = "SAMSKARA_WATCH_CYCLE_MS"
 
 const fromEnv = () => ConfigSchema.parse(process.env)
 
@@ -48,6 +54,7 @@ export type ResolvedConfig = {
   readonly webUrl: string
   readonly messageCap: number
   readonly sessionConcurrency: number
+  readonly cycleMs: number
 }
 
 const resolve = <T>(
@@ -79,5 +86,6 @@ export const parseConfig = (log: pino.Logger): ResolvedConfig => {
       DEFAULT_SESSION_CONCURRENCY,
       POSITIVE_WHOLE,
     ),
+    cycleMs: resolve(log, WATCH_CYCLE_MS_ENV, cycle, DEFAULT_WATCH_CYCLE_MS, CYCLE_RANGE),
   }
 }

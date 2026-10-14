@@ -39,13 +39,6 @@ const base = {
   records,
 } as const
 
-test("S15: a payload whose project omits root still validates", () => {
-  const parsed = ingestPayloadSchema.safeParse({ ...base, type: "main" })
-
-  expect(parsed.success).toBe(true)
-  expect(parsed.success && parsed.data.project.root).toBeUndefined()
-})
-
 test("S15: a payload whose project carries a root validates and preserves it", () => {
   const parsed = ingestPayloadSchema.safeParse({
     ...base,
@@ -71,18 +64,21 @@ const subagentBase = {
   ],
 }
 
-test("SC30: a main upload declaring cliVersion 0.4.2 parses and keeps that version", () => {
-  const parsed = ingestPayloadSchema.safeParse({ ...base, type: "main", cliVersion: "0.4.2" })
+test.each(["0.4.2", "0".repeat(64)])(
+  "SC30: a main upload declaring cliVersion %j parses and keeps that version",
+  (cliVersion) => {
+    const parsed = ingestPayloadSchema.safeParse({ ...base, type: "main", cliVersion })
 
-  expect(parsed.success).toBe(true)
-  expect(parsed.success && parsed.data.type === "main" && parsed.data.cliVersion).toBe("0.4.2")
-})
+    expect(parsed.success && parsed.data.type === "main" && parsed.data.cliVersion).toBe(cliVersion)
+  },
+)
 
 test("SC31 (regression): a main upload from a CLI too old to send a version still parses, with none", () => {
   const parsed = ingestPayloadSchema.safeParse({ ...base, type: "main" })
 
   expect(parsed.success).toBe(true)
   expect(parsed.success && parsed.data.type === "main" && parsed.data.cliVersion).toBeUndefined()
+  expect(parsed.success && parsed.data.project.root).toBeUndefined()
 })
 
 test("SC32: a subagent upload carrying cliVersion is rejected as an unrecognised key", () => {
@@ -94,57 +90,28 @@ test("SC32: a subagent upload carrying cliVersion is rejected as an unrecognised
   expect(!parsed.success && JSON.stringify(parsed.error.issues)).toContain("cliVersion")
 })
 
-test("SC30: an empty cliVersion is not a version and is rejected", () => {
-  expect(ingestPayloadSchema.safeParse({ ...base, type: "main", cliVersion: "" }).success).toBe(
-    false,
-  )
-})
-
-test("SC30: a whitespace-only cliVersion is not a version and is rejected", () => {
-  expect(ingestPayloadSchema.safeParse({ ...base, type: "main", cliVersion: "   " }).success).toBe(
-    false,
-  )
-})
-
-test("SC30: a cliVersion made only of invisible characters is not a version and is rejected", () => {
-  const invisible = [
-    "\u200B",
-    "\u200C",
-    "\u200D",
-    "\u2060",
-    "\uFEFF",
-    "\u180E",
-    "\u2063",
-    "\u00A0",
-    "\u3000",
-  ]
-
-  for (const cliVersion of invisible) {
+test.each([
+  "",
+  "   ",
+  "\u200B",
+  "\u200C",
+  "\u200D",
+  "\u2060",
+  "\uFEFF",
+  "\u180E",
+  "\u2063",
+  "\u00A0",
+  "\u3000",
+  "0".repeat(65),
+])(
+  "SC30: cliVersion %j (blank, invisible or over 64 chars) is not a version and is rejected",
+  (cliVersion) => {
     const parsed = ingestPayloadSchema.safeParse({ ...base, type: "main", cliVersion })
 
-    expect(parsed.success, `cliVersion ${JSON.stringify(cliVersion)} should be rejected`).toBe(
-      false,
-    )
-  }
-})
-
-test("SC30: a cliVersion longer than 64 characters is rejected", () => {
-  const parsed = ingestPayloadSchema.safeParse({
-    ...base,
-    type: "main",
-    cliVersion: "0".repeat(65),
-  })
-
-  expect(parsed.success).toBe(false)
-  expect(!parsed.success && JSON.stringify(parsed.error.issues)).toContain("cliVersion")
-})
-
-test("SC30: a cliVersion of exactly 64 characters is accepted", () => {
-  const cliVersion = "0".repeat(64)
-  const parsed = ingestPayloadSchema.safeParse({ ...base, type: "main", cliVersion })
-
-  expect(parsed.success && parsed.data.type === "main" && parsed.data.cliVersion).toBe(cliVersion)
-})
+    expect(parsed.success).toBe(false)
+    expect(!parsed.success && JSON.stringify(parsed.error.issues)).toContain("cliVersion")
+  },
+)
 
 // The schema is strict and sits in the ingest wire payload, so an unknown key must still be
 // rejected -- adding `root` widened the shape by exactly one optional field, nothing more.

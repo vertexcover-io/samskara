@@ -46,29 +46,6 @@ test("S14: a signed-in visit to / lands on /projects showing both seeded project
   expect(overflow).toBeLessThanOrEqual(0)
 })
 
-test("S15: an unauthenticated visit to /projects lands on /login with the GitHub link and never paints project data", async ({
-  page,
-}) => {
-  await page.goto("/projects")
-
-  await expect(page).toHaveURL(/\/login$/)
-  await expect(page.getByRole("link", { name: /continue with github/i })).toBeVisible()
-  await expect(page.getByText("Samskara", { exact: true })).toHaveCount(0)
-  await expect(page.getByText("Andromeda")).toHaveCount(0)
-})
-
-test("SC7: opening a project from the list lands on its page, showing its name and session count", async ({
-  authedPage: page,
-}) => {
-  await page.goto("/projects")
-
-  await page.getByRole("link", { name: /Samskara/ }).click()
-
-  await expect(page).toHaveURL(/\/projects\/[^/]+$/)
-  await expect(page.getByRole("heading", { name: "Samskara" })).toBeVisible()
-  await expect(page.getByText("2", { exact: true })).toBeVisible()
-})
-
 test("SC17: typing the slug deletes the project and returns to the list", async ({
   authedPage: page,
 }) => {

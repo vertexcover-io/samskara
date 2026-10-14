@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises"
+import { mkdtemp, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, test } from "vitest"
@@ -11,6 +11,7 @@ import {
   readQueue,
   readQueueOrReset,
 } from "./artifact-queue.js"
+import { readArtifactState, readArtifactStateOrReset } from "./artifact-worker.js"
 import { spyLogger } from "./test-logger.js"
 
 const entry = (over: Partial<ArtifactQueueEntry> = {}): ArtifactQueueEntry => ({
@@ -72,53 +73,17 @@ describe("artifact queue", () => {
     expect((await readQueue(queuePath)).entries).toEqual([full])
   })
 
-  test("S12: a missing queue file reads back empty", async () => {
-    expect(await readQueue(queuePath)).toEqual({ version: 1, entries: [] })
-  })
-
-  test("S12: a queue file whose version is not 1 throws rather than reading as empty", async () => {
-    await writeFile(queuePath, JSON.stringify({ version: 2, entries: [entry()] }), "utf8")
-
-    await expect(readQueue(queuePath)).rejects.toThrow()
-  })
-
-  test("S12: a corrupt queue file throws rather than reading as empty", async () => {
-    await writeFile(queuePath, "{not json", "utf8")
-
-    await expect(readQueue(queuePath)).rejects.toThrow()
-  })
-
-  test("S12: the reset helper absorbs a corrupt file and repairs it for the next read", async () => {
-    await writeFile(queuePath, "{not json", "utf8")
-
-    expect(await readQueueOrReset(queuePath)).toEqual({ version: 1, entries: [] })
-    // Repaired on disk, so the throwing form now succeeds too.
-    expect(await readQueue(queuePath)).toEqual({ version: 1, entries: [] })
-  })
-
-  test("S10: re-enqueuing the same (sessionId, path) folds into one entry, keeping the latest observedAt", async () => {
+  test("S10: re-enqueuing the same (sessionId, path) folds into one entry, keeping the latest observedAt, while another session's write to that path stays separate", async () => {
     await enqueue(queuePath, [entry({ observedAt: "2026-07-28T12:00:00.000Z" })])
     await enqueue(queuePath, [entry({ observedAt: "2026-07-28T12:01:00.000Z" })])
+    await enqueue(queuePath, [entry({ sessionId: "sess-2" })])
     await enqueue(queuePath, [entry({ observedAt: "2026-07-28T12:02:00.000Z" })])
 
     const { entries } = await readQueue(queuePath)
-    expect(entries).toHaveLength(1)
-    expect(entries[0]?.observedAt).toBe("2026-07-28T12:02:00.000Z")
-  })
-
-  test("S10: the same path under a different session is a separate entry", async () => {
-    await enqueue(queuePath, [entry({ sessionId: "sess-1" })])
-    await enqueue(queuePath, [entry({ sessionId: "sess-2" })])
-
-    expect((await readQueue(queuePath)).entries).toHaveLength(2)
-  })
-
-  test("S10: folding carries the earlier base forward rather than discarding it", async () => {
-    await enqueue(queuePath, [entry({ base: "original" })])
-    await enqueue(queuePath, [entry({})])
-
-    const [only] = (await readQueue(queuePath)).entries
-    expect(only?.base).toBe("original")
+    expect(entries.map((queued) => [queued.sessionId, queued.observedAt])).toEqual([
+      ["sess-1", "2026-07-28T12:02:00.000Z"],
+      ["sess-2", "2026-07-28T12:00:00.000Z"],
+    ])
   })
 
   test("SC18: a base queued while an earlier entry is still pending survives the fold, and the backoff is not bypassed", async () => {
@@ -182,10 +147,49 @@ describe("artifact queue", () => {
     // silently reset the file here instead of returning the entry.
     expect(await readQueueOrReset(queuePath)).toEqual(queue)
   })
+})
 
-  test("the queue file is written as pretty JSON, matching the other config files", async () => {
-    await enqueue(queuePath, [entry()])
+describe.each([
+  {
+    store: "artifact queue",
+    read: readQueue,
+    readOrReset: readQueueOrReset,
+    empty: { version: 1, entries: [] },
+  },
+  {
+    store: "artifact state",
+    read: readArtifactState,
+    readOrReset: readArtifactStateOrReset,
+    empty: { version: 1, artifacts: {} },
+  },
+])("$store file", ({ read, readOrReset, empty }) => {
+  const originalHome = process.env.SAMSKARA_HOME
+  let path: string
 
-    expect(await readFile(queuePath, "utf8")).toContain('\n  "version": 1')
+  beforeEach(async () => {
+    const dir = await mkdtemp(join(tmpdir(), "samskara-store-"))
+    path = join(dir, "store.json")
+    process.env.SAMSKARA_HOME = dir
+  })
+
+  afterEach(() => {
+    process.env.SAMSKARA_HOME = originalHome
+  })
+
+  test("S12: a missing file reads back empty", async () => {
+    expect(await read(path)).toEqual(empty)
+  })
+
+  test("S12: a corrupt file throws rather than reading as empty", async () => {
+    await writeFile(path, "{not json", "utf8")
+
+    await expect(read(path)).rejects.toThrow()
+  })
+
+  test("S12: the reset helper absorbs a corrupt file and repairs it for the next read", async () => {
+    await writeFile(path, "{not json", "utf8")
+
+    expect(await readOrReset(path)).toEqual(empty)
+    expect(await read(path)).toEqual(empty)
   })
 })

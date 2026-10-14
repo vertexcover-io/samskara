@@ -896,6 +896,83 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
     expect(after).toEqual(before)
   })
 
+  test("S20: a session working across two repos attributes each of its commits to the checkout it was made in, and lists both repos as touched", async () => {
+    const sessionId = "sess-two-repo-acceptance"
+    const birds: RepoIdentity = {
+      host: "github.com",
+      owner: "refrens",
+      repoName: "birds",
+    }
+    const talos: RepoIdentity = { ...birds, repoName: "talos" }
+
+    const inRepo = (
+      lineUuid: string,
+      lineNumber: number,
+      callId: string,
+      repo: RepoIdentity,
+    ): TestMessage => {
+      const base = customMessage({ sessionId, lineUuid, lineNumber })
+      return {
+        ...base,
+        message: {
+          ...base.message,
+          msgType: "toolCall",
+          details: {
+            callId,
+            name: "Bash",
+            input: { command: "git commit" },
+            metadata: { type: "shell", command: "git commit" },
+          },
+          repo,
+        } as NormalizedMessage,
+      }
+    }
+
+    await ingest(ctx, {
+      ...mainPayload(sessionId, [
+        inRepo("0191d942-3ba5-7dba-9a7d-0000000000e1", 1, "call-birds", birds),
+        inRepo("0191d942-3ba5-7dba-9a7d-0000000000e2", 2, "call-talos", talos),
+      ]),
+      gitEvents: [
+        {
+          kind: "commit",
+          sha: "b1rd5aa",
+          branch: "feat/birds",
+          subject: "feat: birds work",
+          repo: birds,
+          callId: "call-birds",
+        },
+        {
+          kind: "commit",
+          sha: "ta105bb",
+          branch: "feat/talos",
+          subject: "feat: talos work",
+          repo: talos,
+          callId: "call-talos",
+        },
+      ],
+    })
+
+    const rows = await db
+      .select({ sha: commits.sha, repoName: repos.repoName, repoId: commits.repoId })
+      .from(commits)
+      .innerJoin(repos, eq(repos.id, commits.repoId))
+      .where(eq(commits.sessionId, sessionId))
+
+    expect(rows).toHaveLength(2)
+    expect(new Set(rows.map((row) => `${row.sha}:${row.repoName}`))).toEqual(
+      new Set(["b1rd5aa:birds", "ta105bb:talos"]),
+    )
+    expect(new Set(rows.map((row) => row.repoId)).size).toBe(2)
+
+    const touched = await db
+      .selectDistinct({ repoName: repos.repoName })
+      .from(messages)
+      .innerJoin(repos, eq(repos.id, messages.repoId))
+      .where(eq(messages.sessionId, sessionId))
+    expect(new Set(touched.map((row) => row.repoName))).toEqual(new Set(["birds", "talos"]))
+  })
+
   test("a commit event arriving a payload after its call resolves message and repo from stored rows", async () => {
     const sessionId = "sess-commit-split"
     const call = customMessage({
@@ -1129,7 +1206,7 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
       .innerJoin(repos, eq(repos.id, pullRequests.repoId))
       .where(eq(sessionPullRequests.sessionId, sessionId))
 
-  test("S15b: a PR opened by the session lands against the repo its own url named, linked to the message that opened it", async () => {
+  test("S15b: a PR opened by the session lands against the repo its own url named even though no message ran in it, linked to the message that opened it", async () => {
     const sessionId = "sess-pr-created"
     await ingest(
       ctx,
@@ -1149,10 +1226,11 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
     })
 
     const [caller] = await db
-      .select({ id: messages.id })
+      .select({ id: messages.id, repoId: messages.repoId })
       .from(messages)
       .where(and(eq(messages.sessionId, sessionId), eq(messages.msgType, "toolCall")))
     expect(rows[0]?.messageId).toBe(caller?.id)
+    expect(caller?.repoId).toBeNull()
   })
 
   test("S19: re-ingesting the same PR creation keeps one row and one link", async () => {
@@ -1177,104 +1255,6 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
     expect(rows[0]).toMatchObject({ number: 77 })
   })
 
-  test("S20: a session working across two repos attributes each of its commits to the checkout it was made in, and lists both repos as touched", async () => {
-    const sessionId = "sess-two-repo-acceptance"
-    const birds: RepoIdentity = {
-      host: "github.com",
-      owner: "refrens",
-      repoName: "birds",
-    }
-    const talos: RepoIdentity = { ...birds, repoName: "talos" }
-
-    const inRepo = (
-      lineUuid: string,
-      lineNumber: number,
-      callId: string,
-      repo: RepoIdentity,
-    ): TestMessage => {
-      const base = customMessage({ sessionId, lineUuid, lineNumber })
-      return {
-        ...base,
-        message: {
-          ...base.message,
-          msgType: "toolCall",
-          details: {
-            callId,
-            name: "Bash",
-            input: { command: "git commit" },
-            metadata: { type: "shell", command: "git commit" },
-          },
-          repo,
-        } as NormalizedMessage,
-      }
-    }
-
-    await ingest(ctx, {
-      ...mainPayload(sessionId, [
-        inRepo("0191d942-3ba5-7dba-9a7d-0000000000e1", 1, "call-birds", birds),
-        inRepo("0191d942-3ba5-7dba-9a7d-0000000000e2", 2, "call-talos", talos),
-      ]),
-      gitEvents: [
-        {
-          kind: "commit",
-          sha: "b1rd5aa",
-          branch: "feat/birds",
-          subject: "feat: birds work",
-          repo: birds,
-          callId: "call-birds",
-        },
-        {
-          kind: "commit",
-          sha: "ta105bb",
-          branch: "feat/talos",
-          subject: "feat: talos work",
-          repo: talos,
-          callId: "call-talos",
-        },
-      ],
-    })
-
-    const rows = await db
-      .select({ sha: commits.sha, repoName: repos.repoName, repoId: commits.repoId })
-      .from(commits)
-      .innerJoin(repos, eq(repos.id, commits.repoId))
-      .where(eq(commits.sessionId, sessionId))
-
-    expect(rows).toHaveLength(2)
-    expect(new Set(rows.map((row) => `${row.sha}:${row.repoName}`))).toEqual(
-      new Set(["b1rd5aa:birds", "ta105bb:talos"]),
-    )
-    expect(new Set(rows.map((row) => row.repoId)).size).toBe(2)
-
-    const touched = await db
-      .selectDistinct({ repoName: repos.repoName })
-      .from(messages)
-      .innerJoin(repos, eq(repos.id, messages.repoId))
-      .where(eq(messages.sessionId, sessionId))
-    expect(new Set(touched.map((row) => row.repoName))).toEqual(new Set(["birds", "talos"]))
-  })
-
-  test("a PR naming a repo the session never had a cwd in still creates that repo", async () => {
-    const sessionId = "sess-pr-unvisited-repo"
-    await ingest(
-      ctx,
-      prPayload(sessionId, {
-        number: 391,
-        repoName: "birds",
-        lineUuid: "0191d942-3ba5-7dba-9a7d-0000000000d4",
-      }),
-    )
-
-    const rows = await prRowsFor(sessionId)
-    expect(rows[0]).toMatchObject({ repoName: "birds", number: 391 })
-
-    const [row] = await db
-      .select({ repoId: messages.repoId })
-      .from(messages)
-      .where(eq(messages.sessionId, sessionId))
-    // No message carried a repo, so the repo exists only because the PR's URL named it.
-    expect(row?.repoId).toBeNull()
-  })
   test("the session is stored under the payload's source, and as claude_code when a CLI predates the field", async () => {
     const opencode = "sess-source-opencode"
     const legacy = "sess-source-legacy"

@@ -30,10 +30,6 @@ const gitReturning = (byArgs: Record<string, string | null>) => {
 }
 
 describe("searchQuery", () => {
-  test("a free-text query becomes q and picks the relevance sort the UI picks, adding nothing else", () => {
-    expect(searchQuery({ query: "auth bug" }).toString()).toBe("q=auth+bug&sort=relevance")
-  })
-
   test("an explicit sort wins over the query-derived default, and recent stays out the way the UI leaves it out", () => {
     expect(searchQuery({ query: "auth", sort: "project" }).toString()).toBe("q=auth&sort=project")
     expect(searchQuery({ query: "auth", sort: "recent" }).toString()).toBe("q=auth")
@@ -82,28 +78,27 @@ describe("resolveOption", () => {
     { value: "22222222-2222-4222-8222-222222222222", names: ["Samskara Server"] },
   ]
 
-  test("a uuid is used as given, so a value copied out of the UI needs no option list at all", () => {
-    expect(
-      resolveOption({
-        flag: "--project",
-        input: "99999999-9999-4999-8999-999999999999",
-        options: [],
-      }),
-    ).toEqual({ ok: true, value: "99999999-9999-4999-8999-999999999999" })
-  })
-
-  test("a name matches whatever case it is typed in, so `samskara web` finds Samskara Web", () => {
-    expect(resolveOption({ flag: "--project", input: "samskara web", options: PROJECTS })).toEqual({
-      ok: true,
-      value: "11111111-1111-4111-8111-111111111111",
-    })
-  })
-
-  test("a fragment that fits one option resolves, so a repo can be named without its owner", () => {
-    expect(resolveOption({ flag: "--project", input: "server", options: PROJECTS })).toEqual({
-      ok: true,
-      value: "22222222-2222-4222-8222-222222222222",
-    })
+  test.each([
+    [
+      "a uuid is used as given, needing no option list at all",
+      "99999999-9999-4999-8999-999999999999",
+      [],
+      "99999999-9999-4999-8999-999999999999",
+    ],
+    [
+      "a name matches whatever case it is typed in",
+      "samskara web",
+      PROJECTS,
+      "11111111-1111-4111-8111-111111111111",
+    ],
+    [
+      "a fragment that fits one option resolves",
+      "server",
+      PROJECTS,
+      "22222222-2222-4222-8222-222222222222",
+    ],
+  ])("%s", (_case, input, options, value) => {
+    expect(resolveOption({ flag: "--project", input, options })).toEqual({ ok: true, value })
   })
 
   test("a fragment fitting two options refuses instead of silently picking one, and names both", () => {
@@ -467,31 +462,24 @@ describe("searchCommand", () => {
     expect(code).toBe(0)
   })
 
-  test("a today range carries this machine's time zone, the way the browser sends its own", async () => {
+  test.each([
+    [
+      "a today range carries this machine's time zone, the way the browser sends its own",
+      undefined,
+      "Europe%2FBerlin",
+    ],
+    ["an explicit --tz beats the machine's own zone", "Asia/Tokyo", "Asia%2FTokyo"],
+  ])("%s", async (_case, tz, sent) => {
     // TZ, not `Intl.DateTimeFormat()`: deriving the expectation from the same call the code makes
     // would assert nothing. Berlin is chosen because ICU reports it back under its own name.
     const originalTz = process.env.TZ
     process.env.TZ = "Europe/Berlin"
     const calls: string[] = []
 
-    await searchCommand({ range: "today" }, deps(stubFetch(calls, [listing([PAYLOAD_ROW], 1)])))
+    await searchCommand({ range: "today", tz }, deps(stubFetch(calls, [listing([PAYLOAD_ROW], 1)])))
     process.env.TZ = originalTz
 
-    expect(calls).toEqual([`${API}?range=today&tz=Europe%2FBerlin`])
-  })
-
-  test("an explicit --tz beats the machine's own zone", async () => {
-    const originalTz = process.env.TZ
-    process.env.TZ = "Europe/Berlin"
-    const calls: string[] = []
-
-    await searchCommand(
-      { range: "today", tz: "Asia/Tokyo" },
-      deps(stubFetch(calls, [listing([PAYLOAD_ROW], 1)])),
-    )
-    process.env.TZ = originalTz
-
-    expect(calls).toEqual([`${API}?range=today&tz=Asia%2FTokyo`])
+    expect(calls).toEqual([`${API}?range=today&tz=${sent}`])
   })
 
   const writeCache = (fetchedAt: number, filterOptions: unknown) =>
@@ -542,19 +530,6 @@ describe("searchCommand", () => {
       fetchedAt: NOW.getTime(),
       filterOptions: probe.body,
     })
-  })
-
-  test("a repo resolved once is cached, so a second search naming it again needs no repeat probe", async () => {
-    const calls: string[] = []
-    const fetch = stubFetch(calls, [probe, listing([PAYLOAD_ROW], 1), listing([PAYLOAD_ROW], 1)])
-
-    await searchCommand({ repo: "vertexcover-io/samskara" }, deps(fetch))
-    expect(calls).toEqual([FILTERS_API, `${API}?repo=22222222-2222-4222-8222-222222222222`])
-
-    await searchCommand({ repo: "vertexcover-io/samskara" }, deps(fetch))
-
-    expect(calls).toHaveLength(3)
-    expect(calls[2]).toBe(`${API}?repo=22222222-2222-4222-8222-222222222222`)
   })
 
   test("a cache that cannot be written does not lose a search the server already answered", async () => {

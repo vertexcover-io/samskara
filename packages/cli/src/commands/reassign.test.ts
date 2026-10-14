@@ -127,10 +127,11 @@ describe("reassign command", () => {
     expect(entry?.pinned).toBe(true)
   })
 
-  test("the registry is pinned to the destination before the server is called, not after", async () => {
+  test("the registry is pinned to the destination and records the source before the server is called, and the source is cleared once it succeeds", async () => {
     const { io } = await setup()
     let pinnedAtCallTime: string | undefined
     let wasPinned: boolean | undefined
+    let pendingAtCallTime: string | undefined
     const spying = (async (url: string | URL, init?: RequestInit): Promise<Response> => {
       const href = String(url)
       if (href.endsWith("/api/projects") && init?.method === undefined) {
@@ -139,6 +140,7 @@ describe("reassign command", () => {
       const entry = await getProject(identity.slug)
       pinnedAtCallTime = entry?.projectId
       wasPinned = entry?.pinned
+      pendingAtCallTime = entry?.pendingFrom
       return new Response(JSON.stringify({ moved: 2 }), { status: 200 })
     }) as unknown as typeof globalThis.fetch
 
@@ -146,9 +148,11 @@ describe("reassign command", () => {
 
     expect(pinnedAtCallTime).toBe(TO)
     expect(wasPinned).toBe(true)
+    expect(pendingAtCallTime).toBe(FROM)
+    expect((await getProject(identity.slug))?.pendingFrom).toBeUndefined()
   })
 
-  test("a refused move puts the folder back where it was, so it is not left pointing somewhere its sessions are not", async () => {
+  test("a refused move puts the folder back where it was and clears the pending source, so it is not left pointing somewhere its sessions are not", async () => {
     const { io, errors } = await setup()
     const { fetch } = stubFetch(
       () => new Response(JSON.stringify({ error: "destinationForbidden" }), { status: 403 }),
@@ -161,6 +165,7 @@ describe("reassign command", () => {
     const entry = await getProject(identity.slug)
     expect(entry?.projectId).toBe(FROM)
     expect(entry?.pinned).toBeUndefined()
+    expect(entry?.pendingFrom).toBeUndefined()
   })
 
   test("a rollback restores the entry exactly, leaving a folder that was already pinned still pinned", async () => {
@@ -198,37 +203,6 @@ describe("reassign command", () => {
     expect(calls[1]?.body).toEqual({ fromProjectId: FROM, scope: "mine" })
     const entry = await getProject(identity.slug)
     expect(entry?.projectId).toBe(TO)
-    expect(entry?.pendingFrom).toBeUndefined()
-  })
-
-  test("the source is recorded before the server call and cleared only once it succeeds", async () => {
-    const { io } = await setup()
-    let pendingAtCallTime: string | undefined
-    const spying = (async (url: string | URL, init?: RequestInit): Promise<Response> => {
-      const href = String(url)
-      if (href.endsWith("/api/projects") && init?.method === undefined) {
-        return new Response(JSON.stringify(listBody), { status: 200 })
-      }
-      pendingAtCallTime = (await getProject(identity.slug))?.pendingFrom
-      return new Response(JSON.stringify({ moved: 2 }), { status: 200 })
-    }) as unknown as typeof globalThis.fetch
-
-    await reassignCommand({ ...base, ...io, fetch: spying, to: TO, yes: true })
-
-    expect(pendingAtCallTime).toBe(FROM)
-    expect((await getProject(identity.slug))?.pendingFrom).toBeUndefined()
-  })
-
-  test("a refused move clears the pending source too, since nothing is left half-done", async () => {
-    const { io } = await setup()
-    const { fetch } = stubFetch(
-      () => new Response(JSON.stringify({ error: "destinationForbidden" }), { status: 403 }),
-    )
-
-    await reassignCommand({ ...base, ...io, fetch, to: TO, yes: true })
-
-    const entry = await getProject(identity.slug)
-    expect(entry?.projectId).toBe(FROM)
     expect(entry?.pendingFrom).toBeUndefined()
   })
 

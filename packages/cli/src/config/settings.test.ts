@@ -18,18 +18,17 @@ afterEach(() => {
 })
 
 describe("normalizeUrl", () => {
-  test("keeps a plain origin untouched", () => {
-    expect(normalizeUrl("http://localhost:3000")).toBe("http://localhost:3000")
-  })
-
-  test("drops trailing slashes, so a joined path never doubles up", () => {
-    expect(normalizeUrl("https://samskara.example.com/")).toBe("https://samskara.example.com")
-    expect(normalizeUrl("  http://localhost:3000//  ")).toBe("http://localhost:3000")
-  })
-
-  test("assumes https when no scheme is given", () => {
-    expect(normalizeUrl("samskara.example.com")).toBe("https://samskara.example.com")
-  })
+  test.each([
+    ["http://localhost:3000", "http://localhost:3000"],
+    ["https://samskara.example.com/", "https://samskara.example.com"],
+    ["  http://localhost:3000//  ", "http://localhost:3000"],
+    ["samskara.example.com", "https://samskara.example.com"],
+  ])(
+    "normalizes %j to %s: trailing slashes go so a joined path never doubles up, and a missing scheme means https",
+    (input, expected) => {
+      expect(normalizeUrl(input)).toBe(expected)
+    },
+  )
 
   test("rejects anything that is not a usable http url", () => {
     expect(() => normalizeUrl("")).toThrow()

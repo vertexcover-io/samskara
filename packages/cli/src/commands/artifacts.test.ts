@@ -271,26 +271,6 @@ describe("uploadArtifactsCommand", () => {
     expect(output).toContain("3 files")
   })
 
-  test("SC18: --dry-run still fails on a collision, before any preview is printed", async () => {
-    const { fetch, calls } = stubFetch(ok())
-    const { stdout, writers } = io()
-
-    const code = await uploadArtifactsCommand(
-      baseArgs({
-        baseDir: "/work",
-        paths: ["/work/shots/a.png", "/work/shots/nested/../a.png"],
-        dryRun: true,
-      }),
-      baseDeps(fetch, writers),
-    )
-
-    expect(code).toBe(1)
-    expect(calls).toHaveLength(0)
-    const output = stdout.join("")
-    expect(output).toContain("shots/a.png")
-    expect(output).not.toContain("would upload")
-  })
-
   test("SC2: a path outside the base directory stops the run before anything uploads", async () => {
     const inside = await tempFile("inside.md", "inside")
     const { fetch, calls } = stubFetch(ok())
@@ -307,20 +287,27 @@ describe("uploadArtifactsCommand", () => {
     expect(stdout.join("")).toContain("/elsewhere/out.html")
   })
 
-  test("SC3: two inputs sharing one relative path stop the run before anything uploads", async () => {
+  test.each([
+    ["SC3: two inputs sharing one relative path stop the run before anything uploads", false],
+    ["SC18: --dry-run still fails on a collision, before any preview is printed", true],
+  ])("%s", async (_case, dryRun) => {
     const { fetch, calls } = stubFetch(ok())
     const { stdout, writers } = io()
 
     const code = await uploadArtifactsCommand(
-      baseArgs({ baseDir: "/work", paths: ["/work/shots/a.png", "/work/shots/nested/../a.png"] }),
+      baseArgs({
+        baseDir: "/work",
+        paths: ["/work/shots/a.png", "/work/shots/nested/../a.png"],
+        dryRun,
+      }),
       baseDeps(fetch, writers),
     )
 
     expect(code).toBe(1)
     expect(calls).toHaveLength(0)
     const output = stdout.join("")
-    expect(output).toContain("shots/a.png")
     expect(output).toContain("/work/shots/a.png")
+    expect(output).not.toContain("would upload")
   })
 
   test("SC4: a vanished file and an oversize file are reported with their own, distinct reasons", async () => {

@@ -109,20 +109,7 @@ describe("reviewFromDetail", () => {
     expect(review.outcome).toBe("shipped")
   })
 
-  test("tokenUsage totals fold into the review so server-side reviews stop reporting zero tokens", () => {
-    const review = reviewFromDetail(
-      "s1",
-      detailWith({
-        tokenUsage: { inputTokens: 4321, outputTokens: 321, cachedTokens: 100, thinkingTokens: 50 },
-      }),
-    )
-    expect(review.signals.inputTokens).toBe(4321)
-    expect(review.signals.outputTokens).toBe(321)
-    expect(review.signals.cachedTokens).toBe(100)
-    expect(review.signals.thinkingTokens).toBe(50)
-  })
-
-  test("usage rows are dropped so the table totals, not the transcript lines, are counted once", () => {
+  test("tokenUsage table totals fold into the review once, and usage rows in the transcript are not counted on top", () => {
     const review = reviewFromDetail(
       "s1",
       detailWith({
@@ -140,8 +127,12 @@ describe("reviewFromDetail", () => {
         tokenUsage: { inputTokens: 4321, outputTokens: 321, cachedTokens: 100, thinkingTokens: 50 },
       }),
     )
-    expect(review.signals.inputTokens).toBe(4321)
-    expect(review.signals.outputTokens).toBe(321)
+    expect(review.signals).toMatchObject({
+      inputTokens: 4321,
+      outputTokens: 321,
+      cachedTokens: 100,
+      thinkingTokens: 50,
+    })
   })
 
   test("a session whose final turn aborted but which committed still ships", () => {

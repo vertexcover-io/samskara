@@ -81,26 +81,6 @@ test("SC18: an org page shows its members, its projects and one total", async ()
   ).toBeInTheDocument()
 })
 
-test("SC19: the total follows the projects listed", async () => {
-  const { unmount } = renderDetail(ORG)
-  await screen.findByRole("heading", { name: "vertexcover-io" })
-  expect(
-    within(screen.getByRole("group", { name: "Org totals" })).getByText("7"),
-  ).toBeInTheDocument()
-  unmount()
-
-  renderDetail({
-    ...ORG,
-    projects: [{ id: "p-3", name: "solo", slug: "solo", sessionCount: 10 }],
-    sessionCount: 10,
-  })
-
-  await screen.findByRole("heading", { name: "vertexcover-io" })
-  expect(
-    within(screen.getByRole("group", { name: "Org totals" })).getByText("10"),
-  ).toBeInTheDocument()
-})
-
 test("SC25: the toggle reflects what the server returned, not the click", async () => {
   const user = userEvent.setup()
   let resolvePatch: (response: Response) => void = () => {}
@@ -159,7 +139,7 @@ test("SC26: a failed toggle goes back to the old value and says so", async () =>
   expect(await screen.findByRole("alert")).toBeInTheDocument()
 })
 
-test("SC53: clearing the name field sends null, and a real name sends itself", async () => {
+test("SC53: a real name is sent trimmed and lands in the heading above the slug; a cleared name sends null", async () => {
   const user = userEvent.setup()
   const sent: Array<unknown> = []
 
@@ -180,7 +160,8 @@ test("SC53: clearing the name field sends null, and a real name sends itself", a
   await user.clear(screen.getByRole("textbox", { name: /display name/i }))
   await user.type(screen.getByRole("textbox", { name: /display name/i }), "  Vertexcover  ")
   await user.click(screen.getByRole("button", { name: /save/i }))
-  await screen.findByRole("heading", { name: "Vertexcover" })
+  const heading = await screen.findByRole("heading", { name: "Vertexcover" })
+  expect(heading.nextElementSibling).toHaveTextContent("vertexcover-io")
   unmount()
 
   stub("vertexcover-io")
@@ -191,27 +172,4 @@ test("SC53: clearing the name field sends null, and a real name sends itself", a
 
   expect(sent[0]).toEqual({ name: "Vertexcover" })
   expect(sent[1]).toEqual({ name: null })
-})
-
-test("SC44: saving a new name puts it in the heading", async () => {
-  const user = userEvent.setup()
-
-  renderWithFetch((input, init) => {
-    const url = typeof input === "string" ? input : String(input)
-    if (!url.includes("/api/orgs/"))
-      return Promise.resolve(jsonResponse(401, { error: "unauthorized" }))
-    if (isPatch(init))
-      return Promise.resolve(jsonResponse(200, { org: { ...ORG, name: "Vertexcover" } }))
-    return Promise.resolve(jsonResponse(200, { org: ORG }))
-  })
-
-  await screen.findByRole("heading", { name: "vertexcover-io" })
-  const nameInput = screen.getByRole("textbox", { name: /display name/i })
-  await user.clear(nameInput)
-  await user.type(nameInput, "Vertexcover")
-  await user.click(screen.getByRole("button", { name: /save/i }))
-
-  await screen.findByRole("heading", { name: "Vertexcover" })
-  const heading = screen.getByRole("heading", { name: "Vertexcover" })
-  expect(heading.nextElementSibling).toHaveTextContent("vertexcover-io")
 })

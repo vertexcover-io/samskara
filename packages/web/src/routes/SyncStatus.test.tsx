@@ -215,40 +215,28 @@ test("SC27: the Project box suggests the projects on the page, and picking one f
   expect(screen.queryByText("Samskara")).not.toBeInTheDocument()
 })
 
-test("SC41: the cell shows the version over its date, and 'unknown' where there is none", async () => {
-  const unversioned: SyncStatusRow = {
-    ...ROW,
-    userId: "u-2",
-    githubLogin: "unversioned-user",
-    cliVersion: null,
-    cliVersionSince: null,
-  }
-  stubFetch(200, { rows: [ROW, unversioned] })
-
-  renderPage()
-
-  expect(await screen.findByText("0.4.2")).toBeInTheDocument()
-  expect(screen.getByTitle(absoluteTime(ROW.cliVersionSince as string))).toBeInTheDocument()
-
-  const unknownRow = screen.getByText("unknown").closest("tr") as HTMLElement
-  expect(unknownRow).toBeInTheDocument()
-  expect(within(unknownRow).queryByText(/^since /)).not.toBeInTheDocument()
-})
-
-test("SC41: a cliVersion with no visible character falls back to 'unknown'", async () => {
-  const invisible: SyncStatusRow = {
-    ...ROW,
-    userId: "u-2",
-    githubLogin: "invisible-user",
+test.each([
+  { claim: "a version shows over its date", cliVersion: "0.4.2", shown: "0.4.2", dated: 1 },
+  { claim: "no version reads 'unknown', undated", cliVersion: null, shown: "unknown", dated: 0 },
+  {
+    claim: "a version with no visible character reads 'unknown', undated",
     cliVersion: "\u200B",
-  }
-  stubFetch(200, { rows: [invisible] })
+    shown: "unknown",
+    dated: 0,
+  },
+])("SC41: $claim", async ({ cliVersion, shown, dated }) => {
+  const since = "2026-08-13T10:00:00.000Z"
+  stubFetch(200, {
+    rows: [{ ...ROW, githubLogin: "probe-user", cliVersion, cliVersionSince: cliVersion && since }],
+  })
 
   renderPage()
 
-  const row = (await screen.findByText("invisible-user")).closest("tr") as HTMLElement
-  expect(within(row).getByText("unknown")).toBeInTheDocument()
-  expect(within(row).queryByText(/^since /)).not.toBeInTheDocument()
+  const row = (await screen.findByText("probe-user")).closest("tr")
+  if (!(row instanceof HTMLElement)) throw new Error("probe-user is not in a table row")
+  expect(within(row).getByText(shown)).toBeInTheDocument()
+  expect(within(row).queryAllByTitle(absoluteTime(since))).toHaveLength(dated)
+  expect(within(row).queryAllByText(/^since /)).toHaveLength(dated)
 })
 
 test("SC42 (regression): the existing columns, filters and sorting still behave", async () => {

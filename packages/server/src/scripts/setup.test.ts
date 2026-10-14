@@ -2,48 +2,44 @@ import { describe, expect, test } from "vitest"
 import { fillGeneratedSecrets, missingCredentials } from "./setup.js"
 
 describe("missingCredentials", () => {
-  test("names the keys the OAuth app has to supply", () => {
-    expect(
-      missingCredentials("GITHUB_CLIENT_ID=\nGITHUB_CLIENT_SECRET=\nOPENCODE_API_KEY=k\n"),
-    ).toEqual(["GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET"])
-  })
-
-  test("says nothing is missing once both are filled", () => {
-    expect(
-      missingCredentials("GITHUB_CLIENT_ID=abc\nGITHUB_CLIENT_SECRET=def\nOPENCODE_API_KEY=k\n"),
-    ).toEqual([])
-  })
-
-  test("treats an absent line the same as a blank one", () => {
-    expect(missingCredentials("GITHUB_CLIENT_ID=abc\nOPENCODE_API_KEY=k\n")).toEqual([
-      "GITHUB_CLIENT_SECRET",
-    ])
-  })
-
-  test("a set LOCAL_LOGIN_SECRET is a way in of its own, so neither GitHub key is missing", () => {
-    expect(
-      missingCredentials(
-        "GITHUB_CLIENT_ID=\nGITHUB_CLIENT_SECRET=\nLOCAL_LOGIN_SECRET=open sesame\nOPENCODE_API_KEY=k\n",
-      ),
-    ).toEqual([])
-  })
-
-  test("a blank LOCAL_LOGIN_SECRET does not excuse the GitHub keys", () => {
-    expect(
-      missingCredentials("GITHUB_CLIENT_ID=\nLOCAL_LOGIN_SECRET=\nOPENCODE_API_KEY=k\n"),
-    ).toEqual(["GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET"])
-  })
-
-  test("names the review credential the server will refuse to boot without", () => {
-    expect(missingCredentials("GITHUB_CLIENT_ID=a\nGITHUB_CLIENT_SECRET=b\n")).toEqual([
-      "OPENCODE_API_KEY",
-    ])
-  })
-
-  test("asks for claude's credential when claude is the configured harness", () => {
-    expect(
-      missingCredentials("GITHUB_CLIENT_ID=a\nGITHUB_CLIENT_SECRET=b\nAI_REVIEW_HARNESS=claude\n"),
-    ).toEqual(["CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY"])
+  test.each([
+    [
+      "both GitHub keys when they are blank",
+      "GITHUB_CLIENT_ID=\nGITHUB_CLIENT_SECRET=\nOPENCODE_API_KEY=k\n",
+      ["GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET"],
+    ],
+    [
+      "nothing once both are filled",
+      "GITHUB_CLIENT_ID=abc\nGITHUB_CLIENT_SECRET=def\nOPENCODE_API_KEY=k\n",
+      [],
+    ],
+    [
+      "an absent line the same as a blank one",
+      "GITHUB_CLIENT_ID=abc\nOPENCODE_API_KEY=k\n",
+      ["GITHUB_CLIENT_SECRET"],
+    ],
+    [
+      "neither GitHub key when LOCAL_LOGIN_SECRET is set, since that is a way in of its own",
+      "GITHUB_CLIENT_ID=\nGITHUB_CLIENT_SECRET=\nLOCAL_LOGIN_SECRET=open sesame\nOPENCODE_API_KEY=k\n",
+      [],
+    ],
+    [
+      "both GitHub keys when LOCAL_LOGIN_SECRET is blank",
+      "GITHUB_CLIENT_ID=\nLOCAL_LOGIN_SECRET=\nOPENCODE_API_KEY=k\n",
+      ["GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET"],
+    ],
+    [
+      "the review credential the server will refuse to boot without",
+      "GITHUB_CLIENT_ID=a\nGITHUB_CLIENT_SECRET=b\n",
+      ["OPENCODE_API_KEY"],
+    ],
+    [
+      "claude's credential when claude is the configured harness",
+      "GITHUB_CLIENT_ID=a\nGITHUB_CLIENT_SECRET=b\nAI_REVIEW_HARNESS=claude\n",
+      ["CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY"],
+    ],
+  ])("names %s", (_case, envText, missing) => {
+    expect(missingCredentials(envText)).toEqual(missing)
   })
 })
 

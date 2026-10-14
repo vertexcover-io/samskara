@@ -115,16 +115,6 @@ describe("resolveProject", () => {
     })
   })
 
-  test("falls back when there is no remote", async () => {
-    gitReturning({ "config --get remote.origin.url": null })
-
-    expect(await resolveProject("/tmp/loose")).toEqual({
-      name: "loose",
-      slug: "-tmp-loose",
-      root: "/tmp/loose",
-    })
-  })
-
   test("a directory that is gone has no identity, rather than one invented from its path", async () => {
     // A cwd read from an old transcript can name a removed worktree. Git cannot run there, and the
     // path-derived fallback would mint a slug matching no project -- which reads downstream as

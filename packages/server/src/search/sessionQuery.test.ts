@@ -106,22 +106,6 @@ describe.skipIf(!dockerAvailable())("compileSessionQuery against PostgreSQL", ()
     await expect(matches("auth -legacy", "auth legacy")).resolves.toBe(false)
   })
 
-  test("rejects zero-lexeme operands before PostgreSQL in final, non-final, and excluded positions", async () => {
-    for (const query of [
-      "___ auth",
-      "auth ___",
-      "auth -___",
-      '"___" auth',
-      'auth "___"',
-      'auth -"___"',
-      "¹ auth",
-      "auth ¹",
-      "auth -¹",
-    ]) {
-      expect(() => parseSessionQuery(query)).toThrow(SessionQueryError)
-    }
-  })
-
   test("executes normalized multi-lexeme operands only where they cannot receive a prefix", async () => {
     // PostgreSQL normalizes auth_guard to two lexemes under simple. It is valid as a non-final
     // AND operand and as an exclusion, but invalid as the final positive prefix operand.

@@ -34,52 +34,33 @@ const corePackage = {
 describe("releaseManifest", () => {
   const manifest = releaseManifest(cliPackage, corePackage, "1.4.0")
 
-  test("declares the licence, so the published tarball is not all-rights-reserved", () => {
-    expect(manifest.license).toBe("MIT")
-  })
-
-  test("pins the workspace dependency to the release version", () => {
-    expect(manifest.dependencies["@samskara/core"]).toBe("1.4.0")
-    expect(JSON.stringify(manifest)).not.toContain("workspace:")
-  })
-
-  test("declares core as bundled so npm never asks the registry for it", () => {
-    expect(manifest.bundleDependencies).toEqual(["@samskara/core"])
-  })
-
-  test("hoists core's own dependencies so bundled core can resolve them by walking up", () => {
-    expect(manifest.dependencies.pino).toBe("^9")
-  })
-
-  test("lets the cli's own range win when both declare the same dependency", () => {
-    expect(manifest.dependencies.zod).toBe("^4.4.3")
-  })
-
-  test("keeps the cli's other dependencies as they are", () => {
-    expect(manifest.dependencies.commander).toBe("13.1.0")
-    expect(manifest.dependencies["pino-roll"]).toBe("^4.0.0")
-  })
-
-  test("keeps the bin entry and the release version", () => {
-    expect(manifest.bin).toEqual({ samskara: "./dist/index.js" })
-    expect(manifest.version).toBe("1.4.0")
-  })
-
-  test("publishes under the cli's own scoped name", () => {
-    expect(manifest.name).toBe("@vertexcover/samskara")
-  })
-
-  test("is public, so npm publishes a scoped package without --access", () => {
-    expect(manifest.private).toBeUndefined()
-    expect(manifest.publishConfig).toEqual({ access: "public" })
-  })
-
   /** Trusted publishing and provenance reject a package whose repository is not the repo the
    * workflow runs in. */
-  test("names the GitHub repository the release workflow publishes from", () => {
+  test("publishes a public, MIT-licensed package under the cli's scoped name from the release repo, with core bundled", () => {
+    expect(manifest).toMatchObject({
+      name: "@vertexcover/samskara",
+      version: "1.4.0",
+      license: "MIT",
+      bin: { samskara: "./dist/index.js" },
+      bundleDependencies: ["@samskara/core"],
+      publishConfig: { access: "public" },
+      repository: { type: "git", url: "git+https://github.com/vertexcover-io/samskara.git" },
+    })
+    expect(manifest.private).toBeUndefined()
+    expect(manifest.publishConfig).toEqual({ access: "public" })
     expect(manifest.repository).toEqual({
       type: "git",
       url: "git+https://github.com/vertexcover-io/samskara.git",
+    })
+  })
+
+  test("pins core to the release version, hoists core's dependencies, and lets the cli's own ranges win", () => {
+    expect(manifest.dependencies).toEqual({
+      "@samskara/core": "1.4.0",
+      commander: "13.1.0",
+      "pino-roll": "^4.0.0",
+      zod: "^4.4.3",
+      pino: "^9",
     })
   })
 
@@ -95,18 +76,11 @@ describe("releaseManifest", () => {
   })
 })
 
-describe("the workspace cli manifest", () => {
-  const workspace = JSON.parse(
+test("the workspace cli manifest is the package the release publishes, and stays private so only the packed tarball can be published", () => {
+  const workspace: unknown = JSON.parse(
     readFileSync(new URL("../packages/cli/package.json", import.meta.url), "utf8"),
-  ) as { name: string; private?: boolean }
-
-  test("is the package the release publishes", () => {
-    expect(workspace.name).toBe("@vertexcover/samskara")
-  })
-
-  test("stays private, so only the packed tarball can ever be published", () => {
-    expect(workspace.private).toBe(true)
-  })
+  )
+  expect(workspace).toMatchObject({ name: "@vertexcover/samskara", private: true })
 })
 
 describe("tarballName", () => {

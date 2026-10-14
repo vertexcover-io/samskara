@@ -310,57 +310,6 @@ describe("init --force", () => {
     expect(await readFile(join(home, "config.json"), "utf8")).toBe(before)
   })
 
-  test("SC19: clears derived state, disables and strips projects, and drops the token", async () => {
-    const home = process.env.SAMSKARA_HOME as string
-    await writeSettings({ apiUrl: "https://one.example", webUrl: "https://one.example" })
-    await seedScopedFiles(home, "https://one.example")
-
-    const code = await initCommand({
-      ...output().writers,
-      force: true,
-      prompt: answers("https://two.example", "https://two.example").prompt,
-    })
-
-    expect(code).toBe(0)
-    expect(existsSync(join(home, "state.json"))).toBe(false)
-    expect(existsSync(join(home, "artifacts.json"))).toBe(false)
-    expect(existsSync(join(home, "artifact-queue.json"))).toBe(false)
-    expect(existsSync(join(home, "filter-options.json"))).toBe(false)
-    expect(existsSync(join(home, "token"))).toBe(false)
-
-    const projects = JSON.parse(await readFile(join(home, "projects.json"), "utf8"))
-    expect(projects.apiBase).toBe("https://two.example")
-    expect(projects.projects["acme-widget"]).toEqual({
-      name: "widget",
-      path: "/work/widget",
-      enabled: false,
-      enabledAt,
-      syncFrom: enabledAt,
-    })
-  })
-
-  test("SC20: stops the watcher before backing anything up, and never restarts it", async () => {
-    const home = process.env.SAMSKARA_HOME as string
-    await writeSettings({ apiUrl: "https://one.example", webUrl: "https://one.example" })
-    await seedScopedFiles(home, "https://one.example")
-    let backupsExistedAtStop: boolean | null = null
-    vi.mocked(stopWatcherDaemon).mockImplementationOnce(async () => {
-      backupsExistedAtStop = existsSync(join(home, "backups"))
-      return true
-    })
-
-    const code = await initCommand({
-      ...output().writers,
-      force: true,
-      prompt: answers("https://two.example", "https://two.example").prompt,
-    })
-
-    expect(code).toBe(0)
-    expect(stopWatcherDaemon).toHaveBeenCalledTimes(1)
-    expect(backupsExistedAtStop).toBe(false)
-    expect(startWatcherDaemon).not.toHaveBeenCalled()
-  })
-
   test("SC21: the same server resets nothing", async () => {
     const home = process.env.SAMSKARA_HOME as string
     await writeSettings({ apiUrl: "https://one.example", webUrl: "https://one.example" })
@@ -407,6 +356,7 @@ describe("init --force", () => {
     expect(existsSync(join(home, "backups"))).toBe(true)
     expect(existsSync(join(home, "state.json"))).toBe(false)
     expect(existsSync(join(home, "token"))).toBe(false)
+    expect(stopWatcherDaemon).toHaveBeenCalledTimes(1)
     // D12: the reset hands the user back the two next steps; it does not do them for them.
     expect(startWatcherDaemon).not.toHaveBeenCalled()
 

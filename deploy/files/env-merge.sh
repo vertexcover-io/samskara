@@ -33,6 +33,6 @@ awk '
   END { for (i = 0; i < n; i++) if (order[i] in ov) print ov[order[i]] }
 ' "$FILE" > "$NEXT"
 
-chmod --reference="$FILE" "$NEXT"
+chmod "$(stat -L -c %a "$FILE" 2>/dev/null || stat -L -f %Lp "$FILE")" "$NEXT"
 mv -f "$NEXT" "$FILE"
 trap - EXIT

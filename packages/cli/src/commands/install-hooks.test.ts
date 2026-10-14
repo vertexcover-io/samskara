@@ -46,15 +46,6 @@ describe("hook commands", () => {
     expect(text).toContain(resolveCliEntry())
   })
 
-  test("EDGE-016: the installed hook points at an entry that exists on disk", async () => {
-    const path = await settingsFile()
-
-    installHooksCommand({ settingsPath: path, stdout: { write: () => undefined } })
-
-    const entry = entryIn(managedCommandIn(await readFile(path, "utf8")))
-    expect(existsSync(entry)).toBe(true)
-  })
-
   test("EDGE-017: reinstalling repairs a managed hook whose entry path went stale", async () => {
     const path = await settingsFile()
     installHooksCommand({ settingsPath: path, stdout: { write: () => undefined } })

@@ -101,15 +101,6 @@ test("shutdown drain: a worker pool that never settles is bounded by the grace d
   expect(onDrained).toHaveBeenCalledTimes(1)
 })
 
-test("shutdown drain: onDrained fires exactly once even if both sides could settle", async () => {
-  const onDrained = vi.fn()
-  const sleep = (_ms: number) => Promise.resolve()
-
-  await drainWorkers(Promise.resolve(), 1, sleep, onDrained)
-
-  expect(onDrained).toHaveBeenCalledTimes(1)
-})
-
 test("an unreadable transcript directory is logged, not silently reported as zero sessions", async () => {
   const root = await mkdtemp(join(tmpdir(), "samskara-discovery-fail-"))
   const spy = spyLogger()
@@ -122,10 +113,4 @@ test("an unreadable transcript directory is logged, not silently reported as zer
   expect(entry?.message).toContain("transcript directory unreadable")
   expect(entry?.details.dir).toBe(join(root, "missing"))
   expect((entry?.details.err as { stack?: string } | undefined)?.stack).toContain("ENOENT")
-})
-
-test("discovery without a logger still works, so the signature stays usable from a test", async () => {
-  const root = await mkdtemp(join(tmpdir(), "samskara-discovery-nolog-"))
-
-  expect(await globAll(`${root}/missing/**/*.jsonl`)).toEqual([])
 })

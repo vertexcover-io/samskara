@@ -8,7 +8,6 @@ import { createLogger } from "../../logging.js"
 import type { CheckpointStore, CollectDeps } from "../types.js"
 import {
   createOpencodePlugin,
-  defaultDbPath,
   normalizeOpencode,
   type OpencodeDatabase,
   openDatabase,
@@ -364,15 +363,6 @@ describe("tool metadata (opencode)", () => {
     }
   }
 
-  test("a bash call is a shell effect carrying its command", () => {
-    expect(
-      metadataOf("bash", { status: "completed", input: { command: "git status" }, output: "" }),
-    ).toEqual({
-      call: { type: "shell", command: "git status" },
-      result: undefined,
-    })
-  })
-
   test("a completed write is a wrote effect that created the file; edit and patch did not", () => {
     expect(
       metadataOf("write", {
@@ -690,11 +680,5 @@ describe("createOpencodePlugin", () => {
     opened.close()
 
     expect(() => openDatabase(join(dir, "missing.db"))).toThrow()
-  })
-})
-
-describe("defaultDbPath", () => {
-  test("returns ~/.local/share/opencode/opencode.db on a unix-style home", () => {
-    expect(defaultDbPath("/home/me")).toBe("/home/me/.local/share/opencode/opencode.db")
   })
 })

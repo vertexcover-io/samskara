@@ -3,7 +3,11 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { HarnessRunner } from "@samskara/core"
 import { beforeEach, describe, expect, test } from "vitest"
-import { type RunnerSpec, reviewSessionCommand } from "./review-session.js"
+import {
+  type ReviewSessionOptions,
+  type RunnerSpec,
+  reviewSessionCommand,
+} from "./review-session.js"
 
 const SESSION = "sess-review-1"
 
@@ -103,6 +107,7 @@ describe("reviewSessionCommand", () => {
     const code = await reviewSessionCommand("no-such-session", {
       homedir: () => home,
       out,
+      env: KEYED,
       stderr,
       stdout: capture(),
     })
@@ -110,12 +115,13 @@ describe("reviewSessionCommand", () => {
     expect(stderr.text).toContain("No transcript found")
   })
 
-  test("RS2: --dry-run writes the export and never calls a harness", async () => {
+  test("RS2: --dry-run writes the export and never calls a harness, so it needs no credential", async () => {
     const stderr = capture()
     let called = 0
     const code = await reviewSessionCommand(SESSION, {
       homedir: () => home,
       out,
+      env: {},
       dryRun: true,
       stderr,
       stdout: capture(),
@@ -135,6 +141,7 @@ describe("reviewSessionCommand", () => {
     await reviewSessionCommand(SESSION, {
       homedir: () => home,
       out,
+      env: {},
       dryRun: true,
       stderr: capture(),
       stdout: capture(),
@@ -193,12 +200,33 @@ describe("reviewSessionCommand", () => {
     expect(await readFile(join(out, "review.xml"), "utf8")).toBe("not xml at all")
   })
 
-  test("RS6: a model id outside the allowed charset is refused before any harness runs", async () => {
+  test.each<[string, ReviewSessionOptions, ReadonlyArray<string>]>([
+    [
+      "RS6: a model id outside the allowed charset is refused before any harness runs",
+      { env: KEYED, model: "sonnet; rm -rf /" },
+      ["is not a model id"],
+    ],
+    [
+      "RS8: an unknown harness is refused by name",
+      { env: KEYED, harness: "cursor" },
+      ["--harness must be one of opencode, claude"],
+    ],
+    [
+      "RS10: opencode with no OPENCODE_API_KEY stops before the harness",
+      { env: {} },
+      ["OPENCODE_API_KEY"],
+    ],
+    [
+      "RS11: claude names both credentials it accepts",
+      { env: {}, harness: "claude" },
+      ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
+    ],
+  ])("%s", async (_case, options, named) => {
     const stderr = capture()
     const code = await reviewSessionCommand(SESSION, {
       homedir: () => home,
       out,
-      model: "sonnet; rm -rf /",
+      ...options,
       stderr,
       stdout: capture(),
       createRunner: () => {
@@ -206,7 +234,7 @@ describe("reviewSessionCommand", () => {
       },
     })
     expect(code).toBe(1)
-    expect(stderr.text).toContain("is not a model id")
+    for (const name of named) expect(stderr.text).toContain(name)
   })
 
   test("RS9: a harness that fails reads as a message with its own stderr, not a stack", async () => {
@@ -230,13 +258,34 @@ describe("reviewSessionCommand", () => {
     expect(stderr.text).toContain("provider refused")
   })
 
-  test("RS7: --harness claude takes claude's default model", async () => {
+  test.each<[string, ReviewSessionOptions, Partial<RunnerSpec>]>([
+    [
+      "RS7: --harness claude takes claude's default model",
+      { harness: "claude", env: { CLAUDE_CODE_OAUTH_TOKEN: "t" } },
+      { harness: "claude", model: "sonnet", sandboxHome: true },
+    ],
+    [
+      "RS13: AI_REVIEW_HARNESS and AI_REVIEW_MODEL override the built-in defaults",
+      {
+        env: {
+          AI_REVIEW_HARNESS: "claude",
+          AI_REVIEW_MODEL: "opus",
+          CLAUDE_CODE_OAUTH_TOKEN: "tok",
+        },
+      },
+      { harness: "claude", model: "opus" },
+    ],
+    [
+      "RS14: an explicit flag still beats the environment",
+      { model: "opencode-go/glm-5.3", env: { AI_REVIEW_MODEL: "ignored/model", ...KEYED } },
+      { model: "opencode-go/glm-5.3" },
+    ],
+  ])("%s", async (_case, options, expected) => {
     let spec: RunnerSpec | undefined
     await reviewSessionCommand(SESSION, {
       homedir: () => home,
       out,
-      harness: "claude",
-      env: { CLAUDE_CODE_OAUTH_TOKEN: "t" },
+      ...options,
       stderr: capture(),
       stdout: capture(),
       createRunner: (given) => {
@@ -244,102 +293,6 @@ describe("reviewSessionCommand", () => {
         return { run: async () => ({ stdout: "", firstByteMs: null }) }
       },
     })
-    expect(spec).toMatchObject({ harness: "claude", model: "sonnet", sandboxHome: true })
-  })
-
-  test("RS10: opencode with no OPENCODE_API_KEY stops before the harness", async () => {
-    const stderr = capture()
-    const code = await reviewSessionCommand(SESSION, {
-      homedir: () => home,
-      out,
-      env: {},
-      stderr,
-      stdout: capture(),
-      createRunner: () => {
-        throw new Error("the runner must not be reached")
-      },
-    })
-    expect(code).toBe(1)
-    expect(stderr.text).toContain("OPENCODE_API_KEY")
-  })
-
-  test("RS11: claude names both credentials it accepts", async () => {
-    const stderr = capture()
-    const code = await reviewSessionCommand(SESSION, {
-      homedir: () => home,
-      out,
-      harness: "claude",
-      env: {},
-      stderr,
-      stdout: capture(),
-      createRunner: () => {
-        throw new Error("the runner must not be reached")
-      },
-    })
-    expect(code).toBe(1)
-    expect(stderr.text).toContain("CLAUDE_CODE_OAUTH_TOKEN")
-    expect(stderr.text).toContain("ANTHROPIC_API_KEY")
-  })
-
-  test("RS12: --dry-run needs no credential -- it never calls a harness", async () => {
-    const code = await reviewSessionCommand(SESSION, {
-      homedir: () => home,
-      out,
-      env: {},
-      dryRun: true,
-      stderr: capture(),
-      stdout: capture(),
-    })
-    expect(code).toBe(0)
-  })
-
-  test("RS13: AI_REVIEW_HARNESS and AI_REVIEW_MODEL override the built-in defaults", async () => {
-    let spec: RunnerSpec | undefined
-    await reviewSessionCommand(SESSION, {
-      homedir: () => home,
-      out,
-      env: {
-        AI_REVIEW_HARNESS: "claude",
-        AI_REVIEW_MODEL: "opus",
-        CLAUDE_CODE_OAUTH_TOKEN: "tok",
-      },
-      stderr: capture(),
-      stdout: capture(),
-      createRunner: (given) => {
-        spec = given
-        return { run: async () => ({ stdout: "", firstByteMs: null }) }
-      },
-    })
-    expect(spec).toMatchObject({ harness: "claude", model: "opus" })
-  })
-
-  test("RS14: an explicit flag still beats the environment", async () => {
-    let spec: RunnerSpec | undefined
-    await reviewSessionCommand(SESSION, {
-      homedir: () => home,
-      out,
-      model: "opencode-go/glm-5.3",
-      env: { AI_REVIEW_MODEL: "ignored/model", ...KEYED },
-      stderr: capture(),
-      stdout: capture(),
-      createRunner: (given) => {
-        spec = given
-        return { run: async () => ({ stdout: "", firstByteMs: null }) }
-      },
-    })
-    expect(spec).toMatchObject({ model: "opencode-go/glm-5.3" })
-  })
-
-  test("RS8: an unknown harness is refused by name", async () => {
-    const stderr = capture()
-    const code = await reviewSessionCommand(SESSION, {
-      homedir: () => home,
-      out,
-      harness: "cursor",
-      stderr,
-      stdout: capture(),
-    })
-    expect(code).toBe(1)
-    expect(stderr.text).toContain("--harness must be one of opencode, claude")
+    expect(spec).toMatchObject(expected)
   })
 })

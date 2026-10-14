@@ -1,4 +1,5 @@
-import { afterAll, beforeAll, describe, expect, test } from "vitest"
+import type { Sql } from "postgres"
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import { createDb } from "./client.js"
 import {
   filterIndexDefinition,
@@ -7,9 +8,60 @@ import {
   SEARCH_FILTER_INDEXES,
   searchIndexDefinition,
 } from "./searchSql.js"
-import { dockerAvailable, runDbScript, startTestDb } from "./testDb.js"
+import { MIGRATION_STEPS, runSteps } from "./steps.js"
+import { dockerAvailable, runDbScript, startTestDb, type TestDb } from "./testDb.js"
 
-describe.skipIf(!dockerAvailable())("session search database foundation", () => {
+const applySteps = (client: Sql, ...flags: ReadonlyArray<string>): Promise<void> =>
+  runSteps(MIGRATION_STEPS, { client, flags: new Set(flags) }, () => undefined)
+
+const staleIndexName = (indexName: string): string => indexName.replace("_v3_idx", "_v2_idx")
+
+const createStaleV2Indexes = async (client: Sql): Promise<void> => {
+  for (const document of SEARCH_DOCUMENTS) {
+    await client.unsafe(
+      `create index concurrently "${staleIndexName(document.indexName)}" on "${document.table}" using gin ((to_tsvector('simple'::regconfig, 'stale')))`,
+    )
+  }
+}
+
+type IndexState = {
+  readonly name: string
+  readonly ready: boolean
+  readonly valid: boolean
+  readonly definition: string
+}
+
+const indexStates = (
+  client: Sql,
+  names: ReadonlyArray<string>,
+): Promise<ReadonlyArray<IndexState>> =>
+  client<ReadonlyArray<IndexState>>`
+    select pg_class.relname as name, indisready as ready, indisvalid as valid,
+      pg_get_indexdef(indexrelid) as definition
+    from pg_index
+    join pg_class on pg_class.oid = indexrelid
+    where pg_class.relname = any(${names}::text[])
+    order by pg_class.relname
+  `
+
+const indexNames = async (
+  client: Sql,
+  names: ReadonlyArray<string>,
+): Promise<ReadonlyArray<string>> => (await indexStates(client, names)).map((row) => row.name)
+
+const expectCanonical = (
+  rows: ReadonlyArray<IndexState>,
+  expected: ReadonlyArray<{ readonly indexName: string; readonly definition: string }>,
+): void => {
+  expect(rows.map((row) => row.name)).toEqual(expected.map((index) => index.indexName).sort())
+  for (const row of rows) {
+    expect(row.ready && row.valid).toBe(true)
+    const canonical = expected.find((index) => index.indexName === row.name)?.definition ?? ""
+    expect(normalizeIndexDefinition(row.definition)).toContain(normalizeIndexDefinition(canonical))
+  }
+}
+
+describe.skipIf(!dockerAvailable())("search SQL functions and generated columns", () => {
   let teardown: () => Promise<void>
   let url: string
 
@@ -97,173 +149,6 @@ describe.skipIf(!dockerAvailable())("session search database foundation", () => 
     }
   })
 
-  test("creates V3 indexes alongside valid stale V2 keyword indexes", async () => {
-    const stale = createDb(url)
-    try {
-      for (const document of SEARCH_DOCUMENTS) {
-        const staleName = document.indexName.replace("_v3_idx", "_v2_idx")
-        const oldExpression = `to_tsvector('simple'::regconfig, 'stale')`
-        await stale.client.unsafe(
-          `create index concurrently "${staleName}" on "${document.table}" using gin ((${oldExpression}))`,
-        )
-      }
-    } finally {
-      await stale.client.end()
-    }
-
-    runDbScript("db:migrate", url)
-
-    const db = createDb(url)
-    try {
-      const rows = await db.client<
-        ReadonlyArray<{ readonly name: string; readonly ready: boolean; readonly valid: boolean }>
-      >`
-        select pg_class.relname as name, indisready as ready, indisvalid as valid
-        from pg_index
-        join pg_class on pg_class.oid = indexrelid
-        where pg_class.relname = any(${SEARCH_DOCUMENTS.map((document) => document.indexName)}::text[])
-        order by pg_class.relname
-      `
-      expect(rows).toHaveLength(5)
-      expect(rows.every((row) => row.ready && row.valid)).toBe(true)
-      expect(rows.map((row) => row.name).sort()).toEqual(
-        SEARCH_DOCUMENTS.map((document) => document.indexName).sort(),
-      )
-
-      const staleRows = await db.client<
-        ReadonlyArray<{ readonly name: string; readonly valid: boolean }>
-      >`
-        select pg_class.relname as name, indisvalid as valid
-        from pg_index
-        join pg_class on pg_class.oid = indexrelid
-        where pg_class.relname = any(${SEARCH_DOCUMENTS.map((document) => document.indexName.replace("_v3_idx", "_v2_idx"))}::text[])
-      `
-      expect(staleRows).toHaveLength(5)
-      expect(staleRows.every((row) => row.valid)).toBe(true)
-
-      const definitions = await db.client<
-        ReadonlyArray<{ readonly name: string; readonly definition: string }>
-      >`
-        select pg_class.relname as name, pg_get_indexdef(indexrelid) as definition
-        from pg_index
-        join pg_class on pg_class.oid = indexrelid
-        where pg_class.relname = any(${SEARCH_DOCUMENTS.map((document) => document.indexName)}::text[])
-      `
-      for (const document of SEARCH_DOCUMENTS) {
-        const definition = definitions.find((row) => row.name === document.indexName)?.definition
-        expect(definition).toBeDefined()
-        expect(normalizeIndexDefinition(definition ?? "")).toContain(
-          normalizeIndexDefinition(searchIndexDefinition(document)),
-        )
-      }
-
-      const filterRows = await db.client<
-        ReadonlyArray<{ readonly name: string; readonly valid: boolean }>
-      >`
-        select pg_class.relname as name, indisvalid as valid
-        from pg_index
-        join pg_class on pg_class.oid = indexrelid
-        where pg_class.relname = any(${SEARCH_FILTER_INDEXES.map((index) => index.indexName)}::text[])
-      `
-      expect(filterRows).toHaveLength(SEARCH_FILTER_INDEXES.length)
-      expect(filterRows.every((row) => row.valid)).toBe(true)
-
-      const filterDefinitions = await db.client<
-        ReadonlyArray<{ readonly name: string; readonly definition: string }>
-      >`
-        select pg_class.relname as name, pg_get_indexdef(indexrelid) as definition
-        from pg_index
-        join pg_class on pg_class.oid = indexrelid
-        where pg_class.relname = any(${SEARCH_FILTER_INDEXES.map((index) => index.indexName)}::text[])
-      `
-      for (const index of SEARCH_FILTER_INDEXES) {
-        const definition = filterDefinitions.find((row) => row.name === index.indexName)?.definition
-        expect(definition).toBeDefined()
-        expect(normalizeIndexDefinition(definition ?? "")).toContain(
-          normalizeIndexDefinition(filterIndexDefinition(index)),
-        )
-      }
-    } finally {
-      await db.client.end()
-    }
-  }, 120_000)
-
-  test("uses the sessions searchVector GIN index for a selective keyword", async () => {
-    const db = createDb(url)
-    try {
-      const [user] = await db.client<{ readonly id: string }[]>`
-        insert into users ("githubId", "githubLogin") values (900001, 'planner-owner') returning id
-      `
-      if (user === undefined) throw new Error("planner user was not inserted")
-      const [project] = await db.client<{ readonly id: string }[]>`
-        insert into projects (name, slug, "ownerId") values ('Planner', 'planner', ${user.id}) returning id
-      `
-      if (project === undefined) throw new Error("planner project was not inserted")
-      await db.client`
-        insert into sessions (id, source, "userId", "projectId", title)
-        select 'planner-' || series, 'claude_code', ${user.id}, ${project.id},
-          case when series = 1 then 'planneruniqueneedle' else 'ordinary session ' || series end
-        from generate_series(1, 10000) as series
-      `
-      await db.client`analyze sessions`
-      const [planRow] = await db.client.unsafe<{ readonly "QUERY PLAN": unknown }[]>(
-        `explain (analyze, buffers, format json) select id from sessions where "searchVector" @@ plainto_tsquery('simple', 'planneruniqueneedle')`,
-      )
-      const plan = JSON.stringify(planRow?.["QUERY PLAN"])
-      expect(plan).toContain("sessions_session_search_v3_idx")
-    } finally {
-      await db.client.end()
-    }
-  }, 120_000)
-
-  test("uses the sessions tags GIN index for a selective tag filter", async () => {
-    const db = createDb(url)
-    try {
-      const [user] = await db.client<{ readonly id: string }[]>`
-        insert into users ("githubId", "githubLogin") values (900002, 'tag-planner-owner') returning id
-      `
-      if (user === undefined) throw new Error("tag planner user was not inserted")
-      const [project] = await db.client<{ readonly id: string }[]>`
-        insert into projects (name, slug, "ownerId") values ('Tag Planner', 'tag-planner', ${user.id}) returning id
-      `
-      if (project === undefined) throw new Error("tag planner project was not inserted")
-      await db.client`
-        insert into sessions (id, source, "userId", "projectId", title, tags)
-        select 'tag-planner-' || series, 'claude_code', ${user.id}, ${project.id},
-          'ordinary session ' || series,
-          case when series = 1 then array['needle']::text[] else array['other']::text[] end
-        from generate_series(1, 10000) as series
-      `
-      await db.client`analyze sessions`
-      const [planRow] = await db.client.unsafe<{ readonly "QUERY PLAN": unknown }[]>(
-        `explain (analyze, buffers, format json) select id from sessions where tags && array['needle']::text[]`,
-      )
-      const plan = JSON.stringify(planRow?.["QUERY PLAN"])
-      expect(plan).toContain("sessions_session_filter_tags_v1_idx")
-    } finally {
-      await db.client.end()
-    }
-  }, 120_000)
-
-  test("drops stale V2 indexes only after verified V3 creation when requested", async () => {
-    runDbScript("db:migrate", url, ["--drop-stale"])
-    const db = createDb(url)
-    try {
-      const names = SEARCH_DOCUMENTS.map((document) =>
-        document.indexName.replace("_v3_idx", "_v2_idx"),
-      )
-      const rows = await db.client<ReadonlyArray<{ readonly name: string }>>`
-        select pg_class.relname as name
-        from pg_index
-        join pg_class on pg_class.oid = indexrelid
-        where pg_class.relname = any(${names}::text[])
-      `
-      expect(rows).toEqual([])
-    } finally {
-      await db.client.end()
-    }
-  }, 120_000)
-
   test("every searchable table stores its document in a generated searchVector column with the canonical expression", async () => {
     const db = createDb(url)
     try {
@@ -295,27 +180,139 @@ describe.skipIf(!dockerAvailable())("session search database foundation", () => 
       await db.client.end()
     }
   })
+})
+
+describe.skipIf(!dockerAvailable())(
+  "the planner uses the search indexes on 10,000 sessions",
+  () => {
+    let started: TestDb
+
+    beforeAll(async () => {
+      started = await startTestDb()
+      const { client } = started
+      const [user] = await client<{ readonly id: string }[]>`
+      insert into users ("githubId", "githubLogin") values (900001, 'planner-owner') returning id
+    `
+      if (user === undefined) throw new Error("planner user was not inserted")
+      const [project] = await client<{ readonly id: string }[]>`
+      insert into projects (name, slug, "ownerId") values ('Planner', 'planner', ${user.id}) returning id
+    `
+      if (project === undefined) throw new Error("planner project was not inserted")
+      await client`
+      insert into sessions (id, source, "userId", "projectId", title, tags)
+      select 'planner-' || series, 'claude_code', ${user.id}, ${project.id},
+        case when series = 1 then 'planneruniqueneedle' else 'ordinary session ' || series end,
+        case when series = 1 then array['needle']::text[] else array['other']::text[] end
+      from generate_series(1, 10000) as series
+    `
+      await client`analyze sessions`
+    }, 120_000)
+
+    afterAll(async () => {
+      await started?.teardown()
+    })
+
+    test.each([
+      [
+        "a selective keyword",
+        `select id from sessions where "searchVector" @@ plainto_tsquery('simple', 'planneruniqueneedle')`,
+        "sessions_session_search_v3_idx",
+      ],
+      [
+        "a selective tag filter",
+        `select id from sessions where tags && array['needle']::text[]`,
+        "sessions_session_filter_tags_v1_idx",
+      ],
+    ])("%s is answered from its GIN index", async (_case, query, indexName) => {
+      const [planRow] = await started.client.unsafe<{ readonly "QUERY PLAN": unknown }[]>(
+        `explain (analyze, buffers, format json) ${query}`,
+      )
+      expect(JSON.stringify(planRow?.["QUERY PLAN"])).toContain(indexName)
+    })
+  },
+)
+
+describe.skipIf(!dockerAvailable())("migration steps converge the search indexes", () => {
+  let client: Sql
+  let url: string
+  let teardown: () => Promise<void>
+
+  beforeEach(async () => {
+    const started = await startTestDb()
+    client = started.client
+    url = started.url
+    teardown = started.teardown
+  })
+
+  afterEach(async () => {
+    await teardown?.()
+  })
+
+  test("creates V3 indexes alongside valid stale V2 keyword indexes", async () => {
+    await createStaleV2Indexes(client)
+    await applySteps(client)
+
+    expectCanonical(
+      await indexStates(
+        client,
+        SEARCH_DOCUMENTS.map((document) => document.indexName),
+      ),
+      SEARCH_DOCUMENTS.map((document) => ({
+        indexName: document.indexName,
+        definition: searchIndexDefinition(document),
+      })),
+    )
+    const stale = await indexStates(
+      client,
+      SEARCH_DOCUMENTS.map((document) => staleIndexName(document.indexName)),
+    )
+    expect(stale).toHaveLength(SEARCH_DOCUMENTS.length)
+    expect(stale.every((row) => row.valid)).toBe(true)
+    expectCanonical(
+      await indexStates(
+        client,
+        SEARCH_FILTER_INDEXES.map((index) => index.indexName),
+      ),
+      SEARCH_FILTER_INDEXES.map((index) => ({
+        indexName: index.indexName,
+        definition: filterIndexDefinition(index),
+      })),
+    )
+  })
+
+  test("db:migrate --drop-stale removes the stale V2 indexes and leaves the V3 ones in place", async () => {
+    await createStaleV2Indexes(client)
+    const staleNames = SEARCH_DOCUMENTS.map((document) => staleIndexName(document.indexName))
+    expect(await indexNames(client, staleNames)).toHaveLength(SEARCH_DOCUMENTS.length)
+
+    runDbScript("db:migrate", url, ["--drop-stale"], "pipe")
+
+    expect(await indexNames(client, staleNames)).toEqual([])
+    expect(
+      await indexNames(
+        client,
+        SEARCH_DOCUMENTS.map((document) => document.indexName),
+      ),
+    ).toHaveLength(SEARCH_DOCUMENTS.length)
+  })
 
   test("db:verify rejects a searchVector column whose expression drifted from the canonical one", async () => {
     const document = SEARCH_DOCUMENTS.find((candidate) => candidate.table === "pullRequests")
     if (document === undefined) throw new Error("missing pullRequests search document")
-    const run = (script: string) => runDbScript(script, url, [], "pipe")
-    const db = createDb(url)
-    try {
-      await db.client.unsafe(`alter table "pullRequests" drop column "searchVector"`)
-      await db.client.unsafe(
-        `alter table "pullRequests" add column "searchVector" tsvector generated always as (to_tsvector('simple'::regconfig, 'stale')) stored`,
-      )
-      expect(() => run("db:verify")).toThrow()
+    await client.unsafe(`alter table "pullRequests" drop column "searchVector"`)
+    await client.unsafe(
+      `alter table "pullRequests" add column "searchVector" tsvector generated always as (to_tsvector('simple'::regconfig, 'stale')) stored`,
+    )
+    await expect(applySteps(client, "verify")).rejects.toThrow(
+      /"pullRequests"\."searchVector" does not match its canonical expression/,
+    )
+    expect(() => runDbScript("db:verify", url, [], "pipe")).toThrow()
 
-      await db.client.unsafe(`alter table "pullRequests" drop column "searchVector"`)
-      await db.client.unsafe(
-        `alter table "pullRequests" add column "searchVector" tsvector generated always as (${document.vector}) stored`,
-      )
-      run("db:migrate")
-      expect(() => run("db:verify")).not.toThrow()
-    } finally {
-      await db.client.end()
-    }
-  }, 120_000)
+    await client.unsafe(`alter table "pullRequests" drop column "searchVector"`)
+    await client.unsafe(
+      `alter table "pullRequests" add column "searchVector" tsvector generated always as (${document.vector}) stored`,
+    )
+    await applySteps(client)
+    await expect(applySteps(client, "verify")).resolves.toBeUndefined()
+  })
 })

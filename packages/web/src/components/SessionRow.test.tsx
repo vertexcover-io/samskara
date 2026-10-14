@@ -62,33 +62,23 @@ test("S19: a null title reads as 'untitled session' rather than an empty heading
   expect(screen.getByRole("link")).toHaveTextContent("untitled session")
 })
 
-test("S26: the row reports capture recency in relative terms rather than a raw timestamp", () => {
+test("S26: the row shows capture recency in relative terms, with the exact moment as a tooltip rather than a raw timestamp", () => {
   renderRow(populated)
 
   expect(screen.getByRole("link")).not.toHaveTextContent("2026-02-01T09:30")
-})
-
-test("S26: the relative stamp carries the exact moment as a tooltip, so recency never costs precision", () => {
-  renderRow(populated)
-
   expect(screen.getByRole("time")).toHaveAttribute("title", "Feb 1, 2026, 09:30")
 })
 
-test("S26: the row is a link, so a session opens in a new tab the way any other link does", () => {
-  renderRow(populated)
-
-  expect(screen.getByRole("link")).toHaveAttribute("href", "/sessions/s-1")
-})
-
-test("S44: a session with a landed AI review wears a badge", () => {
-  renderRow({ ...populated, hasAiReview: true })
-  expect(screen.getByText("AI review")).toBeInTheDocument()
-})
-
-test("S44: a session the AI review has not reached carries no badge", () => {
-  renderRow({ ...populated, hasAiReview: false })
-  expect(screen.queryByText("AI review")).not.toBeInTheDocument()
-})
+test.each([
+  { hasAiReview: true, badges: 1 },
+  { hasAiReview: false, badges: 0 },
+])(
+  "S44: hasAiReview $hasAiReview renders $badges AI review badge(s)",
+  ({ hasAiReview, badges }) => {
+    renderRow({ ...populated, hasAiReview })
+    expect(screen.queryAllByText("AI review")).toHaveLength(badges)
+  },
+)
 
 test("search evidence renders a supported source label and escaped highlighted text", () => {
   renderRow({

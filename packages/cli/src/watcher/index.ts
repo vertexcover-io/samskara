@@ -22,7 +22,6 @@ import { runCycle, type WatcherConfig, type WatcherDeps } from "./driver.js"
 import { resolveProject } from "./resolveProject.js"
 import { createArtifactSink, createHttpSink } from "./sink.js"
 
-const CYCLE_MS = 10_000
 const SHUTDOWN_GRACE_MS = 5_000
 
 /**
@@ -184,6 +183,6 @@ export const watch = async (options: WatchOptions): Promise<void> => {
     await runCycle(config, deps).catch((err: unknown) => {
       log.error({ err }, "Watch cycle failed")
     })
-    await sleep(CYCLE_MS)
+    await sleep(resolved.cycleMs)
   }
 }

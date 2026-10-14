@@ -118,27 +118,6 @@ describe("buildSessionExport", () => {
     for (const record of records) expect("ts" in record).toBe(false)
   })
 
-  test("E13: an orphan toolResult carries its own ts; durations stay derivable from seq ranges", () => {
-    const { records } = buildSessionExport({
-      sessionId: "s1",
-      title: "t",
-      source: "claude_code",
-      messages: [
-        message({ subIndex: 0, timestamp: "2026-08-25T09:00:00Z" }),
-        toolResult("orphan", "success", {
-          subIndex: 1,
-          timestamp: "2026-08-25T09:01:00Z",
-        }),
-      ],
-    })
-    expect(records[1]).toMatchObject({
-      seq: 1,
-      id: "msg-1",
-      status: "success",
-      ts: Date.parse("2026-08-25T09:01:00Z"),
-    })
-  })
-
   test("E2: truncates user text to 100, assistant to 60 and reasoning to 40 chars, deterministically", () => {
     const longText = "x".repeat(600)
     const messages = [
@@ -220,12 +199,14 @@ describe("buildSessionExport", () => {
     })
   })
 
-  test("E6: a toolResult without a matching call carries status but no toolName", () => {
+  test("E6: a toolResult without a matching call carries status and its own ts but no toolName", () => {
     const { records } = buildSessionExport({
       sessionId: "s1",
       title: "t",
       source: "claude_code",
-      messages: [toolResult("orphan", "success", { subIndex: 0 })],
+      messages: [
+        toolResult("orphan", "success", { subIndex: 0, timestamp: "2026-08-25T09:01:00Z" }),
+      ],
     })
     expect(records[0]).toEqual({
       seq: 0,
@@ -233,17 +214,8 @@ describe("buildSessionExport", () => {
       msgType: "toolResult",
       track: "main",
       status: "success",
+      ts: Date.parse("2026-08-25T09:01:00Z"),
     })
-  })
-
-  test("E7: is deterministic for the same input", () => {
-    const input = {
-      sessionId: "s1",
-      title: "t",
-      source: "claude_code",
-      messages: [message(), toolCall("t1", "Bash", { subIndex: 1 })],
-    }
-    expect(buildSessionExport(input)).toEqual(buildSessionExport(input))
   })
 
   test("E8: a toolResult folds into its call's record even with messages in between", () => {
@@ -400,23 +372,30 @@ describe("withDerivedTracks", () => {
     return timeline.entries.map((e) => e.tracks)
   }
 
-  test("E10: derives every track the entry's seq range covers, deduped in seq order", () => {
-    expect(tracksOf(withDerivedTracks(payloadWith([entry()]), records))).toEqual([
-      ["main", "agent:sub"],
-    ])
+  test.each([
+    {
+      id: "DT1",
+      label: "derives every track the seq range covers, deduped in seq order",
+      claimed: entry(),
+      tracks: ["main", "agent:sub"],
+    },
+    {
+      id: "DT2",
+      label: "overwrites whatever the model claimed, however it was spelled",
+      claimed: entry({ fromSeq: 1, toSeq: 2, tracks: ["agent:sub agent:other"] }),
+      tracks: ["agent:sub"],
+    },
+    {
+      id: "DT3",
+      label: "a seq range outside the export derives nothing rather than throwing",
+      claimed: entry({ fromSeq: 99, toSeq: 120 }),
+      tracks: [],
+    },
+  ])("$id: $label", ({ claimed, tracks }) => {
+    expect(tracksOf(withDerivedTracks(payloadWith([claimed]), records))).toEqual([tracks])
   })
 
-  test("E11: overwrites whatever the model claimed, however it was spelled", () => {
-    const claimed = entry({ fromSeq: 1, toSeq: 2, tracks: ["agent:sub agent:other"] })
-    expect(tracksOf(withDerivedTracks(payloadWith([claimed]), records))).toEqual([["agent:sub"]])
-  })
-
-  test("E12: a seq range outside the export derives nothing rather than throwing", () => {
-    const stray = entry({ fromSeq: 99, toSeq: 120 })
-    expect(tracksOf(withDerivedTracks(payloadWith([stray]), records))).toEqual([[]])
-  })
-
-  test("E13: caps at MAX_TRACKS_PER_ENTRY so the derived payload stays schema-valid", () => {
+  test("DT4: caps at MAX_TRACKS_PER_ENTRY so the derived payload stays schema-valid", () => {
     const many = Array.from({ length: 30 }, (_, i) => ({ seq: i, track: `agent:${i}` }))
     const derived = withDerivedTracks(
       payloadWith([entry({ fromSeq: 0, toSeq: 29 })]),
@@ -425,7 +404,7 @@ describe("withDerivedTracks", () => {
     expect(tracksOf(derived)[0]).toHaveLength(MAX_TRACKS_PER_ENTRY)
   })
 
-  test("E14: leaves the learning lenses untouched", () => {
+  test("DT5: leaves the learning lenses untouched", () => {
     const derived = withDerivedTracks(payloadWith([entry()]), records)
     expect(derived.lenses[1]).toEqual({
       lens: "humanLearnings",

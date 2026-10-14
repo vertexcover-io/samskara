@@ -108,17 +108,6 @@ test("S37: an artifact with no path and no url renders as unavailable rather tha
   expect(screen.getAllByText(/unavailable/i).length).toBeGreaterThan(0)
 })
 
-test("EDGE: a session that filed no artifacts explains the absence instead of rendering an empty browser", () => {
-  render(
-    <TestRouter initialEntries={["/s/1?tab=artifacts"]}>
-      <ArtifactsView artifacts={[]} />
-    </TestRouter>,
-  )
-
-  expect(screen.getByText(/no artifacts were filed/i)).toBeInTheDocument()
-  expect(screen.queryByRole("list", { name: /filed artifacts/i })).not.toBeInTheDocument()
-})
-
 test("S48: captured artifacts are listed by relative path and selecting one shows it in the viewer", async () => {
   const user = userEvent.setup()
   render(
@@ -428,19 +417,23 @@ test("S53: a session that filed nothing reads as empty rather than as a filter t
 
   expect(screen.getByText(/no artifacts were filed in this session/i)).toBeInTheDocument()
   expect(screen.queryByRole("searchbox", { name: /filter by filename/i })).not.toBeInTheDocument()
+  expect(screen.queryByRole("list", { name: /filed artifacts/i })).not.toBeInTheDocument()
 })
 
 test("S53: the wrap toggle is off by default and switches the body between scrolling and wrapping", async () => {
   const user = userEvent.setup()
   render(
     <TestRouter initialEntries={["/s/1?tab=artifacts"]}>
-      <ArtifactsView artifacts={ARTIFACTS} />
+      <ArtifactsView artifacts={[captured({ diff: "@@ -1 +1 @@\n+A long added line.\n" })]} />
     </TestRouter>,
   )
 
   const toggle = screen.getByRole("checkbox", { name: /wrap lines/i })
+  const line = screen.getByText("+A long added line.")
   expect(toggle).not.toBeChecked()
+  expect(line).not.toHaveClass("whitespace-pre-wrap")
 
   await user.click(toggle)
   expect(toggle).toBeChecked()
+  expect(screen.getByText("+A long added line.")).toHaveClass("whitespace-pre-wrap")
 })

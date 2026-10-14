@@ -8,29 +8,21 @@ describe("nextVersion", () => {
     expect(nextVersion("1.2.3", "major")).toBe("2.0.0")
   })
 
-  test("takes an explicit version verbatim", () => {
-    expect(nextVersion("1.2.3", "2.0.0")).toBe("2.0.0")
-    expect(nextVersion("1.2.3", "2.0.0-rc.1")).toBe("2.0.0-rc.1")
-  })
+  test.each(["2.0.0", "2.0.0-rc.1", "1.3.0+build.5", "1.3.0-rc.1+build.5"])(
+    "takes the well-formed explicit version %s verbatim",
+    (explicit) => {
+      expect(nextVersion("1.2.3", explicit)).toBe(explicit)
+    },
+  )
 
-  test("rejects an unknown bump", () => {
-    expect(() => nextVersion("1.2.3", "sideways")).toThrow()
-  })
-
-  test("rejects a current version it cannot parse", () => {
-    expect(() => nextVersion("nightly", "patch")).toThrow()
-  })
-
-  test("rejects an explicit version carrying characters that would corrupt JSON", () => {
-    expect(() => nextVersion("1.2.3", '1.3.0-"rc"')).toThrow()
-    expect(() => nextVersion("1.2.3", "1.3.0-rc\\")).toThrow()
-    expect(() => nextVersion("1.2.3", "1.3.0-rc 1")).toThrow()
-  })
-
-  test("still takes a well-formed prerelease and build tag", () => {
-    expect(nextVersion("1.2.3", "1.3.0-rc.1")).toBe("1.3.0-rc.1")
-    expect(nextVersion("1.2.3", "1.3.0+build.5")).toBe("1.3.0+build.5")
-    expect(nextVersion("1.2.3", "1.3.0-rc.1+build.5")).toBe("1.3.0-rc.1+build.5")
+  test.each([
+    ["an unknown bump", "1.2.3", "sideways"],
+    ["a current version it cannot parse", "nightly", "patch"],
+    ["an explicit version with a quote, which would corrupt JSON", "1.2.3", '1.3.0-"rc"'],
+    ["an explicit version with a backslash, which would corrupt JSON", "1.2.3", "1.3.0-rc\\"],
+    ["an explicit version with a space", "1.2.3", "1.3.0-rc 1"],
+  ])("rejects %s", (_case, current, bump) => {
+    expect(() => nextVersion(current, bump)).toThrow()
   })
 })
 

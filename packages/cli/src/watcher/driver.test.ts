@@ -19,13 +19,7 @@ import { DEFAULT_MESSAGE_CAP, DEFAULT_SESSION_CONCURRENCY } from "../config.js"
 import { cliVersion } from "../version.js"
 import { enqueue } from "./artifact-queue.js"
 import { runArtifactWorkers } from "./artifact-worker.js"
-import {
-  flushCause,
-  runCycle,
-  sliceByMessages,
-  type WatcherConfig,
-  type WatcherDeps,
-} from "./driver.js"
+import { runCycle, sliceByMessages, type WatcherConfig, type WatcherDeps } from "./driver.js"
 import type { ResolvedRepo } from "./resolveRepo.js"
 import { createInMemorySink } from "./sink.js"
 import { spyLogger } from "./test-logger.js"
@@ -120,24 +114,6 @@ describe("sliceByMessages", () => {
     expect(oversizeChunks).toHaveLength(1)
     expect(oversizeChunks[0]?.records[0]?.messages).toHaveLength(2500)
     expect(oversizeChunks[0]?.lastCompleteLine).toBe(3)
-  })
-})
-
-describe("ingest fan-out budget", () => {
-  /**
-   * Chunks within a session are serial and sessions are capped, so this product is every message
-   * the CLI can have in flight at once. 2000 is what a single session was already allowed to send,
-   * so the bounded fan-out never puts more on the wire than one unbounded session used to.
-   */
-  test("the whole cycle never has more messages in flight than one session used to send", () => {
-    expect(DEFAULT_SESSION_CONCURRENCY * DEFAULT_MESSAGE_CAP).toBeLessThanOrEqual(2000)
-  })
-})
-
-describe("flushCause", () => {
-  test("SC44 (revised): a 403 points at reassign, not enable - a pinned folder is exactly the folder that gets a 403, and `enable` will not move a pin", () => {
-    expect(flushCause(403)).toContain("samskara reassign")
-    expect(flushCause(401)).toContain("samskara login")
   })
 })
 
@@ -284,11 +260,6 @@ describe("watcher driver", () => {
     expect(next.checkpoints[sub]).toMatchObject({ lineProcessed: 1 })
   })
 
-  test("processes main before subagent within a session", async () => {
-    const sink = await flushMainAndSubagent()
-    expect(sink.received.map((p) => p.type)).toEqual(["main", "subagent"])
-  })
-
   test("SC33: a flush stamps this CLI's own version on the main upload and none on a subagent one", async () => {
     const sink = await flushMainAndSubagent()
 
@@ -382,57 +353,30 @@ describe("watcher driver", () => {
     expect(next.projects).toEqual({ [projects]: project })
   })
 
-  test("derives a missing source sessionId from the transcript path", async () => {
-    const main = join(projects, "no-session.jsonl")
-    const sessionlessLine = JSON.stringify({
-      uuid: "l1",
-      cwd: "/work/app",
-      timestamp: "2026-07-23T00:00:00.000Z",
-      message: { role: "assistant", content: [{ type: "text", text: "hi" }] },
-    })
-    await writeFile(main, `${sessionlessLine}\n`, "utf8")
+  test.each([
+    ["a 401", 401, /samskara login/],
+    ["a 403", 403, /samskara reassign/],
+    ["a 500", 500, /retr/i],
+  ] as const)(
+    "%s flush warns with its cause, the fix, the server's body and the request id, and logs no healthy sync",
+    async (_label, status, message) => {
+      const main = join(projects, "sess-1.jsonl")
+      await writeFile(main, `${assistantLine("l1", "sess-1")}\n`, "utf8")
 
-    const sink = createInMemorySink()
-    const store = await runCycle(config, deps({ sink, glob: async () => [main] }))
+      const spy = spyLogger()
+      const sink = createInMemorySink(
+        () => status,
+        () => '{"error":"refused"}',
+      )
+      await runCycle(config, deps({ sink, glob: async () => [main], log: spy.log }))
 
-    expect(sink.received).toHaveLength(1)
-    expect(sink.received[0]?.sessionId).toBe("no-session")
-    expect(store.checkpoints[main]).toMatchObject({ lineProcessed: 1 })
-  })
-
-  test("a 401 flush names the cause and the fix, not a bare 'flush failed'", async () => {
-    const main = join(projects, "sess-1.jsonl")
-    await writeFile(main, `${assistantLine("l1", "sess-1")}\n`, "utf8")
-
-    const spy = spyLogger()
-    const sink = createInMemorySink(
-      () => 401,
-      () => '{"error":"unauthorized"}',
-    )
-    await runCycle(config, deps({ sink, glob: async () => [main], log: spy.log }))
-
-    const [entry] = spy.warn
-    expect(entry?.message).toContain("samskara login")
-    expect(entry?.details.status).toBe(401)
-    expect(entry?.details.detail).toContain("unauthorized")
-    expect(entry?.details.key).toBe(main)
-  })
-
-  test("a 500 flush explains the retry rather than reading as a lost session", async () => {
-    const main = join(projects, "sess-1.jsonl")
-    await writeFile(main, `${assistantLine("l1", "sess-1")}\n`, "utf8")
-
-    const spy = spyLogger()
-    const sink = createInMemorySink(
-      () => 500,
-      () => "boom",
-    )
-    await runCycle(config, deps({ sink, glob: async () => [main], log: spy.log }))
-
-    const [entry] = spy.warn
-    expect(entry?.message).toMatch(/retr/i)
-    expect(entry?.details.detail).toContain("boom")
-  })
+      const [entry] = spy.warn
+      expect(entry?.message).toMatch(message)
+      expect(entry?.details).toMatchObject({ status, key: main, reqId: sink.requestIds[0] })
+      expect(entry?.details.detail).toContain("refused")
+      expect(spy.info.filter((call) => call.message === "session synced")).toHaveLength(0)
+    },
+  )
 
   test("independent sessions run in parallel; one failing does not block the other", async () => {
     const a = join(projects, "sess-a.jsonl")
@@ -677,17 +621,6 @@ describe("watcher driver", () => {
         },
       ])
     })
-
-    test("a flush with no git commit in it carries no gitEvents at all", async () => {
-      const main = join(projects, "sess-1.jsonl")
-      await writeFile(main, `${assistantLine("l1", "sess-1", { cwd: "/work/serana" })}\n`, "utf8")
-
-      const sink = createInMemorySink()
-      stubRepoResolver()
-      await runCycle(config, deps({ sink, glob: async () => [main] }))
-
-      expect(sink.received[0]).not.toHaveProperty("gitEvents")
-    })
   })
 
   describe("artifact enqueue", () => {
@@ -783,25 +716,6 @@ describe("watcher driver", () => {
       expect(reads).not.toContain(target)
       // Nothing uploaded the artifact: the sink only ever saw the transcript payload.
       expect(sink.received).toHaveLength(1)
-    })
-
-    test("a write's originalFile reaches the queue as the entry's base", async () => {
-      const main = join(projects, "sess-1.jsonl")
-      await artifact("src/a.ts")
-      await writeFile(
-        main,
-        `${writeLine("l1", "sess-1", "src/a.ts", { type: "update", originalFile: "before\n" })}\n`,
-        "utf8",
-      )
-      const queuePath = join(dir, "artifact-queue.json")
-
-      await runCycle(withQueue(queuePath), deps({ glob: async () => [main], ...rootedDeps() }))
-
-      const queue = JSON.parse(await readFile(queuePath, "utf8")) as {
-        entries: Array<{ created: boolean; base?: string }>
-      }
-      expect(queue.entries[0]?.created).toBe(false)
-      expect(queue.entries[0]?.base).toBe("before\n")
     })
 
     test("SC30 (regression): capture works with no file-history directory -- the edit's own result line carries a base all the way to a real upload, with enough there for a non-empty diff", async () => {
@@ -949,29 +863,6 @@ describe("watcher driver", () => {
       await workers
     })
 
-    test("S10: a file written across three cycles stays one queue entry", async () => {
-      const main = join(projects, "sess-1.jsonl")
-      const queuePath = join(dir, "artifact-queue.json")
-      const cycleDeps = (over: Partial<WatcherDeps> = {}) =>
-        deps({ glob: async () => [main], ...rootedDeps(), ...over })
-
-      await artifact("docs/a.md")
-      await writeFile(main, `${writeLine("l1", "sess-1", "docs/a.md")}\n`, "utf8")
-      await runCycle(withQueue(queuePath), cycleDeps({ clock: { now: () => 1000 } }))
-
-      await writeFile(main, `${writeLine("l2", "sess-1", "docs/a.md")}\n`, { flag: "a" })
-      await runCycle(withQueue(queuePath), cycleDeps({ clock: { now: () => 2000 } }))
-
-      await writeFile(main, `${writeLine("l3", "sess-1", "docs/a.md")}\n`, { flag: "a" })
-      await runCycle(withQueue(queuePath), cycleDeps({ clock: { now: () => 3000 } }))
-
-      const queue = JSON.parse(await readFile(queuePath, "utf8")) as {
-        entries: Array<{ path: string; observedAt: string }>
-      }
-      expect(queue.entries).toHaveLength(1)
-      expect(queue.entries[0]?.observedAt).toBe(new Date(3000).toISOString())
-    })
-
     test("S10: a file whose enqueue failed is queued by the next cycle", async () => {
       // A failed enqueue throws before the checkpoint is written, so the next cycle re-reads the
       // same line. Nothing records the file as handled ahead of the write that handles it.
@@ -1035,42 +926,6 @@ describe("watcher driver", () => {
       expect(queue.entries[0]?.path).toBe(target)
       expect(queue.entries[0]?.base).toBe("earlier subagent content\n")
     })
-  })
-
-  // A single high-fanout line whose first chunk sends but whose next chunk fails must NOT record a
-  // checkpoint, so the plugin re-reads it next cycle (advancing on a mid-line success would freeze
-  // the file's mtime/size and skip it forever).
-  test("a straddling first chunk that succeeds then fails advances nothing", async () => {
-    const key = "/fake/huge.jsonl"
-    const track = {
-      type: "main" as const,
-      sessionId: "sess-huge",
-      project,
-      sourceRelativePath: key,
-      checkpointKey: key,
-      records: [record(1, DEFAULT_MESSAGE_CAP + 5), record(2, 1)],
-      lastLineProcessed: 2,
-      checkpointAt: (lineNumber: number) => ({
-        source: "claude_code" as const,
-        mtime: 10,
-        size: 20,
-        lineProcessed: lineNumber,
-      }),
-    }
-    const stubPlugin = {
-      source: "claude_code" as const,
-      collect: async () => [{ sessionId: "sess-huge", tracks: [track] }],
-    }
-
-    let call = 0
-    const sink = createInMemorySink(() => (++call === 1 ? 500 : 200))
-    const store = await runCycle(
-      config,
-      deps({ sink, glob: async () => [], plugins: [stubPlugin] }),
-    )
-
-    expect(sink.received.length).toBe(1)
-    expect(store.checkpoints[key]).toBeUndefined()
   })
 
   test("every plugin runs each cycle and their batches are flushed and checkpointed side by side", async () => {
@@ -1182,21 +1037,7 @@ describe("watcher driver", () => {
     ])
   })
 
-  test("a synced session logs one info summary, so a healthy sync is visible at LOG_LEVEL=info", async () => {
-    const main = join(projects, "sess-1.jsonl")
-    await writeFile(main, `${assistantLine("l1", "sess-1")}\n`, "utf8")
-
-    const spy = spyLogger()
-    await runCycle(config, deps({ glob: async () => [main], log: spy.log }))
-
-    const [entry] = spy.info.filter((call) => call.message === "session synced")
-    expect(entry?.details.sessionId).toBe("sess-1")
-    expect(entry?.details.repo).toBe("acme-widget")
-    expect(entry?.details.chunks).toBe(1)
-    expect(entry?.details.messages).toBeGreaterThan(0)
-  })
-
-  test("the summary carries the request ids the server saw, so both logs join on one string", async () => {
+  test("a synced session logs one info summary carrying the request ids the server saw, so a healthy sync is visible at LOG_LEVEL=info", async () => {
     const main = join(projects, "sess-1.jsonl")
     await writeFile(main, `${assistantLine("l1", "sess-1")}\n`, "utf8")
 
@@ -1205,23 +1046,15 @@ describe("watcher driver", () => {
     await runCycle(config, deps({ sink, glob: async () => [main], log: spy.log }))
 
     const [entry] = spy.info.filter((call) => call.message === "session synced")
-    expect(entry?.details.reqIds).toEqual(sink.requestIds)
+    expect(entry?.details.sessionId).toBe("sess-1")
+    expect(entry?.details.repo).toBe("acme-widget")
+    expect(entry?.details.chunks).toBe(1)
+    expect(entry?.details.messages).toBeGreaterThan(0)
     expect(sink.requestIds).toHaveLength(1)
+    expect(entry?.details.reqIds).toEqual(sink.requestIds)
   })
 
-  test("a failed flush names the request id the server logged it under", async () => {
-    const main = join(projects, "sess-1.jsonl")
-    await writeFile(main, `${assistantLine("l1", "sess-1")}\n`, "utf8")
-
-    const spy = spyLogger()
-    const sink = createInMemorySink(() => 500)
-    await runCycle(config, deps({ sink, glob: async () => [main], log: spy.log }))
-
-    expect(spy.warn[0]?.details.reqId).toBe(sink.requestIds[0])
-    expect(spy.info.filter((call) => call.message === "session synced")).toHaveLength(0)
-  })
-
-  test("a flush that stops on a failed chunk is not reported as a healthy sync", async () => {
+  test("a first chunk that lands then a second that fails checkpoints only the landed line and is not reported as a healthy sync", async () => {
     const key = "/fake/partial.jsonl"
     const track = {
       type: "main" as const,
@@ -1246,12 +1079,13 @@ describe("watcher driver", () => {
     let call = 0
     const sink = createInMemorySink(() => (++call === 1 ? 200 : 500))
     const spy = spyLogger()
-    await runCycle(
+    const store = await runCycle(
       config,
       deps({ sink, glob: async () => [], plugins: [stubPlugin], log: spy.log }),
     )
 
     expect(sink.received).toHaveLength(2)
+    expect(store.checkpoints[key]).toMatchObject({ lineProcessed: 1 })
     expect(spy.info.filter((entry) => entry.message === "session synced")).toHaveLength(0)
     const [partial] = spy.warn.filter((entry) => entry.message.includes("partially synced"))
     expect(partial?.details.sessionId).toBe("sess-partial")

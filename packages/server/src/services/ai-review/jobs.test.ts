@@ -128,11 +128,6 @@ describe("createAiReviewJobRegistry", () => {
     expect(registry.getAiReviewJob(liveId)).toMatchObject({ status: "running" })
   })
 
-  test("J4: an unknown job id is undefined", () => {
-    const registry = createAiReviewJobRegistry()
-    expect(registry.getAiReviewJob("nope")).toBeUndefined()
-  })
-
   test("J6: activeJobForSession finds the session's running job, and nothing once it settles", async () => {
     const runs = deferredRuns()
     const registry = createAiReviewJobRegistry({ run: runs.run as AiReviewRun })

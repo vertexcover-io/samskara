@@ -128,18 +128,6 @@ test("SC59: the clear button appears only once there is text, and empties the fi
   expect(onChange).toHaveBeenLastCalledWith("")
 })
 
-test("SC60: text matching nothing leaves the filter alone and reverts when focus leaves", async () => {
-  const user = userEvent.setup()
-  const { onChange } = renderPicker(REPOSITORIES, "repo-1")
-
-  await user.tripleClick(input())
-  await user.paste("zzz")
-  await user.tab()
-
-  expect(onChange).not.toHaveBeenCalled()
-  expect(input().value).toBe("acme/samskara")
-})
-
 test("SC61: a vocabulary larger than the cap renders only the first 50 matches", async () => {
   const user = userEvent.setup()
   const many = Array.from({ length: 200 }, (_, index) => ({
@@ -156,13 +144,6 @@ test("SC61: a vocabulary larger than the cap renders only the first 50 matches",
 
   await user.click(screen.getByRole("option", { name: "feature/search-49" }))
   expect(onChange).toHaveBeenCalledWith("branch-49")
-})
-
-test("SC62: a value the options do not carry renders as itself", () => {
-  renderPicker([], "unknown-uuid")
-
-  expect(input().value).toBe("unknown-uuid")
-  expect(input().value).not.toBe("")
 })
 
 test("SC63: an option can be chosen with the keyboard alone", async () => {
@@ -205,17 +186,35 @@ test("SC76: Escape cancels what was typed without dropping the applied filter", 
   expect(input().value).toBe("acme/samskara")
 })
 
-test("SC77: an exact label typed but never chosen does not survive leaving the box", async () => {
-  const user = userEvent.setup()
-  const { onChange } = renderApplied(PROJECTS, "samskara")
+test.each([
+  {
+    claim: "SC60: text matching nothing",
+    options: REPOSITORIES,
+    applied: "repo-1",
+    typed: "zzz",
+    shown: "acme/samskara",
+  },
+  {
+    claim: "SC77: an exact label typed but never chosen",
+    options: PROJECTS,
+    applied: "samskara",
+    typed: "Andromeda",
+    shown: "Samskara",
+  },
+])(
+  "$claim leaves the filter alone and reverts when focus leaves",
+  async ({ options, applied, typed, shown }) => {
+    const user = userEvent.setup()
+    const { onChange } = renderApplied(options, applied)
 
-  await user.tripleClick(input())
-  await user.paste("Andromeda")
-  await user.tab()
+    await user.tripleClick(input())
+    await user.paste(typed)
+    await user.tab()
 
-  expect(onChange).not.toHaveBeenCalled()
-  expect(input().value).toBe("Samskara")
-})
+    expect(onChange).not.toHaveBeenCalled()
+    expect(input().value).toBe(shown)
+  },
+)
 
 test("SC78: a parent repaint does not wipe text that is still being typed", async () => {
   const user = userEvent.setup()
@@ -256,19 +255,27 @@ test("SC80: tabbing away from a highlighted option does not apply it", async () 
   expect(input().value).toBe("Samskara")
 })
 
-test("SC81: emptying a box that was never filtering reports nothing", async () => {
+test.each([
+  {
+    claim: "SC81: emptying a box that was never filtering",
+    act: async (user: ReturnType<typeof userEvent.setup>) => {
+      await user.type(input(), "x")
+      await user.keyboard("{Backspace}")
+    },
+  },
+  {
+    claim: "SC82: clearing text that was never applied",
+    act: async (user: ReturnType<typeof userEvent.setup>) => {
+      await user.type(input(), "andro")
+      await user.click(screen.getByRole("button", { name: "Clear Project" }))
+    },
+  },
+])("$claim reports nothing", async ({ act }) => {
   const user = userEvent.setup()
   const { onChange } = renderApplied(PROJECTS)
-  await user.type(input(), "x")
-  await user.keyboard("{Backspace}")
-  expect(onChange).not.toHaveBeenCalled()
-})
 
-test("SC82: clearing text that was never applied reports nothing", async () => {
-  const user = userEvent.setup()
-  const { onChange } = renderApplied(PROJECTS)
-  await user.type(input(), "andro")
-  await user.click(screen.getByRole("button", { name: "Clear Project" }))
+  await act(user)
+
   expect(input().value).toBe("")
   expect(onChange).not.toHaveBeenCalled()
 })

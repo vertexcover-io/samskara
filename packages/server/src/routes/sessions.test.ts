@@ -270,14 +270,6 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     expect(filters.tags).toEqual(["a", "b", "c", "d"])
   })
 
-  test("ST5: an empty or malformed tags filter is refused rather than ignored", async () => {
-    const owner = await seedUser(db, 3202, "st5-bad")
-
-    expect((await request(db, owner, "?tags=")).status).toBe(400)
-    expect((await request(db, owner, "?tags=,")).status).toBe(400)
-    expect((await request(db, owner, "?tags=has%20space")).status).toBe(400)
-  })
-
   test("S20: project, user, and range each narrow the list on their own - an unfiltered request returns all four sessions", async () => {
     const owner = await seedUser(db, 1001, "owner")
     const maya = await seedUser(db, 1002, "maya")
@@ -442,7 +434,7 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     expect(idsOf(rows)).toEqual(["spoke-inside"])
   })
 
-  test("SA3, SA6: one message reports its own start and a count of one; no messages reports a null start and lists by updatedAt", async () => {
+  test("SA3, SA6, SC14: one message reports its own start and a count of one; no messages reports zero, status empty, a null start and lists by updatedAt", async () => {
     const owner = await seedUser(db, 1294, "duration-edge-owner")
     const projectId = await projectsRepo.upsert(db, {
       identity: { name: "Duration Edge", slug: "duration-edge" },
@@ -458,6 +450,7 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     expect(byId.get("one-message")?.messageCount).toBe(1)
     expect(byId.get("one-message")?.startedAt).toBe(new Date("2026-02-07T09:00:00Z").toISOString())
     expect(byId.get("no-messages")?.messageCount).toBe(0)
+    expect(byId.get("no-messages")?.status).toBe("empty")
     expect(byId.get("no-messages")?.startedAt).toBeNull()
     expect(byId.get("no-messages")?.lastActiveAt).toBe(
       new Date("2026-02-07T10:00:00Z").toISOString(),
@@ -479,7 +472,7 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     expect(idsOf(await listAs(db, owner, "?sort=oldest"))).toEqual(["tie-b", "tie-a"])
   })
 
-  test("keyword search, pagination, and structured validation use the paginated list envelope", async () => {
+  test("keyword search pages through the paginated list envelope, and a real leap day is a valid custom range", async () => {
     const owner = await seedUser(db, 1251, "search-owner")
     const projectId = await projectsRepo.upsert(db, {
       identity: { name: "Search", slug: "search" },
@@ -518,33 +511,44 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     expect(body.sessions[0]?.match?.sourceKind).toBe("session")
     expect(body.pagination).toEqual({ page: 2, limit: 1, total: 2, totalPages: 2 })
 
-    for (const query of [
-      "?pr=01",
-      "?pr=2147483648",
-      "?commit=not-a-sha",
-      "?q=OR",
-      "?q=___",
-      "?q=auth_guard",
-      "?q=auth+-___",
-    ]) {
-      const invalid = await request(db, owner, query)
-      expect(invalid.status).toBe(400)
-    }
-
-    for (const query of [
-      "?range=custom&from=2026-02-30&to=2026-03-01&tz=UTC",
-      "?range=custom&from=2026-99-99&to=2027-01-01&tz=UTC",
-    ]) {
-      const invalid = await request(db, owner, query)
-      expect(invalid.status).toBe(400)
-      expect(await invalid.json()).toEqual({ error: "invalidFilter" })
-    }
-
     const leapDay = await request(db, owner, "?range=custom&from=2024-02-29&to=2024-02-29&tz=UTC")
     expect(leapDay.status).toBe(200)
   })
 
-  test("keyword matches and headlines come only from the five approved source documents", async () => {
+  test.each([
+    ["ST5: an empty tags filter", "?tags=", "invalidTags"],
+    ["ST5: a tags filter holding only a comma", "?tags=,", "invalidTags"],
+    ["ST5: a tag holding a space", "?tags=has%20space", "invalidTags"],
+    ["S29: an unknown aiReview value", "?aiReview=maybe", "invalidAiReview"],
+    ["SC15: sort=tokens", "?sort=tokens", "invalidSort"],
+    ["S20: an unrecognized range", "?range=banana", "invalidRange"],
+    ["a zero-padded pr number", "?pr=01", "invalidPrNumber"],
+    ["a pr number past int4", "?pr=2147483648", "invalidPrNumber"],
+    ["a commit that is not a sha", "?commit=not-a-sha", "invalidCommit"],
+    ["a bare OR keyword", "?q=OR", "invalidSearchQuery"],
+    ["a keyword of only underscores", "?q=___", "invalidSearchQuery"],
+    ["a keyword holding an underscore", "?q=auth_guard", "invalidSearchQuery"],
+    ["a negated keyword of only underscores", "?q=auth+-___", "invalidSearchQuery"],
+    [
+      "a custom range starting on February 30th",
+      "?range=custom&from=2026-02-30&to=2026-03-01&tz=UTC",
+      "invalidFilter",
+    ],
+    [
+      "a custom range starting in month 99",
+      "?range=custom&from=2026-99-99&to=2027-01-01&tz=UTC",
+      "invalidFilter",
+    ],
+  ])("%s is refused with 400 rather than silently ignored", async (_label, query, error) => {
+    const owner = await seedUser(db, 1250, "invalid-filter-owner")
+
+    const res = await request(db, owner, query)
+
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error })
+  })
+
+  test("keyword matches and headlines come only from the five approved source documents, ranked title, PR, message, tool call, tool result", async () => {
     const owner = await seedUser(db, 1271, "five-source-owner")
     const projectId = await projectsRepo.upsert(db, {
       identity: { name: "Five", slug: "five" },
@@ -636,6 +640,15 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     }
     expect(await listAs(db, owner, "?q=rawneedle")).toEqual([])
     expect(await listAs(db, owner, "?q=commitneedle")).toEqual([])
+
+    const everywhere = "sessionneedle OR messageneedle OR prneedle OR callneedle OR resultneedle"
+    expect(idsOf(await listAs(db, owner, `?q=${encodeURIComponent(everywhere)}`))).toEqual([
+      "source-session",
+      "source-pr",
+      "source-message",
+      "source-call",
+      "source-result",
+    ])
   })
 
   test("S28: hasAiReview and the aiReview filter follow the ai-v1 row, not any review row", async () => {
@@ -682,13 +695,6 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     ])
   })
 
-  test("S29: an unknown aiReview value is rejected rather than silently ignored", async () => {
-    const owner = await seedUser(db, 1602, "ai-filter-owner")
-    const res = await request(db, owner, "?aiReview=maybe")
-    expect(res.status).toBe(400)
-    expect(await res.json()).toEqual({ error: "invalidAiReview" })
-  })
-
   test("SC13: a summary carries its message count, status and start, and nothing it no longer shows", async () => {
     const owner = await seedUser(db, 1301, "shape-owner")
     const projectId = await projectsRepo.upsert(db, {
@@ -732,36 +738,6 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     expect(summary).not.toHaveProperty("repo")
     expect(summary).not.toHaveProperty("durationMs")
     expect(summary).not.toHaveProperty("tokensTotal")
-  })
-
-  test("SC14: a session with no messages reports zero, empty and a null start", async () => {
-    const owner = await seedUser(db, 1401, "bare-owner")
-    const projectId = await projectsRepo.upsert(db, {
-      identity: { name: "Bare", slug: "bare" },
-      ownerId: owner,
-    })
-    await seedSession(db, {
-      id: "bare",
-      userId: owner,
-      projectId,
-      title: "Bare",
-      updatedAt: new Date("2026-02-06T00:00:00Z"),
-    })
-
-    const [summary] = await listAs(db, owner)
-
-    expect(summary?.messageCount).toBe(0)
-    expect(summary?.status).toBe("empty")
-    expect(summary?.startedAt).toBeNull()
-  })
-
-  test("SC15: sort=tokens is refused rather than silently ignored", async () => {
-    const owner = await seedUser(db, 1402, "sort-refusal-owner")
-
-    const res = await request(db, owner, "?sort=tokens")
-
-    expect(res.status).toBe(400)
-    expect(await res.json()).toEqual({ error: "invalidSort" })
   })
 
   test("SC16 (regression): every surviving filter still narrows the list", async () => {
@@ -870,63 +846,6 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     expect(idsOf(await listAs(db, granteeB, `?project=${projectId}`))).toEqual(["granted-session"])
   })
 
-  test("S22: an unauthenticated list read is 401, while a cli-audience bearer token reads the list so `samskara search` can run", async () => {
-    const owner = await seedUser(db, 1701, "guard-owner")
-    const app = buildApp(db, env)
-
-    const anonymous = await app.request("/api/sessions")
-    expect(anonymous.status).toBe(401)
-    expect(await anonymous.json()).toEqual({ error: "unauthorized" })
-
-    const cliToken = await signToken(env, { sub: owner, aud: "cli" })
-    const cli = await app.request("/api/sessions", {
-      headers: { authorization: `Bearer ${cliToken}` },
-    })
-    expect(cli.status).toBe(200)
-  })
-
-  test("S20: an unrecognized range is rejected by validation rather than silently widening the result", async () => {
-    const owner = await seedUser(db, 1801, "range-owner")
-
-    const res = await request(db, owner, "?range=banana")
-
-    expect(res.status).toBe(400)
-  })
-
-  test("SC27: the session list filters by project id and offers ids as filter values", async () => {
-    const owner = await seedUser(db, 1901, "sc27-owner")
-    const projectA = await projectsRepo.upsert(db, {
-      identity: { name: "Alpha", slug: "sc27-alpha" },
-      ownerId: owner,
-    })
-    const projectB = await projectsRepo.upsert(db, {
-      identity: { name: "Beta", slug: "sc27-beta" },
-      ownerId: owner,
-    })
-    await seedSession(db, {
-      id: "sc27-a",
-      userId: owner,
-      projectId: projectA,
-      title: "A",
-      updatedAt: new Date(),
-    })
-    await seedSession(db, {
-      id: "sc27-b",
-      userId: owner,
-      projectId: projectB,
-      title: "B",
-      updatedAt: new Date(),
-    })
-
-    expect(idsOf(await listAs(db, owner, `?project=${projectA}`))).toEqual(["sc27-a"])
-
-    const filters = await filtersAs(db, owner)
-    expect(filters.projects).toEqual([
-      { value: projectA, label: "Alpha" },
-      { value: projectB, label: "Beta" },
-    ])
-  })
-
   test("SC30: two visible projects with the same slug are two distinct filter options", async () => {
     const owner = await seedUser(db, 1911, "sc30-owner")
     const [org] = await db
@@ -966,27 +885,6 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     expect(idsOf(await listAs(db, owner, `?project=${personal}`))).toEqual(["sc30-personal"])
     expect(idsOf(await listAs(db, owner, `?project=${orgOwned}`))).toEqual(["sc30-org"])
   })
-
-  test("SC4: the list response no longer carries filterOptions", async () => {
-    const owner = await seedUser(db, 1930, "sc4-filters-owner")
-    const projectId = await projectsRepo.upsert(db, {
-      identity: { name: "SC4", slug: "sc4-filters" },
-      ownerId: owner,
-    })
-    await seedSession(db, {
-      id: "sc4-filters-session",
-      userId: owner,
-      projectId,
-      title: "SC4",
-      updatedAt: new Date(),
-    })
-
-    const res = await request(db, owner, "")
-
-    expect(res.status).toBe(200)
-    const body = (await res.json()) as Record<string, unknown>
-    expect(Object.keys(body).sort()).toEqual(["pagination", "sessions"])
-  })
 })
 
 describe.skipIf(!dockerAvailable())("GET /api/sessions/filters", () => {
@@ -1012,7 +910,7 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions/filters", () => {
     await db.delete(users)
   })
 
-  test("SC1: the filters endpoint returns the five option lists for what the caller can see", async () => {
+  test("FILTERS-SC1: the filters endpoint returns the five option lists for what the caller can see", async () => {
     const owner = await seedUser(db, 4001, "sc1-owner")
     const projectA = await projectsRepo.upsert(db, {
       identity: { name: "SC1 Alpha", slug: "sc1-alpha" },
@@ -1078,7 +976,7 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions/filters", () => {
     expect(body.tags).toEqual(["alpha", "beta"])
   })
 
-  test("SC2: a session the caller cannot see contributes nothing to the options", async () => {
+  test("FILTERS-SC2: a session the caller cannot see contributes nothing to the options", async () => {
     const owner = await seedUser(db, 4101, "sc2-owner")
     const stranger = await seedUser(db, 4102, "sc2-stranger")
     const visibleProject = await projectsRepo.upsert(db, {
@@ -1141,7 +1039,7 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions/filters", () => {
     expect(body.tags).not.toContain("hidden-tag")
   })
 
-  test("SC3: a repo reachable only through a commit or a pull request is still offered", async () => {
+  test("FILTERS-SC3: a repo reachable only through a commit or a pull request is still offered", async () => {
     const owner = await seedUser(db, 4201, "sc3-owner")
     const projectId = await projectsRepo.upsert(db, {
       identity: { name: "SC3", slug: "sc3" },
@@ -1192,33 +1090,6 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions/filters", () => {
       const repo = body.repositories.find((candidate) => candidate.repoName === repoName)
       expect(repo).toMatchObject({ host: "github.com", owner: "acme" })
     }
-  })
-
-  test("SC5: /filters resolves as its own route rather than as a session id", async () => {
-    const owner = await seedUser(db, 4301, "sc5-owner")
-
-    const res = await filtersRequest(db, owner)
-
-    expect(res.status).toBe(200)
-    const body = (await res.json()) as Record<string, unknown>
-    expect(body).not.toEqual({ error: "sessionNotFound" })
-    expect(Object.keys(body).sort()).toEqual(
-      ["authors", "branches", "projects", "repositories", "tags"].sort(),
-    )
-  })
-
-  test("SC6: the filters endpoint refuses an unauthenticated read and accepts a cli token", async () => {
-    const owner = await seedUser(db, 4401, "sc6-owner")
-    const app = buildApp(db, env)
-
-    const anonymous = await app.request("/api/sessions/filters")
-    expect(anonymous.status).toBe(401)
-
-    const cliToken = await signToken(env, { sub: owner, aud: "cli" })
-    const cli = await app.request("/api/sessions/filters", {
-      headers: { authorization: `Bearer ${cliToken}` },
-    })
-    expect(cli.status).toBe(200)
   })
 })
 
@@ -1671,26 +1542,6 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions/:id", () => {
     expect(granted.status).toBe(200)
   })
 
-  test("S41: a detail read with no cookie is 401 unauthorized before any lookup happens", async () => {
-    const res = await buildApp(db, env).request("/api/sessions/anything")
-
-    expect(res.status).toBe(401)
-    expect(await res.json()).toEqual({ error: "unauthorized" })
-  })
-
-  // The subject is a real seeded user, so the 401 can only be the audience -- not an unknown sub.
-  test("S43: a cli-audience token is 401 on the detail read, so widening the list route did not widen this one", async () => {
-    const owner = await seedUser(db, 2501, "detail-cli-owner")
-    const cliToken = await signToken(env, { sub: owner, aud: "cli" })
-
-    const res = await buildApp(db, env).request("/api/sessions/anything", {
-      headers: { authorization: `Bearer ${cliToken}` },
-    })
-
-    expect(res.status).toBe(401)
-    expect(await res.json()).toEqual({ error: "unauthorized" })
-  })
-
   test("S42: deleting a session takes everything it owns with it, so a replay re-ingests into an empty slot", async () => {
     const owner = await seedUser(db, 2401, "replay-owner")
     const projectId = await projectsRepo.upsert(db, {
@@ -1760,31 +1611,114 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions/:id", () => {
     expect(await db.select().from(sessions)).toHaveLength(1)
   })
 
-  test("S42: a web-audience token cannot delete, so the browser can never destroy captured history", async () => {
-    const owner = await seedUser(db, 2404, "web-token-owner")
+  const seedGuarded = async (): Promise<{ readonly cli: string; readonly web: string }> => {
+    const owner = await seedUser(db, 2601, "auth-owner")
     const projectId = await projectsRepo.upsert(db, {
-      identity: { name: "Web", slug: "web-delete" },
+      identity: { name: "Guarded", slug: "guarded" },
       ownerId: owner,
     })
     await seedSession(db, {
-      id: "web-guarded",
+      id: "guarded",
       userId: owner,
       projectId,
-      title: "Guarded",
+      title: "G",
       updatedAt: new Date(),
     })
+    return {
+      cli: await signToken(env, { sub: owner, aud: "cli" }),
+      web: await signToken(env, { sub: owner, aud: "web" }),
+    }
+  }
 
-    const webToken = await signToken(env, { sub: owner, aud: "web" })
-    const res = await buildApp(db, env).request("/api/sessions/web-guarded", {
+  const credentialHeaders = (
+    tokens: { readonly cli: string; readonly web: string },
+    as: "none" | "cli" | "web",
+  ): Record<string, string> => {
+    if (as === "cli") return { authorization: `Bearer ${tokens.cli}` }
+    if (as === "web") return { cookie: `session=${tokens.web}` }
+    return {}
+  }
+
+  test.each([
+    { label: "S22: the list", method: "GET", path: "/api/sessions", as: "none" },
+    {
+      label: "FILTERS-SC6: the filters endpoint",
+      method: "GET",
+      path: "/api/sessions/filters",
+      as: "none",
+    },
+    {
+      label: "S41: the detail, before any lookup",
+      method: "GET",
+      path: "/api/sessions/guarded",
+      as: "none",
+    },
+    {
+      label: "S43: the detail, so widening the list did not widen it",
+      method: "GET",
+      path: "/api/sessions/guarded",
+      as: "cli",
+    },
+    {
+      label: "S42: a delete, so the browser can never destroy captured history",
       method: "DELETE",
-      headers: { cookie: `session=${webToken}` },
+      path: "/api/sessions/guarded",
+      as: "web",
+    },
+    {
+      label: "a rename, which only the web UI edits",
+      method: "PATCH",
+      path: "/api/sessions/guarded",
+      as: "cli",
+    },
+  ] as const)(
+    "$label refuses $method $path with credentials $as as 401 unauthorized, and the session survives",
+    async ({ method, path, as }) => {
+      const tokens = await seedGuarded()
+
+      const res = await buildApp(db, env).request(path, {
+        method,
+        headers: credentialHeaders(tokens, as),
+      })
+
+      expect(res.status).toBe(401)
+      expect(await res.json()).toEqual({ error: "unauthorized" })
+      expect(await db.select().from(sessions)).toHaveLength(1)
+    },
+  )
+
+  test.each([
+    { method: "POST", path: "/api/auth/logout" },
+    { method: "POST", path: "/api/auth/cli-code" },
+    { method: "GET", path: "/api/artifacts/session/guarded/files/docs/a.md" },
+    { method: "GET", path: "/api/orgs" },
+    { method: "POST", path: "/api/orgs" },
+    { method: "GET", path: "/api/orgs/acme" },
+    { method: "PATCH", path: "/api/orgs/acme" },
+    { method: "GET", path: "/api/reviewer-options" },
+  ] as const)("the web-only $method $path refuses a cli token as 401", async ({ method, path }) => {
+    const tokens = await seedGuarded()
+
+    const res = await buildApp(db, env).request(path, {
+      method,
+      headers: credentialHeaders(tokens, "cli"),
     })
 
     expect(res.status).toBe(401)
-    expect(await db.select().from(sessions)).toHaveLength(1)
   })
 
-  test("SC2: a member of the owning org reads the org project's session list and detail; a non-member cannot", async () => {
+  test.each([
+    { label: "S22: the list, so `samskara search` can run", path: "/api/sessions" },
+    { label: "FILTERS-SC6: the filters endpoint", path: "/api/sessions/filters" },
+  ])("$label accepts a cli-audience bearer token", async ({ path }) => {
+    const tokens = await seedGuarded()
+
+    const res = await buildApp(db, env).request(path, { headers: credentialHeaders(tokens, "cli") })
+
+    expect(res.status).toBe(200)
+  })
+
+  test("ORG-SC2: a member of the owning org reads the org project's session list and detail; a non-member cannot", async () => {
     const member = await seedUser(db, 2501, "sc2-member")
     const outsider = await seedUser(db, 2502, "sc2-outsider")
     const [org] = await db
@@ -1944,7 +1878,7 @@ describe.skipIf(!dockerAvailable())("PATCH /api/sessions/:id", () => {
     expect((await tagsRequest(db, stranger, "st4-absent", { add: ["nope"] })).status).toBe(404)
   })
 
-  test("SC1: the owner sets a name and description, and a later read returns them", async () => {
+  test("RENAME-SC1: the owner sets a name and description, and a later read returns them", async () => {
     const owner = await seedUser(db, 3001, "sc1-owner")
     const projectId = await projectsRepo.upsert(db, {
       identity: { name: "SC1", slug: "sc1" },
@@ -1970,7 +1904,7 @@ describe.skipIf(!dockerAvailable())("PATCH /api/sessions/:id", () => {
     expect(body.session.description).toBe("A useful description")
   })
 
-  test("SC2: clearing the name restores the derived title", async () => {
+  test("RENAME-SC2: clearing the name restores the derived title", async () => {
     const owner = await seedUser(db, 3002, "sc2-owner")
     const projectId = await projectsRepo.upsert(db, {
       identity: { name: "SC2", slug: "sc2" },
@@ -1993,7 +1927,7 @@ describe.skipIf(!dockerAvailable())("PATCH /api/sessions/:id", () => {
     )
   })
 
-  test("SC3: the captured title is returned beside the human name", async () => {
+  test("RENAME-SC3: the captured title is returned beside the human name", async () => {
     const owner = await seedUser(db, 3003, "sc3-owner")
     const projectId = await projectsRepo.upsert(db, {
       identity: { name: "SC3", slug: "sc3" },
@@ -2014,7 +1948,7 @@ describe.skipIf(!dockerAvailable())("PATCH /api/sessions/:id", () => {
     expect(body.session.aiTitle).toBe("Captured title")
   })
 
-  test("SC4: a caller who cannot see the session is told it does not exist", async () => {
+  test("RENAME-SC4: a caller who cannot see the session is told it does not exist", async () => {
     const owner = await seedUser(db, 3004, "sc4-owner")
     const stranger = await seedUser(db, 3005, "sc4-stranger")
     const projectId = await projectsRepo.upsert(db, {
@@ -2036,7 +1970,7 @@ describe.skipIf(!dockerAvailable())("PATCH /api/sessions/:id", () => {
     expect((await storedRow(db, "sc4-session")).name).toBeNull()
   })
 
-  test("SC5: a project member who does not own the session is refused", async () => {
+  test("RENAME-SC5: a project member who does not own the session is refused", async () => {
     const owner = await seedUser(db, 3006, "sc5-owner")
     const member = await seedUser(db, 3007, "sc5-member")
     const projectId = await projectsRepo.upsert(db, {
@@ -2059,7 +1993,7 @@ describe.skipIf(!dockerAvailable())("PATCH /api/sessions/:id", () => {
     expect((await storedRow(db, "sc5-session")).name).toBeNull()
   })
 
-  test("SC6: a super admin edits a session belonging to someone else", async () => {
+  test("RENAME-SC6: a super admin edits a session belonging to someone else", async () => {
     const owner = await seedUser(db, 3008, "sc6-owner")
     const admin = await seedUser(db, 3009, "sc6-admin", true)
     const projectId = await projectsRepo.upsert(db, {
@@ -2081,7 +2015,7 @@ describe.skipIf(!dockerAvailable())("PATCH /api/sessions/:id", () => {
     expect(body.session.name).toBe("Admin renamed")
   })
 
-  test("SC8: a body the schema rejects is answered 400", async () => {
+  test("RENAME-SC8: a body the schema rejects is answered 400", async () => {
     const owner = await seedUser(db, 3010, "sc8-owner")
     const projectId = await projectsRepo.upsert(db, {
       identity: { name: "SC8", slug: "sc8" },
@@ -2101,43 +2035,36 @@ describe.skipIf(!dockerAvailable())("PATCH /api/sessions/:id", () => {
     expect((await storedRow(db, "sc8-session")).name).toBeNull()
   })
 
-  test("SC9: a session is found by a word that appears only in its name", async () => {
-    const owner = await seedUser(db, 3011, "sc9-owner")
-    const projectId = await projectsRepo.upsert(db, {
-      identity: { name: "SC9", slug: "sc9" },
-      ownerId: owner,
-    })
-    await seedSession(db, {
-      id: "sc9-session",
-      userId: owner,
-      projectId,
-      title: "Ordinary",
-      updatedAt: new Date(),
-    })
-    await patchRequest(db, owner, "sc9-session", { name: "Zylophonic marker" })
+  test.each([
+    { id: "RENAME-SC9", field: "name", text: "Zylophonic marker", word: "zylophonic" },
+    {
+      id: "RENAME-SC10",
+      field: "description",
+      text: "Quinjectory outlier note",
+      word: "quinjectory",
+    },
+  ])(
+    "$id: a session is found by a word that appears only in its $field",
+    async ({ field, text, word }) => {
+      const owner = await seedUser(db, 3011, "search-edit-owner")
+      const projectId = await projectsRepo.upsert(db, {
+        identity: { name: "Search edit", slug: "search-edit" },
+        ownerId: owner,
+      })
+      await seedSession(db, {
+        id: "search-edit-session",
+        userId: owner,
+        projectId,
+        title: "Ordinary",
+        updatedAt: new Date(),
+      })
+      await patchRequest(db, owner, "search-edit-session", { [field]: text })
 
-    expect(idsOf(await listAs(db, owner, "?q=zylophonic"))).toEqual(["sc9-session"])
-  })
+      expect(idsOf(await listAs(db, owner, `?q=${word}`))).toEqual(["search-edit-session"])
+    },
+  )
 
-  test("SC10: a session is found by a word that appears only in its description", async () => {
-    const owner = await seedUser(db, 3012, "sc10-owner")
-    const projectId = await projectsRepo.upsert(db, {
-      identity: { name: "SC10", slug: "sc10" },
-      ownerId: owner,
-    })
-    await seedSession(db, {
-      id: "sc10-session",
-      userId: owner,
-      projectId,
-      title: "Ordinary",
-      updatedAt: new Date(),
-    })
-    await patchRequest(db, owner, "sc10-session", { description: "Quinjectory outlier note" })
-
-    expect(idsOf(await listAs(db, owner, "?q=quinjectory"))).toEqual(["sc10-session"])
-  })
-
-  test("SC11: editing the name leaves the session's updated time alone", async () => {
+  test("RENAME-SC11: editing the name leaves the session's updated time alone", async () => {
     const owner = await seedUser(db, 3013, "sc11-owner")
     const projectId = await projectsRepo.upsert(db, {
       identity: { name: "SC11", slug: "sc11" },
@@ -2158,7 +2085,7 @@ describe.skipIf(!dockerAvailable())("PATCH /api/sessions/:id", () => {
     expect((await storedRow(db, "sc11-session")).updatedAt).toEqual(originalUpdatedAt)
   })
 
-  test("SC12: canRename answers true for the owner and false for another member", async () => {
+  test("RENAME-SC12: canRename answers true for the owner and false for another member", async () => {
     const owner = await seedUser(db, 3014, "sc12-owner")
     const member = await seedUser(db, 3015, "sc12-member")
     const projectId = await projectsRepo.upsert(db, {
@@ -2185,7 +2112,7 @@ describe.skipIf(!dockerAvailable())("PATCH /api/sessions/:id", () => {
     expect(memberBody.session.canRename).toBe(false)
   })
 
-  test("SC13 (regression): ingest still sets the captured title and leaves the human name alone", async () => {
+  test("RENAME-SC13 (regression): ingest still sets the captured title and leaves the human name alone", async () => {
     const owner = await seedUser(db, 3016, "sc13-owner")
     const projectId = await projectsRepo.upsert(db, {
       identity: { name: "SC13", slug: "sc13" },

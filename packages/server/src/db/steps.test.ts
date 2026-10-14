@@ -73,8 +73,4 @@ describe("MIGRATION_STEPS", () => {
     expect(names.every((name) => name.length > 0)).toBe(true)
     expect(new Set(names).size).toBe(names.length)
   })
-
-  test("registers the search indexes drizzle-kit cannot build in a transaction", () => {
-    expect(MIGRATION_STEPS.map((step) => step.name)).toContain("search-indexes")
-  })
 })

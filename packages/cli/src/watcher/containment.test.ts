@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises"
-import { homedir, tmpdir } from "node:os"
+import { tmpdir } from "node:os"
 import { basename, dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
@@ -13,6 +13,67 @@ const write = async (path: string, body = "bytes"): Promise<string> => {
   await writeFile(path, body, "utf8")
   return path
 }
+
+const SECRET = /secret/
+const NOISE = /noise/
+
+const denied: ReadonlyArray<{
+  readonly kind: string
+  readonly path: string
+  readonly reason: RegExp
+}> = [
+  ...[
+    ".env",
+    ".netrc",
+    ".npmrc",
+    ".pypirc",
+    ".git-credentials",
+    ".htpasswd",
+    "id_rsa",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+    "credentials",
+    "credentials.json",
+  ].map((name) => ({ kind: "a secret name", path: `keys/${name}`, reason: SECRET })),
+  { kind: "a suffixed environment file", path: ".env.production", reason: SECRET },
+  ...[".pem", ".key", ".p12", ".pfx", ".jks", ".keystore", ".kdbx", ".asc", ".gpg"].map(
+    (extension) => ({
+      kind: "a secret extension",
+      path: `keys/server${extension}`,
+      reason: SECRET,
+    }),
+  ),
+  ...[".ssh", ".gnupg", ".aws", ".kube", ".docker"].map((dir) => ({
+    kind: "a secret directory at any depth",
+    path: `deploy/hosts/${dir}/material`,
+    reason: SECRET,
+  })),
+  ...[
+    "run.log",
+    "tsconfig.tsbuildinfo",
+    "daemon.pid",
+    ".DS_Store",
+    "deps.lock",
+    "package-lock.json",
+    "bun.lock",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+  ].map((name) => ({ kind: "a noise file", path: `noise/${name}`, reason: NOISE })),
+  ...[
+    "node_modules",
+    "vendor",
+    ".venv",
+    "target",
+    "dist",
+    "build",
+    "out",
+    ".next",
+    ".turbo",
+    "coverage",
+    "__pycache__",
+  ].map((dir) => ({ kind: "an excluded directory", path: `app/${dir}/file.txt`, reason: NOISE })),
+]
 
 describe("shouldCaptureArtifacts", () => {
   let base: string
@@ -54,21 +115,12 @@ describe("shouldCaptureArtifacts", () => {
         "src/index.ts",
         "src/distribution.ts",
         "packages/web/src/App.tsx",
-        "packages/web/node_modules/pkg/index.js",
         "docs/adr-001.md",
         "docs/real.md",
-        "docs/.DS_Store",
         "building/plan.md",
         ".harness/features/x/design.md",
-        "node_modules/pkg/index.js",
-        "dist/bundle.js",
-        ".env",
-        ".env.production",
         ".env.log",
-        "debug.log",
-        "bun.lock",
-        "package-lock.json",
-        "deploy/.ssh/id_rsa",
+        ...denied.map((row) => row.path),
       ].map((relative) => write(join(root, relative))),
     )
     await write(join(outside, "secret.md"))
@@ -91,156 +143,18 @@ describe("shouldCaptureArtifacts", () => {
     ["a gitignored plan", ".harness/features/x/design.md"],
   ]
 
-  const rejected: ReadonlyArray<readonly [string, string]> = [
-    ["a dependency directory", "node_modules/pkg/index.js"],
-    ["a nested dependency directory", "packages/web/node_modules/pkg/index.js"],
-    ["a build output directory", "dist/bundle.js"],
-    ["an environment file", ".env"],
-    ["a suffixed environment file", ".env.production"],
-    ["a lockfile", "bun.lock"],
-    ["an npm lockfile", "package-lock.json"],
-    ["a log file", "debug.log"],
-    ["a macOS directory turd", "docs/.DS_Store"],
-  ]
-
   test.each(accepted)("S6: accepts %s", async (_label, relative) => {
     const decision = await inRoot(join(root, relative))
 
     expect(decision).toEqual({ ok: true, path: join(root, relative), relativePath: relative })
   })
 
-  test.each(rejected)("S6: rejects %s", async (_label, relative) => {
-    expect((await inRoot(join(root, relative))).ok).toBe(false)
+  test.each(denied)("S6: rejects $path as $kind", async ({ path, reason }) => {
+    expect(await rejection(join(root, path))).toMatch(reason)
   })
 
   test("S6: a sibling directory outside the root is rejected", async () => {
     expect(await rejection(join(outside, "secret.md"))).toMatch(/outside the project root/)
-  })
-
-  test("S6: every secret name is rejected", async () => {
-    const names = [
-      ".env",
-      ".netrc",
-      ".npmrc",
-      ".pypirc",
-      ".git-credentials",
-      ".htpasswd",
-      "id_rsa",
-      "id_dsa",
-      "id_ecdsa",
-      "id_ed25519",
-      "credentials",
-      "credentials.json",
-    ]
-    const paths = await Promise.all(names.map((name) => write(join(root, "keys", name))))
-
-    const decisions = await shouldCaptureArtifacts(paths, {
-      projectRoot: root,
-      allowScratch: false,
-    })
-
-    expect(decisions.map((decision, index) => [names[index], decision.ok])).toEqual(
-      names.map((name) => [name, false]),
-    )
-  })
-
-  test("S6: every secret extension is rejected", async () => {
-    const extensions = [
-      ".pem",
-      ".key",
-      ".p12",
-      ".pfx",
-      ".jks",
-      ".keystore",
-      ".kdbx",
-      ".asc",
-      ".gpg",
-    ]
-    const paths = await Promise.all(
-      extensions.map((extension) => write(join(root, "keys", `server${extension}`))),
-    )
-
-    const decisions = await shouldCaptureArtifacts(paths, {
-      projectRoot: root,
-      allowScratch: false,
-    })
-
-    expect(decisions.map((decision, index) => [extensions[index], decision.ok])).toEqual(
-      extensions.map((extension) => [extension, false]),
-    )
-  })
-
-  test("S6: a secret directory is rejected at any depth, not just one level under home", async () => {
-    const dirs = [".ssh", ".gnupg", ".aws", ".kube", ".docker"]
-    const paths = await Promise.all(
-      dirs.map((dir) => write(join(root, "deploy", "hosts", dir, "material"))),
-    )
-
-    const decisions = await shouldCaptureArtifacts(paths, {
-      projectRoot: root,
-      allowScratch: false,
-    })
-
-    expect(decisions.map((decision, index) => [dirs[index], decision.ok])).toEqual(
-      dirs.map((dir) => [dir, false]),
-    )
-    expect(await rejection(join(root, "deploy", ".ssh", "id_rsa"))).toMatch(/secret/)
-  })
-
-  test("S6: a private key under the home directory is never captured", async () => {
-    // Rejected whether or not this machine has one: absent it does not resolve, present it is
-    // outside the project root.
-    expect((await inRoot(join(homedir(), ".ssh", "id_rsa"))).ok).toBe(false)
-  })
-
-  test("S6: every noise glob is rejected", async () => {
-    const names = [
-      "run.log",
-      "tsconfig.tsbuildinfo",
-      "daemon.pid",
-      ".DS_Store",
-      "deps.lock",
-      "package-lock.json",
-      "bun.lock",
-      "yarn.lock",
-      "pnpm-lock.yaml",
-    ]
-    const paths = await Promise.all(names.map((name) => write(join(root, "noise", name))))
-
-    const decisions = await shouldCaptureArtifacts(paths, {
-      projectRoot: root,
-      allowScratch: false,
-    })
-
-    expect(decisions.map((decision, index) => [names[index], decision.ok])).toEqual(
-      names.map((name) => [name, false]),
-    )
-  })
-
-  test("S6: every excluded directory is rejected", async () => {
-    const dirs = [
-      "node_modules",
-      "vendor",
-      ".venv",
-      "target",
-      "dist",
-      "build",
-      "out",
-      ".next",
-      ".turbo",
-      "coverage",
-      "__pycache__",
-    ]
-    const paths = await Promise.all(dirs.map((dir) => write(join(root, "app", dir, "file.txt"))))
-
-    const decisions = await shouldCaptureArtifacts(paths, {
-      projectRoot: root,
-      allowScratch: false,
-    })
-
-    expect(decisions.map((decision, index) => [dirs[index], decision.ok])).toEqual(
-      dirs.map((dir) => [dir, false]),
-    )
   })
 
   test("S6: a file that is both a secret and noise reports as a secret", async () => {
@@ -318,12 +232,16 @@ describe("shouldCaptureArtifacts", () => {
     await rm(tmpRoot, { recursive: true, force: true })
   })
 
-  test("S6: one decision per input path, in the same order", async () => {
+  test("S6: one decision per input path, in input order, because the driver pairs them by index", async () => {
     const decisions = await shouldCaptureArtifacts(
-      [join(root, "src", "index.ts"), join(root, ".env"), join(root, "docs", "adr-001.md")],
+      [join(root, "src", "index.ts"), join(root, "docs", "adr-001.md"), join(root, ".env")],
       { projectRoot: root, allowScratch: false },
     )
 
-    expect(decisions.map((decision) => decision.ok)).toEqual([true, false, true])
+    expect(decisions.map((decision) => (decision.ok ? decision.relativePath : "denied"))).toEqual([
+      join("src", "index.ts"),
+      join("docs", "adr-001.md"),
+      "denied",
+    ])
   })
 })

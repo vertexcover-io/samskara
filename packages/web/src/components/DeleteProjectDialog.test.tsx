@@ -56,26 +56,31 @@ const arm = async (slug = PROJECT.slug) => {
   await userEvent.click(screen.getByRole("button", { name: /delete project/i }))
 }
 
-test("SC50: a refused delete says the account may no longer do it, and stays on the page", async () => {
-  stubDelete(jsonResponse(403, { error: "forbidden" }))
+test.each([
+  {
+    claim: "SC50: a refused delete says the account may no longer do it",
+    status: 403,
+    error: "forbidden",
+    says: /no longer be deleted by this account/i,
+    never: /500/,
+  },
+  {
+    claim: "SC51: any other failure surfaces the server's own message",
+    status: 500,
+    error: "internal",
+    says: /500/,
+    never: /no longer be deleted/i,
+  },
+])("$claim, and the dialog stays open", async ({ status, error, says, never }) => {
+  stubDelete(jsonResponse(status, { error }))
   renderDialog()
 
   await arm()
 
   const alert = await screen.findByRole("alert")
-  expect(alert).toHaveTextContent(/no longer be deleted by this account/i)
+  expect(alert).toHaveTextContent(says)
+  expect(alert).not.toHaveTextContent(never)
   expect(screen.getByRole("button", { name: /delete project/i })).toBeInTheDocument()
-})
-
-test("SC51: a delete that fails for any other reason surfaces the server's own message", async () => {
-  stubDelete(jsonResponse(500, { error: "internal" }))
-  renderDialog()
-
-  await arm()
-
-  const alert = await screen.findByRole("alert")
-  expect(alert).toHaveTextContent(/500/)
-  expect(alert).not.toHaveTextContent(/no longer be deleted/i)
 })
 
 test("SC52: a successful delete calls the project's own endpoint once", async () => {

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto"
 import { createLogger } from "@samskara/core"
-import { eq } from "drizzle-orm"
+import { eq, ne } from "drizzle-orm"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import { buildApp } from "../app.js"
 import type { Db } from "../db/client.js"
@@ -66,6 +66,7 @@ describe.skipIf(!dockerAvailable())("artifacts route", () => {
   let app: ReturnType<typeof buildApp>
   let cliToken: string
   let webToken: string
+  let ownerId: string
 
   /** `as: "none"` sends no Authorization header at all; omitting it uses the CLI token. */
   const post = (payload: unknown, as: string | "none" = "") =>
@@ -91,6 +92,7 @@ describe.skipIf(!dockerAvailable())("artifacts route", () => {
       .values({ githubId: 9191, githubLogin: "artifact-user" })
       .returning()
     if (!user) throw new Error("seed user failed")
+    ownerId = user.id
     const [project] = await db
       .insert(projects)
       .values({ name: "widget", slug: "artifact-widget", ownerUserId: user.id })
@@ -114,6 +116,9 @@ describe.skipIf(!dockerAvailable())("artifacts route", () => {
 
   beforeEach(async () => {
     await db.delete(artifact)
+    await db.delete(sessions).where(ne(sessions.userId, ownerId))
+    await db.delete(projects).where(ne(projects.ownerUserId, ownerId))
+    await db.delete(users).where(ne(users.id, ownerId))
   })
 
   test("S26: an uploaded artifact is stored with its base, current content, and a server-rendered diff", async () => {
@@ -138,7 +143,7 @@ describe.skipIf(!dockerAvailable())("artifacts route", () => {
     expect(row.editCount).toBe(1)
   })
 
-  test("S26: a binary artifact round-trips its exact bytes through base64", async () => {
+  test("S26: a binary artifact round-trips its exact bytes through base64 and stores no diff", async () => {
     // A NUL and a lone 0xFF: neither survives a UTF-8 round trip, so a text path would corrupt it.
     const bytes = Buffer.from([0x00, 0xff, 0x10, 0x00, 0x7f])
     const res = await post(
@@ -156,11 +161,13 @@ describe.skipIf(!dockerAvailable())("artifacts route", () => {
     const [row] = await db.select().from(artifact).where(eq(artifact.id, artifactId))
     expect(row?.currentContent?.equals(bytes)).toBe(true)
     expect(row?.isBinary).toBe(true)
+    expect(row?.diff).toBeNull()
   })
 
   test("S27: a second upload updates the current content but never the base", async () => {
     const first = await post(upload({ baseContent: "original", currentContent: "v1" }))
     expect(first.status).toBe(200)
+    expect(await first.json()).toMatchObject({ updated: false })
 
     const second = await post(upload({ baseContent: "IMPOSTOR", currentContent: "v2" }))
     expect(second.status).toBe(200)
@@ -183,19 +190,6 @@ describe.skipIf(!dockerAvailable())("artifacts route", () => {
     expect(rows[0]?.baseContent?.toString("utf8")).toBe("original")
   })
 
-  test("S28: the same artifact posted twice is one row", async () => {
-    const payload = upload()
-
-    const first = await post(payload)
-    expect(await first.json()).toMatchObject({ updated: false })
-
-    const second = await post(payload)
-    expect(await second.json()).toMatchObject({ updated: true })
-
-    const rows = await db.select().from(artifact).where(eq(artifact.sessionId, SESSION_ID))
-    expect(rows).toHaveLength(1)
-  })
-
   test("SC21: the first upload settles the base, and the stored diff runs from it to the new current", async () => {
     await post(upload({ baseContent: "base A\n", currentContent: "v1\n" }))
     const res = await post(upload({ baseContent: "base B impostor\n", currentContent: "v2\n" }))
@@ -205,6 +199,7 @@ describe.skipIf(!dockerAvailable())("artifacts route", () => {
     expect(rows[0]?.baseContent?.toString("utf8")).toBe("base A\n")
     expect(rows[0]?.diff).toContain("-base A")
     expect(rows[0]?.diff).toContain("+v2")
+    expect(rows[0]?.diff).not.toContain("base B impostor")
   })
 
   test("SC22: the first upload settles the change kind; created never later takes a base", async () => {
@@ -251,24 +246,6 @@ describe.skipIf(!dockerAvailable())("artifacts route", () => {
     expect(withoutBaseRow?.baseContent).toBeNull()
   })
 
-  test("SC25 (regression): a binary file uploads with no diff", async () => {
-    const bytes = Buffer.from([0x00, 0xff, 0x10, 0x00, 0x7f])
-    const res = await post(
-      upload({
-        encoding: "base64",
-        currentContent: bytes.toString("base64"),
-        currentHash: sha256(bytes),
-        baseContent: null,
-        mimeType: "application/octet-stream",
-      }),
-    )
-
-    expect(res.status).toBe(200)
-    const { artifactId } = (await res.json()) as { artifactId: string }
-    const [row] = await db.select().from(artifact).where(eq(artifact.id, artifactId))
-    expect(row?.diff).toBeNull()
-  })
-
   test("SC26: a payload carrying a client-computed diff is refused, not silently ignored", async () => {
     const res = await post({
       ...upload({ baseContent: null }),
@@ -276,16 +253,6 @@ describe.skipIf(!dockerAvailable())("artifacts route", () => {
     })
 
     expect(res.status).toBe(400)
-  })
-
-  test("SC26: a later upload re-renders the diff against the stored base, not the payload's", async () => {
-    await post(upload({ baseContent: "base A\n", currentContent: "v1\n" }))
-    const res = await post(upload({ baseContent: "base B impostor\n", currentContent: "v2\n" }))
-
-    expect(res.status).toBe(200)
-    const rows = await db.select().from(artifact).where(eq(artifact.sessionId, SESSION_ID))
-    expect(rows[0]?.diff).toContain("-base A")
-    expect(rows[0]?.diff).not.toContain("base B impostor")
   })
 
   test("S29: the same file captured by two sessions yields two independent rows", async () => {
@@ -349,10 +316,6 @@ describe.skipIf(!dockerAvailable())("artifacts route", () => {
     expect(
       await db.select().from(artifact).where(eq(artifact.sessionId, otherSessionId)),
     ).toHaveLength(0)
-
-    await db.delete(sessions).where(eq(sessions.id, otherSessionId))
-    await db.delete(projects).where(eq(projects.id, otherProject.id))
-    await db.delete(users).where(eq(users.id, otherUser.id))
   })
 
   test("S31: a payload whose hash does not match its content is refused", async () => {
@@ -413,7 +376,7 @@ describe.skipIf(!dockerAvailable())("artifacts route", () => {
     }
   })
 
-  test("S34: a range request is honoured, so a captured video can seek inside the frame", async () => {
+  test("S34: a range request on the by-path route is honoured, so a captured video can seek inside the frame", async () => {
     await post(upload({ currentContent: "0123456789" }))
 
     const res = await byPath("docs/notes.md", "", { range: "bytes=2-5" })
@@ -445,14 +408,10 @@ describe.skipIf(!dockerAvailable())("artifacts route", () => {
     expect((await byPath("docs/notes.md", "none")).status).toBe(401)
   })
 
-  test("S33: an unauthenticated caller cannot upload", async () => {
-    const res = await post(upload(), "none")
-    expect(res.status).toBe(401)
-  })
-
-  test("S33: a web-audience token cannot upload", async () => {
-    const webToken = await signToken(env, { sub: "someone", aud: "web" })
-    const res = await post(upload(), webToken)
-    expect(res.status).toBe(401)
+  test.each([
+    ["no Authorization header", () => "none"],
+    ["a web-audience token", () => webToken],
+  ])("S33: an upload carrying %s is 401", async (_label, token) => {
+    expect((await post(upload(), token())).status).toBe(401)
   })
 })

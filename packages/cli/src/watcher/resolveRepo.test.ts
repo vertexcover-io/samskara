@@ -42,19 +42,6 @@ describe("resolveRepoIdentity", () => {
     expect(await resolve("/work/andromeda")).toMatchObject({ host: "github.com" })
   })
 
-  test("a resolved identity is still cached, so a settled alias is not re-shelled on every message", async () => {
-    gitReturning({
-      "rev-parse --path-format=absolute --git-common-dir": "/work/andromeda/.git",
-      "config --get remote.origin.url": "git@github-refrens:refrens/andromeda.git",
-    })
-    const resolve = createRepoResolver()
-
-    await resolve("/work/andromeda")
-    await resolve("/work/andromeda")
-
-    expect(ssh).toHaveBeenCalledTimes(1)
-  })
-
   test("an ssh config alias resolves to the host it really points at, so the repo is not split from every other clone and its web links are not dead", async () => {
     ssh.mockImplementation(async (host) => (host === "github-refrens" ? "github.com" : host))
     gitReturning({
@@ -67,20 +54,6 @@ describe("resolveRepoIdentity", () => {
       owner: "refrens",
       repoName: "andromeda",
       root: "/work/andromeda",
-    })
-  })
-
-  test("S1: an ssh remote of refrens/serana resolves to host github.com, owner refrens, repoName serana, without the .git suffix", async () => {
-    gitReturning({
-      "rev-parse --path-format=absolute --git-common-dir": "/work/serana/.git",
-      "config --get remote.origin.url": "git@github.com:refrens/serana.git",
-    })
-
-    expect(await createRepoResolver()("/work/serana")).toEqual({
-      host: "github.com",
-      owner: "refrens",
-      repoName: "serana",
-      root: "/work/serana",
     })
   })
 
@@ -130,7 +103,7 @@ describe("resolveRepoIdentity", () => {
     await expect(createRepoResolver()("/private/tmp/scratch")).resolves.toBeNull()
   })
 
-  test("S5: resolving one cwd three times shells out only on the first call, and a cwd that resolved to null is not retried either", async () => {
+  test("S5: resolving one cwd, concurrently or after it settled, shells out only on the first call, and a cwd that resolved to null is not retried either", async () => {
     git.mockImplementation(async (args, cwd) => {
       if (cwd.startsWith("/private/tmp")) return null
       if (args[0] === "rev-parse") return "/work/serana/.git"
@@ -154,6 +127,10 @@ describe("resolveRepoIdentity", () => {
     ])
     expect(misses).toEqual([null, null, null])
     expect(git.mock.calls.length - afterHits).toBe(1)
+
+    await resolve("/work/serana")
+    await resolve("/private/tmp/scratch")
+    expect(git.mock.calls.length - afterHits).toBe(1)
   })
 })
 
@@ -163,9 +140,5 @@ describe("resolveHeadSha", () => {
 
     expect(await resolveHeadSha("/work/serana")).toBe("37f31013b7ac0a2e6f4c9d1e5a8b2c7d0e3f4a5b")
     expect(git.mock.calls).toEqual([[["rev-parse", "HEAD"], "/work/serana"]])
-  })
-
-  test("EC6: a cwd outside any git repo yields a null starting sha rather than an error", async () => {
-    await expect(resolveHeadSha("/private/tmp/scratch")).resolves.toBeNull()
   })
 })

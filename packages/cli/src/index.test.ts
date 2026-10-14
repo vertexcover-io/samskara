@@ -61,31 +61,6 @@ test("an unrelated argv[1] is not the entrypoint", () => {
   expect(isEntrypoint("/nope/does-not-exist", import.meta.url)).toBe(false)
 })
 
-test("SC7: a command run against a different server warns on stderr, naming both, and still does its job", () => {
-  const home = mkdtempSync(join(tmpdir(), "samskara-scope-e2e-"))
-  writeFileSync(
-    join(home, "config.json"),
-    JSON.stringify({ version: 1, apiUrl: "https://two.example", webUrl: "https://two.example" }),
-  )
-  writeFileSync(
-    join(home, "projects.json"),
-    JSON.stringify({ version: 1, apiBase: "https://one.example", projects: {} }),
-  )
-
-  const result = spawnSync("bun", [entry, "status"], {
-    encoding: "utf8",
-    env: { ...process.env, SAMSKARA_HOME: home },
-  })
-
-  expect(result.status).toBe(0)
-  const stderrLines = result.stderr.trim().split("\n")
-  expect(stderrLines).toHaveLength(1)
-  expect(stderrLines[0]).toContain("https://one.example")
-  expect(stderrLines[0]).toContain("https://two.example")
-  expect(stderrLines[0]).toContain("samskara init --force")
-  expect(result.stdout).toContain("Server")
-})
-
 // A warn and a refusal both used to fire, printing the same sentence twice.
 test.each(["enable", "disable"])(
   "SC27: `%s` reports a mismatch once, not once per guard",
@@ -145,40 +120,6 @@ const seedScopedFiles = (home: string, apiBase: string): void => {
   writeFileSync(join(home, "token"), "sometoken")
 }
 
-test("SC18: a real `init --force` run backs up before it deletes", () => {
-  const home = mkdtempSync(join(tmpdir(), "samskara-reset-e2e-"))
-  writeFileSync(
-    join(home, "config.json"),
-    JSON.stringify({ version: 1, apiUrl: "https://one.example", webUrl: "https://one.example" }),
-  )
-  seedScopedFiles(home, "https://one.example")
-
-  const result = spawnSync(
-    "bun",
-    [entry, "init", "--force", "--server", "https://two.example", "--web", "https://two.example"],
-    { encoding: "utf8", env: { ...process.env, SAMSKARA_HOME: home } },
-  )
-
-  expect(result.status).toBe(0)
-  const backupsDir = join(home, "backups")
-  const [backupName] = readdirSync(backupsDir)
-  expect(backupName).toBeDefined()
-  const backupDir = join(backupsDir, backupName as string)
-  expect(readdirSync(backupDir).sort()).toEqual(
-    [
-      "artifact-queue.json",
-      "artifacts.json",
-      "filter-options.json",
-      "projects.json",
-      "state.json",
-      "token",
-    ].sort(),
-  )
-  expect(result.stdout).toContain(backupDir)
-  expect(result.stdout).toContain("samskara login")
-  expect(result.stdout).toContain("samskara enable")
-})
-
 test("SC22: a server change is survivable end to end", () => {
   const home = mkdtempSync(join(tmpdir(), "samskara-journey-e2e-"))
   writeFileSync(
@@ -194,8 +135,12 @@ test("SC22: a server change is survivable end to end", () => {
 
   const runStatus = spawnSync("bun", [entry, "status"], { encoding: "utf8", env })
   expect(runStatus.status).toBe(0)
-  expect(runStatus.stderr).toContain("https://one.example")
-  expect(runStatus.stderr).toContain("https://two.example")
+  const warnings = runStatus.stderr.trim().split("\n")
+  expect(warnings).toHaveLength(1)
+  expect(warnings[0]).toContain("https://one.example")
+  expect(warnings[0]).toContain("https://two.example")
+  expect(warnings[0]).toContain("samskara init --force")
+  expect(runStatus.stdout).toContain("Server")
 
   const runInit = spawnSync("bun", [entry, "init"], { encoding: "utf8", env })
   expect(runInit.status).not.toBe(0)
@@ -211,7 +156,22 @@ test("SC22: a server change is survivable end to end", () => {
   )
   expect(runForce.status).toBe(0)
 
-  expect(readdirSync(join(home, "backups"))).toHaveLength(1)
+  const backups = readdirSync(join(home, "backups"))
+  expect(backups).toHaveLength(1)
+  const backupDir = join(home, "backups", backups[0] ?? "")
+  expect(readdirSync(backupDir).sort()).toEqual(
+    [
+      "artifact-queue.json",
+      "artifacts.json",
+      "filter-options.json",
+      "projects.json",
+      "state.json",
+      "token",
+    ].sort(),
+  )
+  expect(runForce.stdout).toContain(backupDir)
+  expect(runForce.stdout).toContain("samskara login")
+  expect(runForce.stdout).toContain("samskara enable")
   expect(existsSync(join(home, "state.json"))).toBe(false)
   expect(existsSync(join(home, "artifacts.json"))).toBe(false)
   expect(existsSync(join(home, "artifact-queue.json"))).toBe(false)

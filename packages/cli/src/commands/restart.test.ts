@@ -32,8 +32,12 @@ beforeEach(() => {
 })
 
 describe("restart command", () => {
-  test("stops the running watcher and starts a fresh one, reporting the new pid", async () => {
+  test.each([
+    ["stops the running watcher and starts a fresh one", true],
+    ["a watcher that was not running is still started", false],
+  ])("%s, reporting the new pid", async (_case, wasRunning) => {
     const streams = output()
+    vi.mocked(stopWatcherDaemon).mockResolvedValue(wasRunning)
 
     const code = await restartCommand(streams.writers)
 
@@ -43,30 +47,25 @@ describe("restart command", () => {
     expect(streams.stdout.join("")).toContain("4242")
   })
 
-  test("a missing token fails with login guidance and never touches the watcher", async () => {
-    const streams = output()
-    vi.mocked(readToken).mockResolvedValue(null)
+  test.each([
+    ["a missing token", null, "ok", []],
+    ["a token the server rejects", "token", "rejected", [["token"]]],
+  ] as const)(
+    "%s fails with login guidance and never touches the watcher",
+    async (_case, token, check, checked) => {
+      const streams = output()
+      vi.mocked(readToken).mockResolvedValue(token)
+      vi.mocked(checkToken).mockResolvedValue(check)
 
-    const code = await restartCommand(streams.writers)
+      const code = await restartCommand(streams.writers)
 
-    expect(code).toBe(1)
-    expect(streams.stderr.join("")).toContain("samskara login")
-    expect(stopWatcherDaemon).not.toHaveBeenCalled()
-    expect(startWatcherDaemon).not.toHaveBeenCalled()
-  })
-
-  test("a token the server rejects fails with login guidance and leaves the watcher alone", async () => {
-    const streams = output()
-    vi.mocked(checkToken).mockResolvedValue("rejected")
-
-    const code = await restartCommand(streams.writers)
-
-    expect(code).toBe(1)
-    expect(checkToken).toHaveBeenCalledWith("token")
-    expect(streams.stderr.join("")).toContain("samskara login")
-    expect(stopWatcherDaemon).not.toHaveBeenCalled()
-    expect(startWatcherDaemon).not.toHaveBeenCalled()
-  })
+      expect(code).toBe(1)
+      expect(vi.mocked(checkToken).mock.calls).toEqual(checked)
+      expect(streams.stderr.join("")).toContain("samskara login")
+      expect(stopWatcherDaemon).not.toHaveBeenCalled()
+      expect(startWatcherDaemon).not.toHaveBeenCalled()
+    },
+  )
 
   test("an unreachable server still restarts, saying the check was skipped", async () => {
     const streams = output()
@@ -77,17 +76,6 @@ describe("restart command", () => {
     expect(code).toBe(0)
     expect(startWatcherDaemon).toHaveBeenCalled()
     expect(streams.stdout.join("")).toMatch(/could not be reached/i)
-  })
-
-  test("a watcher that was not running is still started", async () => {
-    const streams = output()
-    vi.mocked(stopWatcherDaemon).mockResolvedValue(false)
-
-    const code = await restartCommand(streams.writers)
-
-    expect(code).toBe(0)
-    expect(startWatcherDaemon).toHaveBeenCalled()
-    expect(streams.stdout.join("")).toContain("4242")
   })
 
   test("a failed start reports the error and exits non-zero", async () => {

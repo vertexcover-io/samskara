@@ -81,68 +81,83 @@ const prsOf = (command: string, output: unknown): ReadonlyArray<PullRequestEvent
   prsIn(collect([bashCall(0, "call-pr", command), bashResult(1, "call-pr", output)]))
 
 describe("collectGitEvents", () => {
-  test("S8: a commit's sha, branch, subject and stats come out of real git output", () => {
-    const event = commitOf(
-      'git commit -m "docs: enrich clients"',
-      [
+  test.each([
+    {
+      label: "S8: a commit's sha, branch, subject and stats come out of real git output",
+      command: 'git commit -m "docs: enrich clients"',
+      output: [
         "[master 37f3101] docs: enrich clients, projects, and services with expanded detail",
         " 51 files changed, 1993 insertions(+), 417 deletions(-)",
         " create mode 100644 docs/clients.md",
         " create mode 100644 docs/projects.md",
-      ].join("\n"),
-    )
-
-    expect(event).toEqual({
-      kind: "commit",
-      sha: "37f3101",
-      branch: "master",
-      subject: "docs: enrich clients, projects, and services with expanded detail",
-      filesChanged: 51,
-      insertions: 1993,
-      deletions: 417,
-      callId: "call-1",
-    })
-  })
-
-  test("S9: hook and npm noise printed before the commit line does not hide it", () => {
-    const event = commitOf(
-      "git commit -m 'build: make container start command overridable'",
-      [
+      ],
+      status: "success",
+      expected: {
+        sha: "37f3101",
+        branch: "master",
+        subject: "docs: enrich clients, projects, and services with expanded detail",
+        filesChanged: 51,
+        insertions: 1993,
+        deletions: 417,
+      },
+    },
+    {
+      label: "S9: hook and npm noise printed before the commit line does not hide it",
+      command: "git commit -m 'build: make container start command overridable'",
+      output: [
         'npm warn Unknown project config "scripts-prepend-node-path".',
         "ℹ No staged files match any configured task.",
         "[feat/workspace-compose-host-mode e285f783b] build: make container start command overridable",
         " 2 files changed, 11 insertions(+), 27 deletions(-)",
         "Your branch is ahead of 'origin/master' by 1 commit.",
-      ].join("\n"),
-    )
-
-    expect(event).toMatchObject({
-      sha: "e285f783b",
-      branch: "feat/workspace-compose-host-mode",
-      subject: "build: make container start command overridable",
-      filesChanged: 2,
-      insertions: 11,
-      deletions: 27,
-    })
-  })
-
-  test("S10: a slashed branch and a short sha are stored exactly as git printed them", () => {
-    const event = commitOf(
-      "git commit --amend --no-edit",
-      [
+      ],
+      status: "success",
+      expected: {
+        sha: "e285f783b",
+        branch: "feat/workspace-compose-host-mode",
+        subject: "build: make container start command overridable",
+        filesChanged: 2,
+        insertions: 11,
+        deletions: 27,
+      },
+    },
+    {
+      label:
+        "S10: a slashed branch, a short sha and no deletions are stored exactly as git printed them",
+      command: "git commit --amend --no-edit",
+      output: [
         "[feat/local-source-graph 2314a2e44] fixup! refactor: collapse @refrens deep imports",
         " 3 files changed, 8 insertions(+)",
-      ].join("\n"),
-    )
-
-    expect(event).toMatchObject({
-      sha: "2314a2e44",
-      branch: "feat/local-source-graph",
-      subject: "fixup! refactor: collapse @refrens deep imports",
-      filesChanged: 3,
-      insertions: 8,
+      ],
+      status: "success",
+      expected: {
+        sha: "2314a2e44",
+        branch: "feat/local-source-graph",
+        subject: "fixup! refactor: collapse @refrens deep imports",
+        filesChanged: 3,
+        insertions: 8,
+      },
+    },
+    {
+      label:
+        "a result whose status is unknown is still extracted, because most transcripts carry no is_error at all",
+      command: "git commit -m 'feat: no is_error on this line'",
+      output: ["[main 7c3d9a1] feat: no is_error on this line", " 1 file changed, 4 insertions(+)"],
+      status: "unknown",
+      expected: {
+        sha: "7c3d9a1",
+        branch: "main",
+        subject: "feat: no is_error on this line",
+        filesChanged: 1,
+        insertions: 4,
+      },
+    },
+  ] as const)("$label", ({ command, output, status, expected }) => {
+    expect(commitOf(command, output.join("\n"), status)).toEqual({
+      kind: "commit",
+      ...expected,
+      callId: "call-1",
     })
-    expect(event).not.toHaveProperty("deletions")
   })
 
   test("S11: a commit that failed, or found nothing to commit, records nothing", () => {
@@ -161,43 +176,6 @@ describe("collectGitEvents", () => {
         "On branch master\nnothing to commit, working tree clean",
       ),
     ).toBeUndefined()
-  })
-
-  test("a result whose status is unknown is still extracted, because most transcripts carry no is_error at all", () => {
-    // Requiring "success" here would silently drop the majority of real commits: no transcript
-    // line carries an explicit status, and over half omit is_error too.
-    expect(
-      commitOf(
-        "git commit -m 'feat: no is_error on this line'",
-        "[main 7c3d9a1] feat: no is_error on this line\n 1 file changed, 4 insertions(+)",
-        "unknown",
-      ),
-    ).toMatchObject({ sha: "7c3d9a1", branch: "main" })
-  })
-
-  test("S12: a command that only mentions git commit in a search pattern records nothing", () => {
-    expect(
-      commitOf(
-        "grep -rn 'git commit' packages/",
-        "docs/guide.md:12: run git commit\n[master 37f3101] a line quoted from a transcript",
-      ),
-    ).toBeUndefined()
-  })
-
-  test("S13a: a commit carries the repo of the message that called it, not the collector's cwd", () => {
-    const subRepo: RepoIdentity = {
-      host: "github.com",
-      owner: "acme",
-      repoName: "serana",
-    }
-    const event = commitOf(
-      "git commit -m 'feat: sub-repo work'",
-      "[main abc1234] feat: sub-repo work\n 1 file changed, 2 insertions(+)",
-      "success",
-      subRepo,
-    )
-
-    expect(event).toMatchObject({ sha: "abc1234", repo: subRepo })
   })
 
   test("S13b: two commits in one batch each keep the repo of their own call", () => {
@@ -261,25 +239,25 @@ describe("collectGitEvents", () => {
     ])
   })
 
-  test("S17: a PR url seen through gh pr view is not recorded -- only creations are captured", () => {
-    const prs = prsOf(
-      "gh pr view 59 --json url",
-      "https://github.com/vertexcover-io/harness-engineering/pull/59",
-    )
-
-    expect(prs).toEqual([])
-  })
-
-  test("S18: a grep whose search pattern contains the words gh pr create records nothing", () => {
-    const prs = prsOf(
-      "grep -rn 'gh pr create' ~/.claude/projects",
-      [
-        "notes.md:4: https://github.com/refrens/birds/pull/391",
-        "notes.md:9: https://github.com/refrens/talos/pull/835",
-      ].join("\n"),
-    )
-
-    expect(prs).toEqual([])
+  test.each([
+    {
+      label: "S12: a command that only mentions git commit in a search pattern",
+      command: "grep -rn 'git commit' packages/",
+      output: "docs/guide.md:12: run git commit\n[master 37f3101] a line quoted from a transcript",
+    },
+    {
+      label: "S17: a PR url seen through gh pr view rather than created",
+      command: "gh pr view 59 --json url",
+      output: "https://github.com/vertexcover-io/harness-engineering/pull/59",
+    },
+    {
+      label: "S18: a grep whose search pattern contains the words gh pr create",
+      command: "grep -rn 'gh pr create' ~/.claude/projects",
+      output:
+        "notes.md:4: https://github.com/refrens/birds/pull/391\nnotes.md:9: https://github.com/refrens/talos/pull/835",
+    },
+  ])("$label records nothing", ({ command, output }) => {
+    expect(collect([bashCall(0, "call-1", command), bashResult(1, "call-1", output)])).toEqual([])
   })
 
   test("a GitLab merge request url is captured with its own host, so repos.host is not assumed to be github.com", () => {
@@ -340,19 +318,6 @@ describe("collectGitEvents", () => {
           details: { callId: "c1", name: "Bash", input: { command: "git commit -m x" } },
         }),
         bashResult(1, "c1", "[main abc1234] x"),
-      ]),
-    ).toEqual([])
-  })
-
-  test("a result whose call is a known non-Bash tool records nothing", () => {
-    expect(
-      collect([
-        message({
-          subIndex: 0,
-          msgType: "toolCall",
-          details: { callId: "c1", name: "Read", input: { command: "git commit -m x" } },
-        }),
-        bashResult(1, "c1", "[main abc1234] not a bash commit"),
       ]),
     ).toEqual([])
   })

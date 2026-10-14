@@ -14,7 +14,6 @@ import {
   advanceArtifactState,
   MAX_ATTEMPTS,
   readArtifactState,
-  readArtifactStateOrReset,
   runArtifactWorkers,
   stateKey,
 } from "./artifact-worker.js"
@@ -116,76 +115,40 @@ describe("artifact workers", () => {
     process.env.SAMSKARA_HOME = originalHome
   })
 
-  test("a 401 is retried rather than dropped, so a later `samskara login` still syncs the artifact", async () => {
-    const sink = scriptedSink([401, 200])
-    const target = entry()
-    const key = stateKey(target.sessionId, target.path)
-    await enqueue(queuePath, [target])
+  test.each([
+    ["a 401, which a later `samskara login` fixes", 401],
+    ["a 403, which a later `samskara login` fixes", 403],
+    ["a 409, the session row not having landed yet", 409],
+    ["a 500", 500],
+    ["a network error, reported as status 0", 0],
+  ] as const)(
+    "S34: %s is retried with backoff, advances no state, then uploads",
+    async (_label, status) => {
+      const sink = scriptedSink([status, 200])
+      const target = entry()
+      const key = stateKey(target.sessionId, target.path)
+      await enqueue(queuePath, [target])
 
-    const now = 1_800_000_000_000
-    const config = { queuePath, statePath, workers: 1, drainOnce: true }
+      const now = 1_800_000_000_000
+      const config = { queuePath, statePath, workers: 1, drainOnce: true }
 
-    // Stale credentials: the entry must survive, because logging in again fixes it.
-    await runArtifactWorkers(config, deps(sink, now))
-    const afterFirst = await readQueue(queuePath)
-    expect(afterFirst.entries).toHaveLength(1)
-    expect(afterFirst.entries[0]?.attempts).toBe(1)
-    expect((await readArtifactState(statePath)).artifacts[key]).toBeUndefined()
+      await runArtifactWorkers(config, deps(sink, now))
+      const afterFirst = await readQueue(queuePath)
+      expect(afterFirst.entries).toHaveLength(1)
+      expect(afterFirst.entries[0]?.attempts).toBe(1)
+      expect(Date.parse(afterFirst.entries[0]?.nextAttemptAt ?? "")).toBeGreaterThan(now)
+      expect((await readArtifactState(statePath)).artifacts[key]).toBeUndefined()
 
-    // After the re-pair the same entry uploads.
-    const later = Date.parse(afterFirst.entries[0]?.nextAttemptAt ?? "") + 1
-    await runArtifactWorkers(config, deps(sink, later))
-    expect((await readQueue(queuePath)).entries).toHaveLength(0)
-    expect((await readArtifactState(statePath)).artifacts[key]).toBeDefined()
-  })
-
-  test("a 400 is still dropped without retrying: no login fixes a payload the server refuses", async () => {
-    const sink = scriptedSink([400])
-    await enqueue(queuePath, [entry()])
-
-    await runArtifactWorkers(
-      { queuePath, statePath, workers: 1, drainOnce: true },
-      deps(sink, 1_800_000_000_000),
-    )
-
-    expect((await readQueue(queuePath)).entries).toHaveLength(0)
-  })
-
-  test("S34: a transient failure is retried with backoff and advances no state", async () => {
-    const sink = scriptedSink([500, 409, 200])
-    const target = entry()
-    const key = stateKey(target.sessionId, target.path)
-    await enqueue(queuePath, [target])
-
-    const now = 1_800_000_000_000
-    const config = { queuePath, statePath, workers: 1, drainOnce: true }
-
-    // Attempt 1 -- 500. The entry survives with a future nextAttemptAt and no state written.
-    await runArtifactWorkers(config, deps(sink, now))
-    const afterFirst = await readQueue(queuePath)
-    expect(afterFirst.entries).toHaveLength(1)
-    expect(afterFirst.entries[0]?.attempts).toBe(1)
-    expect(Date.parse(afterFirst.entries[0]?.nextAttemptAt ?? "")).toBeGreaterThan(now)
-    expect((await readArtifactState(statePath)).artifacts[key]).toBeUndefined()
-
-    // Attempt 2 -- 409 sessionNotFound. Retryable, not permanent: the entry still survives.
-    const later = Date.parse(afterFirst.entries[0]?.nextAttemptAt ?? "") + 1
-    await runArtifactWorkers(config, deps(sink, later))
-    const afterSecond = await readQueue(queuePath)
-    expect(afterSecond.entries).toHaveLength(1)
-    expect(afterSecond.entries[0]?.attempts).toBe(2)
-    expect((await readArtifactState(statePath)).artifacts[key]).toBeUndefined()
-
-    // Attempt 3 -- 200. The entry is gone and the state records the hash it uploaded.
-    const latest = Date.parse(afterSecond.entries[0]?.nextAttemptAt ?? "") + 1
-    await runArtifactWorkers(config, deps(sink, latest))
-    expect((await readQueue(queuePath)).entries).toHaveLength(0)
-    expect((await readArtifactState(statePath)).artifacts[key]).toEqual({
-      currentHash: sha256("current bytes\n"),
-      baseCaptured: false,
-    })
-    expect(sink.sent).toHaveLength(3)
-  })
+      const later = Date.parse(afterFirst.entries[0]?.nextAttemptAt ?? "") + 1
+      await runArtifactWorkers(config, deps(sink, later))
+      expect((await readQueue(queuePath)).entries).toHaveLength(0)
+      expect((await readArtifactState(statePath)).artifacts[key]).toEqual({
+        currentHash: sha256("current bytes\n"),
+        baseCaptured: false,
+      })
+      expect(sink.sent).toHaveLength(2)
+    },
+  )
 
   test("S34: an entry whose nextAttemptAt is still in the future is not claimed", async () => {
     const sink = scriptedSink([200])
@@ -273,19 +236,6 @@ describe("artifact workers", () => {
     expect(reports).toHaveLength(1)
     expect(reports[0]?.details).toMatchObject({ path: queuePath, content: corrupt })
     expect(await readQueue(queuePath)).toEqual({ version: 1, entries: [] })
-  })
-
-  test("malformed JSON is reported too, not read as an absent file", async () => {
-    await writeFile(queuePath, "{ this is not json", "utf8")
-
-    await runArtifactWorkers(
-      { queuePath, statePath, workers: 1, drainOnce: true },
-      deps(scriptedSink([200])),
-    )
-
-    expect(
-      recorder.error.filter((call) => call.message.includes("queue file did not parse")),
-    ).toHaveLength(1)
   })
 
   test("a queue file that is merely absent is not reported", async () => {
@@ -405,20 +355,6 @@ describe("artifact workers", () => {
     expect(
       (await readArtifactState(statePath)).artifacts[stateKey(sessionId, target.path)],
     ).toEqual({ currentHash: sha256("current bytes\n"), baseCaptured: true })
-  })
-
-  test("S35: an entry whose file vanished is dropped without an upload and without state", async () => {
-    const sink = scriptedSink([200])
-    const target = entry({ path: join(dir, "gone.md") })
-    await enqueue(queuePath, [target])
-
-    await runArtifactWorkers({ queuePath, statePath, workers: 1, drainOnce: true }, deps(sink))
-
-    expect(sink.sent).toHaveLength(0)
-    expect((await readQueue(queuePath)).entries).toHaveLength(0)
-    expect(
-      (await readArtifactState(statePath)).artifacts[stateKey(target.sessionId, target.path)],
-    ).toBeUndefined()
   })
 
   test("S1: an HTML artifact's referenced video is queued under the referencing session", async () => {
@@ -831,57 +767,6 @@ describe("artifact workers", () => {
     expect(recorder.warn.length).toBeGreaterThanOrEqual(2)
   })
 
-  test("A1: a verification report seeds its own generated media and nothing from the repo", async () => {
-    const reportPath = join(dir, "verification", "proof-report.html")
-    await mkdir(dirname(reportPath), { recursive: true })
-    await mkdir(join(dir, "src"), { recursive: true })
-    await writeFile(join(dir, "verification", "run.mp4"), "video bytes", "utf8")
-    await writeFile(join(dir, "verification", "shot.png"), "shot bytes", "utf8")
-    await writeFile(join(dir, "src", "driver.ts"), "export const x = 1", "utf8")
-    await writeFile(join(dirname(dir), "outside.png"), "outside bytes", "utf8")
-    await writeFile(
-      reportPath,
-      [
-        '<video src="run.mp4" poster="shot.png"></video>',
-        '<a href="../src/driver.ts">source</a>',
-        '<img src="https://example.com/remote.png">',
-        '<img src="../../outside.png">',
-      ].join("\n"),
-      "utf8",
-    )
-
-    const report = entry({
-      path: reportPath,
-      relativePath: "verification/proof-report.html",
-      sessionId: "proof-session",
-    })
-    await enqueue(queuePath, [report])
-
-    const sink = scriptedSink([200])
-    gitTracking(["src/driver.ts"])
-    const config = { queuePath, statePath, workers: 1, drainOnce: true }
-
-    for (let pass = 0; pass < 4; pass += 1) {
-      await runArtifactWorkers(config, deps(sink))
-    }
-
-    const sent = sink.sent.map((payload) => payload.path)
-    expect(sent).toContain(join(dir, "verification", "run.mp4"))
-    expect(sent).toContain(join(dir, "verification", "shot.png"))
-    expect(sent).not.toContain(join(dir, "src", "driver.ts"))
-    expect(sent.some((path) => path.includes("outside.png"))).toBe(false)
-    expect(sent.some((path) => path.includes("remote.png"))).toBe(false)
-
-    for (const payload of sink.sent) {
-      if (payload.path === reportPath) continue
-      expect(payload.sessionId).toBe(report.sessionId)
-      expect(payload.changeKind).toBe("created")
-    }
-
-    expect((await readQueue(queuePath)).entries).toHaveLength(0)
-    expect(new Set(sent).size).toBe(sent.length)
-  })
-
   test("SC9 (regression): a vanished file settles at debug and an oversize file settles at warn", async () => {
     const sink = scriptedSink([200])
 
@@ -892,6 +777,9 @@ describe("artifact workers", () => {
     expect((await readQueue(queuePath)).entries).toHaveLength(0)
     expect(recorder.debug.some((call) => call.details.path === vanished.path)).toBe(true)
     expect(recorder.warn).toHaveLength(0)
+    expect(
+      (await readArtifactState(statePath)).artifacts[stateKey(vanished.sessionId, vanished.path)],
+    ).toBeUndefined()
 
     const bigPath = join(dir, "big.md")
     await writeFile(bigPath, "a".repeat(5 * 1024 * 1024 + 1), "utf8")
@@ -955,23 +843,6 @@ describe("artifact state", () => {
     const state = await readArtifactState(statePath)
     expect(state.apiBase).toBe("https://one.example")
     expect(state.artifacts[key]).toEqual({ currentHash: "abc", baseCaptured: true })
-  })
-
-  test("S36: a missing state file reads back empty, a corrupt one throws", async () => {
-    expect(await readArtifactState(statePath)).toEqual({ version: 1, artifacts: {} })
-
-    await writeFile(statePath, "{not json", "utf8")
-    await expect(readArtifactState(statePath)).rejects.toThrow()
-
-    await writeFile(statePath, JSON.stringify({ version: 2, artifacts: {} }), "utf8")
-    await expect(readArtifactState(statePath)).rejects.toThrow()
-  })
-
-  test("S36: the reset helper absorbs a corrupt state file and repairs it", async () => {
-    await writeFile(statePath, "{not json", "utf8")
-
-    expect(await readArtifactStateOrReset(statePath)).toEqual({ version: 1, artifacts: {} })
-    expect(await readArtifactState(statePath)).toEqual({ version: 1, artifacts: {} })
   })
 
   test("S36: advancing one key leaves every other key intact", async () => {

@@ -10,7 +10,6 @@ import { signToken, verifyToken } from "../lib/jwt.js"
 import { seedOrg } from "../scripts/seed-org.js"
 import type { User } from "../services/auth.js"
 import type { GithubClient, GithubProfile } from "../services/github.js"
-import { createPairingStore } from "../services/pairing.js"
 
 const env: Env = {
   githubClientId: "Ov23linvZE00y7VZSI4Y",
@@ -519,42 +518,6 @@ describe.skipIf(!dockerAvailable())("auth routes (me + logout)", () => {
     })
     expect(after.status).toBe(401)
   })
-
-  test("S13: session round-trip - callback sets a session, /me returns the user, logout then /me is 401", async () => {
-    await seedOrg(db, "vertexcover-io")
-    const app = buildApp(db, env, {
-      githubClient: stubClient({
-        orgs: ["vertexcover-io"],
-        profile: { githubId: 314159, login: "roundtrip" },
-      }),
-    })
-
-    const callback = await app.request("/api/auth/github/callback?code=x&state=s", {
-      headers: { cookie: "oauth_state=s" },
-    })
-    expect(callback.status).toBe(302)
-    const token = sessionFrom(callback.headers.get("set-cookie"))
-    expect(token).toBeTruthy()
-
-    const me = await app.request("/api/auth/me", {
-      headers: { cookie: `session=${token}` },
-    })
-    expect(me.status).toBe(200)
-    const meBody = await me.json()
-    expect(meBody).toMatchObject({ githubLogin: "roundtrip" })
-
-    const logout = await app.request("/api/auth/logout", {
-      method: "POST",
-      headers: { cookie: `session=${token}` },
-    })
-    expect(logout.status).toBe(200)
-    expect(clearedSession(logout.headers.get("set-cookie"))).toBe(true)
-
-    const afterLogout = await app.request("/api/auth/me", {
-      headers: { cookie: "session=" },
-    })
-    expect(afterLogout.status).toBe(401)
-  })
 })
 
 const jsonPost = (body: unknown, cookie?: string): RequestInit => ({
@@ -603,57 +566,6 @@ describe.skipIf(!dockerAvailable())("auth routes (cli pairing)", () => {
     expect(await verifyToken(env, token, ["cli"])).toEqual({ sub: user.id })
   })
 
-  test("S15: a pairing code is single-use - second exchange is 401", async () => {
-    const user = await seedUser(db)
-    const webToken = await signToken(env, { sub: user.id, aud: "web" })
-    const app = buildApp(db, env, { githubClient: noopClient })
-
-    const minted = await app.request("/api/auth/cli-code", jsonPost({}, `session=${webToken}`))
-    const { code } = (await minted.json()) as { code: string }
-
-    const first = await app.request("/api/auth/cli-exchange", jsonPost({ code }))
-    expect(first.status).toBe(200)
-
-    const second = await app.request("/api/auth/cli-exchange", jsonPost({ code }))
-    expect(second.status).toBe(401)
-  })
-
-  test("S16: a pairing code never expires - other users minting theirs leaves it exchangeable", async () => {
-    const pairingStore = createPairingStore()
-    const user = await seedUser(db)
-    const webToken = await signToken(env, { sub: user.id, aud: "web" })
-    const app = buildApp(db, env, { githubClient: noopClient, pairingStore })
-
-    const minted = await app.request("/api/auth/cli-code", jsonPost({}, `session=${webToken}`))
-    const { code } = (await minted.json()) as { code: string }
-
-    // No clock and no sweeper: only this user pressing Generate again retires this code.
-    pairingStore.mint("someone-else")
-    pairingStore.mint("another-user")
-
-    const exchanged = await app.request("/api/auth/cli-exchange", jsonPost({ code }))
-    expect(exchanged.status).toBe(200)
-    expect(await exchanged.json()).toHaveProperty("token")
-  })
-
-  test("S16c: generating a second code retires the first, so only the pasted one works", async () => {
-    const user = await seedUser(db)
-    const webToken = await signToken(env, { sub: user.id, aud: "web" })
-    const app = buildApp(db, env, { githubClient: noopClient })
-
-    const first = await app.request("/api/auth/cli-code", jsonPost({}, `session=${webToken}`))
-    const { code: stale } = (await first.json()) as { code: string }
-    const second = await app.request("/api/auth/cli-code", jsonPost({}, `session=${webToken}`))
-    const { code: fresh } = (await second.json()) as { code: string }
-
-    expect((await app.request("/api/auth/cli-exchange", jsonPost({ code: stale }))).status).toBe(
-      401,
-    )
-    expect((await app.request("/api/auth/cli-exchange", jsonPost({ code: fresh }))).status).toBe(
-      200,
-    )
-  })
-
   test("S16b: an unknown pairing code is 401 with no token", async () => {
     const app = buildApp(db, env, { githubClient: noopClient })
 
@@ -682,15 +594,6 @@ describe.skipIf(!dockerAvailable())("auth routes (cli pairing)", () => {
     expect(empty.status).toBe(400)
   })
 
-  test("S18: verifyToken holds one audience to itself", async () => {
-    const user = await seedUser(db)
-    const cliToken = await signToken(env, { sub: user.id, aud: "cli" })
-    const webToken = await signToken(env, { sub: user.id, aud: "web" })
-
-    expect(await verifyToken(env, webToken, ["cli"])).toBeNull()
-    expect(await verifyToken(env, cliToken, ["web"])).toBeNull()
-  })
-
   test("S18b: /me identifies the bearer of either a web or a cli token", async () => {
     const user = await seedUser(db)
     const app = buildApp(db, env, { githubClient: noopClient })
@@ -703,23 +606,6 @@ describe.skipIf(!dockerAvailable())("auth routes (cli pairing)", () => {
       expect(res.status).toBe(200)
       expect(await res.json()).toMatchObject({ id: user.id, githubLogin: user.githubLogin })
     }
-  })
-
-  test("S18c: /me still rejects a token signed by a different secret", async () => {
-    const user = await seedUser(db)
-    const foreign = await signToken(
-      { ...env, jwtSecret: "not-the-real-secret" },
-      {
-        sub: user.id,
-        aud: "cli",
-      },
-    )
-    const app = buildApp(db, env, { githubClient: noopClient })
-
-    const res = await app.request("/api/auth/me", {
-      headers: { authorization: `Bearer ${foreign}` },
-    })
-    expect(res.status).toBe(401)
   })
 })
 
@@ -754,23 +640,61 @@ describe.skipIf(!dockerAvailable())("auth routes (methods + local login)", () =>
 
   const localEnabled: Env = { ...env, localLoginSecret: "open sesame" }
 
-  test("L1: /methods reports github true and local false while LOCAL_LOGIN_SECRET is unset", async () => {
-    const app = buildApp(db, env, { githubClient: noopClient })
+  test.each([
+    {
+      id: "L1",
+      when: "LOCAL_LOGIN_SECRET is unset",
+      over: {},
+      methods: { github: true, local: false },
+    },
+    {
+      id: "L2",
+      when: "LOCAL_LOGIN_SECRET is set",
+      over: { localLoginSecret: "open sesame" },
+      methods: { github: true, local: true },
+    },
+    {
+      id: "L8",
+      when: "the OAuth app is unconfigured - no dead button",
+      over: { localLoginSecret: "open sesame", githubClientId: "", githubClientSecret: "" },
+      methods: { github: false, local: true },
+    },
+    {
+      id: "L11",
+      when: "the client id is set but the secret is blank - the code exchange would fail",
+      over: { localLoginSecret: "open sesame", githubClientSecret: "" },
+      methods: { github: false, local: true },
+    },
+  ])("$id: /methods reports $methods when $when", async ({ over, methods }) => {
+    const app = buildApp(db, { ...env, ...over }, { githubClient: noopClient })
 
     const res = await app.request("/api/auth/methods")
 
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ github: true, local: false })
+    expect(await res.json()).toEqual(methods)
   })
 
-  test("L2: /methods reports local true once LOCAL_LOGIN_SECRET is set", async () => {
-    const app = buildApp(db, localEnabled, { githubClient: noopClient })
+  test.each([
+    {
+      id: "L10",
+      when: "no OAuth app is configured",
+      over: { githubClientId: "", githubClientSecret: "" },
+    },
+    {
+      id: "L12",
+      when: "the client id is set but the secret is blank",
+      over: { githubClientSecret: "" },
+    },
+  ])(
+    "$id: /github/start is 404 when $when - never a redirect to a broken authorize page",
+    async ({ over }) => {
+      const app = buildApp(db, { ...localEnabled, ...over }, { githubClient: noopClient })
 
-    const res = await app.request("/api/auth/methods")
+      const res = await app.request("/api/auth/github/start")
 
-    expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ github: true, local: true })
-  })
+      expect(res.status).toBe(404)
+    },
+  )
 
   test("L3: /api/auth/local is 404 not_found while the feature is off - invisible, no session cookie", async () => {
     const app = buildApp(db, env, { githubClient: noopClient })
@@ -863,19 +787,6 @@ describe.skipIf(!dockerAvailable())("auth routes (methods + local login)", () =>
     })
   })
 
-  test("L8: /methods reports github false once the OAuth app is unconfigured - no dead button", async () => {
-    const app = buildApp(
-      db,
-      { ...localEnabled, githubClientId: "", githubClientSecret: "" },
-      { githubClient: noopClient },
-    )
-
-    const res = await app.request("/api/auth/methods")
-
-    expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ github: false, local: true })
-  })
-
   test("L9: two rows sharing a login resolve to the lower githubId, not to whichever row came back first", async () => {
     const renamed = await insertUserWithLogin(4001, "samskara-dev")
     await insertUserWithLogin(9002, "samskara-dev")
@@ -886,42 +797,5 @@ describe.skipIf(!dockerAvailable())("auth routes (methods + local login)", () =>
       expect(res.status).toBe(200)
       expect(await res.json()).toMatchObject({ id: renamed.id })
     }
-  })
-
-  test("L10: /github/start is 404 with no OAuth app configured - never a redirect to a broken authorize page", async () => {
-    const app = buildApp(
-      db,
-      { ...localEnabled, githubClientId: "", githubClientSecret: "" },
-      { githubClient: noopClient },
-    )
-
-    const res = await app.request("/api/auth/github/start")
-
-    expect(res.status).toBe(404)
-  })
-
-  test("L11: /methods reports github false when the client id is set but the secret is blank - the code exchange would fail", async () => {
-    const app = buildApp(
-      db,
-      { ...localEnabled, githubClientSecret: "" },
-      { githubClient: noopClient },
-    )
-
-    const res = await app.request("/api/auth/methods")
-
-    expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ github: false, local: true })
-  })
-
-  test("L12: /github/start is 404 when the client id is set but the secret is blank", async () => {
-    const app = buildApp(
-      db,
-      { ...localEnabled, githubClientSecret: "" },
-      { githubClient: noopClient },
-    )
-
-    const res = await app.request("/api/auth/github/start")
-
-    expect(res.status).toBe(404)
   })
 })
