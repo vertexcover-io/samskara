@@ -1,0 +1,97 @@
+version: 2
+
+baseline:
+  command: s=0; bun run typecheck || s=1; bun run lint || s=1; bun run test || s=1; exit $s
+  timeoutSeconds: 1800
+
+# Mirrors .config/wt.toml: each worktree gets a real .env, its own database and its own ports.
+# Never symlink .env from the main checkout; that puts every branch back on one database.
+workspace:
+  layout: mono
+  path: .worktrees/{{ branch }}
+  baseBranch: master
+  setup: wt step copy-ignored && bun install && bun run wt:setup
+  teardown: bun run wt:teardown || true
+
+environments:
+  default: local
+  entries:
+    local:
+      stackUp: docker compose -p samskara up -d --wait
+      stackStatus: docker compose -p samskara ps
+      stackDown: docker compose -p samskara down
+      migrate: bun run db:migrate
+      seed: bun run seed && bun run seed:org {ORG}
+      appUp: bash -c 'PORT=3100 bun run --cwd packages/server dev & WEB_PORT=8100 API_PROXY_TARGET=http://localhost:3100 bun run --cwd packages/web dev'
+      appHealth: curl -sf http://localhost:3100/health
+      stackUrls: echo web=http://localhost:8100 api=http://localhost:3100 db=postgres://samskara:samskara@localhost:5433/samskara
+
+notifier:
+  type: slack
+
+packages:
+  core:
+    path: packages/core
+    runner: vitest
+    description: "@samskara/core: ingest and domain logic shared by server and cli"
+    commands:
+      bootstrap: bun install
+      typecheck: bun run --cwd packages/core typecheck
+      lint: bunx biome check packages/core
+      lintFile: bunx biome check {FILE}
+      build: bun run --cwd packages/core build
+      testAll: bun run --cwd packages/core test
+      testFile: bun run --cwd packages/core test {FILE}
+
+  server:
+    path: packages/server
+    runner: vitest
+    description: "@samskara/server: Hono API, Drizzle schema and migrations on Postgres"
+    commands:
+      bootstrap: bun install
+      typecheck: bun run --cwd packages/server typecheck
+      lint: bunx biome check packages/server
+      lintFile: bunx biome check {FILE}
+      build: bun run --cwd packages/server build
+      testAll: bun run --cwd packages/server test
+      testFile: bun run --cwd packages/server test {FILE}
+      migrate: bun run db:migrate
+      generateMigration: bun run db:generate
+
+  web:
+    path: packages/web
+    runner: vitest
+    description: "@samskara/web: React + Vite frontend"
+    commands:
+      bootstrap: bun install
+      typecheck: bun run --cwd packages/web typecheck
+      lint: bunx biome check packages/web
+      lintFile: bunx biome check {FILE}
+      build: bun run --cwd packages/web build
+      testAll: bun run --cwd packages/web test
+      testFile: bun run --cwd packages/web test {FILE}
+
+  cli:
+    path: packages/cli
+    runner: vitest
+    description: "@samskara/cli: the samskara binary"
+    commands:
+      bootstrap: bun install
+      typecheck: bun run --cwd packages/cli typecheck
+      lint: bunx biome check packages/cli
+      lintFile: bunx biome check {FILE}
+      build: bun run --cwd packages/cli build
+      testAll: bun run --cwd packages/cli test
+      testFile: bun run --cwd packages/cli test {FILE}
+
+  e2e:
+    path: e2e
+    runner: playwright
+    description: "Playwright end-to-end specs against a real server and database"
+    commands:
+      bootstrap: bun install
+      typecheck: bunx tsc -p e2e/tsconfig.json
+      lint: bunx biome check e2e
+      lintFile: bunx biome check {FILE}
+      testAll: bun run e2e
+      testFile: bun run e2e {FILE}
