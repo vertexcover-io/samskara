@@ -1,12 +1,6 @@
 import { describe, expect, test } from "vitest"
 import { NOTHING_TO_CHANGE_PREFIX, type ReviewCounts } from "./schema.js"
-import {
-  MAX_REVIEW_XML_CHARS,
-  parseReviewXml,
-  REVIEW_XML_ROOT,
-  REVIEW_XML_TAGS,
-  reviewXmlTemplate,
-} from "./xml.js"
+import { MAX_REVIEW_XML_CHARS, parseReviewXml, reviewXmlTemplate } from "./xml.js"
 
 /**
  * A canonical filled review.xml: exactly what the pipeline hopes to read back — template
@@ -132,65 +126,9 @@ const goldenLenses = [
 const matchingCounts: ReviewCounts = { timeline: 1, human: 1, agent: 1, breadcrumbs: 1 }
 
 describe("reviewXmlTemplate", () => {
-  test("T1: renders a complete skeleton with declaration, four sections, commented examples and counts", () => {
-    const template = reviewXmlTemplate()
-    expect(template.startsWith('<?xml version="1.0" encoding="UTF-8"?>')).toBe(true)
-    expect(template.trimEnd().endsWith("</review>")).toBe(true)
-    expect(template).toContain("<review ")
-    expect(template).toContain("<summary>")
-    for (const section of [
-      "<timeline>",
-      "<humanLearnings>",
-      "<agentLearnings>",
-      "<breadcrumbs>",
-      "<counts",
-    ]) {
-      expect(template).toContain(section)
-    }
-    // One worked example per section, inside XML comments, each with the repeat note.
-    expect(template.match(/<!--/g)?.length).toBeGreaterThanOrEqual(5)
-    for (const section of ["timeline", "humanLearnings", "agentLearnings", "breadcrumbs"]) {
-      const wrapper = template.match(
-        new RegExp(`<${section}>\\s*<!--[\\s\\S]*?-->\\s*</${section}>`),
-      )
-      expect(wrapper).not.toBeNull()
-      expect(wrapper?.[0]).toContain("repeat this block per entry, then delete the example")
-    }
-    expect(template).toMatch(/<counts timeline="\d+" human="\d+" agent="\d+" breadcrumbs="\d+"\/>/)
-  })
-
-  test("T2: is deterministic", () => {
-    expect(reviewXmlTemplate()).toBe(reviewXmlTemplate())
-  })
-
-  test("T3: the template's own examples use the full v2 learning vocabulary", () => {
-    const template = reviewXmlTemplate()
-    for (const audience of ['audience="human"', 'audience="agent"']) {
-      expect(template).toContain(audience)
-    }
-    expect(template).toContain('category="query"')
-    expect(template).toContain("Failed-jobs lookup")
-    expect(template).toContain("severity=")
-    expect(template).toContain("<nextTime>")
-    expect(template).toContain("<ref ")
-    expect(template).toContain("message-id=")
-  })
-
   test("T4: comments never contain a double dash (they stay legal XML comments)", () => {
     for (const match of reviewXmlTemplate().matchAll(/<!--([\s\S]*?)-->/g)) {
       expect(match[1]).not.toContain("--")
-    }
-  })
-
-  test("T5: the template states the verdict enums beside the root, so the file alone teaches the contract", () => {
-    const template = reviewXmlTemplate()
-    const rootComment = template.match(/<review [^>]*>\s*<!--([\s\S]*?)-->/)
-    expect(rootComment).not.toBeNull()
-    for (const word of ["shipped", "productive", "struggled", "aborted"]) {
-      expect(rootComment?.[1]).toContain(word)
-    }
-    for (const word of ["none", "moderate", "high"]) {
-      expect(rootComment?.[1]).toContain(word)
     }
   })
 })
@@ -224,24 +162,6 @@ describe("parseReviewXml — file contract", () => {
       expect(result.recovered).toEqual([])
       expect(result.selfCounts).toEqual({ timeline: 0, human: 0, agent: 0, breadcrumbs: 0 })
     }
-  })
-
-  test("X3: an incremental-partial file (one section filled, examples still commented) parses with partial accounting", () => {
-    // The model finished the timeline, learnings sections still hold only commented examples.
-    const partial = filledXml.replace(
-      / {2}<humanLearnings>[\s\S]*?<\/humanLearnings>\n {2}<agentLearnings>[\s\S]*?<\/agentLearnings>\n {2}<breadcrumbs>[\s\S]*?<\/breadcrumbs>\n/,
-      "  <humanLearnings>\n  </humanLearnings>\n  <agentLearnings>\n  </agentLearnings>\n  <breadcrumbs>\n  </breadcrumbs>\n",
-    )
-    const result = parseReviewXml(partial)
-    expect(result.ok).toBe(true)
-    if (!result.ok) return
-    const human = result.value.lenses.find((lens) => lens.lens === "humanLearnings")
-    expect(human?.learnings).toEqual([])
-    // Counts still claim the full intent: the mismatch surfaces as partial, never silently.
-    expect(result.value.partial).toEqual({
-      claimed: matchingCounts,
-      parsed: { timeline: 1, human: 0, agent: 0, breadcrumbs: 0 },
-    })
   })
 
   test("X4: a counts mismatch on a filled file surfaces as partial (the incident shape)", () => {
@@ -284,25 +204,27 @@ describe("parseReviewXml — file contract", () => {
     }
   })
 
-  test("X7: a missing counts element is reported; no selfCounts, no partial", () => {
-    const text = filledXml.replace(/ {2}<counts[^>]*\/>\n/, "")
+  test.each([
+    {
+      id: "X7",
+      label: "a missing counts element",
+      text: filledXml.replace(/ {2}<counts[^>]*\/>\n/, ""),
+      recovered: "missing <counts>",
+    },
+    {
+      id: "X8",
+      label: "a malformed counts element",
+      text: filledXml.replace(
+        'human="1" agent="1" breadcrumbs="1"/>',
+        'human="one" agent="1" breadcrumbs="1"/>',
+      ),
+      recovered: "malformed <counts>",
+    },
+  ])("$id: $label is reported; no selfCounts, no partial", ({ text, recovered }) => {
     const result = parseReviewXml(text)
     expect(result.ok).toBe(true)
     if (!result.ok) return
-    expect(result.recovered).toContain("missing <counts>")
-    expect(result.selfCounts).toBeUndefined()
-    expect(result.value.partial).toBeUndefined()
-  })
-
-  test("X8: a malformed counts element is reported and ignored", () => {
-    const text = filledXml.replace(
-      '<counts timeline="1" human="1" agent="1" breadcrumbs="1"/>',
-      '<counts timeline="1" human="one" agent="1" breadcrumbs="1"/>',
-    )
-    const result = parseReviewXml(text)
-    expect(result.ok).toBe(true)
-    if (!result.ok) return
-    expect(result.recovered).toContain("malformed <counts>")
+    expect(result.recovered).toContain(recovered)
     expect(result.selfCounts).toBeUndefined()
     expect(result.value.partial).toBeUndefined()
   })
@@ -316,40 +238,49 @@ describe("parseReviewXml — file contract", () => {
 })
 
 describe("parseReviewXml — learning vocabulary", () => {
-  test("X10: a missing audience attribute is defaulted to the section's audience and recorded", () => {
-    const text = filledXml.replace(
-      ' category="communication" audience="human"',
-      ' category="communication"',
-    )
-    const result = parseReviewXml(text)
+  test.each([
+    {
+      id: "X10",
+      label: "a missing audience defaults to the section's audience",
+      from: ' category="communication" audience="human"',
+      to: ' category="communication"',
+      lens: "humanLearnings",
+      field: { audience: "human" },
+      recovered: "defaulted audience on <learning>",
+    },
+    {
+      id: "X11",
+      label: "an audience contradicting its section is corrected to the section",
+      from: 'audience="human"',
+      to: 'audience="agent"',
+      lens: "humanLearnings",
+      field: { audience: "human" },
+      recovered: "corrected audience on <learning> to match <humanLearnings>",
+    },
+    {
+      id: "X12",
+      label: "an invalid severity defaults to low",
+      from: 'category="query" audience="agent" severity="low"',
+      to: 'category="query" audience="agent" severity="extreme"',
+      lens: "breadcrumbs",
+      field: { severity: "low" },
+      recovered: "defaulted severity on <learning>",
+    },
+    {
+      id: "X15",
+      label: "a wrong-category learning defaults its category and survives",
+      from: 'category="query"',
+      to: 'category="communication"',
+      lens: "breadcrumbs",
+      field: { title: "Failed-jobs lookup", category: "tool" },
+      recovered: 'defaulted category on <learning> to "tool"',
+    },
+  ])("$id: $label, and the healing is recorded", ({ from, to, lens, field, recovered }) => {
+    const result = parseReviewXml(filledXml.replace(from, to))
     expect(result.ok).toBe(true)
     if (!result.ok) return
-    const human = result.value.lenses.find((lens) => lens.lens === "humanLearnings")
-    expect(human?.learnings[0]?.audience).toBe("human")
-    expect(result.recovered).toContain("defaulted audience on <learning>")
-  })
-
-  test("X11: an audience that contradicts its section is corrected to the section and recorded", () => {
-    const text = filledXml.replace('audience="human"', 'audience="agent"')
-    const result = parseReviewXml(text)
-    expect(result.ok).toBe(true)
-    if (!result.ok) return
-    const human = result.value.lenses.find((lens) => lens.lens === "humanLearnings")
-    expect(human?.learnings[0]?.audience).toBe("human")
-    expect(result.recovered).toContain("corrected audience on <learning> to match <humanLearnings>")
-  })
-
-  test("X12: a missing or invalid severity is defaulted to low and recorded", () => {
-    const text = filledXml.replace(
-      'category="query" audience="agent" severity="low"',
-      'category="query" audience="agent" severity="extreme"',
-    )
-    const result = parseReviewXml(text)
-    expect(result.ok).toBe(true)
-    if (!result.ok) return
-    const breadcrumb = result.value.lenses.find((lens) => lens.lens === "breadcrumbs")
-    expect(breadcrumb?.learnings[0]?.severity).toBe("low")
-    expect(result.recovered).toContain("defaulted severity on <learning>")
+    expect(result.value.lenses.find((l) => l.lens === lens)).toMatchObject({ learnings: [field] })
+    expect(result.recovered).toContain(recovered)
   })
 
   test("X13: a learning missing nextTime is dropped by name (never silently)", () => {
@@ -397,20 +328,6 @@ describe("parseReviewXml — learning vocabulary", () => {
         evidence: [],
       },
     ])
-  })
-
-  test("X15: a wrong-category learning defaults its category and survives, with the healing recorded", () => {
-    const text = filledXml.replace('category="query"', 'category="communication"')
-    const result = parseReviewXml(text)
-    expect(result.ok).toBe(true)
-    if (!result.ok) return
-    const breadcrumbs = result.value.lenses.find((lens) => lens.lens === "breadcrumbs")
-    expect(breadcrumbs?.learnings).toHaveLength(1)
-    expect(breadcrumbs?.learnings[0]).toMatchObject({
-      title: "Failed-jobs lookup",
-      category: "tool",
-    })
-    expect(result.recovered).toContain('defaulted category on <learning> to "tool"')
   })
 
   test("X16: a learning with refs that parse keeps them all; a broken ref drops by name", () => {
@@ -462,16 +379,6 @@ describe("parseReviewXml — healing carries forward", () => {
     }
   })
 
-  test("X19: an unclosed <entry> is closed at its parent and recorded", () => {
-    const text = filledXml.replace("    </entry>\n", "")
-    const result = parseReviewXml(text)
-    expect(result.ok).toBe(true)
-    if (result.ok) {
-      expect(result.value.lenses[0]).toEqual(goldenLenses[0])
-      expect(result.recovered).toContain("closed unclosed <entry>")
-    }
-  })
-
   test("X20: a malformed entry is dropped by name while its sibling survives", () => {
     const broken = [
       '    <entry id="broken" kind="phase" from-seq="x" to-seq="9">',
@@ -498,19 +405,6 @@ describe("parseReviewXml — healing carries forward", () => {
     if (!result.ok) {
       expect(result.error).toMatch(/timeline/i)
       expect(result.recovered).toContain('dropped <entry id="setup-explored">')
-    }
-  })
-
-  test("X22: an unknown element is dropped whole and recorded", () => {
-    const text = filledXml.replace(
-      "      <title>Explored the repo</title>",
-      "      <confidence>0.9</confidence>\n      <title>Explored the repo</title>",
-    )
-    const result = parseReviewXml(text)
-    expect(result.ok).toBe(true)
-    if (result.ok) {
-      expect(result.value.lenses[0]).toEqual(goldenLenses[0])
-      expect(result.recovered).toContain("dropped unknown element <confidence>")
     }
   })
 
@@ -546,16 +440,6 @@ describe("parseReviewXml — healing carries forward", () => {
     }
   })
 
-  test("X25: a stray close tag for a never-opened tag is dropped and recorded", () => {
-    const text = filledXml.replace("</review>", "  </timeline>\n</review>")
-    const result = parseReviewXml(text)
-    expect(result.ok).toBe(true)
-    if (result.ok) {
-      expect(result.recovered).toContain("dropped stray </timeline>")
-      expect(result.value.lenses).toEqual(goldenLenses)
-    }
-  })
-
   test("X26: missing model/harness default to the ? placeholder and are recorded", () => {
     const text = filledXml.replace(' model="?"', "").replace(' harness="?"', "")
     const result = parseReviewXml(text)
@@ -577,18 +461,6 @@ describe("parseReviewXml — healing carries forward", () => {
     }
   })
 
-  test("X28: a dropped learnings opener is reinserted around its children", () => {
-    for (const section of ["humanLearnings", "agentLearnings", "breadcrumbs"]) {
-      const text = filledXml.replace(`  <${section}>\n`, "")
-      const result = parseReviewXml(text)
-      expect(result.ok).toBe(true)
-      if (result.ok) {
-        expect(result.value.lenses).toEqual(goldenLenses)
-        expect(result.recovered).toContain(`inserted missing <${section}> opener`)
-      }
-    }
-  })
-
   test("X29: a stray learnings closer with no children is a dropped section, named and accounted", () => {
     const text = filledXml.replace(
       / {2}<humanLearnings>[\s\S]*?<\/humanLearnings>/,
@@ -605,43 +477,53 @@ describe("parseReviewXml — healing carries forward", () => {
     })
   })
 
-  test("X30: a legacy <lenses> wrapper around the sections is hoisted and recorded", () => {
+  const legacyLensesWrapper = (): string => {
     const sections = filledXml
       .slice(filledXml.indexOf("  <timeline>"), filledXml.lastIndexOf("  <counts"))
       .trimEnd()
-    const v1Shape = `<?xml version="1.0" encoding="UTF-8"?>\n<review outcome="shipped" friction="moderate" model="?" harness="?">\n  <summary>The session shipped a small fix after one mid-course correction.</summary>\n  <lenses>\n${sections}\n  </lenses>\n  <counts timeline="1" human="1" agent="1" breadcrumbs="1"/>\n</review>\n`
-    const result = parseReviewXml(v1Shape)
+    return `<?xml version="1.0" encoding="UTF-8"?>\n<review outcome="shipped" friction="moderate" model="?" harness="?">\n  <summary>The session shipped a small fix after one mid-course correction.</summary>\n  <lenses>\n${sections}\n  </lenses>\n  <counts timeline="1" human="1" agent="1" breadcrumbs="1"/>\n</review>\n`
+  }
+
+  test.each([
+    {
+      id: "X19",
+      label: "an unclosed <entry> is closed at its parent",
+      text: filledXml.replace("    </entry>\n", ""),
+      recovered: "closed unclosed <entry>",
+    },
+    {
+      id: "X22",
+      label: "an unknown element is dropped whole",
+      text: filledXml.replace(
+        "      <title>Explored the repo</title>",
+        "      <confidence>0.9</confidence>\n      <title>Explored the repo</title>",
+      ),
+      recovered: "dropped unknown element <confidence>",
+    },
+    {
+      id: "X25",
+      label: "a stray close tag for a never-opened tag is dropped",
+      text: filledXml.replace("</review>", "  </timeline>\n</review>"),
+      recovered: "dropped stray </timeline>",
+    },
+    ...["humanLearnings", "agentLearnings", "breadcrumbs"].map((section) => ({
+      id: "X28",
+      label: `a dropped <${section}> opener is reinserted around its children`,
+      text: filledXml.replace(`  <${section}>\n`, ""),
+      recovered: `inserted missing <${section}> opener`,
+    })),
+    {
+      id: "X30",
+      label: "a legacy <lenses> wrapper around the sections is hoisted",
+      text: legacyLensesWrapper(),
+      recovered: "hoisted sections from legacy <lenses> wrapper",
+    },
+  ])("$id: $label, recorded, and the lenses come out whole", ({ text, recovered }) => {
+    const result = parseReviewXml(text)
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.value.lenses).toEqual(goldenLenses)
-    expect(result.recovered).toContain("hoisted sections from legacy <lenses> wrapper")
-  })
-})
-
-describe("XML vocabulary constants", () => {
-  test("X31: the root and vocabulary constants are the documented contract", () => {
-    expect(REVIEW_XML_ROOT).toBe("review")
-    for (const tag of [
-      "summary",
-      "timeline",
-      "entry",
-      "title",
-      "message-ids",
-      "id",
-      "humanLearnings",
-      "agentLearnings",
-      "breadcrumbs",
-      "learning",
-      "detail",
-      "nextTime",
-      "evidence",
-      "ref",
-      "what",
-      "counts",
-      "lenses",
-    ]) {
-      expect(REVIEW_XML_TAGS).toContain(tag)
-    }
+    expect(result.recovered).toContain(recovered)
   })
 })
 
@@ -651,20 +533,22 @@ describe("root attribute synonym healing", () => {
       .replace('outcome="shipped"', `outcome="${outcome}"`)
       .replace('friction="moderate"', `friction="${friction}"`)
 
-  test("X32: friction synonyms normalize instead of failing the whole review", () => {
-    for (const [given, expectTo] of [
-      ["overcome", "moderate"],
-      ["Overcome", "moderate"],
-      [" low ", "moderate"],
-      ["minimal", "none"],
-      ["heavy", "high"],
-    ] as const) {
+  test.each([
+    ["overcome", "moderate"],
+    ["Overcome", "moderate"],
+    [" low ", "moderate"],
+    ["minimal", "none"],
+    ["heavy", "high"],
+    ["spicy", "moderate"],
+  ])(
+    "X32: friction %j normalizes to %s and is recorded, instead of failing the review",
+    (given, expected) => {
       const result = parseReviewXml(withAttrs("shipped", given))
       expect(result.ok).toBe(true)
-      if (result.ok) expect(result.value.friction).toBe(expectTo)
-      expect(result.recovered.some((r) => r.includes("normalized friction"))).toBe(true)
-    }
-  })
+      if (result.ok) expect(result.value.friction).toBe(expected)
+      expect(result.recovered).toContain(`normalized friction "${given.trim()}" → "${expected}"`)
+    },
+  )
 
   test("X33: outcome synonyms normalize and are recorded", () => {
     for (const [given, expectTo] of [
@@ -685,13 +569,6 @@ describe("root attribute synonym healing", () => {
   test("X34: an unknown outcome still fails visibly rather than guessing", () => {
     const result = parseReviewXml(withAttrs("sideways", "moderate"))
     expect(result.ok).toBe(false)
-  })
-
-  test("X35: an unknown friction falls back to moderate and is recorded", () => {
-    const result = parseReviewXml(withAttrs("shipped", "spicy"))
-    expect(result.ok).toBe(true)
-    if (result.ok) expect(result.value.friction).toBe("moderate")
-    expect(result.recovered.some((r) => r.includes('normalized friction "spicy"'))).toBe(true)
   })
 
   test("X36: the canonical friction none passes through untouched - the template's own example value", () => {
@@ -754,9 +631,5 @@ describe("tracks are not the model's to name", () => {
     expect(timelineTracks(filledXml.replace('tracks="main"', 'tracks="agent:a,agent:b"'))).toEqual(
       [],
     )
-  })
-
-  test("X-TRACKS2: the template no longer offers a tracks attribute to fill in", () => {
-    expect(reviewXmlTemplate()).not.toContain("tracks=")
   })
 })

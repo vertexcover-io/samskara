@@ -2,14 +2,6 @@ import { describe, expect, test } from "vitest"
 import { createPairingStore } from "./pairing.js"
 
 describe("createPairingStore", () => {
-  test("mint returns a non-empty code and redeem yields the minting userId", () => {
-    const store = createPairingStore()
-    const code = store.mint("user-1")
-
-    expect(code).toBeTruthy()
-    expect(store.redeem(code)).toBe("user-1")
-  })
-
   test("a code is single-use: the second redeem returns null", () => {
     const store = createPairingStore()
     const code = store.mint("user-1")

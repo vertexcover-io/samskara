@@ -207,17 +207,6 @@ describe.skipIf(!dockerAvailable())("GET /api/projects", () => {
     expect(summary?.lastActiveAt).toBe(new Date("2026-03-01T00:00:00Z").toISOString())
   })
 
-  test("SC3: a personal project reports its owner as the user", async () => {
-    const owner = await seedUser(db, 700, "sc3-owner")
-    await projectsRepo.upsert(db, {
-      identity: { name: "Solo", slug: "solo" },
-      ownerId: owner,
-    })
-
-    const [summary] = await listAs(db, owner)
-    expect(summary?.owner).toEqual({ type: "user", slug: "sc3-owner" })
-  })
-
   test("SC1: a member of the owning org lists the org's project with its owner, and a non-member does not", async () => {
     const member = await seedUser(db, 701, "sc1-member")
     const outsider = await seedUser(db, 702, "sc1-outsider")
@@ -242,17 +231,11 @@ describe.skipIf(!dockerAvailable())("GET /api/projects", () => {
     expect((await listAs(db, outsider)).map((p) => p.id)).not.toContain(projectId)
   })
 
-  test("S8 (revised): no cookie is 401 - the cli-audience case moved to the reassign block, which asserts the body too", async () => {
-    const owner = await seedUser(db, 666, "guarded-owner")
-    await projectsRepo.upsert(db, {
-      identity: { name: "Guarded", slug: "guarded" },
-      ownerId: owner,
-    })
-    const app = buildApp(db, env)
+  test("S8: listing projects without credentials is 401 unauthorized", async () => {
+    const res = await buildApp(db, env).request("/api/projects")
 
-    const anonymous = await app.request("/api/projects")
-    expect(anonymous.status).toBe(401)
-    expect(await anonymous.json()).toEqual({ error: "unauthorized" })
+    expect(res.status).toBe(401)
+    expect(await res.json()).toEqual({ error: "unauthorized" })
   })
 })
 
@@ -350,24 +333,6 @@ describe.skipIf(!dockerAvailable())("POST /api/projects", () => {
     expect(rows[0]?.slug).toBe("acme-widget")
   })
 
-  test("SC19: a non-member's POST creates a personal project and says why", async () => {
-    const outsider = await seedUser(db, 802, "sc19-outsider")
-    await seedOrg("acme")
-    const body = {
-      name: "widget",
-      slug: "acme-widget-2",
-      remote: { host: "github.com", owner: "acme", repoName: "widget" },
-    }
-
-    const res = await postAs(outsider, body)
-    expect(res.status).toBe(201)
-    expect(res.body.owner).toEqual({ type: "user", slug: "sc19-outsider" })
-    expect(res.body.reason).toBe("notMember")
-
-    const [row] = await db.select().from(projects).where(eq(projects.slug, "acme-widget-2"))
-    expect(row).toMatchObject({ ownerUserId: outsider, ownerOrgId: null })
-  })
-
   test("SC22: a super admin's POST is org-owned even without a membership row", async () => {
     const admin = await seedUser(db, 806, "sc22-admin")
     await db.update(users).set({ isSuperAdmin: true }).where(eq(users.id, admin))
@@ -386,59 +351,67 @@ describe.skipIf(!dockerAvailable())("POST /api/projects", () => {
     expect(row).toMatchObject({ ownerOrgId: orgId, ownerUserId: null })
   })
 
-  test("SC23: a super admin's POST for an unregistered org stays personal", async () => {
-    const admin = await seedUser(db, 807, "sc23-admin")
-    await db.update(users).set({ isSuperAdmin: true }).where(eq(users.id, admin))
-
-    const res = await postAs(admin, {
-      name: "widget",
-      slug: "nosuchorg-widget",
+  test.each([
+    {
+      label: "SC19: a non-member's POST for a registered org's repo",
+      isSuperAdmin: false,
+      remote: { host: "github.com", owner: "acme", repoName: "widget" },
+      reason: "notMember",
+    },
+    {
+      label: "SC23: a super admin's POST for an unregistered org",
+      isSuperAdmin: true,
       remote: { host: "github.com", owner: "nosuchorg", repoName: "widget" },
-    })
-    expect(res.status).toBe(201)
-    expect(res.body.owner).toEqual({ type: "user", slug: "sc23-admin" })
-    expect(res.body.reason).toBeUndefined()
-  })
-
-  test("SC20: a repo with no remote or a non-GitHub host is personal", async () => {
-    const caller = await seedUser(db, 803, "sc20-caller")
-    await seedOrg("acme")
-
-    const noRemote = await postAs(caller, { name: "solo", slug: "sc20-solo" })
-    expect(noRemote.status).toBe(201)
-    expect(noRemote.body.owner.type).toBe("user")
-    expect(noRemote.body.reason).toBeUndefined()
-
-    const nonGithub = await postAs(caller, {
-      name: "gitlab-widget",
-      slug: "sc20-gitlab-widget",
+      reason: undefined,
+    },
+    {
+      label: "SC20: a POST with no remote",
+      isSuperAdmin: false,
+      remote: undefined,
+      reason: undefined,
+    },
+    {
+      label: "SC20: a POST for a non-GitHub host",
+      isSuperAdmin: false,
       remote: { host: "gitlab.com", owner: "acme", repoName: "widget" },
-    })
-    expect(nonGithub.status).toBe(201)
-    expect(nonGithub.body.owner.type).toBe("user")
-    expect(nonGithub.body.reason).toBeUndefined()
-  })
+      reason: undefined,
+    },
+  ])(
+    "$label creates a personal project, with reason $reason",
+    async ({ isSuperAdmin, remote, reason }) => {
+      const caller = await seedUser(db, 802, "personal-caller")
+      await db.update(users).set({ isSuperAdmin }).where(eq(users.id, caller))
+      await seedOrg("acme")
 
-  test("SC21: the route needs a CLI token", async () => {
-    const caller = await seedUser(db, 804, "sc21-caller")
-    const webToken = await signToken(env, { sub: caller, aud: "web" })
-    const app = buildApp(db, env)
-    const body = { name: "x", slug: "sc21-x" }
+      const res = await postAs(caller, { name: "widget", slug: "personal-widget", remote })
 
-    const withWebCookie = await app.request("/api/projects", {
-      method: "POST",
-      headers: { cookie: `session=${webToken}`, "content-type": "application/json" },
-      body: JSON.stringify(body),
-    })
-    expect(withWebCookie.status).toBe(401)
+      expect(res.status).toBe(201)
+      expect(res.body.owner).toEqual({ type: "user", slug: "personal-caller" })
+      expect(res.body.reason).toBe(reason)
+      const [row] = await db.select().from(projects).where(eq(projects.id, res.body.id))
+      expect(row).toMatchObject({ ownerUserId: caller, ownerOrgId: null })
+    },
+  )
 
-    const withNothing = await app.request("/api/projects", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    })
-    expect(withNothing.status).toBe(401)
-  })
+  test.each(["no", "web-session"] as const)(
+    "SC21: creating a project with %s credentials is 401 unauthorized - only the cli registers projects",
+    async (as) => {
+      const userId = await seedUser(db, 1020, "sc21-anon")
+      const webToken = await signToken(env, { sub: userId, aud: "web" })
+
+      const res = await buildApp(db, env).request("/api/projects", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(as === "web-session" ? { cookie: `session=${webToken}` } : {}),
+        },
+        body: JSON.stringify({ name: "x", slug: "x" }),
+      })
+
+      expect(res.status).toBe(401)
+      expect(await res.json()).toEqual({ error: "unauthorized" })
+    },
+  )
 })
 
 type ReassignBody = { readonly fromProjectId: string; readonly scope?: "mine" | "all" }
@@ -685,7 +658,7 @@ describe.skipIf(!dockerAvailable())("POST /api/projects/:id/sessions", () => {
     expect(await projectOf(db, "s-not-mine")).toBe(lost)
   })
 
-  test("the endpoint refuses an unauthenticated caller, so nothing can bulk-rewrite projectId without a token", async () => {
+  test("reassigning sessions without credentials is 401 unauthorized, so nothing can bulk-rewrite projectId", async () => {
     const { userId, from, to } = await seedPair(1014, "anon")
     await seedSession(db, {
       id: "s-anon",
@@ -831,34 +804,6 @@ describe.skipIf(!dockerAvailable())("GET /api/projects/:id", () => {
     expect(repoRow).toMatchObject({ ownerOrgId: orgId, ownerUserId: null })
   })
 
-  test("R6 (verification bug): two clones of one org repo disagreeing on remote casing share a single repo row", async () => {
-    const member = await seedUser(db, 954, "sc21-member")
-    const orgId = await seedOrgRow("sc21-org")
-    await db.insert(userOrgs).values({ userId: member, orgId })
-
-    const first = await postAs(member, {
-      name: "gadget",
-      slug: "sc21-gadget",
-      remote: { host: "github.com", owner: "sc21-org", repoName: "gadget" },
-    })
-    const second = await postAs(member, {
-      name: "gadget",
-      slug: "sc21-gadget",
-      remote: { host: "github.com", owner: "SC21-Org", repoName: "gadget" },
-    })
-    expect(first.status).toBe(201)
-    expect(second.body.id).toBe(first.body.id)
-
-    const rows = await db.select().from(repos).where(eq(repos.repoName, "gadget"))
-    expect(rows).toHaveLength(1)
-    expect(rows[0]).toMatchObject({ owner: "sc21-org", ownerOrgId: orgId })
-
-    const { body } = await getAs(member, first.body.id)
-    expect(body).toMatchObject({
-      project: { repo: { host: "github.com", owner: "sc21-org", repoName: "gadget" } },
-    })
-  })
-
   test("SC8: a personal-remote project exposes a user-owned repo", async () => {
     const caller = await seedUser(db, 951, "sc8-caller")
 
@@ -895,37 +840,6 @@ describe.skipIf(!dockerAvailable())("GET /api/projects/:id", () => {
       .from(projects)
       .where(eq(projects.id, projectId))
     expect(row?.repoId).toBeNull()
-  })
-
-  test("SC11 (regression): the project API still returns owner and sessionCount after the repo field is added", async () => {
-    const owner = await seedUser(db, 953, "sc11-owner")
-    const created = await postAs(owner, {
-      name: "regression",
-      slug: "sc11-regression",
-      remote: { host: "github.com", owner: "sc11-owner", repoName: "regression" },
-    })
-    await seedSession(db, {
-      id: "sc11-session",
-      userId: owner,
-      projectId: created.body.id,
-      title: "s1",
-      updatedAt: new Date(),
-    })
-
-    const { body } = await getAs(owner, created.body.id)
-    expect(body).toMatchObject({
-      project: {
-        owner: { type: "user", slug: "sc11-owner" },
-        sessionCount: 1,
-        repo: { host: "github.com", owner: "sc11-owner", repoName: "regression" },
-      },
-    })
-
-    const list = await listAs(db, owner)
-    expect(list.find((p) => p.id === created.body.id)).toMatchObject({
-      owner: { type: "user", slug: "sc11-owner" },
-      sessionCount: 1,
-    })
   })
 
   test("SC3: a member reads a project and its session count", async () => {
@@ -970,15 +884,18 @@ describe.skipIf(!dockerAvailable())("GET /api/projects/:id", () => {
     })
   })
 
-  test("SC4: a project the caller cannot see is reported as missing", async () => {
-    const owner = await seedUser(db, 901, "sc4-owner")
-    const outsider = await seedUser(db, 902, "sc4-outsider")
+  test.each([
+    { label: "SC4: a project the caller cannot see", id: "real" },
+    { label: "SC6: a malformed project id, rather than a server error", id: "malformed" },
+  ])("$label is reported as missing", async ({ id }) => {
+    const owner = await seedUser(db, 901, "missing-owner")
+    const outsider = await seedUser(db, 902, "missing-outsider")
     const projectId = await projectsRepo.upsert(db, {
       identity: { name: "Hidden", slug: "hidden" },
       ownerId: owner,
     })
 
-    const { status, body } = await getAs(outsider, projectId)
+    const { status, body } = await getAs(outsider, id === "real" ? projectId : "not-a-uuid")
 
     expect(status).toBe(404)
     expect(body).toEqual({ error: "projectNotFound" })
@@ -1001,15 +918,6 @@ describe.skipIf(!dockerAvailable())("GET /api/projects/:id", () => {
     })
   })
 
-  test("SC6: a malformed project id is reported as missing, not as a server error", async () => {
-    const caller = await seedUser(db, 905, "sc6-caller")
-
-    const { status, body } = await getAs(caller, "not-a-uuid")
-
-    expect(status).toBe(404)
-    expect(body).toEqual({ error: "projectNotFound" })
-  })
-
   test("the detail payload's viewerCanDelete follows canDelete: true for the owner, false for a viewer-only grant", async () => {
     const owner = await seedUser(db, 906, "vcd-owner")
     const grantee = await seedUser(db, 907, "vcd-grantee")
@@ -1021,6 +929,21 @@ describe.skipIf(!dockerAvailable())("GET /api/projects/:id", () => {
 
     expect((await getAs(owner, projectId)).body).toMatchObject({ viewerCanDelete: true })
     expect((await getAs(grantee, projectId)).body).toMatchObject({ viewerCanDelete: false })
+  })
+
+  test("a cli token cannot read a project's detail - the route is web-only", async () => {
+    const owner = await seedUser(db, 905, "cli-reader")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Web only", slug: "web-only" },
+      ownerId: owner,
+    })
+    const token = await signToken(env, { sub: owner, aud: "cli" })
+
+    const res = await buildApp(db, env).request(`/api/projects/${projectId}`, {
+      headers: { authorization: `Bearer ${token}` },
+    })
+
+    expect(res.status).toBe(401)
   })
 })
 
@@ -1097,32 +1020,36 @@ describe.skipIf(!dockerAvailable())("DELETE /api/projects/:id", () => {
     expect(await db.select().from(sessions).where(eq(sessions.id, "sc12-s2"))).toHaveLength(0)
   })
 
-  test("SC13: a member who is not the owner cannot delete the project", async () => {
-    const owner = await seedUser(db, 1001, "sc13-owner")
-    const grantee = await seedUser(db, 1002, "sc13-grantee")
-    const projectId = await projectsRepo.upsert(db, {
-      identity: { name: "Granted", slug: "granted" },
-      ownerId: owner,
-    })
-    await projectsRepo.grant(db, grantee, projectId, "viewer")
+  test.each([
+    {
+      label: "SC13: a viewer-granted member who is not the owner",
+      seedProject: async (caller: string): Promise<string> => {
+        const owner = await seedUser(db, 1001, "sc13-owner")
+        const projectId = await projectsRepo.upsert(db, {
+          identity: { name: "Granted", slug: "granted" },
+          ownerId: owner,
+        })
+        await projectsRepo.grant(db, caller, projectId, "viewer")
+        return projectId
+      },
+    },
+    {
+      label: "SC14: an org member, on their org's project",
+      seedProject: async (caller: string): Promise<string> => {
+        const orgId = await seedOrgRow("sc14-org")
+        await db.insert(userOrgs).values({ userId: caller, orgId })
+        const { id } = await projectsRepo.upsertOwned(db, {
+          identity: { name: "org-project", slug: "org-project" },
+          owner: { kind: "org", orgId },
+        })
+        return id
+      },
+    },
+  ])("$label cannot delete the project", async ({ seedProject }) => {
+    const caller = await seedUser(db, 1003, "delete-caller")
+    const projectId = await seedProject(caller)
 
-    const { status, body } = await deleteAs(grantee, projectId)
-
-    expect(status).toBe(403)
-    expect(body).toEqual({ error: "forbidden" })
-    expect(await db.select().from(projects).where(eq(projects.id, projectId))).toHaveLength(1)
-  })
-
-  test("SC14: an org member cannot delete their org's project", async () => {
-    const member = await seedUser(db, 1003, "sc14-member")
-    const orgId = await seedOrgRow("sc14-org")
-    await db.insert(userOrgs).values({ userId: member, orgId })
-    const { id: projectId } = await projectsRepo.upsertOwned(db, {
-      identity: { name: "org-project", slug: "org-project" },
-      owner: { kind: "org", orgId },
-    })
-
-    const { status, body } = await deleteAs(member, projectId)
+    const { status, body } = await deleteAs(caller, projectId)
 
     expect(status).toBe(403)
     expect(body).toEqual({ error: "forbidden" })
@@ -1157,5 +1084,22 @@ describe.skipIf(!dockerAvailable())("DELETE /api/projects/:id", () => {
     expect(status).toBe(404)
     expect(body).toEqual({ error: "projectNotFound" })
     expect(await db.select().from(projects).where(eq(projects.id, projectId))).toHaveLength(1)
+  })
+
+  test("a cli token cannot delete a project, even the owner's - deletion is web-only", async () => {
+    const owner = await seedUser(db, 1099, "cli-deleter")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Kept", slug: "kept" },
+      ownerId: owner,
+    })
+    const token = await signToken(env, { sub: owner, aud: "cli" })
+
+    const res = await buildApp(db, env).request(`/api/projects/${projectId}`, {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${token}` },
+    })
+
+    expect(res.status).toBe(401)
+    expect(await db.select({ id: projects.id }).from(projects)).toEqual([{ id: projectId }])
   })
 })

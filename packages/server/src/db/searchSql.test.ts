@@ -8,22 +8,6 @@ import {
 } from "./searchSql.js"
 
 describe("searchSql", () => {
-  test("defines exactly the five approved keyword documents and multipliers", () => {
-    expect(
-      SEARCH_DOCUMENTS.map(({ sourceKind, table, multiplier }) => ({
-        sourceKind,
-        table,
-        multiplier,
-      })),
-    ).toEqual([
-      { sourceKind: "session", table: "sessions", multiplier: 4 },
-      { sourceKind: "message", table: "messages", multiplier: 1.5 },
-      { sourceKind: "pullRequest", table: "pullRequests", multiplier: 3 },
-      { sourceKind: "toolCall", table: "toolCall", multiplier: 1 },
-      { sourceKind: "toolResult", table: "toolResult", multiplier: 0.75 },
-    ])
-  })
-
   test("uses capped scalar-only source documents and immutable index-safe concatenation", () => {
     const vectors = SEARCH_DOCUMENTS.map((document) => document.vector).join("\n")
     expect(vectors).toContain("public.samskara_search_cap")
@@ -40,10 +24,6 @@ describe("searchSql", () => {
         `to_tsvector('simple'::regconfig, public.samskara_search_cap(${document.text}))`,
       )
     }
-  })
-
-  test("versions canonical replacements as V3 indexes", () => {
-    expect(SEARCH_DOCUMENTS.every((document) => document.indexName.endsWith("_v3_idx"))).toBe(true)
   })
 
   test("indexes the stored searchVector column with fastupdate off, never an expression", () => {

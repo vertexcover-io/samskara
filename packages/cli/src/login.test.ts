@@ -18,10 +18,8 @@ type StubOptions = {
 }
 
 const pairingFetch = (options: StubOptions = {}) => {
-  const calls: string[] = []
   const impl = async (input: Parameters<typeof globalThis.fetch>[0]): Promise<Response> => {
     const url = String(input)
-    calls.push(url)
     if (url.endsWith("/api/auth/cli-exchange")) {
       return new Response(JSON.stringify({ token: options.token ?? "cli-token" }), { status: 200 })
     }
@@ -39,9 +37,7 @@ const pairingFetch = (options: StubOptions = {}) => {
     }
     throw new Error(`unexpected request to ${url}`)
   }
-  const stub = Object.assign(vi.fn(impl) as unknown as typeof globalThis.fetch, { calls })
-  vi.stubGlobal("fetch", stub)
-  return stub
+  vi.stubGlobal("fetch", vi.fn(impl))
 }
 
 describe("login command", () => {
@@ -90,6 +86,9 @@ describe("login command", () => {
     expect(code).toBe(1)
     await expect(readFile(join(home, "token"), "utf8")).rejects.toMatchObject({ code: "ENOENT" })
     expect(errors.join("")).toContain("The server rejected this pairing code")
+    expect(errors.join("")).toContain("already been used")
+    expect(errors.join("")).not.toContain("expires")
+    expect(errors.join("")).toContain("Pair the CLI")
   })
 
   test("a token the server will not accept is reported, not stored", async () => {
@@ -143,27 +142,9 @@ describe("login command", () => {
     expect(errors.join("")).toContain("did not return a usable token")
   })
 
-  test("a rejected code explains that it was already used, and how to get another", async () => {
-    process.env.SAMSKARA_HOME = await mkdtemp(join(tmpdir(), "samskara-login-rejected-"))
-    const errors: string[] = []
-
-    vi.stubGlobal(
-      "fetch",
-      async () => new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 }),
-    )
-
-    const code = await login({
-      code: "STALE",
-      stderr: { write: (text) => errors.push(text) },
-    })
-
-    expect(code).toBe(1)
-    expect(errors.join("")).toContain("already been used")
-    expect(errors.join("")).not.toContain("expires")
-    expect(errors.join("")).toContain("Pair the CLI")
-  })
-
-  test("checkToken gives up on a server that never answers, rather than hanging the hook", async () => {
+  test("checkToken gives up on a server that never answers after its 3s ceiling, rather than hanging the hook", async () => {
+    const realTimeout = AbortSignal.timeout.bind(AbortSignal)
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation(() => realTimeout(50))
     vi.stubGlobal("fetch", (_url: string, init?: RequestInit) => {
       // A blackholed connection: only the caller's own deadline ends this.
       const signal = init?.signal
@@ -173,7 +154,8 @@ describe("login command", () => {
     })
 
     await expect(checkToken("stale")).resolves.toBe("unreachable")
-  })
+    expect(timeout).toHaveBeenCalledWith(3_000)
+  }, 1_000)
 
   test("a missing code tells the user where to get one", async () => {
     process.env.SAMSKARA_HOME = await mkdtemp(join(tmpdir(), "samskara-login-nocode-"))
@@ -188,20 +170,5 @@ describe("login command", () => {
     expect(code).toBe(1)
     expect(errors.join("")).toContain("http://localhost:8000")
     expect(errors.join("")).toContain("Generate code")
-  })
-
-  test("verification happens before the token reaches disk", async () => {
-    const home = await mkdtemp(join(tmpdir(), "samskara-login-order-"))
-    process.env.SAMSKARA_HOME = home
-    const stub = pairingFetch()
-
-    await login({
-      code: "PAIR-CODE",
-      stdout: { write: () => undefined },
-      stderr: { write: () => undefined },
-    })
-
-    expect(stub.calls.some((url) => url.endsWith("/api/auth/cli-exchange"))).toBe(true)
-    expect(stub.calls.some((url) => url.endsWith("/api/auth/me"))).toBe(true)
   })
 })

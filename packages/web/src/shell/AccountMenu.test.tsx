@@ -43,15 +43,6 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-test("SC9: a signed-in reader reaches the authed state from the identity route - the account menu shows that user's GitHub login", async () => {
-  stubFetch(() => Promise.resolve(jsonResponse(200, { ok: true })))
-
-  renderProjects()
-
-  const trigger = await screen.findByRole("button", { name: /account menu/i })
-  expect(trigger).toHaveTextContent("e2e-user")
-})
-
 test("S28: the opened account menu lists the signed-in identity plus 'Pair the CLI' and 'Log out' - not just a bare identity label", async () => {
   stubFetch(() => Promise.resolve(jsonResponse(200, { ok: true })))
 
@@ -64,7 +55,7 @@ test("S28: the opened account menu lists the signed-in identity plus 'Pair the C
   expect(screen.getByRole("menuitem", { name: /log out/i })).toBeInTheDocument()
 })
 
-test("S34: a 200 from /api/auth/logout lands on /login and renders no identity - not the authenticated shell", async () => {
+test("S34: a 200 from /api/auth/logout lands on /login in the signed-out shell - no identity, no account menu, the GitHub sign-in link back", async () => {
   stubFetch(() => Promise.resolve(jsonResponse(200, { ok: true })))
 
   renderProjects()
@@ -72,7 +63,9 @@ test("S34: a 200 from /api/auth/logout lands on /login and renders no identity -
   await userEvent.click(screen.getByRole("menuitem", { name: /log out/i }))
 
   await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("/login"))
+  expect(await screen.findByRole("link", { name: /continue with github/i })).toBeInTheDocument()
   expect(screen.queryByText("e2e-user")).not.toBeInTheDocument()
+  expect(screen.queryByRole("button", { name: /account menu/i })).not.toBeInTheDocument()
 })
 
 test("S35: a failed /api/auth/logout keeps the user on /projects with the identity still rendered - not an optimistic sign-out", async () => {
@@ -85,17 +78,6 @@ test("S35: a failed /api/auth/logout keeps the user on /projects with the identi
   expect(await screen.findByRole("alert")).toHaveTextContent(/server responded with 500/i)
   expect(screen.getByTestId("location")).toHaveTextContent("/projects")
   expect(screen.getByRole("button", { name: /account menu/i })).toHaveTextContent("e2e-user")
-})
-
-test("SC13: logging out returns the shell to its signed-out state - the account menu is gone and the GitHub sign-in link is back", async () => {
-  stubFetch(() => Promise.resolve(jsonResponse(200, { ok: true })))
-
-  renderProjects()
-  await openMenu()
-  await userEvent.click(screen.getByRole("menuitem", { name: /log out/i }))
-
-  expect(await screen.findByRole("link", { name: /continue with github/i })).toBeInTheDocument()
-  expect(screen.queryByRole("button", { name: /account menu/i })).not.toBeInTheDocument()
 })
 
 test("S28b: Escape closes the open menu and returns focus to the trigger - not to the document body", async () => {
@@ -120,42 +102,39 @@ test("S28c: opening the menu moves focus onto the first menu item - not leaving 
   await waitFor(() => expect(screen.getByRole("menuitem", { name: /pair the cli/i })).toHaveFocus())
 })
 
-test("S28d: ArrowDown and ArrowUp cycle through the menu items and wrap - not leaving focus inert on the trigger", async () => {
-  stubFetch(() => Promise.resolve(jsonResponse(200, { ok: true })))
+test.each([
+  {
+    name: "S28d: ArrowDown and ArrowUp cycle through the menu items and wrap",
+    steps: [
+      ["{ArrowDown}", /log out/i],
+      ["{ArrowDown}", /pair the cli/i],
+      ["{ArrowUp}", /log out/i],
+    ],
+  },
+  {
+    name: "S28e: End and Home jump to the last and first menu items",
+    steps: [
+      ["{End}", /log out/i],
+      ["{Home}", /pair the cli/i],
+    ],
+  },
+] satisfies ReadonlyArray<{ name: string; steps: ReadonlyArray<readonly [string, RegExp]> }>)(
+  "$name - not leaving focus where it was",
+  async ({ steps }) => {
+    stubFetch(() => Promise.resolve(jsonResponse(200, { ok: true })))
 
-  renderProjects()
-  await openMenu()
+    renderProjects()
+    await openMenu()
+    await waitFor(() =>
+      expect(screen.getByRole("menuitem", { name: /pair the cli/i })).toHaveFocus(),
+    )
 
-  const pair = screen.getByRole("menuitem", { name: /pair the cli/i })
-  const logout = screen.getByRole("menuitem", { name: /log out/i })
-  await waitFor(() => expect(pair).toHaveFocus())
-
-  await userEvent.keyboard("{ArrowDown}")
-  expect(logout).toHaveFocus()
-
-  await userEvent.keyboard("{ArrowDown}")
-  expect(pair).toHaveFocus()
-
-  await userEvent.keyboard("{ArrowUp}")
-  expect(logout).toHaveFocus()
-})
-
-test("S28e: Home and End jump to the first and last menu items - not staying wherever focus already was", async () => {
-  stubFetch(() => Promise.resolve(jsonResponse(200, { ok: true })))
-
-  renderProjects()
-  await openMenu()
-
-  const pair = screen.getByRole("menuitem", { name: /pair the cli/i })
-  const logout = screen.getByRole("menuitem", { name: /log out/i })
-  await waitFor(() => expect(pair).toHaveFocus())
-
-  await userEvent.keyboard("{End}")
-  expect(logout).toHaveFocus()
-
-  await userEvent.keyboard("{Home}")
-  expect(pair).toHaveFocus()
-})
+    for (const [key, focused] of steps) {
+      await userEvent.keyboard(key)
+      expect(screen.getByRole("menuitem", { name: focused })).toHaveFocus()
+    }
+  },
+)
 
 test("S28f: closing the pairing dialog opened from the menu returns focus to the account menu trigger - not to the document body", async () => {
   vi.stubGlobal("fetch", (input: RequestInfo | URL) => {

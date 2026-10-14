@@ -7,6 +7,7 @@ import {
   apiBase,
   DEFAULT_MESSAGE_CAP,
   DEFAULT_SESSION_CONCURRENCY,
+  DEFAULT_WATCH_CYCLE_MS,
   parseConfig,
   webBase,
 } from "./config.js"
@@ -18,6 +19,7 @@ const original = {
   web: process.env.SAMSKARA_WEB_URL,
   cap: process.env.SAMSKARA_MESSAGE_CAP,
   concurrency: process.env.SAMSKARA_SESSION_CONCURRENCY,
+  cycle: process.env.SAMSKARA_WATCH_CYCLE_MS,
 }
 
 const restore = (key: string, value: string | undefined): void => {
@@ -31,6 +33,7 @@ beforeEach(async () => {
   delete process.env.SAMSKARA_WEB_URL
   delete process.env.SAMSKARA_MESSAGE_CAP
   delete process.env.SAMSKARA_SESSION_CONCURRENCY
+  delete process.env.SAMSKARA_WATCH_CYCLE_MS
 })
 
 afterEach(() => {
@@ -39,6 +42,7 @@ afterEach(() => {
   restore("SAMSKARA_WEB_URL", original.web)
   restore("SAMSKARA_MESSAGE_CAP", original.cap)
   restore("SAMSKARA_SESSION_CONCURRENCY", original.concurrency)
+  restore("SAMSKARA_WATCH_CYCLE_MS", original.cycle)
 })
 
 describe("server url resolution", () => {
@@ -81,6 +85,7 @@ describe("parseConfig", () => {
       webUrl: "http://localhost:8000",
       messageCap: DEFAULT_MESSAGE_CAP,
       sessionConcurrency: DEFAULT_SESSION_CONCURRENCY,
+      cycleMs: DEFAULT_WATCH_CYCLE_MS,
     })
     expect(spy.warn).toEqual([])
   })
@@ -89,6 +94,7 @@ describe("parseConfig", () => {
     process.env.SAMSKARA_API_URL = "http://localhost:3999"
     process.env.SAMSKARA_MESSAGE_CAP = "1200"
     process.env.SAMSKARA_SESSION_CONCURRENCY = "2"
+    process.env.SAMSKARA_WATCH_CYCLE_MS = "500"
     const spy = spyLogger()
 
     const resolved = parseConfig(spy.log)
@@ -96,6 +102,7 @@ describe("parseConfig", () => {
     expect(resolved.apiUrl).toBe("http://localhost:3999")
     expect(resolved.messageCap).toBe(1200)
     expect(resolved.sessionConcurrency).toBe(2)
+    expect(resolved.cycleMs).toBe(500)
     expect(spy.warn).toEqual([])
   })
 
@@ -123,6 +130,18 @@ describe("parseConfig", () => {
       expect(spy.warn).toHaveLength(1)
       expect(spy.warn[0]?.message).toContain("SAMSKARA_SESSION_CONCURRENCY")
       expect(spy.warn[0]?.details).toMatchObject({ value, fallback: DEFAULT_SESSION_CONCURRENCY })
+    },
+  )
+
+  test.each(["50", "3000000000"])(
+    "a watch cycle of %s ms, below 100 or past setTimeout's limit, falls back to the default",
+    (value) => {
+      process.env.SAMSKARA_WATCH_CYCLE_MS = value
+      const spy = spyLogger()
+
+      expect(parseConfig(spy.log).cycleMs).toBe(DEFAULT_WATCH_CYCLE_MS)
+      expect(spy.warn).toHaveLength(1)
+      expect(spy.warn[0]?.message).toContain("SAMSKARA_WATCH_CYCLE_MS")
     },
   )
 

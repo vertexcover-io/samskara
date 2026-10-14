@@ -56,31 +56,33 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-test("L1: while /api/auth/methods says local=false no secret box appears", async () => {
-  // github=false is the synchronisation point: without it this passes on the first paint.
-  stubAuthFetch(() => Promise.resolve(jsonResponse(200, { github: false, local: false })))
+test.each([
+  { claim: "L1: local=false shows no secret box", github: false, local: false },
+  {
+    claim: "L2: local=true offers the local secret control beside GitHub",
+    github: true,
+    local: true,
+  },
+  {
+    claim: "L7: an unconfigured GitHub app drops its button rather than linking to an error page",
+    github: false,
+    local: true,
+  },
+])("$claim", async ({ github, local }) => {
+  // Each row differs from the first paint (GitHub shown, no secret box), so waitFor cannot pass early.
+  stubAuthFetch(() => Promise.resolve(jsonResponse(200, { github, local })))
 
   renderLogin()
 
-  await waitFor(() =>
-    expect(screen.queryByRole("link", { name: /continue with github/i })).not.toBeInTheDocument(),
-  )
-  expect(
-    screen.queryByRole("button", { name: /sign in with local secret/i }),
-  ).not.toBeInTheDocument()
-  expect(screen.queryByLabelText("Local secret")).not.toBeInTheDocument()
-})
-
-test("L2: once /api/auth/methods says local=true the page offers the local secret control beside GitHub", async () => {
-  stubAuthFetch(() => Promise.resolve(jsonResponse(200, { github: true, local: true })))
-
-  renderLogin()
-
-  expect(
-    await screen.findByRole("button", { name: /sign in with local secret/i }),
-  ).toBeInTheDocument()
-  expect(screen.getByLabelText("Local secret")).toBeInTheDocument()
-  expect(screen.getByRole("link", { name: /continue with github/i })).toBeInTheDocument()
+  await waitFor(() => {
+    expect(screen.queryAllByRole("link", { name: /continue with github/i })).toHaveLength(
+      github ? 1 : 0,
+    )
+    expect(screen.queryAllByRole("button", { name: /sign in with local secret/i })).toHaveLength(
+      local ? 1 : 0,
+    )
+  })
+  expect(screen.queryAllByLabelText("Local secret")).toHaveLength(local ? 1 : 0)
 })
 
 test("L3: a successful local login sends the typed secret and reloads to /", async () => {
@@ -146,15 +148,4 @@ test("L6: typing after a rejection clears the alert straight away, before any ne
   await userEvent.type(field, "x")
 
   expect(screen.queryByRole("alert")).not.toBeInTheDocument()
-})
-
-test("L7: an unconfigured GitHub app drops its button rather than linking to an error page", async () => {
-  stubAuthFetch(() => Promise.resolve(jsonResponse(200, { github: false, local: true })))
-
-  renderLogin()
-
-  expect(
-    await screen.findByRole("button", { name: /sign in with local secret/i }),
-  ).toBeInTheDocument()
-  expect(screen.queryByRole("link", { name: /continue with github/i })).not.toBeInTheDocument()
 })

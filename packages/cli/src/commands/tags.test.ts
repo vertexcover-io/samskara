@@ -47,38 +47,21 @@ const baseOptions = (
   ...over,
 })
 
-test("ST9: --session-id wins over the environment", async () => {
+test.each([
+  ["--session-id wins over the environment", "explicit", "explicit"],
+  ["without the flag the session comes from CLAUDE_CODE_SESSION_ID", undefined, "from-env"],
+])("ST9: %s", async (_case, sessionId, used) => {
   const writers = io()
   const { fetch, calls } = stubFetch(() => json(200, { session: { tags: ["harness"] } }))
 
   const code = await tagsCommand(
-    baseOptions(writers, {
-      fetch,
-      sessionId: "explicit",
-      env: { CLAUDE_CODE_SESSION_ID: "from-env" },
-    }),
+    baseOptions(writers, { fetch, sessionId, env: { CLAUDE_CODE_SESSION_ID: "from-env" } }),
   )
 
   expect(code).toBe(0)
-  expect(calls[0]?.url).toBe("http://test/api/sessions/explicit/tags")
+  expect(calls[0]?.url).toBe(`http://test/api/sessions/${used}/tags`)
   expect(calls[0]?.body).toEqual({ add: ["harness"] })
   expect(writers.out()).toBe("harness\n")
-})
-
-test("ST9: without the flag the session comes from CLAUDE_CODE_SESSION_ID", async () => {
-  const writers = io()
-  const { fetch, calls } = stubFetch(() => json(200, { session: { tags: ["harness"] } }))
-
-  const code = await tagsCommand(
-    baseOptions(writers, {
-      fetch,
-      env: { CLAUDE_CODE_SESSION_ID: "from-env" },
-      ...{ sessionId: undefined },
-    }),
-  )
-
-  expect(code).toBe(0)
-  expect(calls[0]?.url).toBe("http://test/api/sessions/from-env/tags")
 })
 
 test("ST9: with neither, it explains how to name the session and sends nothing", async () => {
@@ -126,25 +109,18 @@ test("ST9: a 404 is retried until the window closes, then explained", async () =
   expect(writers.err()).toContain("not on the server yet")
 })
 
-test("ST9: a 403 is final and never retried", async () => {
+test.each([
+  ["a 403 is final and never retried", 403, "forbidden", "cannot edit"],
+  ["a 401 is final and points at samskara login", 401, "unauthorized", "samskara login"],
+])("ST9: %s", async (_case, status, error, explained) => {
   const writers = io()
-  const { fetch, calls } = stubFetch(() => json(403, { error: "forbidden" }))
+  const { fetch, calls } = stubFetch(() => json(status, { error }))
 
   const code = await tagsCommand(baseOptions(writers, { fetch }))
 
   expect(code).toBe(1)
   expect(calls).toHaveLength(1)
-  expect(writers.err()).toContain("cannot edit")
-})
-
-test("ST9: a 401 points at samskara login", async () => {
-  const writers = io()
-  const { fetch } = stubFetch(() => json(401, { error: "unauthorized" }))
-
-  const code = await tagsCommand(baseOptions(writers, { fetch }))
-
-  expect(code).toBe(1)
-  expect(writers.err()).toContain("samskara login")
+  expect(writers.err()).toContain(explained)
 })
 
 test("ST9: naming no tag on add is refused before any request", async () => {

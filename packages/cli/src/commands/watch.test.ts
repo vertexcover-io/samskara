@@ -52,7 +52,7 @@ beforeEach(() => {
 })
 
 describe("watch command", () => {
-  test("detaches by default, reporting the daemon pid and log path", async () => {
+  test("detaches by default: starts the daemon and never runs the watch loop in-process", async () => {
     const streams = output()
 
     const code = await watchCommand(streams.writers)

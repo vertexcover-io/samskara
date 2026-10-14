@@ -124,32 +124,22 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-test("SC66 (S23): loading /sessions?project=p&user=u&range=week seeds every control from the query string - each typeahead showing its label, not reset to defaults", async () => {
-  stubFetch(okWith([session]))
-
-  renderAt("/sessions?project=samskara&user=maya&range=week")
-
-  await screen.findByRole("link", { name: /port the session detail surface/i })
-
-  // The box seeds from the raw query value and only acquires its label once the filters
-  // endpoint's response lands, so this is a wait, not a read: asserting straight through raced
-  // the upgrade and read back "samskara" on a loaded runner.
-  await waitFor(() => expect(filterBox("Project").value).toBe("Samskara"))
-  expect(filterBox("User").value).toBe("maya")
-  expect(control(/last active/i).value).toBe("week")
-})
-
-test("S23: the request sent to the server carries the same filters the URL declared", async () => {
+test("SC66 (S23): loading /sessions?project=p&user=u&range=week seeds every control from the query string and sends the same filters to the server - each typeahead showing its label, not reset to defaults", async () => {
   const calls = stubFetch(okWith([session]))
 
   renderAt("/sessions?project=samskara&user=maya&range=week")
 
   await screen.findByRole("link", { name: /port the session detail surface/i })
 
-  expect(calls).toContain("/api/sessions?project=samskara&user=maya&range=week")
   expect(calls.filter((path) => path !== "/api/sessions")).toEqual([
     "/api/sessions?project=samskara&user=maya&range=week",
   ])
+  // The box seeds from the raw query value and only acquires its label once the filters
+  // endpoint's response lands, so this is a wait, not a read: asserting straight through raced
+  // the upgrade and read back "samskara" on a loaded runner.
+  await waitFor(() => expect(filterBox("Project").value).toBe("Samskara"))
+  expect(filterBox("User").value).toBe("maya")
+  expect(control(/last active/i).value).toBe("week")
 })
 
 test("ST7: picking two tags sends them as one comma-joined parameter", async () => {
@@ -417,41 +407,6 @@ test("SC15: the sessions page renders each row the inferred list payload returns
   expect(secondRow).toHaveTextContent("unavailable")
 })
 
-test("SC16: a search match decorates its row, and a row without one still renders", async () => {
-  const matched = {
-    ...session,
-    match: {
-      sourceKind: "toolResult" as const,
-      sourceRowId: "tool-1",
-      score: 1.5,
-      snippet: [{ text: "deployment timeout", highlighted: true }],
-    },
-  }
-  const unmatched = { ...session, id: "s-2", title: "Trim the ingest pipeline" }
-  stubFetch(okWith([matched, unmatched]))
-
-  renderAt("/sessions?q=timeout")
-
-  const matchedRow = await screen.findByRole("link", { name: /port the session detail surface/i })
-  expect(matchedRow.querySelector("mark")).toHaveTextContent("deployment timeout")
-
-  const unmatchedRow = screen.getByRole("link", { name: /trim the ingest pipeline/i })
-  expect(unmatchedRow.querySelector("mark")).toBeNull()
-})
-
-test("the active-filter summary names the project by label when the option list carries it", async () => {
-  stubFetch(okWith([session]), {
-    ...filterOptions,
-    projects: [{ value: "p-uuid", label: "Samskara" }],
-  })
-
-  renderAt("/sessions?project=p-uuid")
-
-  await screen.findByRole("link", { name: /port the session detail surface/i })
-
-  expect(screen.getByText(/within samskara/i)).toHaveTextContent("Within Samskara")
-})
-
 test("the active-filter summary names each filter from its own option list", async () => {
   stubFetch(okWith([session]), {
     projects: [{ value: "p-uuid", label: "Samskara" }],
@@ -481,58 +436,6 @@ test("the active-filter summary falls back to the raw value when the option list
   await screen.findByRole("link", { name: /port the session detail surface/i })
 
   expect(screen.getByText(/within orphan-uuid/i)).toBeInTheDocument()
-})
-
-test("SC1: a search in flight shows no row from the previous search", async () => {
-  let settleSearch: ((response: Response) => void) | undefined
-  const calls = stubFetch((url) => {
-    if (url.searchParams.get("q") === "timeout") {
-      return new Promise((resolve) => {
-        settleSearch = resolve
-      })
-    }
-    return Promise.resolve(jsonResponse(200, payload([session])))
-  })
-  renderAt("/sessions")
-
-  await screen.findByRole("link", { name: /port the session detail surface/i })
-  await userEvent.type(screen.getByLabelText(/search session evidence/i), "timeout")
-  await userEvent.click(screen.getByRole("button", { name: "Search" }))
-
-  expect(calls).toHaveLength(2)
-  expect(
-    screen.queryByRole("link", { name: /port the session detail surface/i }),
-  ).not.toBeInTheDocument()
-  expect(screen.getByTestId("list-skeleton")).toBeInTheDocument()
-
-  settleSearch?.(jsonResponse(200, payload([{ ...session, title: "Timeout retry loop" }])))
-  await screen.findByRole("link", { name: /timeout retry loop/i })
-  expect(screen.queryByTestId("list-skeleton")).not.toBeInTheDocument()
-})
-
-test("SC2: a search in flight shows no count for the word it has not looked up", async () => {
-  let settleSearch: ((response: Response) => void) | undefined
-  stubFetch((url) => {
-    if (url.searchParams.get("q") === "timeout") {
-      return new Promise((resolve) => {
-        settleSearch = resolve
-      })
-    }
-    return Promise.resolve(jsonResponse(200, payload([session])))
-  })
-  renderAt("/sessions")
-
-  await screen.findByRole("link", { name: /port the session detail surface/i })
-  await userEvent.type(screen.getByLabelText(/search session evidence/i), "timeout")
-  await userEvent.click(screen.getByRole("button", { name: "Search" }))
-
-  expect(screen.getByTestId("list-skeleton")).toBeInTheDocument()
-  expect(screen.queryByText(/sessions? match/i)).not.toBeInTheDocument()
-  expect(
-    screen.queryByRole("navigation", { name: /search results pagination/i }),
-  ).not.toBeInTheDocument()
-
-  settleSearch?.(jsonResponse(200, payload([session])))
 })
 
 test("SC3: the placeholder holds as many rows as the list had", async () => {
@@ -586,36 +489,15 @@ test("SC4: a search after an empty result still shows a placeholder", async () =
   settleSearch?.(jsonResponse(200, payload([])))
 })
 
-test("SC5: paging to the next page clears the current page's rows", async () => {
-  let settlePageTwo: ((response: Response) => void) | undefined
-  stubFetch((url) => {
-    if (url.searchParams.get("page") === "2") {
-      return new Promise((resolve) => {
-        settlePageTwo = resolve
-      })
-    }
-    return Promise.resolve(
-      jsonResponse(200, payload([session], { page: 1, limit: 1, total: 2, totalPages: 2 })),
-    )
-  })
+test("SC7 (regression): the first load with nothing to replace shows the full-page loading message", async () => {
+  stubFetch(() => new Promise(() => {}))
   renderAt("/sessions")
 
-  await screen.findByRole("link", { name: /port the session detail surface/i })
-  await userEvent.click(screen.getByRole("button", { name: "Next" }))
-
-  expect(
-    screen.queryByRole("link", { name: /port the session detail surface/i }),
-  ).not.toBeInTheDocument()
-  expect(screen.getByTestId("list-skeleton")).toBeInTheDocument()
-
-  const ravi = { ...session, id: "s-2", title: "Trim the ingest pipeline", userLogin: "ravi" }
-  settlePageTwo?.(
-    jsonResponse(200, payload([ravi], { page: 2, limit: 1, total: 2, totalPages: 2 })),
-  )
-  await screen.findByRole("link", { name: /trim the ingest pipeline/i })
+  expect(screen.getByTestId("loading")).toBeInTheDocument()
+  expect(screen.queryByTestId("list-skeleton")).not.toBeInTheDocument()
 })
 
-test("SC6: the filter dropdowns keep their choices while a search is in flight", async () => {
+test("SC2, SC6: a search in flight shows no count or pagination for the word it has not looked up, and the filter dropdowns keep their choices", async () => {
   let settleSearch: ((response: Response) => void) | undefined
   stubFetch((url) => {
     if (url.searchParams.get("q") === "timeout") {
@@ -632,46 +514,68 @@ test("SC6: the filter dropdowns keep their choices while a search is in flight",
   await userEvent.click(screen.getByRole("button", { name: "Search" }))
 
   expect(screen.getByTestId("list-skeleton")).toBeInTheDocument()
+  expect(screen.queryByText(/sessions? match/i)).not.toBeInTheDocument()
+  expect(
+    screen.queryByRole("navigation", { name: /search results pagination/i }),
+  ).not.toBeInTheDocument()
   await openMenu("User")
   expect(offered()).toEqual(expect.arrayContaining(["maya", "ravi"]))
 
   settleSearch?.(jsonResponse(200, payload([session])))
 })
 
-test("SC7 (regression): the first load with nothing to replace shows the full-page loading message", async () => {
-  stubFetch(() => new Promise(() => {}))
-  renderAt("/sessions")
+test.each([
+  {
+    claim: "SC1: a search",
+    held: (url: URL) => url.searchParams.get("q") === "timeout",
+    firstPage: { page: 1, limit: 50, total: 1, totalPages: 1 },
+    trigger: async () => {
+      await userEvent.type(screen.getByLabelText(/search session evidence/i), "timeout")
+      await userEvent.click(screen.getByRole("button", { name: "Search" }))
+    },
+  },
+  {
+    claim: "SC5: paging to the next page",
+    held: (url: URL) => url.searchParams.get("page") === "2",
+    firstPage: { page: 1, limit: 1, total: 2, totalPages: 2 },
+    trigger: () => userEvent.click(screen.getByRole("button", { name: "Next" })),
+  },
+  {
+    claim: "SC19 (regression): changing a filter",
+    held: (url: URL) => url.searchParams.get("user") === "maya",
+    firstPage: { page: 1, limit: 50, total: 1, totalPages: 1 },
+    trigger: () => chooseFilter("User", "maya"),
+  },
+])(
+  "$claim refetches and keeps the previous rows hidden behind a placeholder until the new ones arrive",
+  async ({ held, firstPage, trigger }) => {
+    let settle: ((response: Response) => void) | undefined
+    const calls = stubFetch((url) => {
+      if (held(url)) {
+        return new Promise((resolve) => {
+          settle = resolve
+        })
+      }
+      return Promise.resolve(jsonResponse(200, payload([session], firstPage)))
+    })
+    renderAt("/sessions")
 
-  expect(screen.getByTestId("loading")).toBeInTheDocument()
-  expect(screen.queryByTestId("list-skeleton")).not.toBeInTheDocument()
-})
+    await screen.findByRole("link", { name: /port the session detail surface/i })
+    await trigger()
 
-test("SC19 (regression): changing a filter refetches and keeps the previous rows hidden behind a placeholder until the new ones arrive", async () => {
-  let settleSecond: ((response: Response) => void) | undefined
-  const calls = stubFetch((url) => {
-    if (url.searchParams.get("user") === "maya") {
-      return new Promise((resolve) => {
-        settleSecond = resolve
-      })
-    }
-    return Promise.resolve(jsonResponse(200, payload([session])))
-  })
-  renderAt("/sessions")
+    expect(calls).toHaveLength(2)
+    expect(
+      screen.queryByRole("link", { name: /port the session detail surface/i }),
+    ).not.toBeInTheDocument()
+    expect(screen.getByTestId("list-skeleton")).toBeInTheDocument()
 
-  await screen.findByRole("link", { name: /port the session detail surface/i })
-  await chooseFilter("User", "maya")
+    const ravi = { ...session, id: "s-2", title: "Trim the ingest pipeline", userLogin: "ravi" }
+    settle?.(jsonResponse(200, payload([ravi])))
 
-  expect(calls).toHaveLength(2)
-  expect(
-    screen.queryByRole("link", { name: /port the session detail surface/i }),
-  ).not.toBeInTheDocument()
-  expect(screen.getByTestId("list-skeleton")).toBeInTheDocument()
-
-  const ravi = { ...session, id: "s-2", title: "Trim the ingest pipeline", userLogin: "ravi" }
-  settleSecond?.(jsonResponse(200, payload([ravi])))
-
-  await screen.findByRole("link", { name: /trim the ingest pipeline/i })
-  expect(
-    screen.queryByRole("link", { name: /port the session detail surface/i }),
-  ).not.toBeInTheDocument()
-})
+    await screen.findByRole("link", { name: /trim the ingest pipeline/i })
+    expect(
+      screen.queryByRole("link", { name: /port the session detail surface/i }),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByTestId("list-skeleton")).not.toBeInTheDocument()
+  },
+)

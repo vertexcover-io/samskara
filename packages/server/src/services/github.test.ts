@@ -24,38 +24,35 @@ afterEach(() => {
 })
 
 describe("getOrgs", () => {
-  test("a user with 150 orgs across two pages gets all 150", async () => {
-    const firstPage = Array.from({ length: 100 }, (_, i) => `org-${i}`)
-    const secondPage = Array.from({ length: 50 }, (_, i) => `org-${100 + i}`)
-    const fetch = vi.fn(async (url: string | URL) => {
-      const page = new URL(url).searchParams.get("page")
-      return page === "2" ? orgsPage(secondPage) : orgsPage(firstPage)
-    })
+  const fullPage = (offset: number): ReadonlyArray<string> =>
+    Array.from({ length: 100 }, (_, i) => `org-${offset + i}`)
+
+  test.each([
+    {
+      name: "a user with 150 orgs across two pages gets all 150 in two requests",
+      page: (n: string | null) => (n === "2" ? fullPage(100).slice(0, 50) : fullPage(0)),
+      requests: 2,
+      orgs: [...fullPage(0), ...fullPage(100).slice(0, 50)],
+    },
+    {
+      name: "a single short page makes exactly one request and lowercases the logins",
+      page: () => ["Acme"],
+      requests: 1,
+      orgs: ["acme"],
+    },
+    {
+      name: "every page full stops after a capped 10 requests",
+      page: () => fullPage(0),
+      requests: 10,
+      orgs: Array.from({ length: 10 }, () => fullPage(0)).flat(),
+    },
+  ])("$name", async ({ page, requests, orgs }) => {
+    const fetch = vi.fn(async (url: string | URL) =>
+      orgsPage(page(new URL(url).searchParams.get("page"))),
+    )
     vi.stubGlobal("fetch", fetch)
 
-    const orgs = await createGithubClient(env).getOrgs("token")
-
-    expect(orgs).toEqual([...firstPage, ...secondPage])
-    expect(fetch).toHaveBeenCalledTimes(2)
-  })
-
-  test("a single short page makes exactly one request", async () => {
-    const fetch = vi.fn(async () => orgsPage(["Acme"]))
-    vi.stubGlobal("fetch", fetch)
-
-    const orgs = await createGithubClient(env).getOrgs("token")
-
-    expect(orgs).toEqual(["acme"])
-    expect(fetch).toHaveBeenCalledTimes(1)
-  })
-
-  test("stops after a capped number of pages even if every page is full", async () => {
-    const fetch = vi.fn(async () => orgsPage(Array.from({ length: 100 }, (_, i) => `org-${i}`)))
-    vi.stubGlobal("fetch", fetch)
-
-    const orgs = await createGithubClient(env).getOrgs("token")
-
-    expect(fetch).toHaveBeenCalledTimes(10)
-    expect(orgs).toHaveLength(1000)
+    expect(await createGithubClient(env).getOrgs("token")).toEqual(orgs)
+    expect(fetch).toHaveBeenCalledTimes(requests)
   })
 })

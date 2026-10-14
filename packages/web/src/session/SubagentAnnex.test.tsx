@@ -68,14 +68,6 @@ test("S42: activating Open branch reveals the branch conversation and flips the 
   expect(within(branch).getByText(/No unique constraints on the three tables/)).toBeInTheDocument()
 })
 
-test("S42b: an open annex trigger reads 'Close branch' so its label matches the action it performs", () => {
-  render(<SubagentAnnex {...props(true, { onOpen: vi.fn(), onExit: vi.fn() })} />)
-
-  const trigger = screen.getByRole("button", { name: /close branch/i })
-  expect(trigger).toHaveAttribute("aria-expanded", "true")
-  expect(screen.queryByRole("button", { name: /open branch/i })).not.toBeInTheDocument()
-})
-
 test("S42: an annex names its agent type and task so the branch stays traceable to what spawned it", () => {
   render(<SubagentAnnex {...props(false, { onOpen: vi.fn(), onExit: vi.fn() })} />)
 

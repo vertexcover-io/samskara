@@ -100,10 +100,19 @@ describe("status command", () => {
     expect(output.join("")).toContain("not running")
   })
 
-  test("reports an unpaired CLI without calling the server", async () => {
-    process.env.SAMSKARA_HOME = await mkdtemp(join(tmpdir(), "samskara-status-unpaired-"))
+  const IDENTITY = {
+    id: "user-1",
+    githubLogin: "kgritesh",
+    email: null,
+    name: null,
+    avatarUrl: null,
+    isSuperAdmin: false,
+  }
+
+  test("an unpaired CLI is reported without calling the server", async () => {
+    process.env.SAMSKARA_HOME = await mkdtemp(join(tmpdir(), "samskara-status-pairing-"))
     const output: string[] = []
-    stubFetch(async () => new Response("{}", { status: 200 }))
+    stubFetch(async () => new Response("{}"))
 
     const code = await statusCommand({ stdout: { write: (text) => output.push(text) } })
 
@@ -112,46 +121,33 @@ describe("status command", () => {
     expect(output.join("")).toContain("not paired")
   })
 
-  test("names the paired identity when the token is accepted", async () => {
-    const home = await mkdtemp(join(tmpdir(), "samskara-status-paired-"))
+  test.each([
+    {
+      label: "an accepted token names the paired identity",
+      token: "cli-token",
+      status: 200,
+      body: IDENTITY,
+      shown: ["paired as kgritesh"],
+    },
+    {
+      label: "a rejected token is surfaced instead of reporting healthy",
+      token: "expired-token",
+      status: 401,
+      body: { error: "unauthorized" },
+      shown: ["token rejected", "samskara login"],
+    },
+  ])("$label", async ({ token, status, body, shown }) => {
+    const home = await mkdtemp(join(tmpdir(), "samskara-status-pairing-"))
     process.env.SAMSKARA_HOME = home
-    await writeFile(join(home, "token"), "cli-token", { mode: 0o600 })
+    await writeFile(join(home, "token"), token, { mode: 0o600 })
     const output: string[] = []
-
-    stubFetch(
-      async () =>
-        new Response(
-          JSON.stringify({
-            id: "user-1",
-            githubLogin: "kgritesh",
-            email: null,
-            name: null,
-            avatarUrl: null,
-            isSuperAdmin: false,
-          }),
-          { status: 200 },
-        ),
-    )
+    stubFetch(async () => new Response(JSON.stringify(body), { status }))
 
     const code = await statusCommand({ stdout: { write: (text) => output.push(text) } })
 
     expect(code).toBe(0)
-    expect(output.join("")).toContain("paired as kgritesh")
-  })
-
-  test("surfaces a rejected token instead of reporting healthy", async () => {
-    const home = await mkdtemp(join(tmpdir(), "samskara-status-stale-"))
-    process.env.SAMSKARA_HOME = home
-    await writeFile(join(home, "token"), "expired-token", { mode: 0o600 })
-    const output: string[] = []
-
-    stubFetch(async () => new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 }))
-
-    const code = await statusCommand({ stdout: { write: (text) => output.push(text) } })
-
-    expect(code).toBe(0)
-    expect(output.join("")).toContain("token rejected")
-    expect(output.join("")).toContain("samskara login")
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1)
+    for (const text of shown) expect(output.join("")).toContain(text)
   })
 
   test("shows both the server and the web URL it is pointed at", async () => {

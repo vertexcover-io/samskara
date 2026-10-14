@@ -1,4 +1,4 @@
-import { existsSync, writeFileSync } from "node:fs"
+import { existsSync } from "node:fs"
 import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -35,16 +35,13 @@ afterEach(() => {
 })
 
 describe("cli entry resolution", () => {
-  test("resolves to an entry file that exists, so the spawned daemon can run", () => {
+  test("resolves to the CLI's index module, and that file exists so the spawned daemon can run", () => {
     const entry = resolveCliEntry(() => undefined)
     expect(existsSync(entry)).toBe(true)
+    expect(entry).toMatch(/[/\\]index\.(js|ts)$/)
   })
 
-  test("points at the CLI entry module rather than some other file", () => {
-    expect(resolveCliEntry(() => undefined)).toMatch(/[/\\]index\.(js|ts)$/)
-  })
-
-  test("explains the fallback only when the compiled entry is absent", () => {
+  test("a TypeScript-source entry comes with one fallback notice, a compiled entry with none", () => {
     const notices: string[] = []
     const entry = resolveCliEntry((message) => notices.push(message))
 
@@ -92,14 +89,16 @@ describe("watcher daemon", () => {
     kill.mockRestore()
   })
 
-  test("the lock is released after the action throws, so a later start still works", async () => {
+  test("a failed spawn is an error that kills the child and releases the lock, so a later start still works", async () => {
     await useHome()
-    spawnMock.mockReturnValueOnce(child(undefined)).mockReturnValueOnce(child(777))
+    const failed = child(undefined)
+    spawnMock.mockReturnValueOnce(failed).mockReturnValueOnce(child(777))
     const kill = alive(777)
 
     await expect(startWatcherDaemon("/app/dist/index.js")).rejects.toThrow(
       "failed to spawn watcher daemon",
     )
+    expect(failed.kill).toHaveBeenCalledWith("SIGTERM")
     await expect(startWatcherDaemon("/app/dist/index.js")).resolves.toBe(777)
     kill.mockRestore()
   })
@@ -126,16 +125,6 @@ describe("watcher daemon", () => {
     })
   })
 
-  test("concurrent startup rechecks PID state after acquiring the start lock", async () => {
-    const home = await useHome()
-    alive(777)
-    // A competing process wins the lock and records its PID first.
-    writeFileSync(join(home, "watch.pid"), "777", { mode: 0o600 })
-
-    await expect(startWatcherDaemon("/app/dist/index.js")).resolves.toBe(777)
-    expect(spawnMock).not.toHaveBeenCalled()
-  })
-
   test("PID persistence failure terminates the spawned watcher before returning an error", async () => {
     const home = await useHome()
     const spawned = child(444)
@@ -148,18 +137,6 @@ describe("watcher daemon", () => {
     await expect(startWatcherDaemon("/app/dist/index.js")).rejects.toThrow()
     expect(spawned.kill).toHaveBeenCalledWith("SIGTERM")
     expect(spawned.unref).not.toHaveBeenCalled()
-  })
-
-  test("a watcher that fails to spawn is reported as an error", async () => {
-    await useHome()
-    const spawned = child(undefined)
-    spawnMock.mockReturnValue(spawned)
-    alive()
-
-    await expect(startWatcherDaemon("/app/dist/index.js")).rejects.toThrow(
-      "failed to spawn watcher daemon",
-    )
-    expect(spawned.kill).toHaveBeenCalledWith("SIGTERM")
   })
 
   test("REQ-015: stopping terminates the process and removes its PID file", async () => {

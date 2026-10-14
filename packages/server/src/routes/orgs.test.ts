@@ -61,7 +61,7 @@ const seedOrgRow = async (
     .insert(orgs)
     .values({
       githubSlug: slug,
-      name: flags.name ?? slug,
+      name: flags.name === undefined ? slug : flags.name,
       autoAddMembers: flags.autoAddMembers ?? false,
     })
     .returning({ id: orgs.id })
@@ -223,6 +223,7 @@ describe.skipIf(!dockerAvailable())("GET /api/orgs/:slug", () => {
     const member = await seedUser(db, 1105, "sc41-member")
     const orgId = await seedOrgRow(db, "sc41-org", { name: null })
     await db.insert(userOrgs).values({ userId: member, orgId })
+    expect((await storedFlags(db, orgId)).name).toBeNull()
 
     const { status, body } = await getAs(db, member, "sc41-org")
 
@@ -290,21 +291,11 @@ describe.skipIf(!dockerAvailable())("PATCH /api/orgs/:slug", () => {
     expect((await storedFlags(db, orgId)).autoAddMembers).toBe(false)
   })
 
-  test("SC30: a body that is not a boolean is rejected", async () => {
-    const member = await seedUser(db, 1202, "sc30-member")
-    const orgId = await seedOrgRow(db, "sc30-org", { autoAddMembers: false })
-    await db.insert(userOrgs).values({ userId: member, orgId })
-
-    const { status } = await patchAs(db, member, "sc30-org", { autoAddMembers: "yes" })
-
-    expect(status).toBe(400)
-    expect((await storedFlags(db, orgId)).autoAddMembers).toBe(false)
-  })
-
-  test("SC42: a member renames the org and the change sticks", async () => {
+  test("SC42: a member names a never-named org and the change sticks", async () => {
     const member = await seedUser(db, 1203, "sc42-member")
     const orgId = await seedOrgRow(db, "sc42-org", { name: null, autoAddMembers: true })
     await db.insert(userOrgs).values({ userId: member, orgId })
+    expect((await storedFlags(db, orgId)).name).toBeNull()
 
     const { status, body } = await patchAs(db, member, "sc42-org", { name: "Vertexcover" })
 
@@ -331,12 +322,15 @@ describe.skipIf(!dockerAvailable())("PATCH /api/orgs/:slug", () => {
     expect((read.body as { org: OrgDetailBody }).org.name).toBe("vertexcover-io")
   })
 
-  test("SC45: a body asking for no change is rejected", async () => {
-    const member = await seedUser(db, 1205, "sc45-member")
-    const orgId = await seedOrgRow(db, "sc45-org", { autoAddMembers: false, name: "Keep" })
+  test.each([
+    { label: "SC30: an autoAddMembers that is not a boolean", json: { autoAddMembers: "yes" } },
+    { label: "SC45: a body asking for no change", json: {} },
+  ])("$label is rejected with 400 and nothing is stored", async ({ json }) => {
+    const member = await seedUser(db, 1202, "bad-body-member")
+    const orgId = await seedOrgRow(db, "bad-body-org", { autoAddMembers: false, name: "Keep" })
     await db.insert(userOrgs).values({ userId: member, orgId })
 
-    const { status } = await patchAs(db, member, "sc45-org", {})
+    const { status } = await patchAs(db, member, "bad-body-org", json)
 
     expect(status).toBe(400)
     expect(await storedFlags(db, orgId)).toEqual({ autoAddMembers: false, name: "Keep" })
@@ -366,7 +360,7 @@ describe.skipIf(!dockerAvailable())("POST /api/orgs", () => {
     await db.delete(users)
   })
 
-  test("SC34: a super admin registers an org and it becomes readable", async () => {
+  test("SC34, SC46: a super admin registers an org with no auto-add flag, it is stored with auto-add on, and it becomes readable", async () => {
     const admin = await seedUser(db, 1400, "sc34-admin")
     await makeSuperAdmin(db, admin)
 
@@ -377,6 +371,7 @@ describe.skipIf(!dockerAvailable())("POST /api/orgs", () => {
     expect(body).toEqual({
       org: { id: stored?.id, githubSlug: "sc34-acme", name: "sc34-acme" },
     })
+    expect(stored?.autoAddMembers).toBe(true)
 
     const read = await getAs(db, admin, "sc34-acme")
     expect(read.status).toBe(200)
@@ -420,20 +415,6 @@ describe.skipIf(!dockerAvailable())("POST /api/orgs", () => {
     const rows = await db.select().from(orgs).where(eq(orgs.githubSlug, "sc54-acme"))
     // The script's flag is the operator's stated intent, so it overwrites where the route does not.
     expect(rows[0]?.autoAddMembers).toBe(false)
-  })
-
-  test("SC46: an omitted auto-add flag registers the org with it on", async () => {
-    const admin = await seedUser(db, 1403, "sc46-admin")
-    await makeSuperAdmin(db, admin)
-
-    const { status, body } = await postAs(db, admin, { githubSlug: "sc46-acme" })
-
-    expect(status).toBe(201)
-    const rows = await db.select().from(orgs).where(eq(orgs.githubSlug, "sc46-acme"))
-    expect(body).toEqual({
-      org: { id: rows[0]?.id, githubSlug: "sc46-acme", name: "sc46-acme" },
-    })
-    expect(rows[0]?.autoAddMembers).toBe(true)
   })
 
   test("SC37: two spellings of one slug register one org", async () => {
@@ -513,8 +494,9 @@ describe.skipIf(!dockerAvailable())("GET /api/orgs", () => {
 
   test("SC48: an org with no name of its own is listed by its slug", async () => {
     const member = await seedUser(db, 1502, "sc48-member")
-    const orgId = await seedOrgRow(db, "sc48-org")
+    const orgId = await seedOrgRow(db, "sc48-org", { name: null })
     await db.insert(userOrgs).values({ userId: member, orgId })
+    expect((await storedFlags(db, orgId)).name).toBeNull()
 
     const { status, body } = await getListAs(db, member)
 

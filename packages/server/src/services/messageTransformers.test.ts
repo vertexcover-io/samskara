@@ -102,22 +102,21 @@ describe("applyTransformers", () => {
     expect(changed.get("task-notification-subtype")).toBe(1)
   })
 
-  test("the real transformer leaves a non-user message untouched", () => {
-    const flat = flatOf({
-      message: { ...baseMessage, role: "assistant" },
-      raw: taskNotificationAttachmentLine,
-    })
-
-    const { messages } = applyTransformers([flat], [taskNotificationSubType])
-
-    expect(messages[0]?.message).toEqual(flat.message)
-  })
-
-  test("the real transformer ignores a queued_command that is not a task notification", () => {
-    const flat = flatOf({
-      raw: { type: "attachment", attachment: { type: "queued_command", commandMode: "prompt" } },
-    })
-
+  test.each([
+    [
+      "a non-user message",
+      flatOf({
+        message: { ...baseMessage, role: "assistant" },
+        raw: taskNotificationAttachmentLine,
+      }),
+    ],
+    [
+      "a queued_command that is not a task notification",
+      flatOf({
+        raw: { type: "attachment", attachment: { type: "queued_command", commandMode: "prompt" } },
+      }),
+    ],
+  ])("the real transformer leaves %s untouched", (_case, flat) => {
     const { messages } = applyTransformers([flat], [taskNotificationSubType])
 
     expect(messages[0]?.message).toEqual(flat.message)

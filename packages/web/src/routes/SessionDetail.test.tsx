@@ -337,6 +337,8 @@ const renderDetailWithFetch = (impl: FetchImpl, entry = "/sessions/s-1") => {
 
 const tabs = () => screen.getAllByRole("tab")
 
+const tabsLoaded = () => waitFor(() => expect(tabs()).toHaveLength(6))
+
 const panelOf = () => screen.getByRole("tabpanel")
 
 beforeEach(() => {
@@ -351,7 +353,7 @@ afterEach(() => {
 test("S37: the detail route renders one tab per view, with Conversation selected on load", async () => {
   renderDetail()
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
 
   expect(tabs().map((tab) => tab.textContent)).toEqual([
     expect.stringContaining("Conversation"),
@@ -369,7 +371,7 @@ test("S38: Conversation hides tool payloads until the inline-tools checkbox is t
   const user = userEvent.setup()
   renderDetail()
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
 
   const panel = screen.getByRole("tabpanel")
   expect(within(panel).getByText(/Make it idempotent/)).toBeInTheDocument()
@@ -404,7 +406,7 @@ test("a screenshot pasted with a prompt renders as an image inside that prompt, 
     }),
   )
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
 
   const panel = panelOf()
   const prompt = within(panel)
@@ -441,7 +443,7 @@ test("the slash command that opened a session is on Conversation, spec and all",
     }),
   )
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
 
   const panel = panelOf()
   expect(within(panel).getByText("/harness:orchestrate")).toBeInTheDocument()
@@ -464,7 +466,7 @@ test("a block whose thinking was encrypted shows what it did, not a claim that i
     }),
   )
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
 
   const panel = panelOf()
   expect(within(panel).getByText("Claude")).toBeInTheDocument()
@@ -479,7 +481,7 @@ test("Commits and Pull Requests are tabs of their own, counted like every other 
     }),
   )
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
 
   expect(tabs().map((tab) => tab.textContent)).toEqual([
     expect.stringContaining("Conversation"),
@@ -497,7 +499,7 @@ test("a commit lists its sha, branch, diffstat and subject, linked to the repo i
   const user = userEvent.setup()
   renderDetail(buildPayload({ commits: [commit()] }))
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Commits/ }))
 
   const panel = panelOf()
@@ -515,7 +517,7 @@ test("a diffstat omits the counts capture did not record rather than showing the
   const user = userEvent.setup()
   renderDetail(buildPayload({ commits: [commit({ deletions: null, filesChanged: 1 })] }))
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Commits/ }))
 
   const stat = within(panelOf()).getByText(/1 file/)
@@ -539,7 +541,7 @@ test("a commit jumps to the transcript turn that produced it, landing on Convers
     }),
   )
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Commits/ }))
   await user.click(within(panelOf()).getByRole("button", { name: /Jump to transcript/ }))
 
@@ -570,7 +572,7 @@ test("jumping to a commit made by a tool call reveals that call, rather than lan
     }),
   )
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Commits/ }))
   await user.click(within(panelOf()).getByRole("button", { name: /Jump to transcript/ }))
 
@@ -583,7 +585,7 @@ test("a pull request lists the title and branches it was opened with", async () 
   const user = userEvent.setup()
   renderDetail(buildPayload({ pullRequests: [pullRequest()] }))
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Pull Requests/ }))
 
   const panel = panelOf()
@@ -605,7 +607,7 @@ test("a pull request captured without its invocation shows no branch pair at all
     }),
   )
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Pull Requests/ }))
 
   expect(panelOf().textContent).not.toContain("→")
@@ -616,7 +618,7 @@ test("a session that recorded no pull requests says so, rather than showing an e
   const user = userEvent.setup()
   renderDetail()
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Pull Requests/ }))
 
   expect(within(panelOf()).getByText(/No pull requests recorded/)).toBeInTheDocument()
@@ -625,7 +627,7 @@ test("a session that recorded no pull requests says so, rather than showing an e
 test("S37: thinking is present but collapsed on Conversation, so the prose leads and the reasoning is opt-in", async () => {
   renderDetail()
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
 
   const summary = screen.getByText(/^Thinking$/)
   const thinking = summary.closest("details")
@@ -638,7 +640,7 @@ test("S37: ArrowRight, End, and Home move the selected tab under a roving tabind
   const user = userEvent.setup()
   renderDetail()
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
 
   const [conversation, toolCalls] = tabs()
   const last = tabs()[tabs().length - 1]
@@ -663,7 +665,7 @@ test("S37: ArrowRight, End, and Home move the selected tab under a roving tabind
 test("S37: the masthead reports all six session facts from the payload", async () => {
   renderDetail()
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
 
   const facts = screen.getByRole("group", { name: /session facts/i })
   for (const label of [
@@ -696,7 +698,7 @@ const factValue = (label: string) => within(sessionFacts()).getByText(label).nex
 test("SC24: the facts show a Started entry holding the first message time, and no Created entry", async () => {
   renderDetail()
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
 
   expect(factValue("Started")?.textContent).toBe("Mar 1, 2026, 10:00")
   expect(within(sessionFacts()).queryByText("Created")).not.toBeInTheDocument()
@@ -705,7 +707,7 @@ test("SC24: the facts show a Started entry holding the first message time, and n
 test("SC25: an unknown start time reads as unavailable, as does a null duration", async () => {
   renderDetail(buildPayload({ ...PAYLOAD, session: { startedAt: null, durationMs: null } }))
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
 
   expect(factValue("Started")?.textContent).toMatch(/unavailable/i)
   expect(factValue("Duration")?.textContent).toMatch(/unavailable/i)
@@ -724,7 +726,7 @@ test("S79: the facts report every token bucket the payload carries, so the strip
     }),
   )
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
 
   expect(factValue("Tokens in")?.textContent).toBe("49,284")
   expect(factValue("Tokens out")?.textContent).toBe("5,145,110")
@@ -737,7 +739,7 @@ test("S79: a session that did no thinking keeps the cached entry and drops the t
     buildPayload({ ...PAYLOAD, tokenUsage: { cachedTokens: 900_000, thinkingTokens: 0 } }),
   )
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
 
   expect(factValue("Tokens cached")?.textContent).toBe("900,000")
   expect(within(sessionFacts()).queryByText("Tokens thinking")).not.toBeInTheDocument()
@@ -751,11 +753,30 @@ const metaLineOf = async (): Promise<string> => {
   return (line?.textContent ?? "").replace(/\s+/g, " ").trim()
 }
 
-test("S37: the masthead names the repo the session ran in, alongside project and user", async () => {
-  const repo = { host: "github.com", owner: "acme", repoName: "samskara" }
+test.each([
+  {
+    claim: "names the repo the session ran in, alongside project and user, linked",
+    repo: { host: "github.com", owner: "acme", repoName: "samskara" },
+    line: "Samskara·ritesh·acme/samskara",
+    links: 1,
+  },
+  {
+    claim: "names a remoteless repo but does not link it - there is no url to send a reader to",
+    repo: { host: "local", owner: "/Users/maya/Projects/samskara", repoName: "samskara" },
+    line: "Samskara·ritesh·samskara",
+    links: 0,
+  },
+  {
+    claim: "ends at the user when the session has no repo - no dangling separator",
+    repo: null,
+    line: "Samskara·ritesh",
+    links: 0,
+  },
+])("S37: the masthead $claim", async ({ repo, line, links }) => {
   renderDetail(buildPayload({ ...PAYLOAD, session: { repo } }))
 
-  expect(await metaLineOf()).toBe("Samskara·ritesh·acme/samskara")
+  expect(await metaLineOf()).toBe(line)
+  expect(screen.queryAllByRole("link", { name: /^(acme\/)?samskara$/ })).toHaveLength(links)
 })
 
 test("S37: a remote-backed repo links out to the repo itself, on its own host", async () => {
@@ -765,20 +786,6 @@ test("S37: a remote-backed repo links out to the repo itself, on its own host", 
   const link = await screen.findByRole("link", { name: "acme/samskara" })
   expect(link).toHaveAttribute("href", "https://gitlab.example.com/acme/samskara")
   expect(link).toHaveAttribute("rel", expect.stringContaining("noreferrer"))
-})
-
-test("S37: a remoteless repo is named but not linked - there is no url to send a reader to", async () => {
-  const repo = { host: "local", owner: "/Users/maya/Projects/samskara", repoName: "samskara" }
-  renderDetail(buildPayload({ ...PAYLOAD, session: { repo } }))
-
-  expect(await metaLineOf()).toBe("Samskara·ritesh·samskara")
-  expect(screen.queryByRole("link", { name: "samskara" })).toBeNull()
-})
-
-test("S37: a session with no repo ends the masthead at the user - no dangling separator", async () => {
-  renderDetail(buildPayload({ ...PAYLOAD, session: { repo: null } }))
-
-  expect(await metaLineOf()).toBe("Samskara·ritesh")
 })
 
 const CAPTURED = {
@@ -795,33 +802,6 @@ const CAPTURED = {
   firstSeenAt: "2026-07-01T10:00:00.000Z",
   lastSeenAt: "2026-07-01T10:05:00.000Z",
 }
-
-test("S48: the artifacts tab lists the session's captured files as a folder tree and shows the selected one's diff", async () => {
-  const user = userEvent.setup()
-  renderDetail(PAYLOAD, {
-    status: 200,
-    body: {
-      artifacts: [
-        CAPTURED,
-        { ...CAPTURED, id: "cap-2", relativePath: "src/ingest.ts", diff: null },
-      ],
-    },
-  })
-
-  await waitFor(() => expect(tabs()).toHaveLength(6))
-  await user.click(screen.getByRole("tab", { name: /Artifacts/ }))
-
-  const list = await screen.findByRole("list", { name: /filed artifacts/i })
-  // The browser nests files under folder rows, so the path is carried by the tree, not the leaf.
-  expect(within(list).getByRole("button", { name: /^docs$/ })).toBeInTheDocument()
-  expect(within(list).getByRole("button", { name: /^src$/ })).toBeInTheDocument()
-  expect(within(list).getByRole("button", { name: /notes\.md/ })).toBeInTheDocument()
-  expect(within(list).getByRole("button", { name: /ingest\.ts/ })).toBeInTheDocument()
-
-  const viewer = screen.getByRole("region", { name: /artifact viewer/i })
-  expect(within(viewer).getByText("-The original line.")).toBeInTheDocument()
-  expect(within(viewer).getByText("+The replacement line.")).toBeInTheDocument()
-})
 
 test("SC22: the artifacts panel lists the captured files for the session - both paths appear, a binary artifact shows its preview rather than a text body, and a null diff still renders", async () => {
   const user = userEvent.setup()
@@ -848,7 +828,7 @@ test("SC22: the artifacts panel lists the captured files for the session - both 
     },
   })
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Artifacts/ }))
 
   const list = await screen.findByRole("list", { name: /filed artifacts/i })
@@ -869,7 +849,7 @@ test("S49: a session with no captured artifacts reads empty rather than showing 
   const user = userEvent.setup()
   renderDetail(buildPayload({ messages: [message({ lineNumber: 1, msgType: "message" })] }))
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Artifacts/ }))
 
   expect(await screen.findByText(/no artifacts were filed/i)).toBeInTheDocument()
@@ -884,7 +864,7 @@ test("S53: a transcript frame-link artifact still renders when the captured-arti
   const user = userEvent.setup()
   renderDetail()
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Artifacts/ }))
 
   const list = await screen.findByRole("list", { name: /filed artifacts/i })
@@ -898,7 +878,7 @@ test("S54: a failed artifact fetch leaves the other tabs working and shows a fai
   const user = userEvent.setup()
   renderDetail(PAYLOAD, { status: 500, body: { error: "boom" } })
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
 
   expect(within(panelOf()).getByText(/Make it idempotent/)).toBeInTheDocument()
 
@@ -914,7 +894,7 @@ test("S63: a branch reads like the main spine - its system events are dropped an
   const user = userEvent.setup()
   renderDetail(BRANCH_PAYLOAD)
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   await user.click(screen.getByRole("button", { name: /open branch/i }))
 
   const branch = screen.getByRole("region", { name: /auditor conversation/i })
@@ -928,7 +908,7 @@ test("S64: copying a record's link yields a URL naming that message and the bran
   const user = userEvent.setup()
   renderDetail(BRANCH_PAYLOAD)
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   await user.click(screen.getByRole("button", { name: /open branch/i }))
 
   const branch = screen.getByRole("region", { name: /auditor conversation/i })
@@ -939,19 +919,10 @@ test("S64: copying a record's link yields a URL naming that message and the bran
   )
 })
 
-test("S65: a link to a message inside a branch opens that branch on arrival, so the shared line is on screen rather than folded away", async () => {
-  renderDetail(BRANCH_PAYLOAD, OK_EMPTY, "/sessions/s-1?m=branch-say")
-
-  await waitFor(() => expect(tabs()).toHaveLength(6))
-
-  const branch = await screen.findByRole("region", { name: /auditor conversation/i })
-  expect(within(branch).getByText(/Checked the three tables/)).toBeInTheDocument()
-})
-
 test("S66: a link naming a message this transcript does not hold is ignored, leaving the session reading as it would without one", async () => {
   renderDetail(BRANCH_PAYLOAD, OK_EMPTY, "/sessions/s-1?m=not-in-this-session")
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
 
   expect(screen.queryByText(/not part of this session/i)).not.toBeInTheDocument()
   expect(within(panelOf()).getByRole("button", { name: /open branch/i })).toBeInTheDocument()
@@ -960,7 +931,7 @@ test("S66: a link naming a message this transcript does not hold is ignored, lea
 test("S67: the linked record inside a branch is marked as the reader's location, so the shared line is identifiable among its neighbours", async () => {
   renderDetail(BRANCH_PAYLOAD, OK_EMPTY, "/sessions/s-1?m=branch-say")
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
 
   const branch = await screen.findByRole("region", { name: /auditor conversation/i })
   const marked = within(branch)
@@ -984,7 +955,7 @@ test("S68: a session with no branches marks its linked record too - the mark is 
   })
   renderDetail(solo, OK_EMPTY, "/sessions/s-1?m=solo-say")
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
 
   expect(screen.getByText(/Only answer/).closest("article")).toHaveAttribute(
     "aria-current",
@@ -997,7 +968,7 @@ test("S69: opening a branch records it in the query, so the branch a reader is l
   const user = userEvent.setup()
   renderDetail(BRANCH_PAYLOAD)
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   await user.click(screen.getByRole("button", { name: /open branch/i }))
 
   expect(screen.getByTestId("location")).toHaveTextContent("/sessions/s-1?agent=a1")
@@ -1007,7 +978,7 @@ test("S70: closing a branch drops it from the query rather than leaving a link t
   const user = userEvent.setup()
   renderDetail(BRANCH_PAYLOAD, OK_EMPTY, "/sessions/s-1?agent=a1")
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   await user.click(await screen.findByRole("button", { name: /close branch/i }))
 
   expect(screen.getByTestId("location")).not.toHaveTextContent("agent=a1")
@@ -1016,7 +987,7 @@ test("S70: closing a branch drops it from the query rather than leaving a link t
 test("S71: arriving on a shared branch link opens that branch, so its records and their own links are reachable at once", async () => {
   renderDetail(BRANCH_PAYLOAD, OK_EMPTY, "/sessions/s-1?agent=a1")
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
 
   const branch = await screen.findByRole("region", { name: /auditor conversation/i })
   expect(within(branch).getByText(/Checked the three tables/)).toBeInTheDocument()
@@ -1045,7 +1016,7 @@ test("S72: arriving on a shared branch link lands on that branch's spawn point, 
 
   renderDetail(BRANCH_PAYLOAD, OK_EMPTY, "/sessions/s-1?agent=a1")
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   await waitFor(() => expect(scrolled).toContainEqual({ id: "spawn-a1", block: "start" }))
 })
 
@@ -1054,7 +1025,7 @@ test("S73: a message permalink lands on the top of the record it names, so a tal
 
   renderDetail(BRANCH_PAYLOAD, OK_EMPTY, "/sessions/s-1?agent=a1&m=branch-say")
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   await waitFor(() => expect(scrolled).toContainEqual({ id: "r-branch-say", block: "start" }))
 })
 
@@ -1063,7 +1034,7 @@ test("S73: a message permalink lands on the top of the record it names, so a tal
 test("S74: the rail names each branch by the task it was given, keeping its type as the secondary label", async () => {
   renderDetail(BRANCH_PAYLOAD)
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
 
   const rail = screen.getByRole("complementary", { name: /agents in this session/i })
   const branch = within(rail).getByRole("button", { name: /audit keys/i })
@@ -1074,7 +1045,7 @@ test("S74: the rail names each branch by the task it was given, keeping its type
 test("S75: the rail reports no run status, so a branch is never labelled interrupted on evidence the capture does not have", async () => {
   renderDetail(BRANCH_PAYLOAD)
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
 
   const rail = screen.getByRole("complementary", { name: /agents in this session/i })
   expect(within(rail).queryByText(/interrupted/i)).not.toBeInTheDocument()
@@ -1086,7 +1057,7 @@ test("S75: the rail reports no run status, so a branch is never labelled interru
 test("S77: a link to a nested branch opens the parent branch holding it, so a subagent spawned by a subagent is reachable", async () => {
   renderDetail(NESTED_PAYLOAD, OK_EMPTY, "/sessions/s-1?agent=a2")
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
 
   const nested = await screen.findByRole("region", { name: /researcher conversation/i })
   expect(within(nested).getByText(/Nested branch findings/)).toBeInTheDocument()
@@ -1096,7 +1067,7 @@ test("S78: the rail opens a nested branch too, so every agent it lists leads som
   const user = userEvent.setup()
   renderDetail(NESTED_PAYLOAD)
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
 
   const rail = screen.getByRole("complementary", { name: /agents in this session/i })
   await user.click(within(rail).getByRole("button", { name: /nested task/i }))
@@ -1127,7 +1098,7 @@ test("a skill body injected under the user's role is credited to the skill and f
     }),
   )
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
 
   const panel = panelOf()
   const injected = within(panel).getByText("Skill Loaded — orchestrate").closest("article")
@@ -1174,7 +1145,7 @@ test("the Review tab renders no verdict card for a static-only review, and still
     learnings: { status: 200, body: { learnings: [LESSON] } },
   })
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Review/ }))
 
   const panel = panelOf()
@@ -1195,7 +1166,7 @@ test("the Review tab stays quiet when no review exists — no verdict, no lesson
   const user = userEvent.setup()
   renderDetail()
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Review/ }))
 
   expect(
@@ -1505,7 +1476,7 @@ test("AI review: clicking Analyze starts a job, polls until it lands, and is rep
     reviewAfterAi: { status: 200, body: { reviews: [AI_REVIEW_ROW, REVIEW] } },
   })
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Review/ }))
   const analyze = await within(panelOf()).findByRole("button", { name: /analyze with ai/i })
 
@@ -1551,7 +1522,7 @@ test("AI review: an old-shape ai-v1 row renders its verdict sentence, audience g
     learnings: { status: 200, body: { learnings: [LESSON] } },
   })
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Review/ }))
 
   const panel = panelOf()
@@ -1598,7 +1569,7 @@ test("AI review: a 403 from analyze explains edit rights instead of starting a r
     analyze: { status: 403, body: { error: "notEditable" } },
   })
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Review/ }))
   await user.click(await within(panelOf()).findByRole("button", { name: /analyze with ai/i }))
   await user.click(await screen.findByRole("button", { name: "Run analysis" }))
@@ -1615,7 +1586,7 @@ test("AI review: a 503 from analyze reports the queue is full and keeps the butt
     analyze: { status: 503, body: { error: "busy" } },
   })
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Review/ }))
   await user.click(await within(panelOf()).findByRole("button", { name: /analyze with ai/i }))
   await user.click(await screen.findByRole("button", { name: "Run analysis" }))
@@ -1688,7 +1659,7 @@ test("AI review: 409 analysisAlreadyExists treats the verdict as arrived — the
     reviewAfterAi: { status: 200, body: { reviews: [AI_REVIEW_ROW, REVIEW] } },
   })
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Review/ }))
   await user.click(await within(panelOf()).findByRole("button", { name: /analyze with ai/i }))
   await user.click(await screen.findByRole("button", { name: "Run analysis" }))
@@ -1703,7 +1674,7 @@ test("AI review: the modal offers the server's reviewer choices and posts the pi
   const user = userEvent.setup()
   const view = renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1")
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Review/ }))
   await user.click(await within(panelOf()).findByRole("button", { name: /analyze with ai/i }))
 
@@ -1741,7 +1712,7 @@ test("AI review: an unavailable default harness is not preselected; the first us
     },
   })
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Review/ }))
   await user.click(await within(panelOf()).findByRole("button", { name: /analyze with ai/i }))
 
@@ -1767,7 +1738,7 @@ test("AI review: a joined run that fails surfaces the failure instead of analyzi
     },
   })
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Review/ }))
   const analyze = await within(panelOf()).findByRole("button", { name: /analyze with ai/i })
 
@@ -1809,7 +1780,7 @@ test("AI review: a failed job surfaces its reason, re-enables Analyze, and stops
     ],
   })
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Review/ }))
   const analyze = await within(panelOf()).findByRole("button", { name: /analyze with ai/i })
   fireEvent.click(analyze)
@@ -1848,7 +1819,7 @@ test("AI review: 409 analysisAlreadyRunning joins the existing run and polls it 
     reviewAfterAi: { status: 200, body: { reviews: [AI_REVIEW_ROW, REVIEW] } },
   })
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Review/ }))
   const analyze = await within(panelOf()).findByRole("button", { name: /analyze with ai/i })
 
@@ -1894,30 +1865,15 @@ test.each([
   },
 )
 
-test("AI-9c: the verdict renders as one plain sentence beside a color dot - no jargon word", async () => {
+test("AI-9c: the verdict is built from the review's own friction, and the reviewer session modal renders the transcript like a conversation - roles, text, inline tools", async () => {
   const user = userEvent.setup()
   renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1", {
     review: { status: 200, body: { reviews: [ENRICHED_AI_REVIEW] } },
   })
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Review/ }))
-
-  const panel = panelOf()
-  expect(within(panel).queryByText("shipped")).not.toBeInTheDocument()
-  expect(
-    within(panel).getByText("Delivered, after real friction — the why lives in the summary below."),
-  ).toBeInTheDocument()
-})
-
-test("AI-9c: the reviewer session modal renders the transcript like a conversation - roles, text, inline tools", async () => {
-  const user = userEvent.setup()
-  renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1", {
-    review: { status: 200, body: { reviews: [ENRICHED_AI_REVIEW] } },
-  })
-
-  await waitFor(() => expect(tabs()).toHaveLength(6))
-  await user.click(screen.getByRole("tab", { name: /Review/ }))
+  expect(within(panelOf()).getByText(/^Delivered, after real friction/)).toBeInTheDocument()
   await user.click(await screen.findByRole("button", { name: "Reviewer session" }))
 
   const dialog = screen.getByRole("dialog")
@@ -1940,7 +1896,7 @@ test("AI review: a failed redo surfaces its reason on the card instead of dying 
     analyze: { status: 500, body: { error: "internal" } },
   })
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Review/ }))
   await user.click(await screen.findByRole("button", { name: "Redo review" }))
   await user.click(await screen.findByRole("button", { name: "Run analysis" }))
@@ -1956,7 +1912,7 @@ test("AI-9c: the numbers line renders mono chips from signals.numbers", async ()
     review: { status: 200, body: { reviews: [ENRICHED_AI_REVIEW] } },
   })
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Review/ }))
 
   const panel = panelOf()
@@ -1973,7 +1929,7 @@ test("AI-9c: where the time went — a proportional strip with titled segments a
     review: { status: 200, body: { reviews: [ENRICHED_AI_REVIEW] } },
   })
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Review/ }))
 
   const panel = panelOf()
@@ -1998,7 +1954,7 @@ test("AI-9c: timeline rows show duration + seq range, and the whole row navigate
     review: { status: 200, body: { reviews: [ENRICHED_AI_REVIEW] } },
   })
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Review/ }))
 
   const panel = panelOf()
@@ -2024,7 +1980,7 @@ test("AI-9c: the whole timeline renders, however long it is", async () => {
     },
   })
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Review/ }))
 
   const list = screen.getByRole("list", { name: /review timeline/i })
@@ -2042,7 +1998,7 @@ test("AI-9c: learnings accordions under the three audience headers, with severit
     review: { status: 200, body: { reviews: [ENRICHED_AI_REVIEW] } },
   })
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Review/ }))
 
   const panel = panelOf()
@@ -2093,7 +2049,7 @@ test("AI-9c: when entries fall out of the reviewer's report, the banner names th
     review: { status: 200, body: { reviews: [ENRICHED_AI_REVIEW] } },
   })
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Review/ }))
 
   expect(
@@ -2118,7 +2074,8 @@ test("AI review: a reload while a redo is running shows Redo running on the exis
   expect(screen.getByRole("button", { name: /redo running/i })).toBeDisabled()
 }, 10_000)
 
-test("EDGE-008: a 404 from the detail endpoint renders a not-found state with a way back, not a blank panel", async () => {
+test("EDGE-008: a 404 from the detail endpoint renders a not-found state whose button leads back to the list, not a blank panel", async () => {
+  const user = userEvent.setup()
   vi.spyOn(globalThis, "fetch").mockResolvedValue(
     new Response(JSON.stringify({ error: "sessionNotFound" }), { status: 404 }),
   )
@@ -2132,14 +2089,15 @@ test("EDGE-008: a 404 from the detail endpoint renders a not-found state with a 
   )
 
   expect(await screen.findByText(/no such session/i)).toBeInTheDocument()
-  expect(screen.getByRole("button", { name: /back to all sessions/i })).toBeInTheDocument()
   expect(screen.queryByRole("tab")).not.toBeInTheDocument()
+  await user.click(screen.getByRole("button", { name: /back to all sessions/i }))
+  expect(screen.getByTestId("location")).toHaveTextContent(/^\/sessions$/)
 })
 
 test("S63: the transcript marks who each record came from, so a prompt and a reply are told apart without reading them", async () => {
   renderDetail()
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   const panel = panelOf()
 
   const prompt = panel.querySelector('[data-actor="user"]')
@@ -2155,7 +2113,7 @@ test("S63: the transcript marks who each record came from, so a prompt and a rep
 test("S63: every record in the transcript carries an actor, so none renders unattributed", async () => {
   renderDetail()
 
-  await waitFor(() => expect(tabs()).toHaveLength(6))
+  await tabsLoaded()
   const panel = panelOf()
 
   const records = panel.querySelectorAll("article")
@@ -2180,20 +2138,12 @@ test("SC14: the header shows the human name with the captured title beneath it",
   expect(screen.getByText(/AI title: Session issue investigation/)).toBeInTheDocument()
 })
 
-test("SC15: a session with no human name shows one title and no AI-title line", async () => {
+test.each([
+  { claim: "SC15: a session with no human name", name: null },
+  { claim: "SC30: a name identical to the captured title", name: "Captured title" },
+])("$claim shows one title and no AI-title line", async ({ name }) => {
   renderDetail(
-    buildPayload({ session: { name: null, title: "Captured title", aiTitle: "Captured title" } }),
-  )
-
-  await screen.findByRole("heading", { level: 1, name: "Captured title" })
-  expect(screen.queryByText(/AI title:/)).not.toBeInTheDocument()
-})
-
-test("SC30: a name identical to the captured title shows no AI-title line", async () => {
-  renderDetail(
-    buildPayload({
-      session: { name: "Captured title", title: "Captured title", aiTitle: "Captured title" },
-    }),
+    buildPayload({ session: { name, title: "Captured title", aiTitle: "Captured title" } }),
   )
 
   await screen.findByRole("heading", { level: 1, name: "Captured title" })

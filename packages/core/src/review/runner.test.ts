@@ -250,8 +250,7 @@ describe("createMsbWrappedRunner", () => {
     const timeoutValue = flags[timeoutIdx + 1]
     expect(timeoutValue).toMatch(/^\d+s$/)
     const timeoutSec = Number.parseInt(timeoutValue ?? "0", 10)
-    expect(timeoutSec).toBeLessThan(30)
-    expect(60 - timeoutSec).toBeGreaterThanOrEqual(5) // for MR2 below
+    expect(30 - timeoutSec).toBeGreaterThanOrEqual(5)
     expect(flags).toContain("--name")
     expect(flags.some((flag) => flag.startsWith("samskara-ai-review-"))).toBe(true)
     // Workspace is bind-mounted at /work; XDG paths inside the VM point into it so the
@@ -263,6 +262,7 @@ describe("createMsbWrappedRunner", () => {
     expect(flags).toContain("XDG_DATA_HOME=/work/xdg-data")
     expect(flags).toContain("XDG_CONFIG_HOME=/work/xdg-config")
     expect(flags).toContain("XDG_CACHE_HOME=/work/xdg-cache")
+    expect(flags.some((flag) => flag.includes(".local/share/opencode"))).toBe(false)
     // Image is the positional just before `--`; the inner command bootstraps opencode via
     // npm (the snapshot path would skip this) and runs `opencode run` with the prompt
     // quoted as the shell's last arg.
@@ -314,27 +314,6 @@ describe("createMsbWrappedRunner", () => {
     expect(withoutKey.join(" ")).not.toContain("OPENCODE_API_KEY")
   })
 
-  test("MR2: buildMsbArgs caps the msb --timeout with a fixed safety margin", () => {
-    const args = buildMsbArgs({
-      model: "x",
-      timeoutMs: 60_000,
-      image: "node:22-slim",
-      msbSnapshot: undefined,
-      memoryMb: 2048,
-      sandboxName: "samskara-ai-review-test",
-      workspaceDir: "/tmp/ws",
-      prompt: "p",
-      apiKey: undefined,
-    })
-    const timeoutIdx = args.indexOf("--timeout")
-    const valueRaw = args[timeoutIdx + 1] ?? "0s"
-    expect(valueRaw).toMatch(/^\d+s$/)
-    const value = Number.parseInt(valueRaw, 10)
-    // Parent timeout is 60s; msb's is at least 5s less, in seconds.
-    expect(60 - value).toBeGreaterThanOrEqual(5)
-    expect(value).toBeLessThan(60)
-  })
-
   test("MR3: when `msbSnapshot` is set, --snapshot replaces the image positional", () => {
     const args = buildMsbArgs({
       model: "x",
@@ -351,25 +330,6 @@ describe("createMsbWrappedRunner", () => {
     expect(args).toContain("opencode-with-cli")
     // Image positional is absent when a snapshot is in use.
     expect(args).not.toContain("node:22-slim")
-  })
-
-  test("MR4: the workspace's xdg-data is the in-guest XDG_DATA_HOME — no host paths leak", () => {
-    const args = buildMsbArgs({
-      model: "x",
-      timeoutMs: 30_000,
-      image: "node:22-slim",
-      msbSnapshot: undefined,
-      memoryMb: 2048,
-      sandboxName: "samskara-ai-review-test",
-      workspaceDir: "/tmp/ws",
-      prompt: "p",
-      apiKey: undefined,
-    })
-    // The volume flag for the workspace is the only /tmp path that ever appears in argv;
-    // the guest's XDG_DATA_HOME is derived from the mount, not from the host's HOME.
-    expect(args).toContain("/tmp/ws:/work")
-    const homeLeak = args.find((flag) => flag.includes(".local/share/opencode"))
-    expect(homeLeak).toBeUndefined()
   })
 
   test("MR5: the inner command closes stdin to /dev/null — opencode blocks on an open stdin pipe", () => {
@@ -498,7 +458,7 @@ describe("createMsbWrappedRunner", () => {
     const workspaceDir = mkdtempSync(join(tmpdir(), "samskara-msb-hang-"))
     const runner = createMsbWrappedRunner({
       model: "x",
-      timeoutMs: 1_000,
+      timeoutMs: 100,
       log: log(),
       msbBin: writeHangingMsb(workspaceDir),
     })

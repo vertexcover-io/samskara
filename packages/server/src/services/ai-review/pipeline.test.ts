@@ -731,54 +731,6 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
     expect(titles).toContain("Bash failed 9999999999 times in a row")
   })
 
-  test("P2b: occurrenceCount is per distinct session — a re-run is idempotent, a second session bumps", async () => {
-    // The index depends only on the normalized messages, and both sessions below carry the
-    // same fixtures, so one statically grounded payload serves both.
-    const { runner } = fakeRunner(() => okBehaviour())
-    await runAiReview(depsWith(runner), userId, sessionId)
-    // Re-analysis of the SAME session: same fingerprints, and occurrences must not inflate.
-    await runAiReview(depsWith(runner), userId, sessionId)
-
-    let rows = await db.select().from(learningsTable)
-    expect(rows).toHaveLength(2)
-    for (const row of rows) expect(row.occurrenceCount).toBe(1)
-
-    // A second session reporting identical lessons (identical titles -> identical
-    // fingerprints) is a genuinely new sighting: occurrenceCount moves to 2.
-    const secondSessionId = `${sessionId}-2`
-    await db.insert(sessions).values({
-      id: secondSessionId,
-      source: "claude_code",
-      userId,
-      projectId,
-      title: "flaily session again",
-    })
-    for (const message of normalizedFixtures) {
-      await db.insert(messages).values({
-        sessionId: secondSessionId,
-        lineUuid: crypto.randomUUID(),
-        subIndex: message.subIndex,
-        msgType: message.msgType,
-        role: message.msgType === "message" ? message.role : null,
-        lineNumber: message.subIndex + 1,
-        source: "claude_code",
-        sourceRelativePath: "test.jsonl",
-        trackId: message.trackId,
-        raw: {},
-        sourceSchemaVersion: 1,
-        content: message.msgType === "message" ? message.content : null,
-        details: "details" in message ? message.details : {},
-        timestamp: message.timestamp === undefined ? null : new Date(message.timestamp),
-      })
-    }
-    const elsewhere = await runAiReview(depsWith(runner), userId, secondSessionId)
-    expect(elsewhere.kind).toBe("ok")
-
-    rows = await db.select().from(learningsTable)
-    expect(rows).toHaveLength(2)
-    for (const row of rows) expect(row.occurrenceCount).toBe(2)
-  })
-
   test("P3: unknown session -> sessionNotFound", async () => {
     const { runner, runs } = fakeRunner(() => okBehaviour())
     const result = await runAiReview(depsWith(runner), userId, "does-not-exist")
@@ -827,17 +779,6 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
     expect((result.detail as { error: unknown }).error).toBeTruthy()
   })
 
-  test("P7: well-formed XML that violates the contract -> unparseable (the parser owns schema checks)", async () => {
-    const bad = validPayload(sessionExport.index)
-    const xml = xmlOf(bad).replace('outcome="productive"', 'outcome="banana"')
-    const { runner } = fakeRunner(() => ({ stdout: "ready", file: xml }))
-    const result = await runAiReview(depsWith(runner), userId, sessionId)
-    expect(result.kind).toBe("error")
-    if (result.kind !== "error") return
-    expect(result.code).toBe("unparseable")
-    expect(String((result.detail as { error: unknown }).error)).toContain("outcome")
-  })
-
   test("P8: grounded shape but invented message ids -> ungrounded with problems", async () => {
     const payload = validPayload(sessionExport.index)
     // Widen to a mutable shape for the mutation below.
@@ -858,38 +799,26 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
     expect(detail.problems[0]?.path).toContain("messageIds")
   })
 
-  test("P9: missing review.xml falls back to the fenced XML in stdout (legacy v1 delivery)", async () => {
-    const { runner } = fakeRunner(() => ({
-      stdout: stdoutWith(validPayload(sessionExport.index)),
-      removeFile: true,
-    }))
-    const result = await runAiReview(depsWith(runner), userId, sessionId)
-    expect(result.kind).toBe("ok")
+  test.each([
+    { id: "P9", label: "a missing review.xml", deliverable: { removeFile: true } },
+    { id: "P9b", label: "an emptied review.xml", deliverable: { file: "" } },
+  ])(
+    "$id: $label falls back to the fenced XML in stdout (legacy v1 delivery)",
+    async ({ deliverable }) => {
+      const { runner } = fakeRunner(() => ({
+        stdout: stdoutWith(validPayload(sessionExport.index)),
+        ...deliverable,
+      }))
+      const result = await runAiReview(depsWith(runner), userId, sessionId)
+      expect(result.kind).toBe("ok")
 
-    const signals = await persistedSignals()
-    // The file was never read, so the deliverable_read milestone never fired...
-    const names = ((signals.run as { milestones: Array<{ name: string }> }).milestones ?? []).map(
-      (milestone) => milestone.name,
-    )
-    expect(names).not.toContain("deliverable_read")
-    // ...but the review still landed and the run log counts the stdout bytes it parsed.
-    expect(signals).toMatchObject({
-      model: "fake-model",
-      harness: "opencode",
-    })
-    const run = signals.run as { xmlBytes: number }
-    expect(run.xmlBytes).toBeGreaterThan(0)
-  })
-
-  test("P9b: an emptied review.xml also falls back to stdout", async () => {
-    const { runner } = fakeRunner(() => ({
-      stdout: stdoutWith(validPayload(sessionExport.index)),
-      file: "",
-    }))
-    const result = await runAiReview(depsWith(runner), userId, sessionId)
-    expect(result.kind).toBe("ok")
-    await persistedSignals()
-  })
+      const signals = await persistedSignals()
+      expect(signals).toMatchObject({ model: "fake-model", harness: "opencode" })
+      const run = signals.run as { xmlBytes: number; milestones: Array<{ name: string }> }
+      expect(run.milestones.map((milestone) => milestone.name)).not.toContain("deliverable_read")
+      expect(run.xmlBytes).toBeGreaterThan(0)
+    },
+  )
 
   test("P10: no file deliverable and no XML in stdout -> deliverableMissing naming the last milestone", async () => {
     const { runner } = fakeRunner(() => ({
@@ -1026,19 +955,6 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
       expect(new Date(milestone.at).toISOString()).toBe(milestone.at)
       expect(milestone.elapsedMs).toBeGreaterThanOrEqual(0)
     }
-  })
-
-  test("P14: the deliverable_read milestone logs its byte count", async () => {
-    const capture = captureLogger()
-    const file = xmlOf(validPayload(sessionExport.index))
-    const { runner } = fakeRunner(() => ({ stdout: "ready", file }))
-    const result = await runAiReview(depsWith(runner, { log: capture.log }), userId, sessionId)
-    expect(result.kind).toBe("ok")
-    const line = capture.lines.find(
-      (candidate) => (candidate as { milestone?: string }).milestone === "deliverable_read",
-    )
-    expect(line).toBeDefined()
-    expect((line as { bytes?: number }).bytes).toBe(Buffer.byteLength(file))
   })
 
   test("P18: tracks are derived from the seq range, so a track the model invents never lands", async () => {

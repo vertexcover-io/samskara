@@ -31,24 +31,20 @@ const output = () => {
 }
 
 describe("isNewer", () => {
-  test("compares each segment numerically rather than as text", () => {
-    expect(isNewer("0.10.0", "0.9.0")).toBe(true)
-    expect(isNewer("0.9.0", "0.10.0")).toBe(false)
-    expect(isNewer("1.0.0", "0.99.99")).toBe(true)
-  })
-
-  test("the same version is not newer", () => {
-    expect(isNewer("1.2.3", "1.2.3")).toBe(false)
-  })
-
-  test("a prerelease sorts below the release it leads to", () => {
-    expect(isNewer("1.2.3", "1.2.3-rc.1")).toBe(true)
-    expect(isNewer("1.2.3-rc.1", "1.2.3")).toBe(false)
-  })
-
-  test("a version that does not parse is never newer", () => {
-    expect(isNewer("latest", "1.2.3")).toBe(false)
-  })
+  test.each([
+    ["0.10.0", "0.9.0", true],
+    ["0.9.0", "0.10.0", false],
+    ["1.0.0", "0.99.99", true],
+    ["1.2.3", "1.2.3", false],
+    ["1.2.3", "1.2.3-rc.1", true],
+    ["1.2.3-rc.1", "1.2.3", false],
+    ["latest", "1.2.3", false],
+  ])(
+    "isNewer(%s, %s) is %s: segments compare numerically, a prerelease sorts below its release, and an unparseable version is never newer",
+    (candidate, current, expected) => {
+      expect(isNewer(candidate, current)).toBe(expected)
+    },
+  )
 })
 
 describe("upgrade command", () => {
@@ -114,32 +110,18 @@ describe("upgrade command", () => {
     expect(streams.stderr.join("")).toContain("samskara restart")
   })
 
-  test("nothing is restarted when nothing was installed", async () => {
+  test.each([
+    ["an already-current CLI", "0.2.0"],
+    ["a newer local build than the newest release", "0.3.0"],
+  ])("%s installs and restarts nothing", async (_case, current) => {
     const streams = output()
 
-    await upgradeCommand({}, { ...deps("0.2.0"), ...streams.writers })
-    await upgradeCommand({ check: true }, { ...deps("0.1.0"), ...streams.writers })
+    const code = await upgradeCommand({}, { ...deps(current), ...streams.writers })
 
+    expect(code).toBe(0)
+    expect(install).not.toHaveBeenCalled()
     expect(restartWatcher).not.toHaveBeenCalled()
-  })
-
-  test("an already-current CLI installs nothing", async () => {
-    const streams = output()
-
-    const code = await upgradeCommand({}, { ...deps("0.2.0"), ...streams.writers })
-
-    expect(code).toBe(0)
-    expect(install).not.toHaveBeenCalled()
     expect(streams.stdout.join("")).toMatch(/latest/i)
-  })
-
-  test("a newer local build than the newest release installs nothing", async () => {
-    const streams = output()
-
-    const code = await upgradeCommand({}, { ...deps("0.3.0"), ...streams.writers })
-
-    expect(code).toBe(0)
-    expect(install).not.toHaveBeenCalled()
   })
 
   test("--check reports the newer release without installing it", async () => {
@@ -149,6 +131,7 @@ describe("upgrade command", () => {
 
     expect(code).toBe(0)
     expect(install).not.toHaveBeenCalled()
+    expect(restartWatcher).not.toHaveBeenCalled()
     expect(streams.stdout.join("")).toContain("0.2.0")
     expect(streams.stdout.join("")).toContain("samskara upgrade")
   })

@@ -626,28 +626,38 @@ describe("reasoning blocks", () => {
     return record
   }
 
-  test("reasoning text is disclosed as thinking, never as the answer's prose", () => {
-    const record = assistantAt({ type: "reasoning", value: "Weighing the upsert", signature: "s" })
+  test.each([
+    {
+      claim: "reasoning text is disclosed as thinking, never as the answer's prose",
+      content: { type: "reasoning", value: "Weighing the upsert", signature: "s" },
+      thinking: "Weighing the upsert",
+      body: "",
+    },
+    {
+      claim: "reasoning alongside prose keeps the two apart rather than concatenating them",
+      content: [
+        { type: "reasoning", value: "Weighing the upsert" },
+        { type: "text", value: "Here is the plan" },
+      ],
+      thinking: "Weighing the upsert",
+      body: "Here is the plan",
+    },
+    {
+      claim: "encrypted reasoning holds a signature and no text, so it discloses nothing",
+      content: { type: "reasoning", value: "", signature: "sig" },
+      thinking: null,
+      body: "",
+    },
+  ] satisfies ReadonlyArray<{
+    claim: string
+    content: JSONValue
+    thinking: string | null
+    body: string
+  }>)("$claim", ({ content, thinking, body }) => {
+    const record = assistantAt(content)
 
-    expect(record.thinking).toBe("Weighing the upsert")
-    expect(record.body).toBe("")
-  })
-
-  test("reasoning alongside prose keeps the two apart rather than concatenating them", () => {
-    const record = assistantAt([
-      { type: "reasoning", value: "Weighing the upsert" },
-      { type: "text", value: "Here is the plan" },
-    ])
-
-    expect(record.thinking).toBe("Weighing the upsert")
-    expect(record.body).toBe("Here is the plan")
-  })
-
-  test("encrypted reasoning holds a signature and no text, so it discloses nothing", () => {
-    const record = assistantAt({ type: "reasoning", value: "", signature: "sig" })
-
-    expect(record.thinking).toBeNull()
-    expect(record.body).toBe("")
+    expect(record.thinking).toBe(thinking)
+    expect(record.body).toBe(body)
   })
 })
 
@@ -662,25 +672,27 @@ describe("slash commands", () => {
       true,
     ).records
 
-  test("an invocation survives the shaping that drops events, carrying what was typed with it", () => {
-    const [record] = commandView({
-      command: "/orchestrate",
-      commandType: "slash",
+  test.each([
+    {
+      claim:
+        "an invocation survives the shaping that drops events, carrying what was typed with it",
+      details: {
+        command: "/orchestrate",
+        commandType: "slash",
+        args: "Capture files the agent wrote",
+      },
       args: "Capture files the agent wrote",
-    })
+    },
+    {
+      claim: "a bare command still marks where it ran, with nothing claimed for its arguments",
+      details: { command: "/clear", commandType: "slash" },
+      args: "",
+    },
+  ])("$claim", ({ details, args }) => {
+    const [record] = commandView(details)
 
     expect(record?.kind).toBe("command")
-    expect(record).toMatchObject({
-      command: "/orchestrate",
-      args: "Capture files the agent wrote",
-    })
-  })
-
-  test("a bare command still marks where it ran, with nothing claimed for its arguments", () => {
-    const [record] = commandView({ command: "/clear", commandType: "slash" })
-
-    expect(record?.kind).toBe("command")
-    expect(record).toMatchObject({ command: "/clear", args: "" })
+    expect(record).toMatchObject({ command: details.command, args })
   })
 
   test("a local command naming no command of its own stays an event, so stdout rows keep out", () => {

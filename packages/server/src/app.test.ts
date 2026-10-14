@@ -40,8 +40,15 @@ afterAll(() => {
 const app = () => buildApp({} as Db, env, { rootLog: silentLog() })
 
 describe("static web assets", () => {
-  test("S1: GET / serves the built index.html rather than a 404", async () => {
-    const res = await app().request("/")
+  test.each([
+    { label: "S1: GET / serves the built index.html rather than a 404", path: "/" },
+    {
+      label:
+        "S3: an unknown client-side route falls back to index.html so the SPA router can render it",
+      path: "/sessions/42",
+    },
+  ])("$label", async ({ path }) => {
+    const res = await app().request(path)
     expect(res.status).toBe(200)
     expect(await res.text()).toContain('<div id="root">')
   })
@@ -52,26 +59,17 @@ describe("static web assets", () => {
     expect(await res.text()).toContain("bundle")
   })
 
-  test("S3: an unknown client-side route falls back to index.html so the SPA router can render it", async () => {
-    const res = await app().request("/sessions/42")
-    expect(res.status).toBe(200)
-    expect(await res.text()).toContain('<div id="root">')
-  })
-
   test("S4: the static fallback never shadows the API — unmatched /api paths still 404 as JSON", async () => {
     const res = await app().request("/api/does-not-exist")
     expect(res.status).toBe(404)
     expect(res.headers.get("content-type")).not.toContain("text/html")
   })
 
-  test("S5: /health still returns the JSON health payload", async () => {
-    const res = await app().request("/health")
-    expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ status: "ok" })
-  })
-
-  test("S7: /api/health answers the platform health probe", async () => {
-    const res = await app().request("/api/health")
+  test.each([
+    { label: "S5: /health still returns the JSON health payload", path: "/health" },
+    { label: "S7: /api/health answers the platform health probe", path: "/api/health" },
+  ])("$label", async ({ path }) => {
+    const res = await app().request(path)
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ status: "ok" })
   })

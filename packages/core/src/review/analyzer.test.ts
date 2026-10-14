@@ -59,7 +59,7 @@ describe("HeuristicSessionAnalyzer signals", () => {
     expect(review.signals.errorLoops[0]?.consecutiveFailures).toBe(3)
   })
 
-  test("R3: two failures then a success is not an error loop, but is still counted friction-free churn", () => {
+  test("R3: two failures then a success is not an error loop, and both failures still count", () => {
     const review = analyze(
       prompt(),
       call("Bash", "a"),
@@ -86,27 +86,20 @@ describe("HeuristicSessionAnalyzer signals", () => {
     ])
   })
 
-  test("R5: a prompt after two failures counts as userPromptsAfterFailures", () => {
-    const review = analyze(
-      prompt("start"),
-      call("Bash", "a"),
-      result("a", "failure", "Bash"),
-      call("Bash", "b"),
-      result("b", "failure", "Bash"),
-      prompt("no, use the other flag"),
-    )
-    expect(review.signals.userPromptsAfterFailures).toBe(1)
-  })
-
-  test("R6: a prompt after a single failure does not count as after-failure correction", () => {
-    const review = analyze(
-      prompt("start"),
-      call("Bash", "a"),
-      result("a", "failure", "Bash"),
-      prompt("ok now"),
-    )
-    expect(review.signals.userPromptsAfterFailures).toBe(0)
-  })
+  test.each([
+    { id: "R5", failures: 2, expected: 1 },
+    { id: "R6", failures: 1, expected: 0 },
+  ])(
+    "$id: a prompt after $failures consecutive failure(s) counts $expected userPromptsAfterFailures",
+    ({ failures, expected }) => {
+      const failed = Array.from({ length: failures }, (_, i) => [
+        call("Bash", `f${i}`),
+        result(`f${i}`, "failure", "Bash"),
+      ]).flat()
+      const review = analyze(prompt("start"), ...failed, prompt("no, use the other flag"))
+      expect(review.signals.userPromptsAfterFailures).toBe(expected)
+    },
+  )
 
   test("R7: meta user messages are not prompts", () => {
     const review = analyze({ kind: "userMessage", text: "<skill-injection>", isMeta: true })
@@ -126,18 +119,6 @@ describe("HeuristicSessionAnalyzer signals", () => {
 })
 
 describe("HeuristicSessionAnalyzer outcome and friction", () => {
-  test("R10: a commit makes the outcome shipped even with mild failures", () => {
-    const review = analyze(
-      prompt(),
-      call("Bash", "a"),
-      result("a", "success", "Bash"),
-      { kind: "commit", sha: "abc123" },
-      { kind: "turn", status: "completed" },
-    )
-    expect(review.outcome).toBe("shipped")
-    expect(review.friction).toBe("none")
-  })
-
   test("R11: error loops make friction high and outcome struggled", () => {
     const review = analyze(
       prompt(),

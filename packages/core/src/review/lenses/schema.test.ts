@@ -95,6 +95,28 @@ const samplePayload = (overrides: Record<string, unknown> = {}) => ({
 const rejects = (value: unknown) =>
   expect(aiReviewPayloadSchema.safeParse(value).success).toBe(false)
 
+type Row = Record<string, unknown>
+
+const withLenses = ({
+  entries = [timelineEntry()],
+  human = [],
+  agent = [],
+  breadcrumbs = [],
+}: {
+  entries?: Row[]
+  human?: Row[]
+  agent?: Row[]
+  breadcrumbs?: Row[]
+}) =>
+  samplePayload({
+    lenses: [
+      { lens: "timeline", entries },
+      { lens: "humanLearnings", learnings: human },
+      { lens: "agentLearnings", learnings: agent },
+      { lens: "breadcrumbs", learnings: breadcrumbs },
+    ],
+  })
+
 describe("aiReviewPayloadSchema", () => {
   test("S1: accepts a fully valid payload", () => {
     const parsed = aiReviewPayloadSchema.parse(samplePayload())
@@ -155,239 +177,130 @@ describe("aiReviewPayloadSchema", () => {
     expect(aiReviewPayloadSchema.parse(payload).lenses).toHaveLength(4)
   })
 
-  test("S4: every registered kind, category, severity and audience round-trips", () => {
-    const timelineOnly = (entries: Array<Record<string, unknown>>) =>
-      samplePayload({
-        lenses: [
-          { lens: "timeline", entries },
-          { lens: "humanLearnings", learnings: [] },
-          { lens: "agentLearnings", learnings: [] },
-          { lens: "breadcrumbs", learnings: [] },
-        ],
-      })
-    for (const kind of TIMELINE_ENTRY_KINDS) {
-      expect(aiReviewPayloadSchema.safeParse(timelineOnly([timelineEntry({ kind })])).success).toBe(
-        true,
-      )
-    }
-    const withLearning = (lensName: string, learning: Record<string, unknown>) =>
-      samplePayload({
-        lenses: [
-          { lens: "timeline", entries: [timelineEntry()] },
-          lensName === "humanLearnings"
-            ? { lens: "humanLearnings", learnings: [learning] }
-            : { lens: "humanLearnings", learnings: [] },
-          lensName === "agentLearnings"
-            ? { lens: "agentLearnings", learnings: [learning] }
-            : { lens: "agentLearnings", learnings: [] },
-          lensName === "breadcrumbs"
-            ? { lens: "breadcrumbs", learnings: [learning] }
-            : { lens: "breadcrumbs", learnings: [] },
-        ],
-      })
-    for (const category of HUMAN_LEARNING_CATEGORIES) {
-      expect(
-        aiReviewPayloadSchema.safeParse(withLearning("humanLearnings", humanLearning({ category })))
-          .success,
-      ).toBe(true)
-    }
-    for (const category of AGENT_LEARNING_CATEGORIES) {
-      expect(
-        aiReviewPayloadSchema.safeParse(withLearning("agentLearnings", agentLearning({ category })))
-          .success,
-      ).toBe(true)
-    }
-    for (const category of BREADCRUMB_CATEGORIES) {
-      expect(
-        aiReviewPayloadSchema.safeParse(
-          withLearning("breadcrumbs", breadcrumbLearning({ category })),
-        ).success,
-      ).toBe(true)
-    }
-    for (const severity of LEARNING_SEVERITIES) {
-      expect(
-        aiReviewPayloadSchema.safeParse(withLearning("humanLearnings", humanLearning({ severity })))
-          .success,
-      ).toBe(true)
-    }
+  // parseReviewXml checks values against these constants, then validates with this schema; the two
+  // lists drifting apart would make every review using the dropped value fail validation.
+  test.each([
+    ...TIMELINE_ENTRY_KINDS.map((kind) => [
+      `kind ${kind}`,
+      withLenses({ entries: [timelineEntry({ kind })] }),
+    ]),
+    ...HUMAN_LEARNING_CATEGORIES.map((category) => [
+      `human category ${category}`,
+      withLenses({ human: [humanLearning({ category })] }),
+    ]),
+    ...AGENT_LEARNING_CATEGORIES.map((category) => [
+      `agent category ${category}`,
+      withLenses({ agent: [agentLearning({ category })] }),
+    ]),
+    ...BREADCRUMB_CATEGORIES.map((category) => [
+      `breadcrumb category ${category}`,
+      withLenses({ breadcrumbs: [breadcrumbLearning({ category })] }),
+    ]),
+    ...LEARNING_SEVERITIES.map((severity) => [
+      `severity ${severity}`,
+      withLenses({ human: [humanLearning({ severity })] }),
+    ]),
+  ])("S4: the schema accepts every value the parser accepts: %s", (_value, payload) => {
+    expect(aiReviewPayloadSchema.safeParse(payload).success).toBe(true)
   })
 
-  test("S5: rejects an unknown lens discriminator", () => {
-    rejects(
-      samplePayload({
-        lenses: [
-          samplePayload().lenses[0],
-          { lens: "humanLearnings", learnings: [] },
-          { lens: "agentLearnings", learnings: [] },
-          { lens: "breadcrumbs", learnings: [] },
-          { lens: "vibes", feelings: [] },
-        ],
-      }),
-    )
+  const human = { lens: "humanLearnings", learnings: [] }
+  const agent = { lens: "agentLearnings", learnings: [] }
+  const crumbs = { lens: "breadcrumbs", learnings: [] }
+
+  test.each([
+    { id: "S6", label: "a missing timeline lens", lenses: [human, agent, crumbs] },
+    {
+      id: "S7a",
+      label: "a missing humanLearnings lens",
+      lenses: [samplePayload().lenses[0], agent, crumbs],
+    },
+    {
+      id: "S7b",
+      label: "a missing breadcrumbs lens",
+      lenses: [samplePayload().lenses[0], human, agent],
+    },
+    {
+      id: "S7c",
+      label: "a duplicated humanLearnings lens",
+      lenses: [samplePayload().lenses[0], human, agent, crumbs, human],
+    },
+    {
+      id: "S7d",
+      label: "a duplicated agentLearnings lens",
+      lenses: [samplePayload().lenses[0], human, agent, crumbs, agent],
+    },
+    {
+      id: "S7e",
+      label: "a duplicated breadcrumbs lens",
+      lenses: [samplePayload().lenses[0], human, agent, crumbs, crumbs],
+    },
+    {
+      id: "S8",
+      label: "a duplicated timeline lens",
+      lenses: [
+        samplePayload().lenses[0],
+        {
+          lens: "timeline",
+          entries: [timelineEntry({ id: "again", fromSeq: 9, toSeq: 9, messageIds: ["msg-9"] })],
+        },
+        human,
+        agent,
+        crumbs,
+      ],
+    },
+  ])("$id: rejects $label", ({ lenses }) => {
+    rejects(samplePayload({ lenses }))
   })
 
-  test("S6: rejects a missing timeline lens", () => {
-    rejects(
-      samplePayload({
-        lenses: [
-          { lens: "humanLearnings", learnings: [] },
-          { lens: "agentLearnings", learnings: [] },
-          { lens: "breadcrumbs", learnings: [] },
-        ],
-      }),
-    )
+  test.each([
+    {
+      id: "S9a",
+      label: "a human learning with an agent category",
+      payload: withLenses({ human: [humanLearning({ category: "efficiency" })] }),
+    },
+    {
+      id: "S9b",
+      label: "an agent learning with a human category",
+      payload: withLenses({ agent: [agentLearning({ category: "tooling" })] }),
+    },
+    {
+      id: "S9c",
+      label: "a breadcrumb with a human category",
+      payload: withLenses({ breadcrumbs: [breadcrumbLearning({ category: "communication" })] }),
+    },
+    {
+      id: "S10a",
+      label: "a human learning addressed to the agent",
+      payload: withLenses({ human: [humanLearning({ audience: "agent" })] }),
+    },
+    {
+      id: "S10b",
+      label: "a breadcrumb addressed to the human",
+      payload: withLenses({ breadcrumbs: [breadcrumbLearning({ audience: "human" })] }),
+    },
+    {
+      id: "S10c",
+      label: "an unknown audience",
+      payload: withLenses({ human: [humanLearning({ audience: "crowd" })] }),
+    },
+    {
+      id: "S11a",
+      label: "an unknown severity",
+      payload: withLenses({ human: [humanLearning({ severity: "catastrophic" })] }),
+    },
+    {
+      id: "S11b",
+      label: "a cost over 120 chars",
+      payload: withLenses({ human: [humanLearning({ cost: "x".repeat(121) })] }),
+    },
+  ])("$id: rejects $label", ({ payload }) => {
+    rejects(payload)
   })
 
-  test("S7: rejects a missing or duplicated learnings lens (all three audiences)", () => {
-    rejects(
-      samplePayload({
-        lenses: [
-          samplePayload().lenses[0],
-          { lens: "agentLearnings", learnings: [] },
-          { lens: "breadcrumbs", learnings: [] },
-        ],
-      }),
-    )
-    rejects(
-      samplePayload({
-        lenses: [
-          samplePayload().lenses[0],
-          { lens: "humanLearnings", learnings: [] },
-          { lens: "agentLearnings", learnings: [] },
-        ],
-      }),
-    )
-    for (const duplicated of ["humanLearnings", "agentLearnings", "breadcrumbs"] as const) {
-      rejects(
-        samplePayload({
-          lenses: [
-            samplePayload().lenses[0],
-            { lens: "humanLearnings", learnings: [] },
-            { lens: "agentLearnings", learnings: [] },
-            { lens: "breadcrumbs", learnings: [] },
-            { lens: duplicated, learnings: [] },
-          ],
-        }),
-      )
-    }
-  })
-
-  test("S8: rejects a duplicated timeline lens", () => {
-    rejects(
-      samplePayload({
-        lenses: [
-          samplePayload().lenses[0],
-          {
-            lens: "timeline",
-            entries: [timelineEntry({ id: "again", fromSeq: 9, toSeq: 9, messageIds: ["msg-9"] })],
-          },
-          { lens: "humanLearnings", learnings: [] },
-          { lens: "agentLearnings", learnings: [] },
-          { lens: "breadcrumbs", learnings: [] },
-        ],
-      }),
-    )
-  })
-
-  test("S9: rejects a category from the wrong audience", () => {
-    rejects(
-      samplePayload({
-        lenses: [
-          { lens: "timeline", entries: [timelineEntry()] },
-          { lens: "humanLearnings", learnings: [humanLearning({ category: "efficiency" })] },
-          { lens: "agentLearnings", learnings: [] },
-          { lens: "breadcrumbs", learnings: [] },
-        ],
-      }),
-    )
-    rejects(
-      samplePayload({
-        lenses: [
-          { lens: "timeline", entries: [timelineEntry()] },
-          { lens: "humanLearnings", learnings: [] },
-          { lens: "agentLearnings", learnings: [agentLearning({ category: "tooling" })] },
-          { lens: "breadcrumbs", learnings: [] },
-        ],
-      }),
-    )
-    rejects(
-      samplePayload({
-        lenses: [
-          { lens: "timeline", entries: [timelineEntry()] },
-          { lens: "humanLearnings", learnings: [] },
-          { lens: "agentLearnings", learnings: [] },
-          { lens: "breadcrumbs", learnings: [breadcrumbLearning({ category: "communication" })] },
-        ],
-      }),
-    )
-  })
-
-  test("S10: rejects an audience that does not match the learning's lens", () => {
-    rejects(
-      samplePayload({
-        lenses: [
-          { lens: "timeline", entries: [timelineEntry()] },
-          { lens: "humanLearnings", learnings: [humanLearning({ audience: "agent" })] },
-          { lens: "agentLearnings", learnings: [] },
-          { lens: "breadcrumbs", learnings: [] },
-        ],
-      }),
-    )
-    rejects(
-      samplePayload({
-        lenses: [
-          { lens: "timeline", entries: [timelineEntry()] },
-          { lens: "humanLearnings", learnings: [] },
-          { lens: "agentLearnings", learnings: [] },
-          { lens: "breadcrumbs", learnings: [breadcrumbLearning({ audience: "human" })] },
-        ],
-      }),
-    )
-    rejects(
-      samplePayload({
-        lenses: [
-          { lens: "timeline", entries: [timelineEntry()] },
-          {
-            lens: "humanLearnings",
-            learnings: [humanLearning({ audience: "crowd" })],
-          },
-          { lens: "agentLearnings", learnings: [] },
-          { lens: "breadcrumbs", learnings: [] },
-        ],
-      }),
-    )
-  })
-
-  test("S11: rejects an unknown severity; cost is optional but bounded", () => {
-    rejects(
-      samplePayload({
-        lenses: [
-          { lens: "timeline", entries: [timelineEntry()] },
-          { lens: "humanLearnings", learnings: [humanLearning({ severity: "catastrophic" })] },
-          { lens: "agentLearnings", learnings: [] },
-          { lens: "breadcrumbs", learnings: [] },
-        ],
-      }),
-    )
-    rejects(
-      samplePayload({
-        lenses: [
-          { lens: "timeline", entries: [timelineEntry()] },
-          { lens: "humanLearnings", learnings: [humanLearning({ cost: "x".repeat(121) })] },
-          { lens: "agentLearnings", learnings: [] },
-          { lens: "breadcrumbs", learnings: [] },
-        ],
-      }),
-    )
+  test("S11c: cost is optional", () => {
     const parsed = aiReviewPayloadSchema.parse(
-      samplePayload({
-        lenses: [
-          { lens: "timeline", entries: [timelineEntry()] },
-          { lens: "humanLearnings", learnings: [humanLearning({ cost: undefined })] },
-          { lens: "agentLearnings", learnings: [] },
-          { lens: "breadcrumbs", learnings: [] },
-        ],
-      }),
+      withLenses({ human: [humanLearning({ cost: undefined })] }),
     )
     expect(parsed.lenses[1]).toMatchObject({
       lens: "humanLearnings",
@@ -571,119 +484,41 @@ describe("aiReviewPayloadSchema", () => {
     )
   })
 
-  test("S17: rejects an unknown outcome, friction or analyzer", () => {
-    rejects(samplePayload({ outcome: "vibes" }))
-    rejects(samplePayload({ friction: "some" }))
-    rejects(samplePayload({ analyzer: "ai-v2" }))
-  })
-
-  test("S18: rejects toSeq below fromSeq", () => {
-    rejects(
-      samplePayload({
-        lenses: [
-          { lens: "timeline", entries: [timelineEntry({ fromSeq: 4, toSeq: 3 })] },
-          { lens: "humanLearnings", learnings: [] },
-          { lens: "agentLearnings", learnings: [] },
-          { lens: "breadcrumbs", learnings: [] },
-        ],
-      }),
-    )
-  })
-
-  test("S19: rejects timeline entries whose fromSeq is not strictly ascending", () => {
-    rejects(
-      samplePayload({
-        lenses: [
-          {
-            lens: "timeline",
-            entries: [
-              timelineEntry({ fromSeq: 2, toSeq: 4 }),
-              timelineEntry({ id: "second", fromSeq: 2, toSeq: 6, messageIds: ["msg-2"] }),
-            ],
-          },
-          { lens: "humanLearnings", learnings: [] },
-          { lens: "agentLearnings", learnings: [] },
-          { lens: "breadcrumbs", learnings: [] },
-        ],
-      }),
-    )
-    rejects(
-      samplePayload({
-        lenses: [
-          {
-            lens: "timeline",
-            entries: [
-              timelineEntry({ fromSeq: 5, toSeq: 6 }),
-              timelineEntry({ id: "second", fromSeq: 4, toSeq: 6, messageIds: ["msg-4"] }),
-            ],
-          },
-          { lens: "humanLearnings", learnings: [] },
-          { lens: "agentLearnings", learnings: [] },
-          { lens: "breadcrumbs", learnings: [] },
-        ],
-      }),
-    )
-  })
-
-  test("S20: rejects duplicate timeline entry ids and non-slug ids", () => {
-    rejects(
-      samplePayload({
-        lenses: [
-          {
-            lens: "timeline",
-            entries: [
-              timelineEntry({ fromSeq: 0, toSeq: 2, messageIds: ["msg-0"] }),
-              timelineEntry({ fromSeq: 3, toSeq: 4, messageIds: ["msg-3"] }),
-            ],
-          },
-          { lens: "humanLearnings", learnings: [] },
-          { lens: "agentLearnings", learnings: [] },
-          { lens: "breadcrumbs", learnings: [] },
-        ],
-      }),
-    )
-    rejects(
-      samplePayload({
-        lenses: [
-          { lens: "timeline", entries: [timelineEntry({ id: "Not A Slug" })] },
-          { lens: "humanLearnings", learnings: [] },
-          { lens: "agentLearnings", learnings: [] },
-          { lens: "breadcrumbs", learnings: [] },
-        ],
-      }),
-    )
-  })
-
-  test("S21: rejects an empty timeline, negative seqs and non-integer seqs", () => {
-    rejects(
-      samplePayload({
-        lenses: [
-          { lens: "timeline", entries: [] },
-          { lens: "humanLearnings", learnings: [] },
-          { lens: "agentLearnings", learnings: [] },
-          { lens: "breadcrumbs", learnings: [] },
-        ],
-      }),
-    )
-    rejects(
-      samplePayload({
-        lenses: [
-          { lens: "timeline", entries: [timelineEntry({ fromSeq: -1, toSeq: 2 })] },
-          { lens: "humanLearnings", learnings: [] },
-          { lens: "agentLearnings", learnings: [] },
-          { lens: "breadcrumbs", learnings: [] },
-        ],
-      }),
-    )
-    rejects(
-      samplePayload({
-        lenses: [
-          { lens: "timeline", entries: [timelineEntry({ fromSeq: 0.5, toSeq: 2 })] },
-          { lens: "humanLearnings", learnings: [] },
-          { lens: "agentLearnings", learnings: [] },
-          { lens: "breadcrumbs", learnings: [] },
-        ],
-      }),
-    )
+  test.each([
+    { id: "S18", label: "toSeq below fromSeq", entries: [timelineEntry({ fromSeq: 4, toSeq: 3 })] },
+    {
+      id: "S19a",
+      label: "a repeated fromSeq",
+      entries: [
+        timelineEntry({ fromSeq: 2, toSeq: 4 }),
+        timelineEntry({ id: "second", fromSeq: 2, toSeq: 6, messageIds: ["msg-2"] }),
+      ],
+    },
+    {
+      id: "S19b",
+      label: "a descending fromSeq",
+      entries: [
+        timelineEntry({ fromSeq: 5, toSeq: 6 }),
+        timelineEntry({ id: "second", fromSeq: 4, toSeq: 6, messageIds: ["msg-4"] }),
+      ],
+    },
+    {
+      id: "S20a",
+      label: "duplicate entry ids",
+      entries: [
+        timelineEntry({ fromSeq: 0, toSeq: 2, messageIds: ["msg-0"] }),
+        timelineEntry({ fromSeq: 3, toSeq: 4, messageIds: ["msg-3"] }),
+      ],
+    },
+    { id: "S20b", label: "a non-slug id", entries: [timelineEntry({ id: "Not A Slug" })] },
+    { id: "S21a", label: "an empty timeline", entries: [] },
+    { id: "S21b", label: "a negative seq", entries: [timelineEntry({ fromSeq: -1, toSeq: 2 })] },
+    {
+      id: "S21c",
+      label: "a non-integer seq",
+      entries: [timelineEntry({ fromSeq: 0.5, toSeq: 2 })],
+    },
+  ])("$id: rejects a timeline with $label", ({ entries }) => {
+    rejects(withLenses({ entries }))
   })
 })

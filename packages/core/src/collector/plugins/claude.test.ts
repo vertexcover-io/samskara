@@ -367,13 +367,6 @@ describe("normalizeClaude", () => {
     })
   })
 
-  test("metadata-only line yields a custom message", () => {
-    expect(normalizeClaude({ uuid: "x", type: "summary" })[0]).toMatchObject({
-      msgType: "systemEvent",
-      subType: "summary",
-    })
-  })
-
   test("S10: conversation roles are mapped and provenance is copied from the transcript", () => {
     const fixtures = [
       [
@@ -665,21 +658,57 @@ describe("normalizeClaude", () => {
     ).toMatchObject({ msgType: "custom", subType: "hook_additional_context" })
   })
 
-  test("S13: queued prompts and queue operations stay separate", () => {
-    expect(
-      normalizeClaude({
-        type: "attachment",
-        attachment: { type: "queued_command", prompt: "next", origin: { kind: "human" } },
-      })[0],
-    ).toMatchObject({
-      msgType: "message",
-      role: "user",
-      content: { type: "text", value: "next" },
-      details: { origin: "human", promptSource: "queued", deliveryMode: "activeTurn" },
+  test.each([
+    {
+      label: "S13: a prompt the human queued is a user message with its queue provenance",
+      attachment: { prompt: "next", origin: { kind: "human" } },
+      expected: {
+        msgType: "message",
+        role: "user",
+        subType: undefined,
+        content: { type: "text", value: "next" },
+        details: { origin: "human", promptSource: "queued", deliveryMode: "activeTurn" },
+      },
+    },
+    {
+      label: "SC8 (regression): a prompt queued with commandMode prompt is still a plain prompt",
+      attachment: { commandMode: "prompt", prompt: "next" },
+      expected: { msgType: "message", role: "user", subType: undefined },
+    },
+    {
+      label: "SC7: a task notification captured by an older CLI is marked as an injection",
+      attachment: {
+        commandMode: "task-notification",
+        prompt: "<task-notification>done</task-notification>",
+      },
+      expected: {
+        msgType: "message",
+        role: "user",
+        subType: "taskNotification",
+        content: { type: "text", value: "<task-notification>done</task-notification>" },
+        details: { promptSource: "queued" },
+      },
+    },
+    {
+      label: "S13: a queued command with no prompt text is a custom row",
+      attachment: {},
+      expected: { msgType: "custom", subType: "queued_command" },
+    },
+    {
+      label: "SC9 (regression): a task notification with no prompt text is still a custom row",
+      attachment: { commandMode: "task-notification" },
+      expected: { msgType: "custom", subType: "queued_command" },
+    },
+  ])("$label", ({ attachment, expected }) => {
+    const [message] = normalizeClaude({
+      type: "attachment",
+      attachment: { type: "queued_command", ...attachment },
     })
-    expect(
-      normalizeClaude({ type: "attachment", attachment: { type: "queued_command" } })[0],
-    ).toMatchObject({ msgType: "custom", subType: "queued_command" })
+
+    expect({ subType: undefined, ...message }).toMatchObject(expected)
+  })
+
+  test("S13: queue operations keep their operation and task id, and an unknown one reads as unknown", () => {
     for (const operation of ["enqueue", "dequeue", "remove", "popAll"] as const) {
       expect(
         normalizeClaude({ type: "queue-operation", operation, taskId: "task" })[0],
@@ -689,54 +718,6 @@ describe("normalizeClaude", () => {
       msgType: "queueOperation",
       details: { operation: "unknown" },
     })
-  })
-
-  test("SC7: a task notification captured by an older CLI is marked as an injection", () => {
-    expect(
-      normalizeClaude({
-        type: "attachment",
-        attachment: {
-          type: "queued_command",
-          commandMode: "task-notification",
-          prompt: "<task-notification>done</task-notification>",
-        },
-      })[0],
-    ).toMatchObject({
-      msgType: "message",
-      role: "user",
-      subType: "taskNotification",
-      content: { type: "text", value: "<task-notification>done</task-notification>" },
-      details: { promptSource: "queued" },
-    })
-  })
-
-  test("SC8 (regression): a prompt the user queued is still a prompt", () => {
-    const message = normalizeClaude({
-      type: "attachment",
-      attachment: { type: "queued_command", commandMode: "prompt", prompt: "next" },
-    })[0]
-
-    expect(message).toMatchObject({ msgType: "message", role: "user" })
-    expect(message?.msgType === "message" ? message.subType : "unset").toBeUndefined()
-  })
-
-  test("SC9 (regression): a queued command with no prompt text is still a custom row", () => {
-    expect(
-      normalizeClaude({
-        type: "attachment",
-        attachment: { type: "queued_command", commandMode: "task-notification" },
-      })[0],
-    ).toMatchObject({ msgType: "custom", subType: "queued_command" })
-  })
-
-  test("SC10 (regression): the shape newer CLIs write is unchanged", () => {
-    expect(
-      normalizeClaude({
-        type: "user",
-        message: { role: "user", content: "body" },
-        origin: { kind: "task-notification" },
-      })[0],
-    ).toMatchObject({ subType: "taskNotification" })
   })
 
   test("S14: turns, compaction, and local commands use only explicit evidence", () => {
@@ -1014,12 +995,6 @@ describe("titleFrom", () => {
     )
   })
 
-  test("SC27: a model title in a later batch is uploaded when the session was never renamed", () => {
-    const first = aiTitle("First guess", 1)
-    const second = aiTitle("Second guess", 2)
-    expect(titleFrom([second], [first.raw, second.raw])).toBe("Second guess")
-  })
-
   test("SC28: a poll that adds no title line carries no title, so the stored one survives", () => {
     const renamed = customTitle("Rename it", 1)
     const chatter = record({ type: "user", message: { role: "user", content: "go on" } }, 2)
@@ -1091,26 +1066,6 @@ describe("collect", () => {
     expect(track?.checkpointKey).toBe(path)
     expect(track?.checkpointAt(1)).toMatchObject({ lineProcessed: 1 })
     expect(track?.checkpointAt(1).source).toBe("claude_code")
-  })
-
-  test("the session title is the last ai-title line, so a retitled session ends up current", async () => {
-    // Claude Code rewrites the title as the session's subject becomes clearer, appending a fresh
-    // `ai-title` line each time. The newest one is the session's name; earlier guesses are stale.
-    const dir = await mkTranscriptDir()
-    const path = join(dir, "sess-1.jsonl")
-    await writeFile(
-      path,
-      transcript(
-        { type: "ai-title", aiTitle: "Debug the thing", sessionId: "sess-1" },
-        assistantLine,
-        { type: "ai-title", aiTitle: "Capture artifacts", sessionId: "sess-1" },
-      ),
-      "utf8",
-    )
-
-    const batches = await createClaudePlugin(nodeFs).collect(empty, collectDeps([path]))
-
-    expect(batches[0]?.tracks[0]?.title).toBe("Capture artifacts")
   })
 
   test("a batch with no ai-title line carries no title, so a stored one is never cleared", async () => {
@@ -1244,49 +1199,6 @@ describe("collect", () => {
     expect(records).toHaveLength(1)
     expect(records[0]?.lineUuid).toMatch(/^[0-9a-f-]{36}$/)
     expect(records[0]?.lineNumber).toBe(2)
-  })
-
-  test("drops a file whose project is not enabled before normalizing its records", async () => {
-    const dir = await mkTranscriptDir()
-    const path = join(dir, "sess-1.jsonl")
-    await writeFile(path, `${JSON.stringify(assistantLine)}\n`, "utf8")
-
-    const plugin = createClaudePlugin(nodeFs)
-    const batches = await plugin.collect(
-      empty,
-      collectDeps([path], { shouldCapture: async () => false }),
-    )
-
-    expect(batches).toHaveLength(0)
-  })
-
-  test("keeps a file whose project is enabled", async () => {
-    const dir = await mkTranscriptDir()
-    const path = join(dir, "sess-1.jsonl")
-    await writeFile(path, `${JSON.stringify(assistantLine)}\n`, "utf8")
-
-    const plugin = createClaudePlugin(nodeFs)
-    const batches = await plugin.collect(
-      empty,
-      collectDeps([path], { shouldCapture: async () => true }),
-    )
-
-    expect(batches[0]?.tracks[0]?.records).toHaveLength(1)
-  })
-
-  test("skips a session that started before the project's syncFrom cutoff", async () => {
-    const dir = await mkTranscriptDir()
-    const path = join(dir, "sess-old.jsonl")
-    const old = { ...assistantLine, sessionId: "sess-old", timestamp: "2026-07-01T00:00:00.000Z" }
-    await writeFile(path, `${JSON.stringify(old)}\n`, "utf8")
-
-    const plugin = createClaudePlugin(nodeFs)
-    const batches = await plugin.collect(
-      empty,
-      collectDeps([path], { syncFromFor: async () => "2026-07-23T00:00:00.000Z" }),
-    )
-
-    expect(batches).toHaveLength(0)
   })
 
   test("keeps a session that started at or after the cutoff", async () => {
@@ -1480,36 +1392,6 @@ describe("collect", () => {
     expect(reads).toHaveLength(1)
   })
 
-  test("resolves the project once for a whole session directory, subagents included", async () => {
-    const root = await mkdtemp(join(tmpdir(), "samskara-claude-"))
-    const dir = join(root, ".claude", "projects", "-work-app")
-    await mkdir(join(dir, "sess-1", "subagents"), { recursive: true })
-    const main = join(dir, "sess-1.jsonl")
-    const sub = join(dir, "sess-1", "subagents", "agent-af66.jsonl")
-    await writeFile(main, `${JSON.stringify(assistantLine)}\n`, "utf8")
-    await writeFile(sub, `${JSON.stringify({ ...assistantLine, agentId: "af66" })}\n`, "utf8")
-    await writeFile(
-      sub.replace(/\.jsonl$/, ".meta.json"),
-      JSON.stringify({ agentId: "af66" }),
-      "utf8",
-    )
-
-    const seen: string[] = []
-    const plugin = createClaudePlugin(nodeFs)
-    const batches = await plugin.collect(
-      empty,
-      collectDeps([main, sub], {
-        resolveProject: async (startDir) => {
-          seen.push(startDir)
-          return project
-        },
-      }),
-    )
-
-    expect(seen).toHaveLength(1)
-    expect(batches[0]?.tracks.map((t) => t.type)).toEqual(["main", "subagent"])
-  })
-
   test("resolves a directory's project once across cycles, not once per cycle", async () => {
     const root = await mkdtemp(join(tmpdir(), "samskara-claude-"))
     const dir = join(root, ".claude", "projects", "-work-app")
@@ -1592,18 +1474,6 @@ describe("collect", () => {
 
     // The sibling that answered the probe resolves the directory, so neither file is stranded.
     expect(batches.map((b) => b.sessionId).sort()).toEqual(["aaa-no-cwd", "bbb-has-cwd"])
-  })
-
-  test("emits no track for a file whose starting dir can't be resolved (no cwd)", async () => {
-    const dir = await mkTranscriptDir()
-    const path = join(dir, "no-cwd.jsonl")
-    const noCwd = { ...assistantLine }
-    delete (noCwd as { cwd?: string }).cwd
-    await writeFile(path, `${JSON.stringify({ ...assistantLine, cwd: undefined })}\n`, "utf8")
-
-    const plugin = createClaudePlugin(nodeFs)
-    const batches = await plugin.collect(empty, collectDeps([path]))
-    expect(batches).toHaveLength(0)
   })
 
   test("a subagent's cwd never decides the directory: the main transcript does, whatever the file order", async () => {

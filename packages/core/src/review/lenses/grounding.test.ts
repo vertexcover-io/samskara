@@ -20,23 +20,39 @@ const parseTimelineEntry = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 })
 
+const HUMAN_LEARNING = {
+  title: "Name the file to touch",
+  detail: "The first prompt omitted the path, so the agent guessed wrong.",
+  category: "communication",
+  audience: "human",
+  severity: "medium",
+  nextTime: "Open the task by naming the exact file to change.",
+  evidence: [{ seq: 2, messageId: "msg-2", what: "the agent guessed the wrong file" }],
+}
+
+const BREADCRUMB = {
+  title: "Failed-jobs lookup",
+  detail: "The psql query lists failed jobs with their last error, so nobody re-derives it.",
+  category: "query",
+  audience: "agent",
+  severity: "low",
+  nextTime: "Reach for this before writing a new query against the jobs table.",
+  evidence: [{ seq: 1, messageId: "msg-1", what: "the query was worked out here" }],
+}
+
 /**
  * Cast, not parse: grounding is an independent audit gate, and its tests must reach payloads
  * the schema refinement would reject (non-ascending timelines) without throwing first.
  */
 const payloadWith = (
   timelineEntries: Array<Record<string, unknown>>,
-  learnings: Array<Record<string, unknown>> = [
-    {
-      title: "Name the file to touch",
-      detail: "The first prompt omitted the path, so the agent guessed wrong.",
-      category: "communication",
-      audience: "human",
-      severity: "medium",
-      nextTime: "Open the task by naming the exact file to change.",
-      evidence: [{ seq: 2, messageId: "msg-2", what: "the agent guessed the wrong file" }],
-    },
-  ],
+  {
+    human = [HUMAN_LEARNING],
+    breadcrumbs = [BREADCRUMB],
+  }: {
+    readonly human?: ReadonlyArray<Record<string, unknown>>
+    readonly breadcrumbs?: ReadonlyArray<Record<string, unknown>>
+  } = {},
 ): AiReviewPayload =>
   ({
     analyzer: "ai-v1",
@@ -47,7 +63,7 @@ const payloadWith = (
     summary: "A session that shipped after one mid-course correction.",
     lenses: [
       { lens: "timeline", entries: timelineEntries },
-      { lens: "humanLearnings", learnings },
+      { lens: "humanLearnings", learnings: human },
       {
         lens: "agentLearnings",
         learnings: [
@@ -62,21 +78,7 @@ const payloadWith = (
           },
         ],
       },
-      {
-        lens: "breadcrumbs",
-        learnings: [
-          {
-            title: "Failed-jobs lookup",
-            detail:
-              "The psql query lists failed jobs with their last error, so nobody re-derives it.",
-            category: "query",
-            audience: "agent",
-            severity: "low",
-            nextTime: "Reach for this before writing a new query against the jobs table.",
-            evidence: [{ seq: 1, messageId: "msg-1", what: "the query was worked out here" }],
-          },
-        ],
-      },
+      { lens: "breadcrumbs", learnings: breadcrumbs },
     ],
   }) as unknown as AiReviewPayload
 
@@ -86,42 +88,34 @@ describe("validateGrounding", () => {
     expect(result).toEqual({ ok: true })
   })
 
-  test("G2: rejects a dangling timeline messageId with a precise path", () => {
-    const payload = payloadWith([parseTimelineEntry({ messageIds: ["msg-0", "msg-99"] })])
-    const result = validateGrounding(payload, index)
-    expect(result).toEqual({
-      ok: false,
-      problems: [{ path: "lenses[0].entries[0].messageIds[1]", problem: expect.any(String) }],
-    })
-  })
-
-  test("G3: rejects fromSeq and toSeq endpoints that are not real events", () => {
-    const payload = payloadWith([parseTimelineEntry({ fromSeq: 42, toSeq: 7 })])
-    const result = validateGrounding(payload, index)
-    expect(result.ok).toBe(false)
-    if (!result.ok) {
-      expect(result.problems.map((problem) => problem.path)).toEqual([
-        "lenses[0].entries[0].fromSeq",
-      ])
-    }
-  })
-
-  test("G4: rejects a toSeq endpoint that is not a real event", () => {
-    const payload = payloadWith([parseTimelineEntry({ toSeq: 99 })])
-    const result = validateGrounding(payload, index)
-    expect(result.ok).toBe(false)
-    if (!result.ok) {
-      expect(result.problems.map((problem) => problem.path)).toEqual(["lenses[0].entries[0].toSeq"])
-    }
-  })
-
-  test("G5: rejects an unknown track with a precise path", () => {
-    const payload = payloadWith([parseTimelineEntry({ tracks: ["side-quest"] })])
-    const result = validateGrounding(payload, index)
-    expect(result).toEqual({
-      ok: false,
-      problems: [{ path: "lenses[0].entries[0].tracks[0]", problem: expect.any(String) }],
-    })
+  test.each([
+    {
+      id: "G2",
+      label: "a dangling timeline messageId",
+      overrides: { messageIds: ["msg-0", "msg-99"] },
+      path: "lenses[0].entries[0].messageIds[1]",
+    },
+    {
+      id: "G3",
+      label: "a fromSeq endpoint that is not a real event",
+      overrides: { fromSeq: 42, toSeq: 7 },
+      path: "lenses[0].entries[0].fromSeq",
+    },
+    {
+      id: "G4",
+      label: "a toSeq endpoint that is not a real event",
+      overrides: { toSeq: 99 },
+      path: "lenses[0].entries[0].toSeq",
+    },
+    {
+      id: "G5",
+      label: "an unknown track",
+      overrides: { tracks: ["side-quest"] },
+      path: "lenses[0].entries[0].tracks[0]",
+    },
+  ])("$id: rejects $label at its precise path", ({ overrides, path }) => {
+    const result = validateGrounding(payloadWith([parseTimelineEntry(overrides)]), index)
+    expect(result).toEqual({ ok: false, problems: [{ path, problem: expect.any(String) }] })
   })
 
   test("G6: rejects timeline entries whose fromSeq is not strictly ascending", () => {
@@ -136,70 +130,56 @@ describe("validateGrounding", () => {
     })
   })
 
-  test("G7: rejects learning evidence with a dangling seq or messageId", () => {
-    const payload = payloadWith(
+  type Evidence = { seq: number; messageId: string; what: string }
+
+  const withEvidence = (lens: "human" | "breadcrumbs", evidence: ReadonlyArray<Evidence>) =>
+    payloadWith(
       [parseTimelineEntry()],
-      [
-        {
-          title: "Name the file to touch",
-          detail: "The first prompt omitted the path, so the agent guessed wrong.",
-          category: "communication",
-          audience: "human",
-          severity: "medium",
-          nextTime: "Open the task by naming the exact file to change.",
-          evidence: [
-            { seq: 2, messageId: "msg-2", what: "grounded" },
-            { seq: 55, messageId: "msg-77", what: "not grounded" },
-          ],
-        },
-      ],
+      lens === "human"
+        ? { human: [{ ...HUMAN_LEARNING, evidence }] }
+        : { breadcrumbs: [{ ...BREADCRUMB, evidence }] },
     )
-    const result = validateGrounding(payload, index)
-    expect(result.ok).toBe(false)
-    if (!result.ok) {
-      expect(result.problems.map((problem) => problem.path)).toEqual([
+
+  test.each([
+    {
+      id: "G7",
+      label: "learning evidence with a dangling seq and messageId is rejected",
+      payload: () =>
+        withEvidence("human", [
+          { seq: 2, messageId: "msg-2", what: "grounded" },
+          { seq: 55, messageId: "msg-77", what: "not grounded" },
+        ]),
+      paths: [
         "lenses[1].learnings[0].evidence[1].seq",
         "lenses[1].learnings[0].evidence[1].messageId",
-      ])
-    }
-  })
-
-  test("G10: breadcrumbs citing the transcript are audited like every lens", () => {
-    const payload = payloadWith([parseTimelineEntry()])
-    // Replace the breadcrumb's evidence with a dangling ref.
-    const breadcrumbs = payload.lenses[3]
-    if (breadcrumbs === undefined || breadcrumbs.lens !== "breadcrumbs")
-      throw new Error("expected breadcrumbs lens")
-    const first = breadcrumbs.learnings[0]
-    if (first === undefined) throw new Error("expected a breadcrumb")
-    first.evidence = [
-      { seq: 42, messageId: "msg-42", what: "a harness failure the session never had" },
-    ]
-    const result = validateGrounding(payload, index)
-    expect(result.ok).toBe(false)
-    if (!result.ok) {
-      expect(result.problems.map((problem) => problem.path)).toEqual([
+      ],
+    },
+    {
+      id: "G10",
+      label: "breadcrumb evidence with a dangling seq and messageId is rejected like every lens",
+      payload: () =>
+        withEvidence("breadcrumbs", [
+          { seq: 42, messageId: "msg-42", what: "a harness failure the session never had" },
+        ]),
+      paths: [
         "lenses[3].learnings[0].evidence[0].seq",
         "lenses[3].learnings[0].evidence[0].messageId",
-      ])
-    }
+      ],
+    },
+  ])("$id: $label", ({ payload, paths }) => {
+    const result = validateGrounding(payload(), index)
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.problems.map((problem) => problem.path)).toEqual(paths)
   })
 
   test("G11: a breadcrumb with no evidence refs (a nothing-entry) grounds clean", () => {
-    const payload = payloadWith([parseTimelineEntry()])
-    const breadcrumbs = payload.lenses[3]
-    if (breadcrumbs === undefined || breadcrumbs.lens !== "breadcrumbs")
-      throw new Error("expected breadcrumbs lens")
-    const first = breadcrumbs.learnings[0]
-    if (first === undefined) throw new Error("expected a breadcrumb")
-    first.evidence = []
-    expect(validateGrounding(payload, index)).toEqual({ ok: true })
+    expect(validateGrounding(withEvidence("breadcrumbs", []), index)).toEqual({ ok: true })
   })
 
   test("G8: accumulates every problem across lenses", () => {
     const payload = payloadWith(
       [parseTimelineEntry({ fromSeq: 9, toSeq: 10, messageIds: ["msg-99"], tracks: ["nope"] })],
-      [],
+      { human: [] },
     )
     const result = validateGrounding(payload, index)
     expect(result.ok).toBe(false)
@@ -208,37 +188,12 @@ describe("validateGrounding", () => {
     }
   })
 
-  test("G9: sessionIndexFrom builds the sets from array shape", () => {
-    const built = sessionIndexFrom({
-      seqs: [0, 1],
-      messageIds: ["msg-0", "msg-1"],
-      tracks: ["main"],
-    })
-    expect(built.seqs.has(1)).toBe(true)
-    expect(built.messageIds.has("msg-1")).toBe(true)
-    expect(built.tracks.has("main")).toBe(true)
-    expect(built.seqs.has(2)).toBe(false)
-  })
-
   test("G12: a ref whose seq and messageId name different records is rejected", () => {
     // Both halves exist in the export, so two independent membership tests both pass. But
     // the export mints `msg-<seq>`, so this ref describes one record and links to another —
     // exactly the hallucinated-citation class the gate exists to stop.
     const result = validateGrounding(
-      payloadWith(
-        [parseTimelineEntry()],
-        [
-          {
-            title: "Name the file to touch",
-            detail: "The first prompt omitted the path, so the agent guessed wrong.",
-            category: "communication",
-            audience: "human",
-            severity: "medium",
-            nextTime: "Open the task by naming the exact file to change.",
-            evidence: [{ seq: 3, messageId: "msg-6", what: "mismatched halves" }],
-          },
-        ],
-      ),
+      withEvidence("human", [{ seq: 3, messageId: "msg-6", what: "mismatched halves" }]),
       index,
     )
     expect(result.ok).toBe(false)
@@ -248,9 +203,12 @@ describe("validateGrounding", () => {
       problem: 'messageId "msg-6" does not belong to seq 3',
     })
   })
+})
 
-  test("G13: a matched pair still grounds clean", () => {
-    const result = validateGrounding(payloadWith([parseTimelineEntry()]), index)
-    expect(result.ok).toBe(true)
+test("sessionIndexFrom keeps each array of the export's index under its own name", () => {
+  expect(sessionIndexFrom({ seqs: [3], messageIds: ["msg-3"], tracks: ["main"] })).toEqual({
+    seqs: new Set([3]),
+    messageIds: new Set(["msg-3"]),
+    tracks: new Set(["main"]),
   })
 })

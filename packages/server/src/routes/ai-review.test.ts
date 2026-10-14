@@ -580,7 +580,7 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
     ])
   })
 
-  test("A13: a stranger cannot see an in-flight job through /aireview or poll it by jobId", async () => {
+  test("A17: a stranger cannot see an in-flight job through /aireview or poll it by jobId", async () => {
     // The registry is an in-memory map keyed by a client-supplied session id, so neither
     // lookup carries the visibility join the review list does. Unguarded, /aireview answered
     // 200 with the jobId for a foreign session, and the job body then hands out harness
@@ -610,7 +610,7 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
     expect((await request(`/api/sessions/${sessionId}/analyze/${jobId}`)).status).toBe(200)
   })
 
-  test("A14: two concurrent analyze requests start exactly one run", async () => {
+  test("A18: two concurrent analyze requests start exactly one run", async () => {
     // The route's own guard is a separate turn of the event loop from the start call, so
     // both requests could pass it. The registry refuses the second one.
     let starts = 0

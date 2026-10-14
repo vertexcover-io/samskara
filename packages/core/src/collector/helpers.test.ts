@@ -3,7 +3,7 @@ import { readFile, rename, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, test } from "vitest"
-import { compact, completeLines, parseJsonLines } from "./helpers.js"
+import { completeLines, parseJsonLines } from "./helpers.js"
 import { readCheckpoints, writeCheckpoints } from "./state.js"
 import type { Checkpoint } from "./types.js"
 
@@ -60,12 +60,8 @@ describe("parseJsonLines", () => {
   })
 })
 
-test("compact removes null and undefined", () => {
-  expect(compact([1, null, 2, undefined, 3])).toEqual([1, 2, 3])
-})
-
 describe("checkpoints", () => {
-  test("write is atomic via temp then rename, and round-trips", async () => {
+  test("a written store reads back, and a checkpoint with no projectSlug stays valid", async () => {
     const dir = mkdtempSync(join(tmpdir(), "samskara-state-"))
     const path = join(dir, "state.json")
     const store = { checkpoints: { "/a.jsonl": checkpoint(5) } }

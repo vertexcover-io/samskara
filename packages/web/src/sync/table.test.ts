@@ -117,33 +117,23 @@ test("SC39: sorting by CLI version follows the numbers, not the alphabet", () =>
   expect(sorted.map((r) => r.userId)).toEqual(["u-3", "u-1", "u-2"])
 })
 
-test("SC39: a prerelease sorts below the release carrying the same numbers", () => {
-  const cases: ReadonlyArray<readonly [string, string, "above" | "below"]> = [
-    ["1.4.0", "1.4.0-rc.1", "above"],
-    ["1.4.0-rc.1", "1.3.9", "above"],
-    ["1.4.2-rc.1", "1.4.2", "below"],
-    ["1.4.2-rc.1", "1.4.1", "above"],
-    ["1.4.0+build.5", "1.4.0", "below"],
-    ["1.4.0+build.5", "1.3.9", "above"],
-  ]
-
-  for (const [left, right, expected] of cases) {
-    const gap = compareVersions(left, right)
-    if (expected === "above") expect([left, right, gap > 0]).toEqual([left, right, true])
-    else expect([left, right, gap <= 0]).toEqual([left, right, true])
-  }
-})
-
-test("SC39: build metadata does not change the order", () => {
-  expect(compareVersions("1.4.0+build.5", "1.4.0")).toBe(0)
-  expect(compareVersions("v1.4.0", "1.4.0")).toBe(0)
-})
-
-test("SC39: a string that is not a version sorts below every version", () => {
-  expect(compareVersions("dev", "0.0.1")).toBeLessThan(0)
-  expect(compareVersions("0.0.1", "dev")).toBeGreaterThan(0)
-  expect(compareVersions("dev", "nightly")).toBe(0)
-})
+test.each([
+  ["1.4.0", "1.4.0-rc.1", 1],
+  ["1.4.0-rc.1", "1.3.9", 1],
+  ["1.4.2-rc.1", "1.4.2", -1],
+  ["1.4.2-rc.1", "1.4.1", 1],
+  ["1.4.0+build.5", "1.3.9", 1],
+  ["1.4.0+build.5", "1.4.0", 0],
+  ["v1.4.0", "1.4.0", 0],
+  ["dev", "0.0.1", -1],
+  ["0.0.1", "dev", 1],
+  ["dev", "nightly", 0],
+] as const)(
+  "SC39: %s compared with %s has sign %i - prereleases below their release, build metadata ignored, non-versions lowest",
+  (left, right, sign) => {
+    expect(Math.sign(compareVersions(left, right))).toBe(sign)
+  },
+)
 
 test("SC40: rows with no recorded version sort last in both directions", () => {
   const versioned = row({ userId: "u-1", cliVersion: "0.4.2" })

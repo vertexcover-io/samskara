@@ -17,15 +17,25 @@ const env: Env = {
   aiReviewTimeoutMs: 600_000,
 }
 
+const handSigned = ({
+  issuer,
+  expiresIn,
+}: {
+  readonly issuer: string
+  readonly expiresIn: string
+}) =>
+  new SignJWT({})
+    .setProtectedHeader({ alg: "HS256" })
+    .setIssuer(issuer)
+    .setAudience("web")
+    .setSubject("user-1")
+    .setExpirationTime(expiresIn)
+    .sign(new TextEncoder().encode(env.jwtSecret))
+
 describe("S5: jwt sign/verify", () => {
   test("round-trips sub and aud for a web token", async () => {
     const token = await signToken(env, { sub: "user-1", aud: "web" })
     expect(await verifyToken(env, token, ["web"])).toEqual({ sub: "user-1" })
-  })
-
-  test("returns null for a web token verified against cli audience", async () => {
-    const token = await signToken(env, { sub: "user-1", aud: "web" })
-    expect(await verifyToken(env, token, ["cli"])).toBeNull()
   })
 
   test("accepts a token whose audience appears anywhere in the accepted list", async () => {
@@ -35,35 +45,33 @@ describe("S5: jwt sign/verify", () => {
     expect(await verifyToken(env, cli, ["web", "cli"])).toEqual({ sub: "user-2" })
   })
 
-  test("a single-entry list still excludes every other audience", async () => {
-    const cli = await signToken(env, { sub: "user-1", aud: "cli" })
-    expect(await verifyToken(env, cli, ["web"])).toBeNull()
-  })
-
-  test("returns null for a token signed with a different secret (tampered)", async () => {
-    const token = await signToken(env, { sub: "user-1", aud: "web" })
-    expect(await verifyToken({ ...env, jwtSecret: "other-secret" }, token, ["web"])).toBeNull()
-  })
-
-  test("returns null for an expired token", async () => {
-    const expired = await new SignJWT({})
-      .setProtectedHeader({ alg: "HS256" })
-      .setIssuer("samskara")
-      .setAudience("web")
-      .setSubject("user-1")
-      .setExpirationTime("-1h")
-      .sign(new TextEncoder().encode(env.jwtSecret))
-    expect(await verifyToken(env, expired, ["web"])).toBeNull()
-  })
-
-  test("returns null for a token with the wrong issuer", async () => {
-    const wrongIssuer = await new SignJWT({})
-      .setProtectedHeader({ alg: "HS256" })
-      .setIssuer("evil")
-      .setAudience("web")
-      .setSubject("user-1")
-      .setExpirationTime("7d")
-      .sign(new TextEncoder().encode(env.jwtSecret))
-    expect(await verifyToken(env, wrongIssuer, ["web"])).toBeNull()
+  test.each([
+    [
+      "a web token checked against the cli audience",
+      () => signToken(env, { sub: "user-1", aud: "web" }),
+      env,
+      ["cli"],
+    ],
+    [
+      "a cli token checked against a single-entry web list",
+      () => signToken(env, { sub: "user-1", aud: "cli" }),
+      env,
+      ["web"],
+    ],
+    [
+      "a token signed with a different secret",
+      () => signToken(env, { sub: "user-1", aud: "web" }),
+      { ...env, jwtSecret: "other-secret" },
+      ["web"],
+    ],
+    ["an expired token", () => handSigned({ issuer: "samskara", expiresIn: "-1h" }), env, ["web"]],
+    [
+      "a token from another issuer",
+      () => handSigned({ issuer: "evil", expiresIn: "7d" }),
+      env,
+      ["web"],
+    ],
+  ] as const)("returns null for %s", async (_case, mint, verifyEnv, audiences) => {
+    expect(await verifyToken(verifyEnv, await mint(), audiences)).toBeNull()
   })
 })

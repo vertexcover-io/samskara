@@ -1,46 +1,20 @@
 import { describe, expect, test, vi } from "vitest"
 import { createLogger, resolveLevel } from "./logging.js"
 
-describe("createLogger", () => {
-  test("S1: createLogger({service:'x'}) returns a logger with working .info, .child, and child.setBindings", () => {
-    const logger = createLogger({ service: "x" })
-
-    expect(typeof logger.info).toBe("function")
-    expect(typeof logger.child).toBe("function")
-    expect(typeof logger.child({}).setBindings).toBe("function")
-  })
-})
-
 describe("resolveLevel", () => {
-  test("S2: LOG_LEVEL=warn resolves to warn", () => {
-    expect(resolveLevel({ LOG_LEVEL: "warn" })).toBe("warn")
+  test.each([
+    { id: "S2a", env: { LOG_LEVEL: "warn" }, level: "warn" },
+    { id: "S2b", env: { LOG_LEVEL: "debug" }, level: "debug" },
+    { id: "S3a", env: { NODE_ENV: "production" }, level: "info" },
+    { id: "S3b", env: {}, level: "debug" },
+    { id: "S3c", env: { NODE_ENV: "development" }, level: "debug" },
+    { id: "S3d", env: { NODE_ENV: "test" }, level: "silent" },
+    { id: "S3e", env: { NODE_ENV: "test", LOG_LEVEL: "debug" }, level: "debug" },
+  ])("$id: $env resolves to $level", ({ env, level }) => {
+    expect(resolveLevel(env)).toBe(level)
   })
 
-  test("S2: LOG_LEVEL=debug resolves to debug", () => {
-    expect(resolveLevel({ LOG_LEVEL: "debug" })).toBe("debug")
-  })
-
-  test("S3: NODE_ENV=production with no LOG_LEVEL defaults to info", () => {
-    expect(resolveLevel({ NODE_ENV: "production" })).toBe("info")
-  })
-
-  test("S3: no NODE_ENV and no LOG_LEVEL defaults to debug", () => {
-    expect(resolveLevel({})).toBe("debug")
-  })
-
-  test("S3: NODE_ENV=development with no LOG_LEVEL defaults to debug", () => {
-    expect(resolveLevel({ NODE_ENV: "development" })).toBe("debug")
-  })
-
-  test("S3: NODE_ENV=test with no LOG_LEVEL defaults to silent", () => {
-    expect(resolveLevel({ NODE_ENV: "test" })).toBe("silent")
-  })
-
-  test("S3: an explicit LOG_LEVEL still wins under NODE_ENV=test", () => {
-    expect(resolveLevel({ NODE_ENV: "test", LOG_LEVEL: "debug" })).toBe("debug")
-  })
-
-  test("S2: LOG_LEVEL=silent resolves to silent rather than warning", () => {
+  test("S2c: LOG_LEVEL=silent resolves to silent rather than warning", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
 
     expect(resolveLevel({ LOG_LEVEL: "silent" })).toBe("silent")
@@ -49,25 +23,20 @@ describe("resolveLevel", () => {
     warnSpy.mockRestore()
   })
 
-  test("S4a: an invalid LOG_LEVEL under NODE_ENV=test falls back to silent", () => {
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+  test.each([
+    { id: "S4a", nodeEnv: "test", level: "silent" },
+    { id: "S4b", nodeEnv: "production", level: "info" },
+  ])(
+    "$id: LOG_LEVEL=chatty under NODE_ENV=$nodeEnv falls back to $level and warns once",
+    ({ nodeEnv, level }) => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
 
-    expect(resolveLevel({ LOG_LEVEL: "chatty", NODE_ENV: "test" })).toBe("silent")
-    expect(warnSpy).toHaveBeenCalledOnce()
+      expect(resolveLevel({ LOG_LEVEL: "chatty", NODE_ENV: nodeEnv })).toBe(level)
+      expect(warnSpy).toHaveBeenCalledOnce()
 
-    warnSpy.mockRestore()
-  })
-
-  test("S4a: LOG_LEVEL=chatty in production falls back to info, warns once, does not throw", () => {
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
-
-    const level = resolveLevel({ LOG_LEVEL: "chatty", NODE_ENV: "production" })
-
-    expect(level).toBe("info")
-    expect(warnSpy).toHaveBeenCalledOnce()
-
-    warnSpy.mockRestore()
-  })
+      warnSpy.mockRestore()
+    },
+  )
 })
 
 describe("createLogger redaction", () => {
@@ -116,7 +85,7 @@ describe("createLogger base", () => {
     return JSON.parse(lines[0] ?? "{}") as Record<string, unknown>
   }
 
-  test("S5: every line carries pid and hostname alongside service, so two processes are tellable apart", () => {
+  test("S5a: every line carries pid and hostname alongside service, so two processes are tellable apart", () => {
     const parsed = lineFrom({ service: "x" })
 
     expect(parsed.service).toBe("x")
@@ -124,7 +93,7 @@ describe("createLogger base", () => {
     expect(typeof parsed.hostname).toBe("string")
   })
 
-  test("S5: a caller-supplied field wins over the defaults", () => {
+  test("S5b: a caller-supplied field wins over the defaults", () => {
     expect(lineFrom({ service: "x", pid: 1 }).pid).toBe(1)
   })
 })

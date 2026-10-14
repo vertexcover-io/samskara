@@ -4,11 +4,10 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
-import { SignJWT } from "jose"
 import postgres from "postgres"
 import { requireDatabaseUrl } from "./db.js"
-import { expect, test } from "./fixtures/auth.js"
-import { API_BASE } from "./playwright.config.js"
+import { expect, mintCliToken, test } from "./fixtures/auth.js"
+import { assertApiAcceptsCliToken, daemonEnv, pollUntil, stopWatcher } from "./pipeline.js"
 import { E2E_USER_ID, seedDatabase } from "./seed.js"
 import {
   assistantLine,
@@ -18,13 +17,9 @@ import {
   userLine,
 } from "./transcript.js"
 
-const JWT_SECRET = process.env.JWT_SECRET ?? "e2e-secret"
 const DATABASE_URL = requireDatabaseUrl()
 const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url))
 const CLI_ENTRY = join(REPO_ROOT, "packages/cli/src/index.ts")
-
-const PIPELINE_TIMEOUT_MS = 45_000
-const POLL_INTERVAL_MS = 250
 
 const SESSION_ID = "5c1f7a30-9b2e-4d61-a8c4-3e7f0b6d2a91"
 const PROJECT_SLUG = "acme-widgets"
@@ -54,35 +49,6 @@ const appendWithCwd = (
   )
 
 type Sql = ReturnType<typeof postgres>
-
-const mintCliToken = (): Promise<string> =>
-  new SignJWT({})
-    .setProtectedHeader({ alg: "HS256" })
-    .setIssuer("samskara")
-    .setAudience("cli")
-    .setSubject(E2E_USER_ID)
-    .setExpirationTime("1h")
-    .sign(new TextEncoder().encode(JWT_SECRET))
-
-const pollUntil = async <T>(
-  read: () => Promise<T>,
-  done: (value: T) => boolean,
-  describe: (value: T) => string,
-  timeoutMs = PIPELINE_TIMEOUT_MS,
-): Promise<T> => {
-  const deadline = Date.now() + timeoutMs
-  let last: T = await read()
-  while (!done(last)) {
-    if (Date.now() > deadline) {
-      throw new Error(
-        `timed out after ${timeoutMs}ms waiting for pipeline; last saw ${describe(last)}`,
-      )
-    }
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS))
-    last = await read()
-  }
-  return last
-}
 
 type Harness = {
   readonly home: string
@@ -138,19 +104,7 @@ const startHarness = async (): Promise<Harness> => {
     "utf8",
   )
 
-  const probe = await fetch(`${API_BASE}/api/ingest`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${await mintCliToken()}`,
-    },
-    body: JSON.stringify({}),
-  })
-  if (probe.status === 401) {
-    throw new Error(
-      `the API at ${API_BASE} rejected an e2e CLI token (401) -- it is signing with a different JWT_SECRET than this spec mints with.`,
-    )
-  }
+  await assertApiAcceptsCliToken()
 
   const child: ChildProcess = spawn(
     "bun",
@@ -159,13 +113,7 @@ const startHarness = async (): Promise<Harness> => {
     [CLI_ENTRY, "watch", "--foreground"],
     {
       cwd: REPO_ROOT,
-      env: {
-        ...process.env,
-        HOME: home,
-        SAMSKARA_HOME: samskaraHome,
-        SAMSKARA_DAEMON: "1",
-        SAMSKARA_API_URL: API_BASE,
-      },
+      env: { ...daemonEnv(home, samskaraHome), SAMSKARA_DAEMON: "1" },
       stdio: ["ignore", "pipe", "pipe"],
     },
   )
@@ -184,7 +132,7 @@ const startHarness = async (): Promise<Harness> => {
     // The transcript's cwd is the SUB-REPO, so every message resolves to `serana`.
     writer: createTranscriptWriter({ home, cwd: subRepo, sessionId: SESSION_ID }),
     stop: async () => {
-      child.kill("SIGTERM")
+      if (child.pid !== undefined) await stopWatcher(child.pid)
       await sql.end()
       await rm(home, { recursive: true, force: true })
     },
@@ -206,7 +154,7 @@ test.beforeEach(async () => {
 test.afterEach(harnessTeardown)
 
 test.describe("commit capture", () => {
-  test.describe.configure({ timeout: 90_000 })
+  test.describe.configure({ timeout: 45_000 })
 
   test("E1: a git commit run in a session lands as a commit row keyed to the repo of the cwd it ran in, and re-ingesting it changes nothing", async () => {
     harness = await startHarness()

@@ -108,23 +108,6 @@ test("SC64: uses server vocabulary, preserves exact branch case, and deliberatel
   expect(onChange).toHaveBeenLastCalledWith({ ...EMPTY_FILTERS, commit: "abcdef1" })
 })
 
-test("only exposes relevance as a sort choice when a keyword is active", () => {
-  const { rerender } = render(
-    <FilterBar filters={EMPTY_FILTERS} options={options} onChange={vi.fn()} onClear={vi.fn()} />,
-  )
-  expect(screen.queryByRole("option", { name: "Relevance" })).not.toBeInTheDocument()
-
-  rerender(
-    <FilterBar
-      filters={{ ...EMPTY_FILTERS, q: "auth", sort: "relevance" }}
-      options={options}
-      onChange={vi.fn()}
-      onClear={vi.fn()}
-    />,
-  )
-  expect(screen.getByRole("option", { name: "Relevance" })).toBeInTheDocument()
-})
-
 test("SC65 (regression): Last active and Sort by are still native dropdowns", async () => {
   const user = userEvent.setup()
   const { onChange } = renderBar()
@@ -136,21 +119,32 @@ test("SC65 (regression): Last active and Sort by are still native dropdowns", as
   expect(onChange).toHaveBeenLastCalledWith({ ...EMPTY_FILTERS, sort: "project" })
 })
 
-test("SC11: the sort control no longer offers Most tokens", () => {
-  render(
-    <FilterBar
-      filters={{ ...EMPTY_FILTERS, q: "auth", sort: "relevance" }}
-      options={options}
-      onChange={vi.fn()}
-      onClear={vi.fn()}
-    />,
-  )
+test.each([
+  {
+    claim: "no keyword offers no Relevance",
+    filters: EMPTY_FILTERS,
+    offered: ["Most recent", "Oldest first", "Project name"],
+  },
+  {
+    claim: "SC11: an active keyword adds Relevance",
+    filters: { ...EMPTY_FILTERS, q: "auth", sort: "relevance" as const },
+    offered: ["Relevance", "Most recent", "Oldest first", "Project name"],
+  },
+])(
+  "sort choices on a bar mounted empty then given new filters: $claim, and never Most tokens",
+  ({ filters, offered }) => {
+    const bar = (current: SessionFilters) => (
+      <FilterBar filters={current} options={options} onChange={vi.fn()} onClear={vi.fn()} />
+    )
+    const { rerender } = render(bar(EMPTY_FILTERS))
+    rerender(bar(filters))
 
-  for (const label of ["Relevance", "Most recent", "Oldest first", "Project name"]) {
-    expect(screen.getByRole("option", { name: label })).toBeInTheDocument()
-  }
-  expect(screen.queryByRole("option", { name: "Most tokens" })).not.toBeInTheDocument()
-})
+    const sortBy = screen.getByRole("combobox", { name: "Sort by" })
+    expect(Array.from(sortBy.querySelectorAll("option"), (option) => option.textContent)).toEqual(
+      offered,
+    )
+  },
+)
 
 test("Search stays inert until submitting it would change the results", async () => {
   const user = userEvent.setup()
@@ -171,14 +165,17 @@ test("emptying the box still submits, so an active search can be cleared from it
   expect(screen.getByRole("button", { name: "Search" })).toBeEnabled()
 })
 
-test("Reset is inert when there is nothing to reset", async () => {
-  renderBar()
-  expect(screen.getByRole("button", { name: "Reset search & filters" })).toBeDisabled()
-})
-
-test("Reset wakes up once any filter is set", async () => {
-  renderBar({ ...EMPTY_FILTERS, project: "samskara" })
-  expect(screen.getByRole("button", { name: "Reset search & filters" })).toBeEnabled()
+test.each([
+  { claim: "inert when there is nothing to reset", filters: EMPTY_FILTERS, enabled: false },
+  {
+    claim: "wakes up once any filter is set",
+    filters: { ...EMPTY_FILTERS, project: "samskara" },
+    enabled: true,
+  },
+])("Reset is $claim", ({ filters, enabled }) => {
+  renderBar(filters)
+  const reset = screen.getByRole("button", { name: "Reset search & filters" })
+  expect(reset.hasAttribute("disabled")).toBe(!enabled)
 })
 
 test("Apply is inert until its own draft differs from the filter it applies", async () => {

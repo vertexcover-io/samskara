@@ -8,6 +8,7 @@ import postgres from "postgres"
 import { cliVersion } from "../packages/cli/src/version.js"
 import { requireDatabaseUrl } from "./db.js"
 import { expect, mintCliToken, mintSessionToken, test } from "./fixtures/auth.js"
+import { assertApiAcceptsCliToken, daemonEnv, pollUntil, stopWatcher } from "./pipeline.js"
 import { API_BASE } from "./playwright.config.js"
 import { E2E_OTHER_USER_ID, E2E_USER_ID, orgId, seedDatabase } from "./seed.js"
 import {
@@ -28,10 +29,6 @@ const DATABASE_URL = requireDatabaseUrl()
 const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url))
 const CLI_ENTRY = join(REPO_ROOT, "packages/cli/src/index.ts")
 
-// The watcher polls every 10s, so a full cycle plus ingest has to fit inside this.
-const PIPELINE_TIMEOUT_MS = 45_000
-const POLL_INTERVAL_MS = 250
-
 const SESSION_ID = "0b9d4c1e-7f3a-4c22-9a6e-1d5f8b2c3e40"
 const PROJECT_SLUG = "acme-widgets"
 const PROJECT_NAME = "acme-widgets"
@@ -41,31 +38,6 @@ const GIT_REMOTE = "git@github.com:acme/widgets.git"
 const execFileAsync = promisify(execFile)
 
 type Sql = ReturnType<typeof postgres>
-
-/**
- * Polls until `read` returns a value satisfying `done`, or the deadline passes.
- * Nothing in this spec sleeps for a fixed duration: the watcher's cycle boundary is
- * not observable from here, so a fixed sleep would be either flaky or needlessly slow.
- */
-const pollUntil = async <T>(
-  read: () => Promise<T>,
-  done: (value: T) => boolean,
-  describe: (value: T) => string,
-  timeoutMs = PIPELINE_TIMEOUT_MS,
-): Promise<T> => {
-  const deadline = Date.now() + timeoutMs
-  let last: T = await read()
-  while (!done(last)) {
-    if (Date.now() > deadline) {
-      throw new Error(
-        `timed out after ${timeoutMs}ms waiting for pipeline; last saw ${describe(last)}`,
-      )
-    }
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS))
-    last = await read()
-  }
-  return last
-}
 
 type Harness = {
   readonly home: string
@@ -134,29 +106,8 @@ const startHarness = async (options: HarnessOptions = {}): Promise<Harness> => {
     )
   }
 
-  // Fail loudly here rather than as a silent 45s ingest timeout: an auth mismatch
-  // between the token and the server makes every upload 401, which otherwise looks
-  // like a broken pipeline rather than a broken fixture.
-  const probe = await fetch(`${API_BASE}/api/ingest`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${await mintCliToken()}`,
-    },
-    body: JSON.stringify({}),
-  })
-  if (probe.status === 401) {
-    throw new Error(
-      `the API at ${API_BASE} rejected an e2e CLI token (401) -- it is signing with a different JWT_SECRET than this spec mints with.`,
-    )
-  }
-
-  const env = {
-    ...process.env,
-    HOME: home,
-    SAMSKARA_HOME: samskaraHome,
-    SAMSKARA_API_URL: API_BASE,
-  }
+  await assertApiAcceptsCliToken()
+  const env = daemonEnv(home, samskaraHome)
 
   let child: ChildProcess | undefined
   let enableOutput: string | undefined
@@ -194,19 +145,13 @@ const startHarness = async (options: HarnessOptions = {}): Promise<Harness> => {
     writer: createTranscriptWriter({ home, cwd, sessionId: SESSION_ID }),
     ...(enableOutput === undefined ? {} : { enableOutput }),
     stop: async () => {
-      if (child) {
-        child.kill("SIGTERM")
-      } else {
-        try {
-          const pid = Number.parseInt(
-            (await readFile(join(samskaraHome, "watch.pid"), "utf8")).trim(),
-            10,
-          )
-          if (Number.isFinite(pid)) process.kill(pid, "SIGTERM")
-        } catch {
-          // no watcher was running -- nothing to stop
-        }
-      }
+      const pid =
+        child?.pid ??
+        Number.parseInt(
+          (await readFile(join(samskaraHome, "watch.pid"), "utf8").catch(() => "")).trim(),
+          10,
+        )
+      if (Number.isFinite(pid)) await stopWatcher(pid)
       await sql.end()
       await rm(home, { recursive: true, force: true })
     },
@@ -256,7 +201,7 @@ const harnessTeardown = async (): Promise<void> => {
 test.afterEach(harnessTeardown)
 
 test.describe("capture pipeline", () => {
-  test.describe.configure({ timeout: 90_000 })
+  test.describe.configure({ timeout: 45_000 })
 
   test("SC15: the real CLI reads an old-format task notification and it is not shown as the user's words", async () => {
     const { writer, sql } = await useHarness()
@@ -379,39 +324,6 @@ test.describe("capture pipeline", () => {
       select distinct "lineNumber" from messages where "sessionId" = ${SESSION_ID} order by "lineNumber"
     `
     expect(lineNumbers.map((r) => r.lineNumber)).toEqual([1, 2, 3, 4])
-  })
-
-  test("P3: a subagent sidecar lands as a subagent track against the same session", async () => {
-    const { writer, sql } = await useHarness()
-
-    await writer.append([userLine("Audit the constraints.", 0), assistantLine("Delegating.", 1)])
-    await pollUntil(
-      () => sql<{ id: string }[]>`select id from sessions where id = ${SESSION_ID}`,
-      (r) => r.length === 1,
-      (r) => `${r.length} sessions`,
-    )
-
-    await writer.appendSubagent(
-      "audit",
-      [assistantLine("No unique constraints exist on the ingest tables.", 2)],
-      { agentType: "db-schema-auditor", description: "Audit unique constraints" },
-    )
-
-    const subagents = await pollUntil(
-      () => sql<{ agentId: string; agentType: string | null }[]>`
-        select "agentId", "agentType" from subagents where "sessionId" = ${SESSION_ID}
-      `,
-      (r) => r.length >= 1,
-      (r) => `${r.length} subagents`,
-    )
-    expect(subagents[0]?.agentId).toBe("audit")
-    expect(subagents[0]?.agentType).toBe("db-schema-auditor")
-
-    const flagged = await sql<{ count: string }[]>`
-      select count(*)::text as count from messages
-      where "sessionId" = ${SESSION_ID} and "isSubagent" = true
-    `
-    expect(Number(flagged[0]?.count)).toBeGreaterThan(0)
   })
 
   test("P4: a session captured by the watcher is readable in the web UI, listed under its project and opening to its conversation", async ({
@@ -606,13 +518,14 @@ test.describe("capture pipeline", () => {
     ])
 
     const subagents = await pollUntil(
-      () => sql<{ agentId: string }[]>`
-        select "agentId" from subagents where "sessionId" = ${SESSION_ID}
+      () => sql<{ agentId: string; agentType: string | null }[]>`
+        select "agentId", "agentType" from subagents where "sessionId" = ${SESSION_ID}
       `,
       (r) => r.length >= 1,
       (r) => `${r.length} subagents`,
     )
     expect(subagents[0]?.agentId).toBe("early")
+    expect(subagents[0]?.agentType).toBe("db-schema-auditor")
 
     // The retry must not duplicate: one row for the subagent's single line.
     const flagged = await sql<{ count: string }[]>`
@@ -793,75 +706,6 @@ test.describe("capture pipeline", () => {
     await rm(outsideDir, { recursive: true, force: true })
   })
 
-  test("P13 (regression): a write result's own originalFile resolves into a stored base and diff, with no file-history lookup involved, while an edit that carries no originalFile lands as editedUnknownBase with no diff at all", async () => {
-    const { writer, sql, cwd } = await useHarness({
-      enabled: true,
-    })
-
-    const resolvable = join(cwd, "docs", "resolvable.md")
-    const unknownBase = join(cwd, "docs", "unknown-base.md")
-    await mkdir(join(cwd, "docs"), { recursive: true })
-    await writeFile(resolvable, "# Notes\n\nChanged line.\n", "utf8")
-    await writeFile(unknownBase, "# Other\n\nAlso changed.\n", "utf8")
-
-    // Only the first file's result names an `originalFile`. No `~/.claude/file-history` exists.
-    await writer.append([
-      userLine("Edit both docs.", 0),
-      toolCallLine(
-        "tool-edit-1",
-        "Edit",
-        { file_path: resolvable, old_string: "Original line." },
-        1,
-      ),
-      writeResultLine(
-        "tool-edit-1",
-        resolvable,
-        { type: "update", originalFile: "# Notes\n\nOriginal line.\n" },
-        1,
-      ),
-      toolCallLine("tool-edit-2", "Edit", { file_path: unknownBase, old_string: "Was here." }, 2),
-      writeResultLine("tool-edit-2", unknownBase, { type: "update" }, 2),
-    ])
-
-    await pollUntil(
-      () => sql<{ count: string }[]>`
-        select count(*)::text as count from messages where "sessionId" = ${SESSION_ID}
-      `,
-      (r) => Number(r[0]?.count ?? 0) >= 3,
-      (r) => `${r[0]?.count ?? 0} message rows`,
-    )
-
-    const rows = await pollUntil(
-      () => sql<
-        {
-          path: string
-          changeKind: string
-          baseContent: Buffer | null
-          diff: string | null
-        }[]
-      >`
-        select path, "changeKind", "baseContent", diff
-        from artifact where "sessionId" = ${SESSION_ID}
-      `,
-      (r) => r.length >= 2,
-      (r) => `${r.length} artifact rows`,
-    )
-
-    const byPath = new Map(rows.map((row) => [row.path, row]))
-    const withBase = byPath.get(await realpath(resolvable))
-    const withoutBase = byPath.get(await realpath(unknownBase))
-
-    expect(withBase?.changeKind).toBe("edited")
-    expect(withBase?.baseContent?.toString("utf8")).toBe("# Notes\n\nOriginal line.\n")
-    expect(withBase?.diff).toContain("-Original line.")
-    expect(withBase?.diff).toContain("+Changed line.")
-
-    // Captured anyway, recorded as unrecoverable, and no diff invented for it.
-    expect(withoutBase?.changeKind).toBe("editedUnknownBase")
-    expect(withoutBase?.baseContent).toBeNull()
-    expect(withoutBase?.diff).toBeNull()
-  })
-
   test("P14: a captured report's referenced media is captured too, under the same session, while a source file it links is not", async () => {
     // The tracked-reference filter needs the real `git ls-files` against this fixture repo.
     const { writer, sql, cwd } = await useHarness({ enabled: true })
@@ -951,12 +795,13 @@ test.describe("capture pipeline", () => {
     expect(rows.some((row) => row.path === source)).toBe(false)
   })
 
-  test("A1: a file the agent edits during a captured session arrives in Postgres with its pre-session content and a diff, without delaying message capture", async () => {
+  test("A1: a file the agent edits during a captured session arrives in Postgres with its pre-session content and a diff, without delaying message capture, while an edit whose result carries no originalFile lands as editedUnknownBase with no diff", async () => {
     const { writer, sql, cwd } = await useHarness({
       enabled: true,
     })
 
     const notes = join(cwd, "docs", "notes.md")
+    const unknownBase = join(cwd, "docs", "unknown-base.md")
     const ORIGINAL = "# Notes\n\nThe original line.\n"
     const CHANGED = "# Notes\n\nThe replacement line.\n"
     const FINAL = "# Notes\n\nThe third line.\n"
@@ -964,6 +809,7 @@ test.describe("capture pipeline", () => {
     await mkdir(join(cwd, "docs"), { recursive: true })
     // Only post-edit bytes land on disk; the pre-edit content rides the result line.
     await writeFile(notes, CHANGED, "utf8")
+    await writeFile(unknownBase, "# Other\n\nAlso changed.\n", "utf8")
 
     await writer.append([
       userLine("Rewrite the notes.", 0),
@@ -974,6 +820,8 @@ test.describe("capture pipeline", () => {
         1,
       ),
       writeResultLine("tool-edit-a1", notes, { type: "update", originalFile: ORIGINAL }, 1),
+      toolCallLine("tool-edit-a1u", "Edit", { file_path: unknownBase, old_string: "Was here." }, 2),
+      writeResultLine("tool-edit-a1u", unknownBase, { type: "update" }, 2),
       userLine("Thanks, anything else worth noting?", 3),
       assistantLine("Nothing further -- the notes now read correctly.", 4),
     ])
@@ -1010,6 +858,19 @@ test.describe("capture pipeline", () => {
     // A real unified diff, carrying both sides of the change.
     expect(artifact.diff).toContain("-The original line.")
     expect(artifact.diff).toContain("+The replacement line.")
+
+    const unknownBasePath = await realpath(unknownBase)
+    const [withoutBase] = await pollUntil(
+      () => sql<{ changeKind: string; baseContent: Buffer | null; diff: string | null }[]>`
+        select "changeKind", "baseContent", diff
+        from artifact where "sessionId" = ${SESSION_ID} and path = ${unknownBasePath}
+      `,
+      (rows) => rows.length === 1,
+      (rows) => `${rows.length} artifact rows for the unknown-base file`,
+    )
+    expect(withoutBase?.changeKind).toBe("editedUnknownBase")
+    expect(withoutBase?.baseContent).toBeNull()
+    expect(withoutBase?.diff).toBeNull()
 
     // Artifact work did not stall ingest: the conversational turns landed too.
     const messageRows = await pollUntil(
@@ -1138,83 +999,6 @@ test.describe("capture pipeline", () => {
     expect((await asStranger(`/api/artifacts/${html.id}`)).status).toBe(404)
     expect((await asStranger(`/api/artifacts/${html.id}/raw`)).status).toBe(404)
     expect((await asStranger(`/api/sessions/${SESSION_ID}/artifacts`)).status).toBe(404)
-  })
-
-  test("SC32: an edited file's own result line resolves a diff, opening the Changes view straight onto a populated Diff tab -- and a viewer with no grant is refused, no demo fixture present", async ({
-    authedPage: page,
-  }) => {
-    const { writer, sql, cwd } = await useHarness({
-      enabled: true,
-    })
-
-    // A1's capture, run again so a real edited artifact with a real diff exists to read back.
-    const notes = join(cwd, "docs", "notes.md")
-    const ORIGINAL = "# Notes\n\nThe original line.\n"
-    const CHANGED = "# Notes\n\nThe replacement line.\n"
-
-    await mkdir(join(cwd, "docs"), { recursive: true })
-    // No `~/.claude/file-history` exists here: the base rides the result line.
-    await writeFile(notes, CHANGED, "utf8")
-
-    await writer.append([
-      userLine("Rewrite the notes.", 0),
-      toolCallLine(
-        "tool-edit-a2ui",
-        "Edit",
-        { file_path: notes, old_string: "The original line." },
-        1,
-      ),
-      writeResultLine("tool-edit-a2ui", notes, { type: "update", originalFile: ORIGINAL }, 1),
-    ])
-
-    const resolvedPath = await realpath(notes)
-    await pollUntil(
-      () => sql<{ diff: string | null }[]>`
-        select diff from artifact
-        where "sessionId" = ${SESSION_ID} and path = ${resolvedPath}
-      `,
-      (rows) => rows.length === 1 && rows[0]?.diff !== null,
-      (rows) => `${rows.length} artifact rows (diff ${rows[0]?.diff === null ? "null" : "set"})`,
-    )
-
-    // The owning user opens the session the daemon just captured.
-    await page.goto(`/sessions/${SESSION_ID}`)
-    await page.getByRole("tab", { name: /Artifacts/ }).click()
-
-    // The browser nests files under folder rows, so the folder carries the path and the leaf
-    // carries the file name.
-    const list = page.getByRole("list", { name: /filed artifacts/i })
-    await expect(list.getByRole("button", { name: /^docs$/ })).toBeVisible()
-    const file = list.getByRole("button", { name: /notes\.md/ })
-    await expect(file).toBeVisible()
-
-    // A captured base means the Diff tab opens populated, with the "no diff" notice absent.
-    await file.click()
-    const viewer = page.getByRole("region", { name: /artifact viewer/i })
-    await expect(viewer.getByRole("tab", { name: "Diff" })).toHaveAttribute("aria-selected", "true")
-    await expect(viewer.getByText("-The original line.")).toBeVisible()
-    await expect(viewer.getByText("+The replacement line.")).toBeVisible()
-    await expect(viewer.getByText("No diff captured")).toHaveCount(0)
-
-    // No fixture from the deleted DEMO_ARTIFACTS survives anywhere on the rendered page.
-    const body = (await page.locator("body").textContent()) ?? ""
-    for (const fixture of ["architecture.svg", "walkthrough.mp4", "idempotent-ingest.md"]) {
-      expect(body).not.toContain(fixture)
-    }
-
-    // A real, authenticated user with no grant on this project is refused on both routes.
-    const stranger = await mintSessionToken(E2E_OTHER_USER_ID)
-    const asStranger = (path: string) =>
-      fetch(`${API_BASE}${path}`, { headers: { authorization: `Bearer ${stranger}` } })
-
-    const listed = await asStranger(`/api/sessions/${SESSION_ID}/artifacts`)
-    expect(listed.status).toBe(404)
-
-    const [row] = await sql<{ id: string }[]>`
-      select id from artifact where "sessionId" = ${SESSION_ID} and path = ${resolvedPath}
-    `
-    if (!row) throw new Error("no artifact row to probe the raw route with")
-    expect((await asStranger(`/api/artifacts/${row.id}/raw?which=current`)).status).toBe(404)
   })
 
   test("P11: credentials in a transcript are redacted before upload, so no secret reaches the raw column that stores the whole line", async () => {

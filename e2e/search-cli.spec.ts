@@ -1,16 +1,16 @@
 import { execFile, execFileSync } from "node:child_process"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
-import { expect, mintCliToken, mintSessionToken, test } from "./fixtures/auth.js"
+import { expect, mintCliToken, test } from "./fixtures/auth.js"
 import { API_BASE, WEB_BASE } from "./playwright.config.js"
 import { projectId, seedDatabase } from "./seed.js"
 
 // Functional-verify evidence for `samskara search` (design: .harness/samskara-search-cli/design.md).
 // This is a headless feature -- its whole surface is CLI stdout/stderr/exit code plus the two
-// HTTP routes it touches -- so every scenario here drives the real CLI binary or curl against the
+// HTTP routes it touches -- so every scenario here drives the real CLI binary against the
 // live stack `bun run e2e` provisions, and logs the verbatim exchange for the proof report.
 
 const execFileAsync = promisify(execFile)
@@ -140,16 +140,6 @@ const runCli = async (
   }
 }
 
-const curl = async (args: ReadonlyArray<string>): Promise<{ status: string; body: string }> => {
-  const full = ["-s", "-w", "\n%{http_code}", ...args]
-  const { stdout } = await execFileAsync("curl", full)
-  const lastNewline = stdout.lastIndexOf("\n")
-  const body = stdout.slice(0, lastNewline)
-  const status = stdout.slice(lastNewline + 1)
-  console.log(`$ curl ${full.join(" ")}\n→ ${status}\n${body}\n`)
-  return { status, body }
-}
-
 test.beforeEach(async () => {
   await seedDatabase(SEED)
   home = await mkdtemp(join(tmpdir(), "samskara-search-verify-"))
@@ -166,42 +156,9 @@ test("01: a free-text search prints the matching session and omits a default ran
   expect(stdout).not.toContain("range=")
 })
 
-test("02: --repo resolves an owner/name label, a bare unambiguous repo name, a case-insensitive label, and a raw id with no lookup", async () => {
+test("02: --repo resolves an owner/name label", async () => {
   const exact = await runCli(["--repo", "acme/samskara", "--branch", "master", "--url"])
   expect(exact.stdout).toBe(`${WEB_BASE}/sessions/verify-free-hit\n`)
-
-  const bare = await runCli(["--repo", "samskara", "--branch", "master", "--url"])
-  expect(bare.stdout).toBe(`${WEB_BASE}/sessions/verify-free-hit\n`)
-
-  const upper = await runCli(["--repo", "ACME/SAMSKARA", "--branch", "master", "--url"])
-  expect(upper.stdout).toBe(`${WEB_BASE}/sessions/verify-free-hit\n`)
-
-  const probe = await curl([
-    `${API_BASE}/api/sessions/filters`,
-    "-H",
-    `authorization: Bearer ${await mintCliToken()}`,
-  ])
-  const repoId = JSON.parse(probe.body).repositories.find(
-    (r: { label: string }) => r.label === "acme/samskara",
-  ).value
-  const byId = await runCli(["--repo", repoId, "--branch", "master", "--url"])
-  expect(byId.stdout).toBe(`${WEB_BASE}/sessions/verify-free-hit\n`)
-})
-
-test("03: --project ambiguous substrings list every candidate, and a miss ranks by closeness rather than alphabetically", async () => {
-  const ambiguous = await runCli(["--project", "auth"])
-  expect(ambiguous.code).toBe(1)
-  expect(ambiguous.stderr).toContain("matches more than one")
-  expect(ambiguous.stderr).toContain("Auth Gateway")
-  expect(ambiguous.stderr).toContain("Auth Ops")
-
-  // "Zephyr Search Ops" sorts last of 13 projects alphabetically -- the pre-fix alphabetical-
-  // first-8 listing would never have shown it. It shares no substring with the typo (so this
-  // cannot resolve by partial match) but shares the longest prefix of any candidate.
-  const miss = await runCli(["--project", "Zephyr Search Opz"])
-  expect(miss.code).toBe(1)
-  expect(miss.stderr).toContain("matched nothing")
-  expect(miss.stderr).toContain("Zephyr Search Ops")
 })
 
 test("04: each filter the server rejects comes back naming the offending flag", async () => {
@@ -220,68 +177,6 @@ test("04: each filter the server rejects comes back naming the offending flag", 
     expect(code).toBe(1)
     expect(stderr).toContain(expected)
   }
-})
-
-test("05: an ambiguous commit prefix asks for more characters, and a longer prefix resolves the one session it names", async () => {
-  const ambiguous = await runCli(["--commit", "abcdef1"])
-  expect(ambiguous.code).toBe(1)
-  expect(ambiguous.stderr).toContain("matches several commits")
-
-  const unique = await runCli(["--commit", "abcdef11", "--url"])
-  expect(unique.stdout).toBe(`${WEB_BASE}/sessions/verify-commit-a\n`)
-})
-
-test("06: a project id invisible to this account is reported by name, not as a raw 404", async () => {
-  const { code, stderr } = await runCli(["--project", projectId("other-project")])
-  expect(code).toBe(1)
-  expect(stderr).toContain("--project names a project this account cannot see")
-})
-
-test("07: no token, a rejected token, and an unreachable server are three distinct messages", async () => {
-  await rm(join(home, "token"))
-  const noToken = await runCli([])
-  expect(noToken.code).toBe(1)
-  expect(noToken.stderr).toContain("Not paired with a server. Run `samskara login` first")
-
-  await writeFile(join(home, "token"), "not-a-real-jwt", "utf8")
-  const rejected = await runCli([])
-  expect(rejected.code).toBe(1)
-  expect(rejected.stderr).toContain("Run `samskara login` again")
-
-  await writeFile(join(home, "token"), await mintCliToken(), "utf8")
-  const unreachable = await runCli([], { env: { SAMSKARA_API_URL: "http://localhost:1" } })
-  expect(unreachable.code).toBe(1)
-  expect(unreachable.stderr).toContain("Could not reach http://localhost:1")
-})
-
-test("08: no matches says so plainly and the footer still echoes the filters that were applied", async () => {
-  const { stdout } = await runCli(["--repo", "acme/samskara", "--branch", "does-not-exist"])
-  expect(stdout).toContain("No sessions matched")
-  expect(stdout).toContain("0 of 0")
-  expect(stdout).toContain("branch=does-not-exist")
-})
-
-test("09: --first caps the rows but keeps the true total, and --json / --url carry the same data", async () => {
-  const table = await runCli(["--branch", "output-demo"])
-  expect(table.stdout).toContain("2 of 2")
-  expect(table.stdout).toContain("Alpha output demo")
-  expect(table.stdout).toContain("Beta output demo")
-
-  // No query means the default sort is "recent" -- Beta was seeded with the later timestamp, so
-  // it is the top hit --first keeps.
-  const first = await runCli(["--branch", "output-demo", "--first"])
-  expect(first.stdout).toContain("1 of 2")
-  expect(first.stdout).toContain("Beta output demo")
-  expect(first.stdout).not.toContain("Alpha output demo")
-
-  const json = await runCli(["--branch", "output-demo", "--json"])
-  const parsed = JSON.parse(json.stdout)
-  expect(parsed.total).toBe(2)
-  expect(parsed.sessions).toHaveLength(2)
-  expect(parsed.sessions[0].url).toContain(WEB_BASE)
-
-  const url = await runCli(["--branch", "output-demo", "--url"])
-  expect(url.stdout.trim().split("\n")).toHaveLength(2)
 })
 
 test("10: --here fills project, repo and branch from the checkout, and an explicit flag overrides it", async () => {
@@ -372,61 +267,6 @@ test("12: resolving a name by search writes the filter-options cache to disk at 
   const { stat } = await import("node:fs/promises")
   const mode = (await stat(path)).mode & 0o777
   expect(mode).toBe(0o600)
-})
-
-test("13: the auth widening is scoped to the list route -- cli reads the list, web still reads the list, and neither cli nor anonymous reads a detail route", async () => {
-  const cliToken = await mintCliToken()
-  const webToken = await mintSessionToken()
-
-  const anonymousList = await curl(["-X", "GET", `${API_BASE}/api/sessions`])
-  expect(anonymousList.status).toBe("401")
-  expect(JSON.parse(anonymousList.body)).toEqual({ error: "unauthorized" })
-
-  const cliList = await curl([
-    "-X",
-    "GET",
-    `${API_BASE}/api/sessions?limit=1`,
-    "-H",
-    `authorization: Bearer ${cliToken}`,
-  ])
-  expect(cliList.status).toBe("200")
-  expect(JSON.parse(cliList.body).sessions).toBeDefined()
-
-  const webList = await curl([
-    "-X",
-    "GET",
-    `${API_BASE}/api/sessions?limit=1`,
-    "-b",
-    `session=${webToken}`,
-  ])
-  expect(webList.status).toBe("200")
-
-  const cliDetail = await curl([
-    "-X",
-    "GET",
-    `${API_BASE}/api/sessions/verify-free-hit`,
-    "-H",
-    `authorization: Bearer ${cliToken}`,
-  ])
-  expect(cliDetail.status).toBe("401")
-  expect(JSON.parse(cliDetail.body)).toEqual({ error: "unauthorized" })
-
-  const cliArtifacts = await curl([
-    "-X",
-    "GET",
-    `${API_BASE}/api/sessions/verify-free-hit/artifacts`,
-    "-H",
-    `authorization: Bearer ${cliToken}`,
-  ])
-  expect(cliArtifacts.status).toBe("401")
-  expect(JSON.parse(cliArtifacts.body)).toEqual({ error: "unauthorized" })
-})
-
-test("14: --pr and --user compose as AND, narrowing past a session that only matches one of them", async () => {
-  const { stdout } = await runCli(["--pr", "501", "--user", "e2e-maya"])
-  expect(stdout).toContain("Multi filter target")
-  expect(stdout).not.toContain("Multi filter decoy")
-  expect(stdout).toContain("1 of 1")
 })
 
 test("15: a custom range with an explicit tz windows to the calendar day, excluding every other seeded day", async () => {

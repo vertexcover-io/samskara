@@ -15,13 +15,12 @@ describe("planMembership", () => {
 })
 
 describe("isSuperAdminLogin", () => {
-  test("matches a configured login regardless of case", () => {
-    expect(isSuperAdminLogin(["harit"], "Harit")).toBe(true)
-    expect(isSuperAdminLogin(["harit"], "harit")).toBe(true)
-  })
-
-  test("rejects a login that is not configured, and an empty list admits nobody", () => {
-    expect(isSuperAdminLogin(["harit"], "someone-else")).toBe(false)
-    expect(isSuperAdminLogin([], "harit")).toBe(false)
+  test.each([
+    [["harit"], "Harit", true],
+    [["harit"], "harit", true],
+    [["harit"], "someone-else", false],
+    [[], "harit", false],
+  ])("configured logins %j admit %s: %s", (configured, login, admitted) => {
+    expect(isSuperAdminLogin(configured, login)).toBe(admitted)
   })
 })

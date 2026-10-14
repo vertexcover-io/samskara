@@ -1,15 +1,7 @@
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { afterEach, expect, test } from "vitest"
-import {
-  artifactQueuePath,
-  artifactStatePath,
-  configHome,
-  settingsPath,
-  statePath,
-  tokenPath,
-  watchPidPath,
-} from "./paths.js"
+import { configHome, settingsPath, tokenPath, watchPidPath } from "./paths.js"
 
 const original = {
   home: process.env.SAMSKARA_HOME,
@@ -24,18 +16,6 @@ const restore = (key: string, value: string | undefined): void => {
 afterEach(() => {
   restore("SAMSKARA_HOME", original.home)
   restore("SAMSKARA_PROFILE", original.profile)
-})
-
-test("artifact paths are separate files beside state.json under the config home", () => {
-  process.env.SAMSKARA_HOME = "/tmp/samskara-paths"
-
-  expect(artifactQueuePath()).toBe(join(configHome(), "artifact-queue.json"))
-  expect(artifactStatePath()).toBe(join(configHome(), "artifacts.json"))
-
-  // Separate files, never new keys inside state.json: readCheckpoints returns empty on any
-  // validation failure, so one corrupt artifact entry would wipe every transcript checkpoint.
-  const distinct = new Set([statePath(), artifactQueuePath(), artifactStatePath()])
-  expect(distinct.size).toBe(3)
 })
 
 test("a profile moves every per-install file, so a dev CLI cannot share prod's token, pid or urls", () => {

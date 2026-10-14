@@ -78,7 +78,7 @@ describe("ensure command", () => {
     expect(streams.stdout.join("")).toContain("logs")
   })
 
-  test("REQ-024: inactive current folder emits enable guidance", async () => {
+  test("REQ-024,REQ-026d: an inactive current folder emits enable guidance and is never checked against the server", async () => {
     const streams = output()
     vi.mocked(isProjectEnabled).mockResolvedValue(false)
 
@@ -87,6 +87,7 @@ describe("ensure command", () => {
     expect(code).toBe(0)
     expect(streams.stdout.join("")).toContain("acme-widget")
     expect(streams.stdout.join("")).toContain("samskara enable")
+    expect(checkToken).not.toHaveBeenCalled()
   })
 
   test("REQ-026: an enabled project whose stored token the server rejects warns to log in again", async () => {
@@ -101,33 +102,21 @@ describe("ensure command", () => {
     expect(streams.stdout.join("")).toContain("acme-widget")
   })
 
-  test("REQ-026b: an enabled project with an accepted token stays silent", async () => {
-    const streams = output()
+  test.each([
+    ["REQ-026b: an accepted token", "ok"],
+    ["REQ-026c: an unreachable server", "unreachable"],
+  ] as const)(
+    "%s on an enabled project stays silent, not reported as a rejected login",
+    async (_case, check) => {
+      const streams = output()
+      vi.mocked(checkToken).mockResolvedValue(check)
 
-    const code = await ensureCommand(streams.writers)
+      const code = await ensureCommand(streams.writers)
 
-    expect(code).toBe(0)
-    expect(streams.stdout).toEqual([])
-  })
-
-  test("REQ-026c: an unreachable server is not reported as a rejected login", async () => {
-    const streams = output()
-    vi.mocked(checkToken).mockResolvedValue("unreachable")
-
-    const code = await ensureCommand(streams.writers)
-
-    expect(code).toBe(0)
-    expect(streams.stdout.join("")).not.toContain("samskara login")
-  })
-
-  test("REQ-026d: a disabled project is not checked against the server at all", async () => {
-    const streams = output()
-    vi.mocked(isProjectEnabled).mockResolvedValue(false)
-
-    await ensureCommand(streams.writers)
-
-    expect(checkToken).not.toHaveBeenCalled()
-  })
+      expect(code).toBe(0)
+      expect(streams.stdout).toEqual([])
+    },
+  )
 
   test("REQ-025: unexpected failures never block SessionStart", async () => {
     const streams = output()

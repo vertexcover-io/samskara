@@ -251,7 +251,7 @@ describe.skipIf(!dockerAvailable())("reviews and learnings", () => {
     expect(retry?.title).toBe("Bash failed 5 times in a row")
   })
 
-  test("V4: learnings filter by audience and status", async () => {
+  test("V4: ?audience=agent returns only agent-audience learnings", async () => {
     await seedErrorLoop()
     await request(`/api/sessions/${sessionId}/review`, { method: "POST" })
     const agents = await request(`/api/learnings?audience=agent`)

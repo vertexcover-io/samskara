@@ -1,7 +1,7 @@
 import { appendFile, mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, describe, expect, test } from "vitest"
+import { afterEach, describe, expect, test, vi } from "vitest"
 import { currentLogPath } from "../config/paths.js"
 import { logsCommand } from "./logs.js"
 
@@ -49,7 +49,7 @@ describe("logs command", () => {
     expect(streams.stdout.join("")).not.toContain('"level":30')
   })
 
-  test("follow streams lines appended after the initial read", async () => {
+  test("follow prints a line appended while the initial dump is being written, and every later line, each once", async () => {
     const home = await useHome()
     const target = join(home, "logs", "watch.2026-07-26.1.log")
     const entry = (msg: string): string =>
@@ -57,14 +57,29 @@ describe("logs command", () => {
     await writeFile(target, entry("first line"), "utf8")
     await symlink("watch.2026-07-26.1.log", join(home, "logs", "current.log"))
     const streams = output()
+    const appended: Promise<void>[] = []
+    const stdout = {
+      write: (text: string) => {
+        streams.stdout.push(text)
+        if (appended.length === 0 && text.includes("first line")) {
+          appended.push(
+            new Promise((resolve) => {
+              setImmediate(() => resolve(appendFile(target, entry("racing line"), "utf8")))
+            }),
+          )
+        }
+      },
+    }
 
-    void logsCommand({ follow: true, colorize: false, ...streams.writers })
-    await new Promise((resolve) => setTimeout(resolve, 100))
-    await appendFile(target, entry("appended line"), "utf8")
-    await new Promise((resolve) => setTimeout(resolve, 300))
+    void logsCommand({ follow: true, colorize: false, stdout, stderr: streams.writers.stderr })
+    await vi.waitFor(() => expect(appended).toHaveLength(1))
+    await appended[0]
+    await appendFile(target, entry("later line"), "utf8")
+    await vi.waitFor(() => expect(streams.stdout.join("")).toContain("later line"))
 
-    expect(streams.stdout.join("")).toContain("first line")
-    expect(streams.stdout.join("")).toContain("appended line")
+    const printed = streams.stdout.join("")
+    expect(printed.match(/racing line/g)).toHaveLength(1)
+    expect(printed.match(/later line/g)).toHaveLength(1)
   })
 
   test("reports a helpful message when no log file exists yet", async () => {

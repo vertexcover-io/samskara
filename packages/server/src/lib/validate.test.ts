@@ -31,17 +31,11 @@ describe("validate", () => {
     expect(capture.at("warn")).toHaveLength(0)
   })
 
-  test("an invalid body still answers 400 -- the hook only observes, it never changes the response", async () => {
+  test("an invalid body still answers 400 and logs one warning naming every bad field, so a 400 is diagnosable", async () => {
     const capture = captureLogger()
     const res = await post(buildApp(capture.log), { sessionId: "", count: "two" })
 
     expect(res.status).toBe(400)
-  })
-
-  test("an invalid body logs one warning naming every bad field, so a 400 is diagnosable", async () => {
-    const capture = captureLogger()
-    await post(buildApp(capture.log), { sessionId: "", count: "two" })
-
     const [line] = capture.at("warn")
     expect(line?.msg).toBe("request validation failed")
     expect(line?.target).toBe("json")

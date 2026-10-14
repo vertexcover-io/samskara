@@ -219,32 +219,38 @@ describe.skipIf(!dockerAvailable())("ingest repositories", () => {
     expect(rows[0]?.name).toBe("widget-renamed")
   })
 
-  test("SC4: the database enforces exactly one owner - both null or both set is rejected, either alone is accepted", async () => {
-    const owner = await seedUser()
+  type OwnerColumns = { readonly ownerUserId?: string; readonly ownerOrgId?: string }
 
-    await expect(
-      db.insert(projects).values({ name: "neither", slug: "sc4-neither" }),
-    ).rejects.toThrow()
+  test.each([
+    {
+      label: "SC4: a project row",
+      insert: (tag: string, owner: OwnerColumns) =>
+        db
+          .insert(projects)
+          .values({ name: tag, slug: `sc4-${tag}`, ...owner })
+          .returning(),
+    },
+    {
+      label: "SC5: a repo row",
+      insert: (tag: string, owner: OwnerColumns) =>
+        db
+          .insert(repos)
+          .values({ host: "github.com", owner: "acme", repoName: `sc5-${tag}`, ...owner })
+          .returning(),
+    },
+  ])(
+    "$label with neither owner or both is rejected by the database, and either alone is accepted",
+    async ({ insert }) => {
+      const owner = await seedUser()
+      const org = await seedOrg()
 
-    const org = await seedOrg()
-    await expect(
-      db
-        .insert(projects)
-        .values({ name: "both", slug: "sc4-both", ownerUserId: owner.id, ownerOrgId: org.id }),
-    ).rejects.toThrow()
+      await expect(insert("neither", {})).rejects.toThrow()
+      await expect(insert("both", { ownerUserId: owner.id, ownerOrgId: org.id })).rejects.toThrow()
 
-    const [userOwned] = await db
-      .insert(projects)
-      .values({ name: "user-owned", slug: "sc4-user", ownerUserId: owner.id })
-      .returning()
-    expect(userOwned).toBeDefined()
-
-    const [orgOwned] = await db
-      .insert(projects)
-      .values({ name: "org-owned", slug: "sc4-org", ownerOrgId: org.id })
-      .returning()
-    expect(orgOwned).toBeDefined()
-  })
+      expect(await insert("user", { ownerUserId: owner.id })).toHaveLength(1)
+      expect(await insert("org", { ownerOrgId: org.id })).toHaveLength(1)
+    },
+  )
 
   test("SC5: the same slug is one row per owner, and a repeat upsertOwned returns the same row", async () => {
     const userA = await seedUser()
@@ -383,79 +389,27 @@ describe.skipIf(!dockerAvailable())("ingest repositories", () => {
     expect(again).toBe(gh)
   })
 
-  test("R3 (verification bug): a forge repo's identity ignores remote casing, so two clones that spell the owner differently are one row", async () => {
+  test.each([
+    {
+      label:
+        "R3 (verification bug): a forge repo's identity ignores remote casing, so two clones that spell the owner differently",
+      first: { host: "github.com", owner: "acme", repoName: "serana-cased" },
+      second: { host: "GitHub.com", owner: "ACME", repoName: "Serana-Cased" },
+    },
+    {
+      label: "R3: two local roots differing only in case, like every other host,",
+      first: { host: "local", owner: "/Users/maya/projects/app", repoName: "app" },
+      second: { host: "local", owner: "/Users/Maya/Projects/app", repoName: "app" },
+    },
+  ])("$label are one row, stored as the first clone spelled it", async ({ first, second }) => {
     const owner = await seedUser()
 
-    const lower = await reposRepo.upsertByIdentity(
-      db,
-      { host: "github.com", owner: "acme", repoName: "serana-cased" },
-      { kind: "user", userId: owner.id },
-    )
-    const upper = await reposRepo.upsertByIdentity(
-      db,
-      { host: "GitHub.com", owner: "ACME", repoName: "Serana-Cased" },
-      { kind: "user", userId: owner.id },
-    )
-
-    expect(upper).toBe(lower)
-    // The stored spelling is the one the first clone wrote, not a folded copy of it.
-    const [row] = await db.select().from(repos).where(eq(repos.id, lower))
-    expect(row).toMatchObject({ host: "github.com", owner: "acme", repoName: "serana-cased" })
-  })
-
-  test("R3: two local roots differing only in case are one repo, like every other host", async () => {
-    const owner = await seedUser()
-
-    const lower = await reposRepo.upsertByIdentity(
-      db,
-      { host: "local", owner: "/Users/maya/projects/app", repoName: "app" },
-      { kind: "user", userId: owner.id },
-    )
-    const upper = await reposRepo.upsertByIdentity(
-      db,
-      { host: "local", owner: "/Users/Maya/Projects/app", repoName: "app" },
-      { kind: "user", userId: owner.id },
-    )
+    const lower = await reposRepo.upsertByIdentity(db, first, { kind: "user", userId: owner.id })
+    const upper = await reposRepo.upsertByIdentity(db, second, { kind: "user", userId: owner.id })
 
     expect(upper).toBe(lower)
     const [row] = await db.select().from(repos).where(eq(repos.id, lower))
-    expect(row?.owner).toBe("/Users/maya/projects/app")
-  })
-
-  test("SC5: a repo row with both owners or neither is rejected by the database", async () => {
-    const owner = await seedUser()
-    const org = await seedOrg()
-
-    await expect(
-      db.insert(repos).values({ host: "github.com", owner: "acme", repoName: "sc5-neither" }),
-    ).rejects.toThrow()
-
-    await expect(
-      db.insert(repos).values({
-        host: "github.com",
-        owner: "acme",
-        repoName: "sc5-both",
-        ownerUserId: owner.id,
-        ownerOrgId: org.id,
-      }),
-    ).rejects.toThrow()
-
-    const [userOwned] = await db
-      .insert(repos)
-      .values({
-        host: "github.com",
-        owner: "acme",
-        repoName: "sc5-user",
-        ownerUserId: owner.id,
-      })
-      .returning()
-    expect(userOwned).toBeDefined()
-
-    const [orgOwned] = await db
-      .insert(repos)
-      .values({ host: "github.com", owner: "acme", repoName: "sc5-org", ownerOrgId: org.id })
-      .returning()
-    expect(orgOwned).toBeDefined()
+    expect(row).toMatchObject(first)
   })
 
   test("authorization is owner-or-grant with ordered scopes", async () => {
@@ -747,16 +701,6 @@ describe.skipIf(!dockerAvailable())("ingest repositories", () => {
         .where(eq(pullRequests.repoId, repoId))
       return row
     }
-
-    test("an opened PR links the session to the repo's PR row", async () => {
-      const sessionId = "sess-pr-open"
-      await startSessionAt(sessionId)
-      const repoId = await seedRepo("pr-open-repo")
-
-      await pullRequestsRepo.insertOpened(db, [{ repoId, number: 59, sessionId }])
-
-      expect(await linkOf(sessionId, repoId)).toEqual({ number: 59, sessionId })
-    })
 
     test("a re-parse of the same creation stays one PR row and one link", async () => {
       const sessionId = "sess-pr-reparse"

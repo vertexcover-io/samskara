@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rename, stat, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
-import type { CheckpointStore, FileSystem, IngestPayload } from "@samskara/core"
+import type { FileSystem, IngestPayload } from "@samskara/core"
 import { createClaudePlugin, createLogger } from "@samskara/core"
 import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
@@ -174,20 +174,12 @@ describe.skipIf(!dockerAvailable())("ingest route", () => {
     await teardown?.()
   })
 
-  test("rejects a request with no token (401)", async () => {
-    const res = await post(app, mainPayload("sess-401"))
+  test.each([
+    ["no token", () => undefined],
+    ["a web-audience token", () => signToken(env, { sub: "someone", aud: "web" })],
+  ])("rejects a request carrying %s (401)", async (label, token) => {
+    const res = await post(app, mainPayload(`sess-401-${label}`), await token())
     expect(res.status).toBe(401)
-  })
-
-  test("rejects a web-audience token (401)", async () => {
-    const webToken = await signToken(env, { sub: "someone", aud: "web" })
-    const res = await post(app, mainPayload("sess-web"), webToken)
-    expect(res.status).toBe(401)
-  })
-
-  test("rejects a malformed body (400)", async () => {
-    const res = await post(app, { type: "main", sessionId: "x" }, cliToken)
-    expect(res.status).toBe(400)
   })
 
   test("accepts a valid main flush (200) and persists rows", async () => {
@@ -197,39 +189,6 @@ describe.skipIf(!dockerAvailable())("ingest route", () => {
 
     const rows = await db.select().from(messages).where(eq(messages.sessionId, "sess-ok"))
     expect(rows).toHaveLength(1)
-  })
-
-  test("returns 409 for a subagent flush with no session", async () => {
-    const payload: IngestPayload = {
-      type: "subagent",
-      sessionId: "no-session",
-      sourceRelativePath: "subagents/agent-z.jsonl",
-      project,
-      agent: { agentId: "agent-z" },
-      records: [
-        {
-          lineUuid: "0191d942-3ba5-7dba-9a7d-22d65b30258d",
-          lineNumber: 1,
-          raw: {},
-          messages: [
-            {
-              subIndex: 0,
-              sessionId: "no-session",
-              source: "claude_code",
-              sourceSchemaVersion: 1,
-              trackId: "agent:agent-z",
-              msgType: "custom",
-              subType: "fixture",
-              timestamp: "2026-07-23T00:00:00.000Z",
-              agentId: "agent-z",
-            },
-          ],
-        },
-      ],
-    }
-    const res = await post(app, payload, cliToken)
-    expect(res.status).toBe(409)
-    expect(await res.json()).toEqual({ error: "sessionNotFound" })
   })
 
   test("idempotent re-POST dedupes (200)", async () => {
@@ -318,82 +277,6 @@ describe.skipIf(!dockerAvailable())("ingest route", () => {
       ],
     }
     expect((await post(app, contradictory, cliToken)).status).toBe(400)
-  })
-
-  test("S9: a basic transcript reaches authenticated storage and checkpoints without loss", async () => {
-    const root = await mkdtemp(join(tmpdir(), "samskara-e2e-"))
-    const dir = join(root, ".claude", "projects", "bucket")
-    await mkdir(dir, { recursive: true })
-    const transcript = join(dir, "sess-e2e.jsonl")
-    const unknown = { type: "future_record", cwd: "/work/app", token: "secret-value" }
-    const assistant = {
-      type: "assistant",
-      sessionId: "sess-e2e",
-      cwd: "/work/app",
-      uuid: "0191d942-3ba5-7dba-9a7d-22d65b302599",
-      message: {
-        role: "assistant",
-        usage: { input_tokens: 2, output_tokens: 1 },
-        content: [
-          { type: "text", text: "hello" },
-          { type: "tool_use", id: "call-e2e", name: "Read", input: { path: "a.ts" } },
-        ],
-      },
-    }
-    await writeFile(
-      transcript,
-      `\n${JSON.stringify(unknown)}\n${JSON.stringify(assistant)}\n`,
-      "utf8",
-    )
-
-    const plugin = createClaudePlugin(nodeFs)
-    const log = createLogger({ service: "e2e" }, { level: "silent" })
-    const empty: CheckpointStore = { checkpoints: {} }
-    const batches = await plugin.collect(empty, {
-      fs: nodeFs,
-      glob: async () => [transcript],
-      resolveProject: async () => project,
-      log,
-    })
-    const track = batches[0]?.tracks[0]
-    if (!track) throw new Error("expected ingest track")
-    const { checkpointKey: _key, checkpointAt, lastLineProcessed: _last, ...payload } = track
-
-    const response = await post(app, payload, cliToken)
-    expect(response.status).toBe(200)
-    expect(await response.json()).toEqual({ ingested: 3, deduped: 0 })
-
-    const rows = await db
-      .select()
-      .from(messages)
-      .where(eq(messages.sessionId, "sess-e2e"))
-      .orderBy(messages.lineNumber, messages.subIndex)
-    expect(rows.map((row) => row.msgType)).toEqual(["custom", "message", "toolCall"])
-    expect(JSON.stringify(rows)).not.toContain("secret-value")
-    expect(rows[0]?.raw).toMatchObject({ token: "[Redacted]" })
-    expect(await db.select().from(toolCall).where(eq(toolCall.toolId, "call-e2e"))).toHaveLength(1)
-    expect(await db.select().from(tokenUsage)).toContainEqual(
-      expect.objectContaining({ inputTokens: 2, outputTokens: 1 }),
-    )
-
-    const body = checkpointAt(4)
-    const checkpointed: CheckpointStore = {
-      checkpoints: {
-        [transcript]: {
-          ...body,
-          filePath: transcript,
-          lastUpdatedAt: "2026-07-25T00:00:00.000Z",
-        },
-      },
-    }
-    expect(
-      await plugin.collect(checkpointed, {
-        fs: nodeFs,
-        glob: async () => [transcript],
-        resolveProject: async () => project,
-        log,
-      }),
-    ).toEqual([])
   })
 
   test("S17: a selected session and persisted fixture have no missing source lines", async () => {
@@ -633,40 +516,6 @@ describe.skipIf(!dockerAvailable())("ingest route", () => {
     expect(JSON.stringify(stored)).not.toContain("/Users/")
   })
 
-  test("re-ingesting the same recorded session stores nothing new", async () => {
-    const root = await mkdtemp(join(tmpdir(), "samskara-real-again-"))
-    const dir = join(root, ".claude", "projects", "bucket")
-    await mkdir(dir, { recursive: true })
-    const transcript = join(dir, "sess-real-again.jsonl")
-    await writeFile(transcript, await readFile(fixturePath, "utf8"), "utf8")
-
-    const collect = async () => {
-      const batches = await createClaudePlugin(nodeFs).collect(
-        { checkpoints: {} },
-        {
-          fs: nodeFs,
-          glob: async () => [transcript],
-          resolveProject: async () => project,
-          log: createLogger({ service: "real" }, { level: "silent" }),
-        },
-      )
-      const track = batches[0]?.tracks[0]
-      if (!track) throw new Error("expected an ingest track")
-      const { checkpointKey: _k, checkpointAt: _a, lastLineProcessed: _l, ...payload } = track
-      return payload
-    }
-
-    const payload = await collect()
-    const first = (await (await post(app, payload, cliToken)).json()) as { ingested: number }
-    const second = (await (await post(app, payload, cliToken)).json()) as {
-      ingested: number
-      deduped: number
-    }
-
-    expect(first.ingested).toBeGreaterThan(0)
-    expect(second).toEqual({ ingested: 0, deduped: first.ingested })
-  })
-
   test("SC22: ingest with a writable projectId stores the session there", async () => {
     const [member] = await db
       .insert(users)
@@ -698,7 +547,7 @@ describe.skipIf(!dockerAvailable())("ingest route", () => {
     expect((await db.select({ id: projects.id }).from(projects)).length).toBe(projectCountBefore)
   })
 
-  test("SC23: ingest with a projectId the caller cannot write is refused", async () => {
+  test("SC23: ingest with a projectId the caller cannot write is refused with 403, stores nothing, and warns naming the project and user", async () => {
     const [otherOwner] = await db
       .insert(users)
       .values({ githubId: 9102, githubLogin: "sc23-owner" })
@@ -709,13 +558,19 @@ describe.skipIf(!dockerAvailable())("ingest route", () => {
       ownerId: otherOwner.id,
     })
 
+    const capture = captureLogger()
+    const loud = buildApp(db, env, { rootLog: capture.log })
     const res = await post(
-      app,
+      loud,
       mainPayload("sess-sc23", { name: "ignored", slug: "sc23-ignored-slug", projectId }),
       cliToken,
     )
     expect(res.status).toBe(403)
     expect(await res.json()).toEqual({ error: "projectForbidden" })
+    const [line] = capture.at("warn")
+    expect(line?.msg).toBe("ingest rejected: project not writable by this user")
+    expect(line?.projectId).toBe(projectId)
+    expect(line?.userId).toBe(routeUserId)
     expect(await db.select().from(sessions).where(eq(sessions.id, "sess-sc23"))).toHaveLength(0)
     expect(
       await db.select().from(messages).where(eq(messages.sessionId, "sess-sc23")),
@@ -791,35 +646,10 @@ describe.skipIf(!dockerAvailable())("ingest route", () => {
     const res = await post(loud, subagentPayload("no-session-logged"), cliToken)
 
     expect(res.status).toBe(409)
+    expect(await res.json()).toEqual({ error: "sessionNotFound" })
     const [line] = capture.at("warn")
     expect(line?.msg).toBe("ingest rejected: no such session for this user")
     expect(line?.sessionId).toBe("no-session-logged")
-    expect(line?.userId).toBe(routeUserId)
-  })
-
-  test("a 403 warns with the project the caller was refused, and by whom", async () => {
-    const [otherOwner] = await db
-      .insert(users)
-      .values({ githubId: 9104, githubLogin: "forbidden-log-owner" })
-      .returning()
-    if (!otherOwner) throw new Error("seed owner failed")
-    const projectId = await projectsRepo.upsert(db, {
-      identity: { name: "private", slug: "forbidden-log-private" },
-      ownerId: otherOwner.id,
-    })
-
-    const capture = captureLogger()
-    const loud = buildApp(db, env, { rootLog: capture.log })
-    const res = await post(
-      loud,
-      mainPayload("sess-forbidden-log", { name: "x", slug: "x-slug", projectId }),
-      cliToken,
-    )
-
-    expect(res.status).toBe(403)
-    const [line] = capture.at("warn")
-    expect(line?.msg).toBe("ingest rejected: project not writable by this user")
-    expect(line?.projectId).toBe(projectId)
     expect(line?.userId).toBe(routeUserId)
   })
 

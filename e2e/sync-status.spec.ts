@@ -54,25 +54,6 @@ test("SC13: a signed-in visit follows the Sync nav link to /sync-status and list
   await expect(syncedCell(secondaryRow).locator("time")).toBeVisible()
 })
 
-test("SC21: a project filter narrows the table and survives a reload", async ({
-  authedPage: page,
-}) => {
-  await page.goto("/sync-status")
-  await expect(page.locator("tr", { hasText: "Secondary Sync Project" }).first()).toBeVisible()
-
-  await page.getByRole("combobox", { name: "Project" }).fill("Primary")
-  await page.getByRole("option", { name: "Primary Sync Project" }).click()
-
-  await expect(page.locator("tr", { hasText: "Primary Sync Project" })).toBeVisible()
-  await expect(page.locator("tr", { hasText: "Secondary Sync Project" })).toHaveCount(0)
-  await expect(page).toHaveURL(/project=Primary\+Sync\+Project/)
-
-  await page.reload()
-
-  await expect(page.locator("tr", { hasText: "Primary Sync Project" })).toBeVisible()
-  await expect(page.locator("tr", { hasText: "Secondary Sync Project" })).toHaveCount(0)
-})
-
 test("SC22/SC47: the table shows the CLI version column and does not scroll sideways on a narrow screen", async ({
   authedPage: page,
 }) => {

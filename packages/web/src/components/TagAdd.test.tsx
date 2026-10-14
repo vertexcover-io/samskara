@@ -47,22 +47,15 @@ test("ST9: clicking a suggestion adds it", async () => {
   expect(onAdd).toHaveBeenCalledWith("demo")
 })
 
-test("ST9: an already-applied tag is not added again", async () => {
+test.each([
+  { claim: "an already-applied tag", selected: ["harness"], typed: "harness" },
+  { claim: "an invalid tag", selected: [], typed: "has space" },
+])("ST9: $claim is not added", async ({ selected, typed }) => {
   const onAdd = vi.fn()
-  render(<TagAdd selected={["harness"]} options={OPTIONS} onAdd={onAdd} />)
+  render(<TagAdd selected={selected} options={OPTIONS} onAdd={onAdd} />)
 
   await open()
-  await userEvent.type(input(), "harness{Enter}")
-
-  expect(onAdd).not.toHaveBeenCalled()
-})
-
-test("ST9: an invalid tag is not added", async () => {
-  const onAdd = vi.fn()
-  render(<TagAdd selected={[]} options={OPTIONS} onAdd={onAdd} />)
-
-  await open()
-  await userEvent.type(input(), "has space{Enter}")
+  await userEvent.type(input(), `${typed}{Enter}`)
 
   expect(onAdd).not.toHaveBeenCalled()
 })

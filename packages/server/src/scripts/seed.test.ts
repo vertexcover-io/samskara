@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm"
-import { afterAll, beforeAll, describe, expect, test } from "vitest"
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import type { Db } from "../db/client.js"
 import {
   messages,
@@ -81,14 +81,14 @@ describe.skipIf(!dockerAvailable())("seed fills a fresh database", () => {
   })
 
   test("hasProjects tells setup whether this database is still empty", async () => {
-    const summary = await seedDev(db)
-    expect(summary.projectId).toBeTruthy()
-    expect(await hasProjects(db)).toBe(true)
-  })
-
-  test("the seeded org is the one seed:org would have registered", async () => {
-    const summary = await seedDev(db)
-    expect(summary.orgSlug).toBe(DEV_ORG_SLUG)
+    const fresh = await startTestDb()
+    try {
+      expect(await hasProjects(fresh.db)).toBe(false)
+      await seedDev(fresh.db)
+      expect(await hasProjects(fresh.db)).toBe(true)
+    } finally {
+      await fresh.teardown()
+    }
   })
 })
 
@@ -96,8 +96,9 @@ describe.skipIf(!dockerAvailable())("capture and restore carry local identities 
   let teardown: () => Promise<void>
   let source: Db
   let target: Db
+  let realUserId: string
 
-  beforeAll(async () => {
+  beforeEach(async () => {
     const from = await startTestDb()
     const to = await startTestDb()
     source = from.db
@@ -106,36 +107,37 @@ describe.skipIf(!dockerAvailable())("capture and restore carry local identities 
       await from.teardown()
       await to.teardown()
     }
-  }, 240_000)
-
-  afterAll(async () => {
-    await teardown?.()
-  })
-
-  test("keeps the uuid, so a cookie minted against the source still verifies", async () => {
     const [real] = await source
       .insert(users)
       .values({ githubId: 3_336_623, githubLogin: "kgritesh", name: "Ritesh" })
       .returning()
     if (!real) throw new Error("could not create the source user")
+    realUserId = real.id
     const [org] = await source
       .insert(orgs)
       .values({ githubSlug: "vertexcover-io", autoAddMembers: true })
       .returning()
     if (!org) throw new Error("could not create the source org")
     await source.insert(userOrgs).values({ userId: real.id, orgId: org.id })
-
     await seedDev(target)
+  }, 60_000)
+
+  afterEach(async () => {
+    await teardown?.()
+  })
+
+  test("keeps the uuid, so a cookie minted against the source still verifies", async () => {
     const result = await restoreIdentity(target, await captureIdentity(source))
 
-    expect(result.copied[0]?.targetId).toBe(real.id)
+    expect(result.copied[0]?.targetId).toBe(realUserId)
     expect(result.copied[0]?.idPreserved).toBe(true)
 
-    const [landed] = await target.select().from(users).where(eq(users.id, real.id))
+    const [landed] = await target.select().from(users).where(eq(users.id, realUserId))
     expect(landed?.githubLogin).toBe("kgritesh")
   })
 
   test("keeps the snapshot free of the demo rows seedDev recreates anyway", async () => {
+    await seedDev(source)
     const snapshot = await captureIdentity(source)
     expect(snapshot.users.map((u) => u.githubLogin)).not.toContain(DEV_USER_LOGIN)
     expect(snapshot.orgs.map((o) => o.githubSlug)).not.toContain(DEV_ORG_SLUG)
@@ -163,11 +165,10 @@ describe.skipIf(!dockerAvailable())("capture and restore carry local identities 
   test("grants admin on the demo project so the seeded data is actually browsable", async () => {
     await restoreIdentity(target, await captureIdentity(source))
     const [demo] = await target.select().from(projects).where(eq(projects.slug, DEV_PROJECT_SLUG))
-    const [user] = await target.select().from(users).where(eq(users.githubLogin, "kgritesh"))
     const grants = await target
       .select()
       .from(userProjectGrant)
-      .where(eq(userProjectGrant.userId, user?.id ?? ""))
+      .where(eq(userProjectGrant.userId, realUserId))
     expect(grants.some((g) => g.projectId === demo?.id && g.scope === "admin")).toBe(true)
   })
 
@@ -180,12 +181,9 @@ describe.skipIf(!dockerAvailable())("capture and restore carry local identities 
   })
 
   test("kind:all sweeps up every user the local database has", async () => {
-    await source
-      .insert(users)
-      .values({ githubId: 4_444_444, githubLogin: "teammate" })
-      .onConflictDoNothing()
+    await source.insert(users).values({ githubId: 4_444_444, githubLogin: "teammate" })
     const result = await restoreIdentity(target, await captureIdentity(source))
-    expect(result.copied.map((u) => u.githubLogin).sort()).toContain("teammate")
+    expect(result.copied.map((u) => u.githubLogin)).toContain("teammate")
   })
 })
 
@@ -202,15 +200,15 @@ describe("parseSnapshot", () => {
     expect(snapshot?.users[0]?.githubLogin).toBe("a")
   })
 
-  test("refuses a snapshot from a format it does not know", () => {
-    expect(
-      parseSnapshot(JSON.stringify({ version: 99, users: [], orgs: [], memberships: [] })),
-    ).toBe(null)
-  })
-
-  test("refuses junk rather than throwing mid-seed", () => {
-    expect(parseSnapshot("not json")).toBe(null)
-    expect(parseSnapshot("{}")).toBe(null)
-    expect(parseSnapshot("null")).toBe(null)
+  test.each([
+    [
+      "a format it does not know",
+      JSON.stringify({ version: 99, users: [], orgs: [], memberships: [] }),
+    ],
+    ["text that is not json", "not json"],
+    ["an empty object", "{}"],
+    ["null", "null"],
+  ])("refuses %s rather than throwing mid-seed", (_case, text) => {
+    expect(parseSnapshot(text)).toBe(null)
   })
 })

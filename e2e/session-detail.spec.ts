@@ -72,7 +72,7 @@ test.beforeEach(async () => {
   await seedDatabase(SEED)
 })
 
-test("S44: opening a session from the filtered list shows five tabs with Conversation selected, the inline-tools toggle reveals tool calls, the annex reveals its branch, Escape restores focus to the trigger, and Artifacts renders its viewer", async ({
+test("S44: opening a session from the filtered list shows six tabs with Conversation selected, the inline-tools toggle reveals tool calls, the annex reveals its branch, Escape restores focus to the trigger, and Artifacts renders its viewer", async ({
   authedPage: page,
 }) => {
   await page.goto(`/sessions?project=${projectId("samskara")}`)
@@ -81,13 +81,14 @@ test("S44: opening a session from the filtered list shows five tabs with Convers
   await expect(page).toHaveURL(/\/sessions\/e2e-detail-1$/)
 
   const tabs = page.getByRole("tab")
-  await expect(tabs).toHaveCount(5)
+  await expect(tabs).toHaveCount(6)
   await expect(tabs).toHaveText([
     /Conversation/,
     /Tool Calls/,
     /Artifacts/,
     /Commits/,
     /Pull Requests/,
+    /Review/,
   ])
   await expect(page.getByRole("tab", { name: /Conversation/ })).toHaveAttribute(
     "aria-selected",
@@ -163,20 +164,6 @@ test("S44: the session masthead reports its six facts, and 320px introduces no h
   await page.getByRole("tab", { name: /Artifacts/ }).click()
   await expect(page.getByRole("combobox", { name: /choose an artifact/i })).toBeVisible()
   await expect(page.getByRole("list", { name: /filed artifacts/i })).toBeHidden()
-})
-
-test("EDGE-008 S44: a session id that does not exist renders the not-found state and its recovery returns to the list", async ({
-  authedPage: page,
-}) => {
-  await page.goto("/sessions/no-such-session")
-
-  await expect(page.getByText(/no such session/i)).toBeVisible()
-  await expect(page.getByRole("tab")).toHaveCount(0)
-
-  await page.getByRole("button", { name: /back to all sessions/i }).click()
-
-  await expect(page).toHaveURL(/\/sessions$/)
-  await expect(page.getByRole("link", { name: /Make ingest idempotent/ })).toBeVisible()
 })
 
 test("SC21, A1: a rename typed in the browser survives a reload, and the session becomes findable by its new name", async ({

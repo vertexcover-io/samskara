@@ -11,20 +11,25 @@ import {
 } from "./worktree-env.js"
 
 describe("slugify", () => {
-  test("turns a branch name into a postgres-safe identifier", () => {
-    expect(slugify("feat/session-search")).toMatch(/^feat_session_search_[a-z0-9]+$/)
-  })
-
-  test("lowercases and collapses runs of separators", () => {
-    expect(slugify("Feat//Session--Search")).toMatch(/^feat_session_search_[a-z0-9]+$/)
+  test.each([
+    [
+      "turns a branch name into a postgres-safe identifier",
+      "feat/session-search",
+      /^feat_session_search_[a-z0-9]+$/,
+    ],
+    [
+      "lowercases and collapses runs of separators",
+      "Feat//Session--Search",
+      /^feat_session_search_[a-z0-9]+$/,
+    ],
+    ["never leaves a leading or trailing underscore", "/feat/x/", /^feat_x_[a-z0-9]+$/],
+    ["falls back rather than producing an empty identifier", "///", /^wt_[a-z0-9]+$/],
+  ])("%s", (_case, branch, shape) => {
+    expect(slugify(branch)).toMatch(shape)
   })
 
   test("is deterministic, so a branch keeps its database across runs", () => {
     expect(slugify("feat/session-search")).toBe(slugify("feat/session-search"))
-  })
-
-  test("never leaves a leading or trailing underscore", () => {
-    expect(slugify("/feat/x/")).toMatch(/^feat_x_[a-z0-9]+$/)
   })
 
   test("truncates long branches without leaving a trailing underscore", () => {
@@ -33,25 +38,18 @@ describe("slugify", () => {
     expect(slug.endsWith("_")).toBe(false)
   })
 
-  test("falls back rather than producing an empty identifier", () => {
-    expect(slugify("///")).toMatch(/^wt_[a-z0-9]+$/)
-  })
-
   // Two worktrees on one database is the exact failure per-branch databases exist to prevent, and
   // a collision is silent: `ensureDatabase` just reports "reusing".
-  test("separates branches that differ only in their separators", () => {
-    expect(slugify("feat/a-b")).not.toBe(slugify("feat/a_b"))
-  })
-
-  test("separates long branches that share a truncated prefix", () => {
-    const one = slugify("feat/worktree-db-isolation-and-a-very-long-tail-one")
-    const two = slugify("feat/worktree-db-isolation-and-a-very-long-tail-two")
-    expect(one).not.toBe(two)
-    expect(one.length).toBeLessThanOrEqual(40)
-  })
-
-  test("separates branches that differ only in case", () => {
-    expect(slugify("feat/Thing")).not.toBe(slugify("feat/thing"))
+  test.each([
+    ["only in their separators", "feat/a-b", "feat/a_b"],
+    [
+      "only past a shared truncated prefix",
+      "feat/worktree-db-isolation-and-a-very-long-tail-one",
+      "feat/worktree-db-isolation-and-a-very-long-tail-two",
+    ],
+    ["only in case", "feat/Thing", "feat/thing"],
+  ])("separates branches that differ %s", (_case, one, two) => {
+    expect(slugify(one)).not.toBe(slugify(two))
   })
 })
 
