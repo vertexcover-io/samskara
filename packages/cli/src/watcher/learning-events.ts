@@ -245,7 +245,7 @@ const processFile = async (
     const { event } = parsed
     if (isBeforeCutoff(event, syncFrom))
       deps.log.debug(
-        { file, eventId: event.event_id },
+        { file, eventId: event.eventId },
         "Learning event before the project's cutoff; not uploaded",
       )
     else pending.push({ event, start: lineStart })
