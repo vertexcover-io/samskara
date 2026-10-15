@@ -43,12 +43,12 @@ const seedUser = (db: Db, login: string): Promise<string> => {
 }
 
 const event = (overrides: Record<string, unknown> = {}) => ({
-  event_id: "evt-1",
-  session_id: "sess-not-ingested",
+  eventId: "evt-1",
+  sessionId: "sess-not-ingested",
   timestamp: "2026-10-06T12:00:00Z",
   trigger: "manual",
-  why_triggered: "user corrected the same mistake twice",
-  proposed_learning: "Use absolute paths in worktrees",
+  whyTriggered: "user corrected the same mistake twice",
+  proposedLearning: "Use absolute paths in worktrees",
   outcome: "new",
   ...overrides,
 })
@@ -94,20 +94,20 @@ describe.skipIf(!dockerAvailable())("/api/compound-learnings", () => {
     test("a valid batch is stored with every contract field mapped onto its column", async () => {
       const userId = await seedUser(db, "alice")
       const full = event({
-        event_id: "evt-full",
+        eventId: "evt-full",
         cwd: "/repo",
-        evidence_from_message: "0b7e6c1a-4a1e-4c55-9c1e-2f3d5a6b7c8d",
-        skill_version: "harness@1.33.1",
-        options_shown: ["1. x", "2. y", "3. z"],
-        option_user_picked: "2",
+        evidenceFromMessage: "0b7e6c1a-4a1e-4c55-9c1e-2f3d5a6b7c8d",
+        skillVersion: "harness@1.33.1",
+        optionsShown: ["1. x", "2. y", "3. z"],
+        optionUserPicked: "2",
         status: "edited",
-        final_learning: "final text",
-        rejection_reason: "",
-        learning_file: "docs/learnings.md",
+        finalLearning: "final text",
+        rejectionReason: "",
+        learningFile: "docs/learnings.md",
         replaces: "docs/learnings/old-rule.md",
       })
 
-      const res = await post(db, { events: [full, event({ event_id: "evt-min" })] }, { userId })
+      const res = await post(db, { events: [full, event({ eventId: "evt-min" })] }, { userId })
 
       expect(res).toEqual({ status: 200, body: { inserted: 2, skipped: 0 } })
       const rows = await db.select().from(compoundLearnings).orderBy(asc(compoundLearnings.eventId))
@@ -146,7 +146,7 @@ describe.skipIf(!dockerAvailable())("/api/compound-learnings", () => {
       await post(
         db,
         {
-          events: [event({ event_id: "blank", status: "", option_user_picked: "", replaces: "" })],
+          events: [event({ eventId: "blank", status: "", optionUserPicked: "", replaces: "" })],
         },
         { userId },
       )
@@ -161,7 +161,7 @@ describe.skipIf(!dockerAvailable())("/api/compound-learnings", () => {
 
       const res = await post(
         db,
-        { events: [event(), event({ event_id: "evt-2" }), event({ event_id: "evt-2" })] },
+        { events: [event(), event({ eventId: "evt-2" }), event({ eventId: "evt-2" })] },
         { userId },
       )
 
@@ -186,7 +186,7 @@ describe.skipIf(!dockerAvailable())("/api/compound-learnings", () => {
 
       const badOutcome = await post(
         db,
-        { events: [event({ event_id: "ok" }), event({ outcome: "maybe" })] },
+        { events: [event({ eventId: "ok" }), event({ outcome: "maybe" })] },
         { userId },
       )
       const badTrigger = await post(db, { events: [event({ trigger: "cron" })] }, { userId })
@@ -199,7 +199,7 @@ describe.skipIf(!dockerAvailable())("/api/compound-learnings", () => {
     test("an empty or oversized batch is a 400", async () => {
       const userId = await seedUser(db, "alice")
       const tooMany = Array.from({ length: COMPOUND_LEARNINGS_BATCH_MAX + 1 }, (_, i) =>
-        event({ event_id: `e${i}` }),
+        event({ eventId: `e${i}` }),
       )
 
       expect((await post(db, { events: [] }, { userId })).status).toBe(400)
@@ -288,13 +288,13 @@ describe.skipIf(!dockerAvailable())("/api/compound-learnings", () => {
 
     test("lists the newest events first, filtered by outcome, status, trigger and version", async () => {
       await upload(alice, [
-        event({ event_id: "old", session_id: "sess-1", timestamp: "2026-10-01T00:00:00Z" }),
+        event({ eventId: "old", sessionId: "sess-1", timestamp: "2026-10-01T00:00:00Z" }),
         event({
-          event_id: "new",
-          session_id: "sess-1",
+          eventId: "new",
+          sessionId: "sess-1",
           outcome: "rejected",
           status: "rejected",
-          skill_version: "harness@1.34.0",
+          skillVersion: "harness@1.34.0",
         }),
       ])
 
@@ -313,8 +313,8 @@ describe.skipIf(!dockerAvailable())("/api/compound-learnings", () => {
 
     test("others see an event only once its session is in a project they can open", async () => {
       await upload(alice, [
-        event({ event_id: "ingested", session_id: "sess-1" }),
-        event({ event_id: "pending", session_id: "not-yet-ingested" }),
+        event({ eventId: "ingested", sessionId: "sess-1" }),
+        event({ eventId: "pending", sessionId: "not-yet-ingested" }),
       ])
       const ids = async (userId: string) =>
         ((await get(db, "", userId)).body.events as Array<{ eventId: string }>)
@@ -331,7 +331,7 @@ describe.skipIf(!dockerAvailable())("/api/compound-learnings", () => {
 
     test("an event naming someone else's session is not linked to it: no project, no messages", async () => {
       await upload(bob, [
-        event({ event_id: "spoof", session_id: "sess-1", evidence_to_message: lineUuids[3] }),
+        event({ eventId: "spoof", sessionId: "sess-1", evidenceToMessage: lineUuids[3] }),
       ])
       const [row] = await db.select({ id: compoundLearnings.id }).from(compoundLearnings)
 
@@ -348,10 +348,10 @@ describe.skipIf(!dockerAvailable())("/api/compound-learnings", () => {
     test("the detail returns the messages from the first evidence message to the last, with context", async () => {
       await upload(alice, [
         event({
-          event_id: "e",
-          session_id: "sess-1",
-          evidence_from_message: lineUuids[3],
-          evidence_to_message: lineUuids[4],
+          eventId: "e",
+          sessionId: "sess-1",
+          evidenceFromMessage: lineUuids[3],
+          evidenceToMessage: lineUuids[4],
         }),
       ])
       const [row] = await db.select({ id: compoundLearnings.id }).from(compoundLearnings)
@@ -368,7 +368,7 @@ describe.skipIf(!dockerAvailable())("/api/compound-learnings", () => {
 
     test("an uploader who can no longer open the project still sees the event, but not its project or messages", async () => {
       await upload(bob, [
-        event({ event_id: "e", session_id: "sess-bob", evidence_to_message: lineUuids[0] }),
+        event({ eventId: "e", sessionId: "sess-bob", evidenceToMessage: lineUuids[0] }),
       ])
       await db
         .insert(sessions)
@@ -404,10 +404,10 @@ describe.skipIf(!dockerAvailable())("/api/compound-learnings", () => {
       await db.insert(messages).values(wide)
       await upload(alice, [
         event({
-          event_id: "w",
-          session_id: "sess-1",
-          evidence_from_message: wide[0]?.lineUuid,
-          evidence_to_message: wide[119]?.lineUuid,
+          eventId: "w",
+          sessionId: "sess-1",
+          evidenceFromMessage: wide[0]?.lineUuid,
+          evidenceToMessage: wide[119]?.lineUuid,
         }),
       ])
       const [row] = await db.select({ id: compoundLearnings.id }).from(compoundLearnings)
@@ -422,8 +422,8 @@ describe.skipIf(!dockerAvailable())("/api/compound-learnings", () => {
 
     test("without message ids, or before the transcript arrives, the detail has no messages", async () => {
       await upload(alice, [
-        event({ event_id: "no-ids", session_id: "sess-1" }),
-        event({ event_id: "early", session_id: "later", evidence_to_message: lineUuids[0] }),
+        event({ eventId: "no-ids", sessionId: "sess-1" }),
+        event({ eventId: "early", sessionId: "later", evidenceToMessage: lineUuids[0] }),
       ])
       const rows = await db.select({ id: compoundLearnings.id }).from(compoundLearnings)
 

@@ -47,13 +47,13 @@ afterEach(async () => {
 const NOW = Date.parse("2026-10-06T12:00:00Z")
 
 const event = (id: string, overrides: Record<string, unknown> = {}) => ({
-  event_id: id,
-  session_id: "sess-1",
+  eventId: id,
+  sessionId: "sess-1",
   timestamp: "2026-10-06T11:00:00Z",
   cwd: "/work/repo",
   trigger: "auto",
-  why_triggered: "repeated correction",
-  proposed_learning: "Prefer absolute paths",
+  whyTriggered: "repeated correction",
+  proposedLearning: "Prefer absolute paths",
   outcome: "new",
   ...overrides,
 })
@@ -91,7 +91,7 @@ const harness = (
     },
     hasToken: async () => true,
     send: async (events): Promise<SinkResult> => {
-      sent.push(events.map((e) => e.event_id))
+      sent.push(events.map((e) => e.eventId))
       sentEvents.push(...events)
       return { status: over.status?.() ?? 200 }
     },
@@ -270,8 +270,8 @@ test("an event this CLI does not understand holds the file there, for a newer CL
 
 test("offsets are raw bytes: multi-byte text split across a checkpoint survives intact", async () => {
   const file = join(dir, "s.jsonl")
-  const first = Buffer.from(line(event("a", { proposed_learning: "café 😀 first" })), "utf8")
-  const second = Buffer.from(line(event("b", { proposed_learning: "naïve 😀😀 second" })), "utf8")
+  const first = Buffer.from(line(event("a", { proposedLearning: "café 😀 first" })), "utf8")
+  const second = Buffer.from(line(event("b", { proposedLearning: "naïve 😀😀 second" })), "utf8")
   const emojiAt = second.indexOf(Buffer.from("😀", "utf8"))
   await writeFile(file, Buffer.concat([first, second.subarray(0, emojiAt + 2)]))
   const h = harness()
@@ -282,7 +282,7 @@ test("offsets are raw bytes: multi-byte text split across a checkpoint survives 
   await appendFile(file, second.subarray(emojiAt + 2))
   await run(h.deps)
 
-  expect(h.sentEvents.map((e) => e.proposed_learning)).toEqual([
+  expect(h.sentEvents.map((e) => e.proposedLearning)).toEqual([
     "café 😀 first",
     "naïve 😀😀 second",
   ])
@@ -292,13 +292,13 @@ test("offsets are raw bytes: multi-byte text split across a checkpoint survives 
 test("a line with an invalid UTF-8 byte is malformed, and the offset still lands on the byte", async () => {
   const file = join(dir, "s.jsonl")
   const bad = Buffer.concat([
-    Buffer.from('{"event_id":"bad","proposed_learning":"x', "utf8"),
+    Buffer.from('{"eventId":"bad","proposedLearning":"x', "utf8"),
     Buffer.from([0xff]),
     Buffer.from('"}\n', "utf8"),
   ])
   await writeFile(
     file,
-    Buffer.concat([bad, Buffer.from(line(event("ok", { proposed_learning: "é" })))]),
+    Buffer.concat([bad, Buffer.from(line(event("ok", { proposedLearning: "é" })))]),
   )
   const spy = spyLogger()
   const h = harness({ log: spy.log })
