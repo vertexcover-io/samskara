@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import type { ArtifactUploadPayload, IngestPayload } from "@samskara/core"
+import type { ArtifactUploadPayload, CompoundLearningEvent, IngestPayload } from "@samskara/core"
 
 /** `detail` is what the server (or the network) said, so a failure log can name the cause. */
 export type SinkResult = {
@@ -76,6 +76,12 @@ export const createHttpSink = (deps: HttpSinkDeps): Sink => ({
 export const createArtifactSink = (deps: HttpSinkDeps) => ({
   send: (payload: ArtifactUploadPayload): Promise<SinkResult> =>
     post(deps, "/api/artifacts", payload),
+})
+
+/** Its own endpoint too, and run off the loop, so a learning-events failure never touches ingest. */
+export const createLearningEventsSink = (deps: HttpSinkDeps) => ({
+  send: (events: ReadonlyArray<CompoundLearningEvent>): Promise<SinkResult> =>
+    post(deps, "/api/compound-learnings", { events }),
 })
 
 export type InMemorySink = Sink & {

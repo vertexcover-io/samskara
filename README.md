@@ -40,7 +40,10 @@ transcript, so adding a third harness means adding a plugin and nothing else.
 
 A `SessionStart` hook keeps the watcher alive: every time you start a Claude Code session, the hook
 makes sure the background watcher is running. The watcher polls transcripts, keeps a per-session
-checkpoint so it only sends what is new, and uploads artifacts in the background.
+checkpoint so it only sends what is new, and uploads artifacts in the background. It also uploads the
+learning events the `/learn` skill (harness or yok) writes to `.harness/learning-events/` or
+`.yok/learning-events/` in an enabled folder or one of its git worktrees. They are listed on the
+Learn events page.
 
 ## Requirements
 
