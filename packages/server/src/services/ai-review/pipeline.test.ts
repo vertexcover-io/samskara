@@ -13,7 +13,6 @@ import { eq, sql } from "drizzle-orm"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import type { Db } from "../../db/client.js"
 import {
-  learnings as learningsTable,
   messages,
   projects,
   reviewProblems as reviewProblemsTable,
@@ -367,7 +366,6 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
   beforeEach(async () => {
     createdDirs.length = 0
     await db.delete(sessionReviews)
-    await db.delete(learningsTable)
     await db.delete(tokenUsage)
     await db.delete(messages)
     await db.delete(sessions)
@@ -478,7 +476,7 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
     file: xmlOf(validPayload(sessionExport.index)),
   })
 
-  test("P1: ok path persists the ai-v1 review, candidate learnings, and cleans the workspace", async () => {
+  test("P1: ok path persists the ai-v1 review and cleans the workspace", async () => {
     const { runner, runs } = fakeRunner(() => okBehaviour())
     const result = await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
 
@@ -504,19 +502,6 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
       harness: "opencode",
       lenses: expect.arrayContaining([expect.objectContaining({ lens: "timeline" })]),
     })
-
-    const learningRows = await db.select().from(learningsTable)
-    // human + agent become candidates; the harness "Nothing to change" entry is review display
-    // data, not a curated lesson for a person or the agent.
-    expect(learningRows).toHaveLength(2)
-    for (const row of learningRows) {
-      expect(row.status).toBe("candidate")
-      expect(row.occurrenceCount).toBe(1)
-      expect(row.sourceReviewId).toBe(result.reviewId)
-    }
-    expect(learningRows.map((row) => row.audience).sort()).toEqual(["agent", "human"])
-    expect(learningRows.some((row) => row.category === "communication")).toBe(true)
-    expect(learningRows.some((row) => row.category === "tool-use")).toBe(true)
 
     // The runner saw the lean pointer-prompt — the workspace carries the contract, so the
     // prompt names the files and defers to CONTRACT.md. The real sessionId never reaches
@@ -668,7 +653,7 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
     expect(seen.at(-1)).toBe("persisted")
   })
 
-  test("P2: re-analysis supersedes — one ai-v1 row, same reviewId, learnings re-upserted", async () => {
+  test("P2: re-analysis supersedes — one ai-v1 row, same reviewId", async () => {
     const { runner } = fakeRunner(() => okBehaviour())
     const first = await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
     const second = await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
@@ -682,66 +667,6 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
       .from(sessionReviews)
       .where(eq(sessionReviews.sessionId, sessionId))
     expect(reviewRows).toHaveLength(1)
-  })
-
-  test("P2c: a learning write that fails rolls the review row back", async () => {
-    // Nothing in a valid payload can make upsertLearning fail, so the failure is injected at
-    // the only layer that can refuse the write unconditionally.
-    await db.execute(
-      sql`create or replace function fail_learning() returns trigger language plpgsql as $$
-        begin raise exception 'learning write refused'; end $$`,
-    )
-    await db.execute(
-      sql`create trigger fail_learning_trigger before insert on learnings
-        for each row execute function fail_learning()`,
-    )
-    try {
-      const { runner } = fakeRunner(() => okBehaviour())
-      await expect(
-        runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" }),
-      ).rejects.toThrow()
-    } finally {
-      await db.execute(sql`drop trigger if exists fail_learning_trigger on learnings`)
-    }
-
-    const reviewRows = await db
-      .select()
-      .from(sessionReviews)
-      .where(eq(sessionReviews.sessionId, sessionId))
-    expect(reviewRows).toHaveLength(0)
-  })
-
-  test("P20: a reviewer-written number too large for int4 still persists", async () => {
-    // The title is the model's own prose, so the number in it is whatever it wrote. The
-    // title-magnitude comparison casts that number in SQL; an int4 cast raises on anything
-    // above 2147483647 and takes the whole persist transaction down with it.
-    const payload = validPayload(sessionExport.index)
-    const huge = {
-      ...payload,
-      lenses: payload.lenses.map((lens) =>
-        lens.lens === "agentLearnings"
-          ? {
-              ...lens,
-              learnings: lens.learnings.map((learning) => ({
-                ...learning,
-                title: "Bash failed 9999999999 times in a row",
-              })),
-            }
-          : lens,
-      ),
-    } as typeof payload
-    const { runner } = fakeRunner(() => ({ stdout: "ok", file: xmlOf(huge) }))
-
-    // Twice: the magnitude comparison lives in ON CONFLICT DO UPDATE, so the cast is only
-    // evaluated when the fingerprint is seen a second time.
-    expect(
-      await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" }),
-    ).toMatchObject({ kind: "ok" })
-    const second = await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
-    expect(second).toMatchObject({ kind: "ok" })
-
-    const titles = (await db.select().from(learningsTable)).map((row) => row.title)
-    expect(titles).toContain("Bash failed 9999999999 times in a row")
   })
 
   test("P3: unknown session -> sessionNotFound", async () => {
@@ -1094,8 +1019,6 @@ The agent claimed the build was fixed after the tests failed.
         fixType: "skill",
         extra: { stage: "coder" },
       })
-      // The lens review's table is untouched.
-      expect(await db.select().from(learningsTable)).toEqual([])
     })
 
     test("PR2: a problem quoting what is not in the session is dropped, and the drop is recorded", async () => {

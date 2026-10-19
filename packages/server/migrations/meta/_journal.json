@@ -232,6 +232,13 @@
       "when": 1793384274570,
       "tag": "0032_milky_micromax",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1793384275570,
+      "tag": "0033_low_thundra",
+      "breakpoints": true
     }
   ]
 }

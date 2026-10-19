@@ -10,6 +10,9 @@ export const PROBLEM_CLASSES = ["missed", "blocked", "slow", "caught"] as const
 export const PROBLEM_SEVERITIES = ["high", "medium", "low"] as const
 /** Where the fix goes. `human` means the person, not the system, should change. */
 export const FIX_TYPES = ["skill", "code", "project_guidelines", "knowledge_base", "human"] as const
+export type ProblemClass = (typeof PROBLEM_CLASSES)[number]
+export type ProblemSeverity = (typeof PROBLEM_SEVERITIES)[number]
+export type FixType = (typeof FIX_TYPES)[number]
 
 /**
  * The fence around the reviewer's output, the same idea as the lens schema's caps. A problem
@@ -48,10 +51,10 @@ export const idsLabel = (item: Pick<Evidence, "from" | "to">): string =>
 
 export type Problem = {
   readonly title: string
-  readonly class: (typeof PROBLEM_CLASSES)[number]
-  readonly severity: (typeof PROBLEM_SEVERITIES)[number]
+  readonly class: ProblemClass
+  readonly severity: ProblemSeverity
   readonly severityReason: string
-  readonly fixType: (typeof FIX_TYPES)[number]
+  readonly fixType: FixType
   /** What was expected, and what happened instead. */
   readonly description: string
   readonly evidence: ReadonlyArray<Evidence>

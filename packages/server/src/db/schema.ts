@@ -1,5 +1,6 @@
 import {
   FIX_TYPES,
+  LEARNING_PRIORITIES,
   type LearnOutcome,
   type LearnStatus,
   type LearnTrigger,
@@ -74,6 +75,7 @@ const msgTypeValues = MSG_TYPES.map((t) => `'${t}'`).join(", ")
 const problemClassValues = PROBLEM_CLASSES.map((v) => `'${v}'`).join(", ")
 const problemSeverityValues = PROBLEM_SEVERITIES.map((v) => `'${v}'`).join(", ")
 const fixTypeValues = FIX_TYPES.map((v) => `'${v}'`).join(", ")
+const learningPriorityValues = LEARNING_PRIORITIES.map((v) => `'${v}'`).join(", ")
 
 const createdAt = timestamp("createdAt", { withTimezone: true }).notNull().defaultNow()
 const updatedAt = timestamp("updatedAt", { withTimezone: true }).notNull().defaultNow()
@@ -511,65 +513,66 @@ export const sessionReviews = pgTable(
 )
 
 /**
- * A curated lesson extracted from reviews, deduplicated by (projectId, fingerprint): the
- * fingerprint ignores occurrence counts, so the same lesson seen in five sessions is one row
- * whose occurrenceCount says five — once per distinct session, enforced through
- * learningSessions. Evidence is capped by the extractor, and a capped array is appended to
- * (never replaced) so accepting a lesson never loses its history.
+ * One run of the learning step: the problems no run had considered yet, grouped by cause and
+ * turned into learnings. Every problem the run considered points back at it, which is how the
+ * next run knows what is new.
+ */
+export const learningRuns = pgTable(
+  "learningRuns",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("orgId")
+      .notNull()
+      .references(() => orgs.id, { onDelete: "cascade" }),
+    status: text("status").notNull().default("running"),
+    /** The harness repo and the commit its code was read at, e.g. `yok@3f2c...`. */
+    harnessRef: text("harnessRef"),
+    /** Why a failed run failed. */
+    error: text("error"),
+    startedAt: timestamp("startedAt", { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp("finishedAt", { withTimezone: true }),
+  },
+  (t) => [
+    check("learningRuns_status_check", sql`${t.status} in ('running', 'done', 'failed')`),
+    index("learningRuns_orgId_startedAt_idx").on(t.orgId, t.startedAt),
+    // One run at a time per org: a second would read the same unmarked problems.
+    uniqueIndex("learningRuns_one_running_per_org").on(t.orgId).where(sql`${t.status} = 'running'`),
+  ],
+)
+
+/**
+ * One cause behind problems in many sessions, and what to change about it. A row is a group:
+ * its problems point at it through `reviewProblems.learningId`. A later run that finds more
+ * problems with the same cause links them here and sets the priority and fix again.
  */
 export const learnings = pgTable(
   "learnings",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    projectId: uuid("projectId")
+    orgId: uuid("orgId")
       .notNull()
-      .references(() => projects.id, { onDelete: "cascade" }),
-    audience: text("audience").notNull(),
-    category: text("category").notNull(),
+      .references(() => orgs.id, { onDelete: "cascade" }),
+    /**
+     * The last run that created or changed this learning. `restrict`: a run that wrote a
+     * learning is part of its history, so deleting the run is refused rather than losing it.
+     */
+    updatedByRunId: uuid("updatedByRunId")
+      .notNull()
+      .references(() => learningRuns.id, { onDelete: "restrict" }),
     title: text("title").notNull(),
-    detail: text("detail").notNull(),
-    evidence: jsonb("evidence").notNull(),
-    fingerprint: text("fingerprint").notNull(),
-    status: text("status").notNull().default("candidate"),
-    occurrenceCount: integer("occurrenceCount").notNull().default(1),
-    sourceReviewId: uuid("sourceReviewId").references(() => sessionReviews.id, {
-      onDelete: "set null",
-    }),
-    firstSeenAt: timestamp("firstSeenAt", { withTimezone: true }).notNull().defaultNow(),
-    lastSeenAt: timestamp("lastSeenAt", { withTimezone: true }).notNull().defaultNow(),
+    cause: text("cause").notNull(),
+    problem: text("problem").notNull(),
+    priority: text("priority").notNull(),
+    priorityReason: text("priorityReason").notNull(),
+    fixType: text("fixType").notNull(),
+    fix: text("fix").notNull(),
     createdAt,
     updatedAt,
   },
   (t) => [
-    unique("learnings_project_fingerprint_unique").on(t.projectId, t.fingerprint),
-    check("learnings_audience_check", sql`${t.audience} in ('agent', 'human')`),
-    check("learnings_status_check", sql`${t.status} in ('candidate', 'accepted', 'superseded')`),
-    index("learnings_project_status_idx").on(t.projectId, t.status),
-    index("learnings_audience_idx").on(t.audience),
-  ],
-)
-
-/**
- * The sessions that already contributed to a learning. occurrenceCount counts distinct
- * sessions, not reviews: a re-review of the same session must not bump it, so every
- * persist records the (learning, session) pair here and the upsert conditions its bump on
- * the pair's novelty. Keyed by session rather than by review so two analyzers reviewing
- * the same session still count it once.
- */
-export const learningSessions = pgTable(
-  "learningSessions",
-  {
-    learningId: uuid("learningId")
-      .notNull()
-      .references(() => learnings.id, { onDelete: "cascade" }),
-    sessionId: text("sessionId")
-      .notNull()
-      .references(() => sessions.id, { onDelete: "cascade" }),
-    createdAt,
-  },
-  (t) => [
-    primaryKey({ columns: [t.learningId, t.sessionId] }),
-    index("learningSessions_sessionId_idx").on(t.sessionId),
+    check("learnings_priority_check", sql`${t.priority} in (${sql.raw(learningPriorityValues)})`),
+    check("learnings_fixType_check", sql`${t.fixType} in (${sql.raw(fixTypeValues)})`),
+    index("learnings_orgId_idx").on(t.orgId),
   ],
 )
 
@@ -624,8 +627,9 @@ export const compoundLearnings = pgTable(
 /**
  * One problem a review found in a session, exactly as the reviewer wrote it and code checked
  * it: never merged with another row, so the same problem in two sessions is two rows and the
- * grouping step decides what repeats. Replaced as a set when the review is redone. Kept apart
- * from `learnings`, which the lens reviewer writes and merges by title.
+ * grouping step decides what repeats. Replaced as a set when the review is redone.
+ * `learningRunId` is set once a learning run has considered it; `learningId` only when that
+ * run put it into a learning.
  */
 export const reviewProblems = pgTable(
   "reviewProblems",
@@ -652,6 +656,10 @@ export const reviewProblems = pgTable(
     evidence: jsonb("evidence").notNull(),
     learning: text("learning").notNull(),
     extra: jsonb("extra").notNull().default({}),
+    learningRunId: uuid("learningRunId").references(() => learningRuns.id, {
+      onDelete: "set null",
+    }),
+    learningId: uuid("learningId").references(() => learnings.id, { onDelete: "set null" }),
     createdAt,
   },
   (t) => [
@@ -663,5 +671,7 @@ export const reviewProblems = pgTable(
     check("reviewProblems_fixType_check", sql`${t.fixType} in (${sql.raw(fixTypeValues)})`),
     index("reviewProblems_reviewId_idx").on(t.reviewId),
     index("reviewProblems_projectId_idx").on(t.projectId),
+    index("reviewProblems_learningId_idx").on(t.learningId),
+    index("reviewProblems_learningRunId_idx").on(t.learningRunId),
   ],
 )

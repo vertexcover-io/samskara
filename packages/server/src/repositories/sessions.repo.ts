@@ -898,6 +898,32 @@ const countedTokens = (row: TokenUsageTotals | undefined): TokenUsageTotals =>
         thinkingTokens: Number(row.thinkingTokens),
       }
 
+/**
+ * A session's messages in transcript order, as the detail view and the reviewer read them. No
+ * visibility check: callers that act for a user check the session first (`getDetail`); the
+ * learning run reads sessions of problems it was already scoped to.
+ */
+export const sessionMessages = (db: Querier, sessionId: string) =>
+  db
+    .select({
+      id: messages.id,
+      msgType: messages.msgType,
+      subType: messages.subType,
+      role: messages.role,
+      lineNumber: messages.lineNumber,
+      subIndex: messages.subIndex,
+      trackId: messages.trackId,
+      timestamp: sql<string | null>`${messages.timestamp}`,
+      agentId: messages.agentId,
+      isSubagent: messages.isSubagent,
+      model: messages.model,
+      content: messages.content,
+      details: messages.details,
+    })
+    .from(messages)
+    .where(eq(messages.sessionId, sessionId))
+    .orderBy(asc(messages.lineNumber), asc(messages.subIndex))
+
 export const getDetail = async (
   db: Querier,
   userId: string,
@@ -908,25 +934,7 @@ export const getDetail = async (
 
   const [messageRows, toolCallRows, subagentRows, tokenRows, commitRows, prRows] =
     await Promise.all([
-      db
-        .select({
-          id: messages.id,
-          msgType: messages.msgType,
-          subType: messages.subType,
-          role: messages.role,
-          lineNumber: messages.lineNumber,
-          subIndex: messages.subIndex,
-          trackId: messages.trackId,
-          timestamp: sql<string | null>`${messages.timestamp}`,
-          agentId: messages.agentId,
-          isSubagent: messages.isSubagent,
-          model: messages.model,
-          content: messages.content,
-          details: messages.details,
-        })
-        .from(messages)
-        .where(eq(messages.sessionId, sessionId))
-        .orderBy(asc(messages.lineNumber), asc(messages.subIndex)),
+      sessionMessages(db, sessionId),
       db
         .select({
           toolId: toolCall.toolId,
