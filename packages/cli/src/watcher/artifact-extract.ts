@@ -25,15 +25,29 @@ const timeOf = (record: ParsedRecord): number => {
   return stamp === undefined ? 0 : Date.parse(stamp)
 }
 
-const artifactOf = (message: NormalizedMessage, cwd: string): PotentialArtifact | undefined => {
+const artifactsOf = (
+  message: NormalizedMessage,
+  fallbackCwd: string,
+): ReadonlyArray<PotentialArtifact> => {
+  const cwd = message.cwd ?? fallbackCwd
+  if (
+    message.msgType === "toolResult" &&
+    message.details.status === "success" &&
+    message.details.metadata?.type === "writes"
+  ) {
+    return message.details.metadata.files.map((file) => ({
+      ...file,
+      path: absolute(file.path, cwd),
+    }))
+  }
   if (message.msgType === "toolResult" && message.details.metadata?.type === "wrote") {
     const { path, created, base } = message.details.metadata
-    return { path: absolute(path, cwd), created, ...(base === undefined ? {} : { base }) }
+    return [{ path: absolute(path, cwd), created, ...(base === undefined ? {} : { base }) }]
   }
   if (message.msgType === "fileEvent" && message.details.type === "edited") {
-    return { path: absolute(message.details.path, cwd), created: false }
+    return [{ path: absolute(message.details.path, cwd), created: false }]
   }
-  return undefined
+  return []
 }
 
 export const collectArtifacts = (
@@ -44,9 +58,9 @@ export const collectArtifacts = (
   const byTime = [...records].sort((a, b) => timeOf(a) - timeOf(b))
 
   const byPath = new Map<string, PotentialArtifact>()
-  for (const message of byTime.flatMap((record) => record.messages)) {
-    const artifact = artifactOf(message, cwd)
-    if (!artifact) continue
+  for (const artifact of byTime
+    .flatMap((record) => record.messages)
+    .flatMap((message) => artifactsOf(message, cwd))) {
     const seen = byPath.get(artifact.path)
     byPath.set(artifact.path, seen ? mergeArtifact(seen, artifact) : artifact)
   }

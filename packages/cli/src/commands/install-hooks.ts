@@ -24,12 +24,23 @@ type JsonRecord = z.infer<typeof recordSchema>
 type Status = "missing" | "stale" | "current"
 
 export type HookCommandOptions = {
+  readonly agent?: string
   readonly settingsPath?: string
   readonly stdout?: Writer
   readonly stderr?: Writer
 }
 
 const defaultSettingsPath = (): string => join(homedir(), ".claude", "settings.json")
+const codexHome = (): string => process.env.CODEX_HOME ?? join(homedir(), ".codex")
+export const detectedAgents = (): ReadonlyArray<"claude" | "codex"> => [
+  ...(existsSync(join(homedir(), ".claude")) ? ["claude" as const] : []),
+  ...(existsSync(codexHome()) ? ["codex" as const] : []),
+]
+const settingsPathFor = (options: HookCommandOptions): string =>
+  options.settingsPath ??
+  (options.agent === "codex" ? join(codexHome(), "hooks.json") : defaultSettingsPath())
+const validAgent = (agent: string | undefined): boolean =>
+  agent === undefined || ["claude", "codex", "all"].includes(agent)
 
 const parseError = (path: string): Error => new Error(`failed to parse ${path}`)
 
@@ -59,9 +70,9 @@ const writeSettings = (path: string, settings: JsonRecord): void => {
  * Claude Code runs this command with its own environment, never the shell that installed it, so a
  * non-default profile has to travel inside the command itself.
  */
-const managedCommand = (): string => {
+const managedCommand = (agent?: string): string => {
   const prefix = profile() === "default" ? "" : `SAMSKARA_PROFILE=${profile()} `
-  return `${prefix}${JSON.stringify(process.execPath)} ${JSON.stringify(resolveCliEntry())} ensure # ${marker()}`
+  return `${prefix}${JSON.stringify(process.execPath)} ${JSON.stringify(resolveCliEntry())} ensure${agent === "codex" ? " --agent codex" : ""} # ${marker()}`
 }
 
 // Anchored, not `includes`: `samskara:ensure` is a prefix of `samskara:ensure:dev`, so a substring
@@ -116,20 +127,30 @@ const saveSessionStart = (
 
 export const isManagedHookInstalled = (options: HookCommandOptions = {}): boolean => {
   try {
-    const path = options.settingsPath ?? defaultSettingsPath()
-    return statusOf(readCurrent(path).sessionStart, managedCommand()) !== "missing"
+    const path = settingsPathFor(options)
+    return statusOf(readCurrent(path).sessionStart, managedCommand(options.agent)) !== "missing"
   } catch {
     return false
   }
 }
 
 export const installHooksCommand = (options: HookCommandOptions = {}): number => {
-  const path = options.settingsPath ?? defaultSettingsPath()
+  if (!validAgent(options.agent))
+    return reportError(
+      resolveIo(options).stderr,
+      new Error("--agent must be claude, codex, or all"),
+    )
+  if (options.agent === "all")
+    return ["claude", "codex"].reduce(
+      (code, agent) => Math.max(code, installHooksCommand({ ...options, agent })),
+      0,
+    )
+  const path = settingsPathFor(options)
   const { stdout, stderr } = resolveIo(options)
 
   try {
     const current = readCurrent(path)
-    const command = managedCommand()
+    const command = managedCommand(options.agent)
     const status = statusOf(current.sessionStart, command)
 
     if (status === "current") {
@@ -145,6 +166,8 @@ export const installHooksCommand = (options: HookCommandOptions = {}): number =>
         : [...current.sessionStart, { hooks: [{ type: "command", command }] }],
     )
     stdout.write(`${status === "stale" ? "repaired" : "installed"} SessionStart hook in ${path}\n`)
+    if (options.agent === "codex")
+      stdout.write("Open /hooks in Codex to review and trust this hook. Hooks must be enabled.\n")
     return 0
   } catch (error) {
     return reportError(stderr, error)
@@ -152,7 +175,17 @@ export const installHooksCommand = (options: HookCommandOptions = {}): number =>
 }
 
 export const uninstallHooksCommand = (options: HookCommandOptions = {}): number => {
-  const path = options.settingsPath ?? defaultSettingsPath()
+  if (!validAgent(options.agent))
+    return reportError(
+      resolveIo(options).stderr,
+      new Error("--agent must be claude, codex, or all"),
+    )
+  if (options.agent === "all")
+    return ["claude", "codex"].reduce(
+      (code, agent) => Math.max(code, uninstallHooksCommand({ ...options, agent })),
+      0,
+    )
+  const path = settingsPathFor(options)
   const { stdout, stderr } = resolveIo(options)
   if (!existsSync(path)) {
     stdout.write("nothing to uninstall\n")

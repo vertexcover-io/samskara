@@ -9,6 +9,7 @@ import {
   type PromptPart,
   type TimelineRecord,
 } from "./records.js"
+import { sourceName } from "./source.js"
 import { ToolCallItem } from "./ToolCallItem.js"
 
 const Unavailable = () => (
@@ -339,7 +340,7 @@ export const RecordItem = ({ record, showTools = true, annex, link, linked = fal
     return (
       <Shell {...shell}>
         <Head
-          actor="Claude"
+          actor={sourceName(record.source)}
           tone={tone}
           kind="Tool call"
           timestamp={record.timestamp}
@@ -383,7 +384,7 @@ export const RecordItem = ({ record, showTools = true, annex, link, linked = fal
             Subagent returned
           </span>
           <span className="font-mono text-[0.75rem]">
-            {record.agent.agentType ?? record.agent.agentId} → Claude
+            {record.agent.agentType ?? record.agent.agentId} → {sourceName(record.source)}
           </span>
           <Stamp timestamp={record.timestamp} link={link} />
         </div>
@@ -401,7 +402,7 @@ export const RecordItem = ({ record, showTools = true, annex, link, linked = fal
     return (
       <Shell {...shell}>
         <Head
-          actor="Claude"
+          actor={sourceName(record.source)}
           tone={tone}
           kind="Artifact filed"
           timestamp={record.timestamp}

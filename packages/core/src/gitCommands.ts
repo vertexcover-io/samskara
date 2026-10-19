@@ -4,11 +4,11 @@
  * (which trusts no event and re-verifies it against the stored call before deriving rows).
  */
 export const isGitCommitCommand = (command: string): boolean =>
-  /(^|[\s;&|])git\s+(-\S+\s+)*commit\b/.test(command)
+  /(^|[\s;&|])git\s+(-\S+\s+)*commit\b/.test(shellBody(command))
 
 /** Only creations are captured -- a PR merely viewed or listed is not the session's work. */
 export const isPrCreateCommand = (command: string): boolean =>
-  /(^|[\s;&|])(?:gh\s+pr|glab\s+mr)\s+create\b/.test(command)
+  /(^|[\s;&|])(?:gh\s+pr|glab\s+mr)\s+create\b/.test(shellBody(command))
 
 /**
  * Splits on whitespace the shell would split on, which is the whole point: a `--body` is one
@@ -52,6 +52,19 @@ const tokenize = (command: string): ReadonlyArray<string> => {
   return tokens
 }
 
+/** Codex renders argv as a shell invocation. Inspect its script without executing expansions. */
+const shellBody = (command: string): string => {
+  const [executable, flags, script] = tokenize(command)
+  const shell = executable?.split("/").at(-1)
+  return shell &&
+    ["sh", "bash", "zsh", "dash", "ksh"].includes(shell) &&
+    flags &&
+    /^-[a-z]*c[a-z]*$/.test(flags) &&
+    script !== undefined
+    ? script
+    : command
+}
+
 const PR_FLAGS: Readonly<Record<string, "title" | "baseBranch" | "headBranch">> = {
   "--title": "title",
   "--base": "baseBranch",
@@ -70,7 +83,7 @@ export type PullRequestFlags = {
  * it was read from the wrong half of the call.
  */
 export const pullRequestFlags = (command: string): PullRequestFlags => {
-  const tokens = tokenize(command)
+  const tokens = tokenize(shellBody(command))
   const flags: { -readonly [K in keyof PullRequestFlags]: string } = {}
 
   for (let index = 0; index < tokens.length; index += 1) {

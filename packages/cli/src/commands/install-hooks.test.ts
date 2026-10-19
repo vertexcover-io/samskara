@@ -26,6 +26,21 @@ const entryIn = (command: string): string => {
 }
 
 describe("hook commands", () => {
+  test("Codex hooks preserve other handlers and include profile and stdin routing", async () => {
+    const path = await settingsFile()
+    installHooksCommand({ settingsPath: path, agent: "codex" })
+    const initial = JSON.parse(await readFile(path, "utf8"))
+    initial.hooks.Stop = [{ hooks: [{ type: "command", command: "echo unrelated" }] }]
+    await writeFile(path, JSON.stringify(initial))
+    expect(installHooksCommand({ settingsPath: path, agent: "codex" })).toBe(0)
+    const saved = await readFile(path, "utf8")
+    expect(saved.match(/samskara:ensure/g)).toHaveLength(1)
+    expect(saved).toContain("ensure --agent codex")
+    expect(saved).toContain("echo unrelated")
+    expect(uninstallHooksCommand({ settingsPath: path, agent: "codex" })).toBe(0)
+    expect(await readFile(path, "utf8")).toContain("echo unrelated")
+    expect(await readFile(path, "utf8")).not.toContain("samskara:ensure")
+  })
   test("REQ-018,EDGE-015: installs one absolute managed SessionStart hook idempotently", async () => {
     const path = await settingsFile()
     const output: string[] = []

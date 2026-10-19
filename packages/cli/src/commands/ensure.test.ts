@@ -44,6 +44,14 @@ beforeEach(() => {
 })
 
 describe("ensure command", () => {
+  test("Codex stdin cwd identifies the project instead of the hook process cwd", async () => {
+    await ensureCommand({
+      agent: "codex",
+      input: JSON.stringify({ cwd: "/native/project", hook_event_name: "SessionStart" }),
+      ...output().writers,
+    })
+    expect(resolveProject).toHaveBeenCalledWith("/native/project")
+  })
   test("REQ-021: missing credentials emit login guidance without starting a watcher", async () => {
     const streams = output()
     vi.mocked(readToken).mockResolvedValue(null)

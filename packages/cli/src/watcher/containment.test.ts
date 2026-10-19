@@ -8,6 +8,24 @@ import { type CaptureDecision, shouldCaptureArtifacts } from "./containment.js"
 
 const fixtureBase = dirname(fileURLToPath(import.meta.url))
 
+test("custom Codex state roots cannot become artifacts through a symlink", async () => {
+  const root = await mkdtemp(join(tmpdir(), "samskara-codex-containment-"))
+  const state = await write(join(root, "codex-state", "state.sqlite"))
+  const alias = join(root, "alias")
+  await symlink(join(root, "codex-state"), alias)
+  const previous = process.env.CODEX_SQLITE_HOME
+  process.env.CODEX_SQLITE_HOME = alias
+  try {
+    expect(
+      await shouldCaptureArtifacts([state], { projectRoot: root, allowScratch: true }),
+    ).toMatchObject([{ ok: false, reason: "inside a system or agent directory" }])
+  } finally {
+    if (previous === undefined) delete process.env.CODEX_SQLITE_HOME
+    else process.env.CODEX_SQLITE_HOME = previous
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 const write = async (path: string, body = "bytes"): Promise<string> => {
   await mkdir(dirname(path), { recursive: true })
   await writeFile(path, body, "utf8")

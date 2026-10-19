@@ -32,9 +32,29 @@ export const opencodeCheckpointSchema = checkpointBaseSchema.extend({
   lastMessageId: z.string(),
 })
 
+export const codexCheckpointSchema = checkpointBaseSchema.extend({
+  source: z.literal("codex"),
+  threadId: z.string(),
+  sessionId: z.string(),
+  metadataHash: z.string(),
+  spawnToolUseId: z.string().optional(),
+  nextOrdinal: z.number().int().positive(),
+  items: z.record(
+    z.string(),
+    z
+      .object({
+        ordinal: z.number().int().positive(),
+        acknowledged: z.array(z.number().int().nonnegative()).readonly(),
+        pending: z.boolean(),
+      })
+      .readonly(),
+  ),
+})
+
 export const checkpointSchema = z.discriminatedUnion("source", [
   claudeCheckpointSchema,
   opencodeCheckpointSchema,
+  codexCheckpointSchema,
 ])
 export const checkpointStoreSchema = z
   .object({
@@ -51,11 +71,13 @@ export const checkpointStoreSchema = z
 export type CheckpointBase = z.infer<typeof checkpointBaseSchema>
 export type ClaudeCheckpoint = z.infer<typeof claudeCheckpointSchema>
 export type OpencodeCheckpoint = z.infer<typeof opencodeCheckpointSchema>
+export type CodexCheckpoint = z.infer<typeof codexCheckpointSchema>
 export type Checkpoint = z.infer<typeof checkpointSchema>
 export type CheckpointStore = z.infer<typeof checkpointStoreSchema>
 export type CheckpointBody =
   | Omit<ClaudeCheckpoint, keyof CheckpointBase>
   | Omit<OpencodeCheckpoint, keyof CheckpointBase>
+  | Omit<CodexCheckpoint, keyof CheckpointBase>
 
 export type CollectDeps = {
   readonly fs: FileSystem
@@ -90,4 +112,5 @@ export type SessionBatch = {
 export interface AgentPlugin {
   readonly source: SessionSource
   collect(store: CheckpointStore, deps: CollectDeps): Promise<ReadonlyArray<SessionBatch>>
+  close?(): Promise<void>
 }

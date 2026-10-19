@@ -1,9 +1,12 @@
+import { existsSync } from "node:fs"
 import { glob as nodeGlob, readdir, readFile, rename, stat, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import {
   type AgentPlugin,
   createClaudePlugin,
+  createCodexHistoryClient,
+  createCodexPlugin,
   createOpencodePlugin,
   defaultDbPath,
   type FileSystem,
@@ -17,6 +20,7 @@ import { getProject, isProjectEnabled, syncFromFor } from "../config/projects.js
 import { ALL_SCOPED_PATHS, mismatchFact, scopeMismatch } from "../config/server-scope.js"
 import { parseConfig } from "../config.js"
 import { sleep } from "../io.js"
+import { cliVersion } from "../version.js"
 import { runArtifactWorkers } from "./artifact-worker.js"
 import { runCycle, type WatcherConfig, type WatcherDeps } from "./driver.js"
 import { resolveProject } from "./resolveProject.js"
@@ -30,12 +34,20 @@ const SHUTDOWN_GRACE_MS = 5_000
  */
 const activePlugins = (log: pino.Logger): ReadonlyArray<AgentPlugin> => {
   const claude = createClaudePlugin(nodeFs)
+  const home = process.env.CODEX_HOME ?? join(homedir(), ".codex")
+  const codex = existsSync(home)
+    ? [
+        createCodexPlugin({
+          reader: createCodexHistoryClient({ home, log, clientVersion: cliVersion }),
+        }),
+      ]
+    : []
   const dbPath = defaultDbPath()
   try {
-    return [claude, createOpencodePlugin({ db: openDatabase(dbPath) })]
+    return [claude, ...codex, createOpencodePlugin({ db: openDatabase(dbPath) })]
   } catch (err) {
     log.debug({ dbPath, err }, "OpenCode capture off: database did not open")
-    return [claude]
+    return [claude, ...codex]
   }
 }
 
@@ -173,7 +185,8 @@ export const watch = async (options: WatchOptions): Promise<void> => {
   const shutdown = (signal: NodeJS.Signals) => {
     stopping = true
     log.info({ signal }, "Shutting down; draining in-flight artifact uploads")
-    void drainWorkers(workers, SHUTDOWN_GRACE_MS, sleep, () => process.exit(0))
+    const cleanup = Promise.all([workers, ...deps.plugins.map((plugin) => plugin.close?.())])
+    void drainWorkers(cleanup, SHUTDOWN_GRACE_MS, sleep, () => process.exit(0))
   }
   process.once("SIGINT", shutdown)
   process.once("SIGTERM", shutdown)

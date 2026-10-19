@@ -18,6 +18,7 @@ import {
 import { Code } from "./Code.js"
 import { Markdown } from "./Markdown.js"
 import type { Artifact } from "./records.js"
+import { sourceName } from "./source.js"
 
 const Unavailable = () => (
   <span className="text-faded italic underline decoration-dotted">unavailable</span>
@@ -510,7 +511,7 @@ const Provenance = ({ exhibit }: { exhibit: Exhibit }) => (
     <Fact label="Last written">
       {exhibit.timestamp === null ? "unavailable" : absoluteTime(exhibit.timestamp)}
     </Fact>
-    <Fact label="By">{exhibit.agent ?? "Claude"}</Fact>
+    <Fact label="By">{exhibit.agent ?? "unavailable"}</Fact>
     <Fact label="Type">{displayType(exhibit.mimeType)}</Fact>
     {exhibit.editCount !== null && exhibit.editCount > 1 ? (
       <Fact label="Edits">{exhibit.editCount}</Fact>
@@ -702,9 +703,11 @@ const Tree = ({ nodes, depth, selectedId, openFolders, onToggle, onSelect }: Tre
 export const ArtifactsView = ({
   artifacts,
   sessionId = null,
+  source,
 }: {
   artifacts: ReadonlyArray<Artifact | CapturedArtifact>
   sessionId?: string | null
+  source?: string
 }) => {
   // Selection and filter live in the URL so an artifact view is shareable and survives reload.
   const [params, setParams] = useSearchParams()
@@ -713,7 +716,13 @@ export const ArtifactsView = ({
 
   const [wrap, setWrap] = useState(false)
 
-  const all = artifacts.map((artifact) => toExhibit(artifact, sessionId))
+  const all = artifacts.map((artifact) => {
+    const exhibit = toExhibit(artifact, sessionId)
+    return {
+      ...exhibit,
+      agent: exhibit.agent ?? sourceName(source),
+    }
+  })
   const rawKind = params.get("kind")
   const kind: ArtifactKind = isArtifactKind(rawKind) ? rawKind : "all"
   const query = params.get("file") ?? ""

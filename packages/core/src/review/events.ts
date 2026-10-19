@@ -74,6 +74,7 @@ export const reviewEventsFromMessages = (
 ): ReviewEvent[] => {
   const bodies: ReviewEventBody[] = []
   const toolNameByCallId = new Map<string, string>()
+  const legacyEdits = new Set<string>()
   for (const message of messages) {
     switch (message.msgType) {
       case "message":
@@ -106,6 +107,7 @@ export const reviewEventsFromMessages = (
         const path = input?.file_path ?? input?.filePath
         if (EDIT_TOOL_NAMES.has(message.details.name) && typeof path === "string" && path !== "") {
           bodies.push({ kind: "edit", path })
+          legacyEdits.add(message.details.callId)
         }
         break
       }
@@ -116,6 +118,12 @@ export const reviewEventsFromMessages = (
           name: toolNameByCallId.get(message.details.callId) ?? null,
           status: message.details.status,
         })
+        if (message.details.status === "success" && !legacyEdits.has(message.details.callId)) {
+          const effect = message.details.metadata
+          const files =
+            effect?.type === "writes" ? effect.files : effect?.type === "wrote" ? [effect] : []
+          bodies.push(...files.map((file): ReviewEventBody => ({ kind: "edit", path: file.path })))
+        }
         break
       case "turnEvent":
         bodies.push({

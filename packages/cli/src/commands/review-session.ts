@@ -5,9 +5,12 @@ import {
   type AiReviewPayload,
   buildReviewPrompt,
   buildSessionExport,
+  type CodexHistoryReader,
   capAgentLog,
   createClaudePlugin,
   createClaudeRunner,
+  createCodexHistoryClient,
+  createCodexPlugin,
   createLogger,
   createOpencodeRunner,
   DEFAULT_REVIEW_MODEL,
@@ -26,6 +29,7 @@ import {
   withDerivedTracks,
 } from "@samskara/core"
 import { errorMessage, reportError, resolveIo, type Writer } from "../io.js"
+import { cliVersion } from "../version.js"
 import { globAll, nodeFs } from "../watcher/index.js"
 import { belongsToSession } from "./replay.js"
 
@@ -40,6 +44,8 @@ const ALIAS = "session-under-review"
 const STDOUT_REVIEW_RE = /<review[\s>]/
 
 export type ReviewSessionOptions = {
+  readonly source?: string
+  readonly codexReader?: CodexHistoryReader
   readonly harness?: string
   readonly model?: string
   readonly timeout?: string
@@ -168,6 +174,50 @@ const defaultRunner = (spec: RunnerSpec): HarnessRunner => {
   return build()
 }
 
+const codexMessagesFor = async (
+  target: string,
+  reader: CodexHistoryReader,
+  log: ReturnType<typeof createLogger>,
+): Promise<Awaited<ReturnType<typeof messagesFor>>> => {
+  try {
+    const threads = await reader.listThreads()
+    const ids = new Set([target])
+    let changed = true
+    while (changed) {
+      changed = false
+      for (const thread of threads)
+        if (thread.parentThreadId && ids.has(thread.parentThreadId) && !ids.has(thread.id)) {
+          ids.add(thread.id)
+          changed = true
+        }
+    }
+    const batches = await createCodexPlugin({
+      reader: {
+        ...reader,
+        listThreads: async () => threads.filter((thread) => ids.has(thread.id)),
+      },
+    }).collect(
+      { checkpoints: {} },
+      {
+        fs: nodeFs,
+        glob: async () => [],
+        resolveProject: async () => ({ name: "local", slug: "local" }),
+        log,
+      },
+    )
+    const batch = batches.find((value) => value.sessionId === target)
+    if (!batch)
+      throw new Error(`No Codex root thread found for "${target}". Use its native root thread id.`)
+    return {
+      messages: batch.tracks.flatMap((track) => track.records.flatMap((record) => record.messages)),
+      title: batch.tracks[0]?.title ?? "untitled session",
+      source: "codex",
+    }
+  } finally {
+    await reader.close()
+  }
+}
+
 const writeJson = (path: string, value: unknown): Promise<void> =>
   writeFile(path, `${JSON.stringify(value, null, 2)}\n`, "utf8")
 
@@ -186,6 +236,8 @@ export const reviewSessionCommand = async (
   const env = options.env ?? process.env
   let settings: Settings
   try {
+    if (options.source !== undefined && !["claude", "codex"].includes(options.source))
+      throw new Error("--source must be claude or codex")
     settings = settingsFrom(target, options, env)
   } catch (error) {
     return reportError(stderr, error)
@@ -201,14 +253,18 @@ export const reviewSessionCommand = async (
     stderr.write(`[${seconds}s] ${name}\n`)
   }
 
-  const files = await transcriptsFor(target, home)
-  if (files.length === 0) {
+  const files = options.source === "codex" ? [] : await transcriptsFor(target, home)
+  if (options.source !== "codex" && files.length === 0) {
     stderr.write(
       `No transcript found for "${target}" under ${join(home, ".claude", "projects")}.\n`,
     )
     return 1
   }
-  step(`found ${files.length} transcript file(s)`)
+  step(
+    options.source === "codex"
+      ? `reading Codex thread ${target}`
+      : `found ${files.length} transcript file(s)`,
+  )
 
   if (!settings.dryRun) {
     const missing = missingCredentialMessage(settings.harness, env)
@@ -220,7 +276,20 @@ export const reviewSessionCommand = async (
 
   let exported: Awaited<ReturnType<typeof messagesFor>>
   try {
-    exported = await messagesFor(files, log)
+    exported =
+      options.source === "codex"
+        ? await codexMessagesFor(
+            target,
+            options.codexReader ??
+              createCodexHistoryClient({
+                home: env.CODEX_HOME ?? join(home, ".codex"),
+                log,
+                env,
+                clientVersion: cliVersion,
+              }),
+            log,
+          )
+        : await messagesFor(files, log)
   } catch (error) {
     return reportError(stderr, error)
   }

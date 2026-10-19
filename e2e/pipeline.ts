@@ -1,3 +1,4 @@
+import { join } from "node:path"
 import { WATCH_CYCLE_MS_ENV } from "../packages/cli/src/config.js"
 import { mintCliToken } from "./fixtures/auth.js"
 import { API_BASE } from "./playwright.config.js"
@@ -32,6 +33,8 @@ export const pollUntil = async <T>(
 export const daemonEnv = (home: string, samskaraHome: string): NodeJS.ProcessEnv => ({
   ...process.env,
   HOME: home,
+  CODEX_HOME: join(home, ".codex"),
+  CODEX_SQLITE_HOME: join(home, ".codex"),
   SAMSKARA_HOME: samskaraHome,
   SAMSKARA_API_URL: API_BASE,
   [WATCH_CYCLE_MS_ENV]: "500",

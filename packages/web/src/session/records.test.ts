@@ -8,6 +8,33 @@ const kindsOf = (payload: SessionDetailPayload): ReadonlyArray<string> =>
   toDetail(payload).records.map((record) => record.kind)
 
 describe("toDetail", () => {
+  test("all native Codex children join their proven spawn call before later replies", () => {
+    const payload = buildPayload({
+      session: { source: "codex" },
+      messages: [
+        message({ id: "spawn", lineNumber: 1, msgType: "toolCall" }),
+        message({ lineNumber: 2, role: "assistant" }),
+      ],
+      toolCalls: [
+        {
+          toolId: "native-spawn",
+          messageId: "spawn",
+          toolName: "spawnAgent",
+          toolInput: {},
+          result: null,
+          status: "success",
+        },
+      ],
+      subagents: ["a", "b"].map((agentId) => ({
+        agentId,
+        parentAgentId: null,
+        agentType: null,
+        description: null,
+        spawnToolUseId: "native-spawn",
+      })),
+    })
+    expect(kindsOf(payload)).toEqual(["tool", "agentSpawn", "agentSpawn", "assistant"])
+  })
   test("S38: each msgType maps to its own record kind - a fileEvent artifact never collapses into a generic event", () => {
     const payload = buildPayload({
       messages: [

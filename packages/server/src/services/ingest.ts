@@ -142,8 +142,7 @@ const verifiedCall = (
   provesIntent: (command: string) => boolean,
 ): toolRowsRepo.StoredCall | null => {
   const call = input.calls.get(callId)
-  if (call?.toolName !== "Bash") return null
-  if (!call.command || !provesIntent(call.command)) return null
+  if (!call?.command || !provesIntent(call.command)) return null
   return call
 }
 
@@ -273,6 +272,7 @@ export const ingest = async (ctx: Ctx, payload: IngestPayload): Promise<IngestRe
             title: payload.title,
             startCwd: payload.startCwd,
             startCommit: payload.startCommit,
+            sourceContext: payload.sourceContext,
           },
         })
       } else {

@@ -21,6 +21,7 @@ import {
   users,
 } from "../db/schema.js"
 import { dockerAvailable, startTestDb } from "../db/testDb.js"
+import { getDetail } from "../repositories/sessions.repo.js"
 import { type Ctx, ingest } from "./ingest.js"
 
 const project = { name: "widget", slug: "acme-widget" } as const
@@ -126,6 +127,70 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
 
   afterAll(async () => {
     await teardown?.()
+  })
+
+  test("Codex metadata-only capture preserves native context and reports unavailable usage", async () => {
+    const sessionId = "codex-context"
+    const payload: IngestPayload = {
+      ...mainPayload(sessionId, [], {
+        source: "codex",
+        startCwd: "/native",
+        startCommit: "abc123",
+      }),
+      type: "main",
+      sourceContext: {
+        startedAt: "2026-01-01T00:00:00.000Z",
+        lastActiveAt: "2026-01-02T00:00:00.000Z",
+        modelSnapshot: "gpt-5.4",
+        provider: "openai",
+      },
+    }
+    await ingest(ctx, payload)
+    await ingest(ctx, {
+      ...payload,
+      startCwd: "/later",
+      startCommit: "changed",
+      sourceContext: {
+        ...payload.sourceContext,
+        startedAt: "2026-01-01T12:00:00.000Z",
+        lastActiveAt: "2026-01-01T12:00:00.000Z",
+      },
+    })
+    const [row] = await db.select().from(sessions).where(eq(sessions.id, sessionId))
+    expect(row).toMatchObject({
+      cwd: "/native",
+      startCommit: "abc123",
+      model: "gpt-5.4",
+      provider: "openai",
+    })
+    expect(new Date(row?.startedAt ?? "").toISOString()).toBe("2026-01-01T00:00:00.000Z")
+    expect(new Date(row?.lastMessageAt ?? "").toISOString()).toBe("2026-01-02T00:00:00.000Z")
+    expect(await getDetail(db, userId, sessionId)).toMatchObject({
+      tokenUsageAvailable: false,
+      session: { modelSnapshot: "gpt-5.4" },
+    })
+  })
+
+  test("Codex explicit nested parents do not require a spawn call", async () => {
+    const sessionId = "codex-family"
+    await ingest(ctx, mainPayload(sessionId, [], { source: "codex" }))
+    await ingest(ctx, subagentPayload(sessionId, "parent", []))
+    const child = subagentPayload(sessionId, "child", [])
+    if (child.type !== "subagent") throw new Error("expected subagent")
+    await ingest(ctx, { ...child, agent: { agentId: "child", parentAgentId: "parent" } })
+    const [row] = await db
+      .select()
+      .from(subagents)
+      .where(and(eq(subagents.sessionId, sessionId), eq(subagents.agentId, "child")))
+    expect(row?.parentAgentId).toBe("parent")
+    const parent = subagentPayload(sessionId, "parent", [])
+    if (parent.type !== "subagent") throw new Error("expected subagent")
+    await ingest(ctx, { ...parent, agent: { agentId: "parent", parentAgentId: "child" } })
+    const [safeParent] = await db
+      .select()
+      .from(subagents)
+      .where(and(eq(subagents.sessionId, sessionId), eq(subagents.agentId, "parent")))
+    expect(safeParent?.parentAgentId).toBeNull()
   })
 
   test("S8: canonical JSONB rows and projections round-trip with session-scoped deduplication", async () => {
@@ -1062,55 +1127,68 @@ describe.skipIf(!dockerAvailable())("ingest service", () => {
     expect(await db.select().from(commits).where(eq(commits.sessionId, sessionId))).toHaveLength(0)
   })
 
-  test("a call stored without metadata -- a CLI from before it existed -- still verifies its commit from toolInput", async () => {
-    const sessionId = "sess-commit-legacy"
-    const call = customMessage({
-      sessionId,
-      lineUuid: "0191d942-3ba5-7dba-9a7d-0000000000c6",
-      lineNumber: 1,
-    })
-    const result = customMessage({
-      sessionId,
-      lineUuid: "0191d942-3ba5-7dba-9a7d-0000000000c7",
-      lineNumber: 2,
-    })
-    await ingest(ctx, {
-      ...mainPayload(sessionId, [
-        {
-          ...call,
-          message: {
-            ...call.message,
-            msgType: "toolCall",
-            details: {
-              callId: "call-legacy",
-              name: "Bash",
-              input: { command: "git commit -m legacy" },
-            },
+  test.each(["Bash", "commandExecution"])(
+    "a shell call named %s verifies commit evidence across sources",
+    async (name) => {
+      const sessionId = `sess-commit-legacy-${name}`
+      const sha = name === "Bash" ? "1e9ac11" : "1e9ac12"
+      const call = customMessage({
+        sessionId,
+        lineUuid: "0191d942-3ba5-7dba-9a7d-0000000000c6",
+        lineNumber: 1,
+      })
+      const result = customMessage({
+        sessionId,
+        lineUuid: "0191d942-3ba5-7dba-9a7d-0000000000c7",
+        lineNumber: 2,
+      })
+      await ingest(ctx, {
+        ...mainPayload(sessionId, [
+          {
+            ...call,
+            message: {
+              ...call.message,
+              msgType: "toolCall",
+              details: {
+                callId: "call-legacy",
+                name,
+                input: { command: "git commit -m legacy" },
+                ...(name === "Bash"
+                  ? {}
+                  : { metadata: { type: "shell", command: "git commit -m legacy" } }),
+              },
+              repo: subRepo,
+            } as NormalizedMessage,
+          },
+          {
+            ...result,
+            message: {
+              ...result.message,
+              msgType: "toolResult",
+              details: {
+                callId: "call-legacy",
+                output: `[main ${sha}] legacy\n 1 file changed, 1 insertion(+)`,
+                status: "unknown",
+              },
+            } as NormalizedMessage,
+          },
+        ]),
+        gitEvents: [
+          {
+            kind: "commit",
+            sha,
+            subject: "legacy",
             repo: subRepo,
-          } as NormalizedMessage,
-        },
-        {
-          ...result,
-          message: {
-            ...result.message,
-            msgType: "toolResult",
-            details: {
-              callId: "call-legacy",
-              output: "[main 1e9acy1] legacy\n 1 file changed, 1 insertion(+)",
-              status: "unknown",
-            },
-          } as NormalizedMessage,
-        },
-      ]),
-      gitEvents: [
-        { kind: "commit", sha: "1e9acy1", subject: "legacy", repo: subRepo, callId: "call-legacy" },
-      ],
-    })
+            callId: "call-legacy",
+          },
+        ],
+      })
 
-    const rows = await db.select().from(commits).where(eq(commits.sessionId, sessionId))
-    expect(rows).toHaveLength(1)
-    expect(rows[0]?.sha).toBe("1e9acy1")
-  })
+      const rows = await db.select().from(commits).where(eq(commits.sessionId, sessionId))
+      expect(rows).toHaveLength(1)
+      expect(rows[0]?.sha).toBe(sha)
+    },
+  )
 
   test("when metadata is present it decides: a non-commit shell metadata drops the event even if toolInput says git commit", async () => {
     const sessionId = "sess-commit-metadata-wins"

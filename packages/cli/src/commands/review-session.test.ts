@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { HarnessRunner } from "@samskara/core"
+import type { CodexHistoryReader, HarnessRunner } from "@samskara/core"
 import { beforeEach, describe, expect, test } from "vitest"
 import {
   type ReviewSessionOptions,
@@ -73,6 +73,47 @@ const capture = () => {
 describe("reviewSessionCommand", () => {
   let home: string
   let out: string
+
+  test("Codex is a transcript source independent of the reviewer harness", async () => {
+    let closed = false
+    const thread = {
+      id: SESSION,
+      cwd: "/work/app",
+      createdAt: 1,
+      updatedAt: 2,
+      historyMode: "legacy" as const,
+      parentThreadId: null,
+    }
+    const reader: CodexHistoryReader = {
+      listThreads: async () => [thread],
+      readThread: async () => ({
+        thread,
+        turns: [{ id: "turn", status: "completed", items: [] }],
+        items: [
+          {
+            turnId: "turn",
+            item: { id: "answer", type: "agentMessage", text: "hello from Codex" },
+          },
+        ],
+      }),
+      close: async () => {
+        closed = true
+      },
+    }
+    const code = await reviewSessionCommand(SESSION, {
+      source: "codex",
+      codexReader: reader,
+      dryRun: true,
+      out,
+      homedir: () => home,
+      env: {},
+      stdout: capture(),
+      stderr: capture(),
+    })
+    expect(code).toBe(0)
+    expect(await readFile(join(out, "session.json"), "utf8")).toContain("hello from Codex")
+    expect(closed).toBe(true)
+  })
 
   /** The export's first record id and seq, read back from the dry run's session.json. */
   const firstRecord = async (): Promise<{ id: string; seq: number }> => {
