@@ -42,6 +42,43 @@ describe("review contract", () => {
       expect(BASE_REVIEW_INSTRUCTIONS).toContain(heading)
   })
 
+  test("C6: Step 1 is the one list of leads: every kind has a short name, the readers' kinds included", () => {
+    const step1 = BASE_REVIEW_INSTRUCTIONS.split("## Step 1")[1]?.split("## Step 2")[0] ?? ""
+    for (const words of [
+      "a claim the agent makes that turns out wrong",
+      "a blocked command worked around instead of reported",
+      "a warning or a secret in the output of a command that succeeded",
+      "a step that tested or checked the wrong thing",
+      "two rules or documents that disagree",
+      "work done by hand that a step should have done",
+      "and later it turns out it was not",
+    ])
+      expect(step1.toLowerCase()).toContain(words)
+    const items = step1.split("\n").filter((line) => line.startsWith("- "))
+    expect(items).toHaveLength(16)
+    for (const item of items) expect(item).toMatch(/^- `[a-z]+(-[a-z]+)*`: /)
+  })
+
+  test("C7: a lead is dropped only for a named case; small or recovered is not one", () => {
+    const step2 = BASE_REVIEW_INSTRUCTIONS.split("## Step 2")[1]?.split("## Step 3")[0] ?? ""
+    expect(step2).not.toContain("turns out to be fine")
+    for (const words of [
+      "did not happen",
+      "no kind",
+      "exception: repeated-failures",
+      "exception: repeated-command",
+      "exception: idle-gap",
+      "low severity",
+      "slow",
+    ])
+      expect(step2).toContain(words)
+  })
+
+  test("C8: the class only says who caught it", () => {
+    expect(BASE_REVIEW_INSTRUCTIONS).not.toContain("report only if")
+    expect(BASE_REVIEW_INSTRUCTIONS).toContain("caught (a check or review found it)")
+  })
+
   test("C5: session.json is valid JSON with one record per line, so grep finds a record whole", () => {
     const exported: SessionExport = {
       meta: { sessionId: "s", title: "t", source: "claude_code" },

@@ -1,5 +1,3 @@
-import { readFileSync, writeFileSync } from "node:fs"
-import { join } from "node:path"
 import { describe, expect, test } from "vitest"
 import type { SessionExport, SessionExportRecord } from "../lenses/export.js"
 import type { HarnessRunner } from "../runner.js"
@@ -120,22 +118,23 @@ describe("findAgentLeads", () => {
     },
   }
 
-  /** A reader that writes whatever `write` returns for its piece. */
-  const reader = (write: (piece: string, instructions: string) => string | undefined) => {
+  /**
+   * A reader that replies with whatever `reply` returns for its prompt. Every run must be a
+   * one-shot: the piece is in the prompt, and nothing is read from a workspace.
+   */
+  const reader = (reply: (prompt: string) => string) => {
     const seen: string[] = []
     const runner: HarnessRunner = {
-      run: async ({ workspaceDir, prompt }) => {
-        const piece = readFileSync(join(workspaceDir, "piece.json"), "utf8")
+      run: async ({ prompt, oneShot }) => {
+        expect(oneShot).toBe(true)
         seen.push(prompt)
-        const out = write(piece, readFileSync(join(workspaceDir, "INSTRUCTIONS.md"), "utf8"))
-        if (out !== undefined) writeFileSync(join(workspaceDir, "leads.md"), out)
-        return { stdout: "done", firstByteMs: 1 }
+        return { stdout: reply(prompt), firstByteMs: 1 }
       },
     }
     return { runner, seen }
   }
 
-  test("FA1: every piece is read by its own run, and the leads that hold come back with their piece", async () => {
+  test("FA1: every piece is read by its own one-shot call, and the leads that hold come back with their piece", async () => {
     const { runner, seen } = reader((piece) =>
       piece.includes("all tests pass")
         ? '- msg-1 — "all tests pass" — nothing was run before this'
@@ -143,6 +142,11 @@ describe("findAgentLeads", () => {
     )
     const result = await findAgentLeads({ exported, instructions: "# How to review", runner })
     expect(seen).toHaveLength(2)
+    // Readers run side by side, so the main piece's prompt is found by its label, not its place.
+    const main = seen.find((prompt) => prompt.includes("# The piece: main"))
+    expect(main).toContain('"text":"all tests pass"')
+    expect(main).not.toContain("helper did the work")
+    expect(main).toMatch(/Reply with only the lead lines/)
     expect(result.pieceCount).toBe(2)
     expect(result.leads).toEqual([
       {
@@ -164,20 +168,32 @@ describe("findAgentLeads", () => {
     expect(result.failedPieces).toEqual([])
   })
 
-  test("FA2: a lead quoting what is not there is dropped; a reader that writes nothing is a failed piece, not a failed review", async () => {
+  test("FA2: a lead quoting what is not there is dropped; a reader that replies with nothing is a failed piece, not a failed review", async () => {
     const { runner } = reader((piece) =>
-      piece.includes("all tests pass") ? '- msg-1 — "tests are green" — invented' : undefined,
+      piece.includes("all tests pass") ? '- msg-1 — "tests are green" — invented' : "  \n",
     )
     const result = await findAgentLeads({ exported, instructions: "# How to review", runner })
     expect(result.leads).toEqual([])
     expect(result.dropped).toEqual(['main, part 1: "tests are green" is not in msg-1'])
-    expect(result.failedPieces).toEqual(["helper agent:a: wrote no leads.md"])
+    expect(result.failedPieces).toEqual(["helper agent:a: replied with nothing"])
+  })
+
+  test("FA2b: a reader call that fails leaves its piece unread and the others still count", async () => {
+    const runner: HarnessRunner = {
+      run: async ({ prompt }) => {
+        if (prompt.includes("helper did the work")) throw new Error("harness run timed out")
+        return { stdout: '- msg-1 — "all tests pass" — nothing ran', firstByteMs: 1 }
+      },
+    }
+    const result = await findAgentLeads({ exported, instructions: "# How to review", runner })
+    expect(result.leads).toHaveLength(1)
+    expect(result.failedPieces).toEqual(["helper agent:a: harness run timed out"])
   })
 
   test("FA3: readers get the review's instructions, so a user's own rules shape what they look for", async () => {
     let instructions = ""
-    const { runner } = reader((_, given) => {
-      instructions = given
+    const { runner } = reader((prompt) => {
+      instructions = prompt
       return "Nothing found."
     })
     await findAgentLeads({
@@ -186,6 +202,17 @@ describe("findAgentLeads", () => {
       runner,
     })
     expect(instructions).toContain("Every port change is a problem.")
+  })
+
+  test("FA3b: readers look for the kinds in Step 1 of the instructions; they keep no list of their own", async () => {
+    let prompt = ""
+    const { runner } = reader((seen) => {
+      prompt = seen
+      return "Nothing found."
+    })
+    await findAgentLeads({ exported, instructions: "# How to review", runner })
+    expect(prompt).toContain("Step 1")
+    expect(prompt).not.toContain("two rules or documents that disagree")
   })
 
   test("FA4: a reader's lead may point at a wide range and explain at length; only the words must be there", async () => {

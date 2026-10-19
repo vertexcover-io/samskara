@@ -1,5 +1,3 @@
-import { readFile } from "node:fs/promises"
-import { join } from "node:path"
 import type { SessionExport, SessionExportRecord } from "../lenses/export.js"
 import type { HarnessRunInput, HarnessRunner } from "../runner.js"
 import { sessionJsonText } from "./contract.js"
@@ -134,7 +132,7 @@ export const shortenForReader = (record: SessionExportRecord): SessionExportReco
 }
 
 /**
- * Every well-formed lead line in a reader's leads.md — `- msg-3 to msg-5 — "exact words" —
+ * Every well-formed lead line in a reader's reply — `- msg-3 to msg-5 — "exact words" —
  * why`, the same shape as an evidence line; anything else is ignored.
  */
 export const parseFoundLeads = (markdown: string): Evidence[] =>
@@ -148,14 +146,15 @@ export const parseFoundLeads = (markdown: string): Evidence[] =>
 const READER_CONTRACT = `# Read one piece of a session
 
 You are one of several readers of a recorded AI agent session. Each reader gets one piece.
-Yours is \`piece.json\`: one record per line, each with an \`id\` (\`msg-N\`), \`track\`, \`ts\`,
-and \`text\`, or for a tool call \`toolName\`, \`input\`, \`status\` and \`output\`.
+Yours is under "The piece" below: one record per line, each with an \`id\` (\`msg-N\`),
+\`track\`, \`ts\`, and \`text\`, or for a tool call \`toolName\`, \`input\`, \`status\` and
+\`output\`.
 
-Read every record in it, in order. It is small enough to read whole — do not search and skip.
-\`INSTRUCTIONS.md\` says what counts as a problem in this session; use its goal, steps and
-rules, and ignore anything it says about writing a review.
+Read every record in it, in order. "The instructions" below say what counts as a problem in
+this session; use their goal, steps and rules, and ignore anything they say about writing a
+review.
 
-Write \`leads.md\`: one line for each thing in your piece that may be a problem.
+Reply with only the lead lines: one line for each thing in your piece that may be a problem.
 
 \`\`\`
 - msg-120 to msg-134 — "the exact words from those records" — why it may be a problem
@@ -167,22 +166,19 @@ Write \`leads.md\`: one line for each thing in your piece that may be a problem.
   error, a warning or a secret, and a long failed one only its start and end. Both are marked
   \`[… …]\`. Quote only words you can see, never the marker. If what was left out may matter,
   say so in the lead.
-- Look past errors. Also note: a claim the agent makes that turns out wrong; a blocked command
-  worked around instead of reported; a warning or a secret in the output of a command that
-  succeeded; the person correcting, repeating or not understanding; a step that tested or
-  checked the wrong thing; two rules or documents that disagree; work done by hand that a
-  step should have done.
-- At most ${MAX_LEADS_PER_PIECE} lines. If nothing in your piece may be a problem, write
+- Look past errors: note every kind of lead listed in Step 1 of the instructions below.
+- At most ${MAX_LEADS_PER_PIECE} lines. If nothing in your piece may be a problem, reply
   \`Nothing found.\`
-- Your final reply is one short line.
 `
 
-const readerPrompt = (label: string): string =>
+/** One reader's whole prompt: the contract, the review's instructions, and the piece itself. */
+const readerPrompt = (label: string, instructions: string, pieceText: string): string =>
   [
-    `You are reading one piece of a recorded AI agent session: ${label}.`,
-    "Read `READER.md` first, then all of `piece.json`, and write `leads.md`.",
-    "The file is the deliverable. Your final reply is one short line.",
-  ].join("\n")
+    READER_CONTRACT,
+    `# The instructions\n\n${instructions}`,
+    `# The piece: ${label}\n\n${pieceText}`,
+    "Reply with only the lead lines, or `Nothing found.`",
+  ].join("\n\n")
 
 export type FoundLeads = {
   /** Leads that passed the quote check, each with the piece it came from. */
@@ -215,7 +211,8 @@ const inBatches = async <T, R>(
 
 /**
  * The first stage of a problems review: the session cut into pieces and each piece read whole
- * by its own reader run, side by side. A reader that fails leaves its piece unread and is
+ * by its own reader, side by side. A reader is one model call with the piece in its prompt, not
+ * an agent: an agent reads a file in chunks and re-sends everything it has read at every step. A reader that fails leaves its piece unread and is
  * recorded, but does not fail the review — the code leads still cover that piece.
  */
 export const findAgentLeads = async (input: {
@@ -230,20 +227,22 @@ export const findAgentLeads = async (input: {
   // must really be there.
   const check = quoteChecker(input.exported.records, Number.POSITIVE_INFINITY)
   const outcomes = await inBatches(pieces, READER_CONCURRENCY, (piece) =>
-    withWorkspace(
-      "samskara-review-reader-",
-      {
-        "piece.json": sessionJsonText({ ...input.exported, records: piece.records }),
-        "INSTRUCTIONS.md": input.instructions,
-        "READER.md": READER_CONTRACT,
-      },
-      async (workspaceDir) => {
-        await input.runner.run({ ...input.run, prompt: readerPrompt(piece.label), workspaceDir })
-        const markdown = await readFile(join(workspaceDir, "leads.md"), "utf8").catch(() => null)
-        if (markdown === null) return { piece, failed: "wrote no leads.md" }
-        return { piece, found: parseFoundLeads(markdown).slice(0, MAX_LEADS_PER_PIECE) }
-      },
-    ).catch((error: unknown) => ({
+    // The folder holds nothing: it is only the run's cwd, and its home when sandboxed.
+    withWorkspace("samskara-review-reader-", {}, async (workspaceDir) => {
+      const prompt = readerPrompt(
+        piece.label,
+        input.instructions,
+        sessionJsonText({ ...input.exported, records: piece.records }),
+      )
+      const { stdout } = await input.runner.run({
+        ...input.run,
+        prompt,
+        workspaceDir,
+        oneShot: true,
+      })
+      if (stdout.trim() === "") return { piece, failed: "replied with nothing" }
+      return { piece, found: parseFoundLeads(stdout).slice(0, MAX_LEADS_PER_PIECE) }
+    }).catch((error: unknown) => ({
       piece,
       failed: error instanceof Error ? error.message : String(error),
     })),
