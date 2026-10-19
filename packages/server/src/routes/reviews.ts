@@ -13,19 +13,9 @@ import {
   type ReviewHarness,
 } from "../lib/env.js"
 import { type AuthVariables, requireAuth } from "../lib/require-auth.js"
-import { validate } from "../lib/validate.js"
 import { canWrite } from "../repositories/projects.repo.js"
 import { listProblemsForSession } from "../repositories/reviewProblems.repo.js"
-import {
-  getLearning,
-  type LearningRow,
-  listCommonLearnings,
-  listLearnings,
-  listLearningsForSession,
-  listReviewsForSession,
-  setLearningStatus,
-  visibleSessionProjectId,
-} from "../repositories/reviews.repo.js"
+import { listReviewsForSession, visibleSessionProjectId } from "../repositories/reviews.repo.js"
 import type { AiReviewJobRegistry, RunningAiReviewJob } from "../services/ai-review/jobs.js"
 import {
   AI_ANALYZER,
@@ -50,25 +40,6 @@ type AiReviewDeps = Deps & {
   readonly credentialEnv?: NodeJS.ProcessEnv
 }
 
-const serializeLearning = (row: LearningRow) => ({
-  id: row.id,
-  projectId: row.projectId,
-  audience: row.audience,
-  category: row.category,
-  title: row.title,
-  detail: row.detail,
-  evidence: row.evidence,
-  fingerprint: row.fingerprint,
-  status: row.status,
-  occurrenceCount: row.occurrenceCount,
-  firstSeenAt: new Date(row.firstSeenAt).toISOString(),
-  lastSeenAt: new Date(row.lastSeenAt).toISOString(),
-})
-
-const audienceSchema = z.enum(["agent", "human"])
-const statusSchema = z.enum(["candidate", "accepted", "superseded"])
-
-/** The per-run reviewer choice the modal posts; absent fields keep the env defaults. */
 /**
  * The running-job shape both job-bearing endpoints return. Deliberately re-flattened into a
  * plain object rather than passing the registry's type through: hono infers the client's
@@ -80,15 +51,6 @@ const serializeRunningJob = (job: RunningAiReviewJob) => ({
   startedAt: job.startedAt,
   lastEvent: job.lastEvent === null ? null : { name: job.lastEvent.name, at: job.lastEvent.at },
 })
-
-/** The learnings list filter. Every field optional; an unparseable one is a 400, not a 500. */
-const learningsQuerySchema = z
-  .object({
-    audience: audienceSchema.optional(),
-    status: statusSchema.optional(),
-    projectId: z.string().uuid().optional(),
-  })
-  .strict()
 
 /** A user prompt is instructions, not a document: this is room for a long one. */
 const MAX_USER_PROMPT_CHARS = 20_000
@@ -108,61 +70,6 @@ const analyzeBodySchema = z
   })
   .strict()
   .optional()
-
-export const learningsRoutes = ({ db, env }: Deps) =>
-  new Hono<{ Variables: AuthVariables }>()
-    // The curation surface: the web UI reads this to list lessons per project, the CLI reads
-    // it for `learn`. Visibility comes from the join inside listLearnings — a caller with no
-    // project filter still only sees learnings from projects they can open.
-    .get("/", requireAuth({ db, env }, ["web", "cli"]), async (c) => {
-      // Parsed, not `.parse`d: a bare zod throw escapes the handler and the app-wide catch
-      // turns bad input into a 500. `projectId` reaches a uuid column, where an unparseable
-      // value is a Postgres 22P02 — also a 500 — so it is shaped here too.
-      const filter = learningsQuerySchema.safeParse({
-        audience: c.req.query("audience"),
-        status: c.req.query("status"),
-        projectId: c.req.query("projectId"),
-      })
-      if (!filter.success) {
-        const field = filter.error.issues[0]?.path[0]
-        const codes: Record<string, string> = {
-          audience: "invalidAudience",
-          status: "invalidStatus",
-          projectId: "invalidProjectId",
-        }
-        return c.json({ error: codes[String(field)] ?? "invalidLearningsQuery" }, 400)
-      }
-      const rows = await listLearnings(db, c.get("user").id, filter.data)
-      return c.json({ learnings: rows.map(serializeLearning) }, 200)
-    })
-    /** The cross-project view: same lesson in two or more visible projects. */
-    .get("/common", requireAuth({ db, env }, ["web", "cli"]), async (c) => {
-      const rows = await listCommonLearnings(db, c.get("user").id)
-      return c.json({ learnings: rows }, 200)
-    })
-    /**
-     * Human-check-only promotion (owner ruling 2026-08-26): this route is the one place a
-     * lesson's status moves, and only a project editor (or owner/admin) may move it.
-     */
-    .patch(
-      "/:id/status",
-      requireAuth({ db, env }, ["web", "cli"]),
-      validate("json", z.object({ status: statusSchema }).strict()),
-      async (c) => {
-        const { status } = c.req.valid("json")
-        const learningId = c.req.param("id")
-        // A non-uuid would reach a uuid column and surface as a Postgres 22P02 -> 500.
-        if (!z.string().uuid().safeParse(learningId).success)
-          return c.json({ error: "learningNotFound" }, 404)
-        const existing = await getLearning(db, learningId)
-        if (existing === null) return c.json({ error: "learningNotFound" }, 404)
-        const allowed = await canWrite(db, c.get("user").id, existing.projectId)
-        if (!allowed) return c.json({ error: "projectForbidden" }, 403)
-        const row = await setLearningStatus(db, existing.id, status)
-        if (row === null) return c.json({ error: "learningNotFound" }, 404)
-        return c.json({ learning: serializeLearning(row) }, 200)
-      },
-    )
 
 /** Best-effort "is this CLI on the machine" — the reviewer-options availability probe. */
 const defaultCommandExists = (command: string): boolean =>
@@ -221,11 +128,10 @@ export const reviewRoutes = ({
 }: AiReviewDeps) =>
   new Hono<{ Variables: AuthVariables }>()
     /**
-     * Reviewing is a write (it persists learnings), so `web` and `cli` both may trigger it —
+     * Reviewing is a write (it persists the review), so `web` and `cli` both may trigger it —
      * and, like `/analyze`, only a project editor may. Read visibility is not enough: this
-     * route rewrites the session's review row and every fingerprint-matching learning in the
-     * project, so a viewer-scoped member gated only by `getDetail` could edit a project they
-     * are only allowed to read.
+     * route rewrites the session's review row, so a viewer-scoped member gated only by
+     * `getDetail` could edit a project they are only allowed to read.
      */
     .post("/:id/review", requireAuth({ db, env }, ["web", "cli"]), async (c) => {
       const sessionId = c.req.param("id")
@@ -283,17 +189,6 @@ export const reviewRoutes = ({
         },
         200,
       )
-    })
-    /**
-     * The per-session lessons view behind the web Review tab: learnings whose latest provenance
-     * is this session. Reading is a `web` and `cli` capability like every other sessions subpath.
-     */
-    .get("/:id/learnings", requireAuth({ db, env }, ["web", "cli"]), async (c) => {
-      const sessionId = c.req.param("id")
-      const projectId = await visibleSessionProjectId(db, c.get("user").id, sessionId)
-      if (projectId === null) return c.json({ error: "sessionNotFound" }, 404)
-      const rows = await listLearningsForSession(db, c.get("user").id, sessionId)
-      return c.json({ learnings: rows.map(serializeLearning) }, 200)
     })
     /**
      * Start a harness-run AI review. Editor-gated, then refused synchronously when the chosen

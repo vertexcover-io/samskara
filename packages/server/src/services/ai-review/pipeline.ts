@@ -5,18 +5,12 @@ import {
   type AiReviewPayload,
   BASE_REVIEW_INSTRUCTIONS,
   buildReviewPrompt,
-  buildSessionExport,
   capAgentLog,
-  type EvidenceRef,
-  fingerprintOf,
   type GroundingProblem,
   HARNESS_STATE_DIR,
   type HarnessRunner,
-  type LearningCandidate,
-  type LearningCategory,
   mergeReviewPrompt,
   missingCredentialMessage,
-  type NormalizedMessage,
   type PreparedProblems,
   type ProblemReview,
   parseReviewXml,
@@ -36,12 +30,12 @@ import { canWrite } from "../../repositories/projects.repo.js"
 import { replaceReviewProblems } from "../../repositories/reviewProblems.repo.js"
 import * as reviewsRepo from "../../repositories/reviews.repo.js"
 import { getDetail } from "../../repositories/sessions.repo.js"
-import { persistCandidates } from "../review.js"
+import { reviewSessionExport } from "./sessionExport.js"
 import { transcriptFromClaudeConfigDir, transcriptFromOpencodeDataDir } from "./transcript.js"
 
 /**
  * `problems` is the full-session review that writes review.md and saves each problem to
- * `reviewProblems`; `lenses` is the excerpt review that writes review.xml into `learnings`.
+ * `reviewProblems`; `lenses` is the excerpt review that writes review.xml.
  */
 export const REVIEWERS = ["problems", "lenses"] as const
 export type Reviewer = (typeof REVIEWERS)[number]
@@ -172,7 +166,7 @@ export const runAiReview = async (
   const detail = await getDetail(db, userId, sessionId)
   if (detail === null) return { kind: "error", code: "sessionNotFound" }
 
-  // Editor-gated, because the run writes learnings.
+  // Editor-gated, because the run writes the session's review.
   const editable = await canWrite(db, userId, detail.session.projectId)
   if (!editable) return { kind: "error", code: "notEditable" }
 
@@ -183,19 +177,9 @@ export const runAiReview = async (
     return { kind: "error", code: "harnessUnauthenticated", detail: { message: credentialProblem } }
   }
 
-  // The same cast services/review.ts makes: stored jsonb is the captured shape.
-  const messages = detail.messages as unknown as ReadonlyArray<NormalizedMessage>
-  // Withheld from the reviewer: it is the one key that would let an agent look this session
-  // up in its own database and cite ids the export never gave it.
-  const REVIEW_SESSION_ALIAS = "session-under-review"
-  const sessionExport = buildSessionExport({
-    sessionId: REVIEW_SESSION_ALIAS,
-    title: detail.session.title ?? detail.session.id,
-    source: detail.session.source,
-    ...(detail.session.startedAt === null ? {} : { startedAt: detail.session.startedAt }),
-    // sessions have no true endedAt column; lastActiveAt is the honest approximation.
-    endedAt: detail.session.lastActiveAt,
-    messages,
+  const sessionExport = reviewSessionExport({
+    session: detail.session,
+    messages: detail.messages,
     // The problems review reads every message whole; the lens review keeps its excerpts.
     full: reviewer === "problems",
   })
@@ -554,40 +538,22 @@ export const runAiReview = async (
       recordIds: sessionExport.records.map((record) => record.sourceId ?? null),
     }
 
-    // Persist: review first (its id keys the learnings), then every human/agent learning as
-    // a candidate — human-check-only curation, same rule as the static path. Harness
-    // learnings stay in signals for display: they name what the tooling broke, not advice
-    // to re-attribute to a person or the agent.
-    //
-    // One transaction, because a committed review with no learnings is worse than no review:
-    // the job settles as failed while the ai-v1 row is already there, and the retry it
-    // prompts is refused with analysisAlreadyExists.
-    const reviewRow = await db.transaction(async (tx) => {
-      const row = await reviewsRepo.upsertReview(tx, {
-        sessionId,
-        projectId: detail.session.projectId,
-        analyzer: AI_ANALYZER,
-        outcome: payload.outcome,
-        friction: payload.friction,
-        summary: payload.summary,
-        signals: {
-          model: payload.model,
-          harness: payload.harness,
-          lenses: persistedLenses,
-          ...(payload.partial === undefined ? {} : { partial: payload.partial }),
-          numbers,
-          ...(totalDurationMs === undefined ? {} : { totalDurationMs }),
-          run,
-        } as unknown as object,
-      })
-      await persistCandidates(
-        tx,
-        detail.session.projectId,
-        sessionId,
-        row.id,
-        learningCandidates(payload),
-      )
-      return row
+    const reviewRow = await reviewsRepo.upsertReview(db, {
+      sessionId,
+      projectId: detail.session.projectId,
+      analyzer: AI_ANALYZER,
+      outcome: payload.outcome,
+      friction: payload.friction,
+      summary: payload.summary,
+      signals: {
+        model: payload.model,
+        harness: payload.harness,
+        lenses: persistedLenses,
+        ...(payload.partial === undefined ? {} : { partial: payload.partial }),
+        numbers,
+        ...(totalDurationMs === undefined ? {} : { totalDurationMs }),
+        run,
+      } as unknown as object,
     })
 
     log.info(
@@ -609,21 +575,3 @@ export const runAiReview = async (
     }
   }
 }
-
-/** Harness learnings stay out: they name what the tooling broke, not advice for anyone. */
-const learningCandidates = (payload: AiReviewPayload): ReadonlyArray<LearningCandidate> =>
-  payload.lenses.flatMap((lens) => {
-    if (lens.lens !== "humanLearnings" && lens.lens !== "agentLearnings") return []
-    const audience = lens.lens === "humanLearnings" ? "human" : "agent"
-    return lens.learnings.map((learning) => ({
-      audience,
-      // Same hash core's extractor fingerprints with (audience:category:subject); the AI
-      // lens categories are wider than the extractor's closed enum, but the hash only
-      // concatenates strings, so the cast narrows a type, not a behavior.
-      category: learning.category as LearningCategory,
-      title: learning.title,
-      detail: learning.detail,
-      evidence: learning.evidence as unknown as ReadonlyArray<EvidenceRef>,
-      fingerprint: fingerprintOf(audience, learning.category as LearningCategory, learning.title),
-    }))
-  })

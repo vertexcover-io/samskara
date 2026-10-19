@@ -1,5 +1,4 @@
 import {
-  type LearningCandidate,
   type NormalizedMessage,
   type ReviewEvent,
   type ReviewEventBody,
@@ -7,7 +6,7 @@ import {
   runReview,
   type SessionReview,
 } from "@samskara/core"
-import type { Db, Querier } from "../db/client.js"
+import type { Db } from "../db/client.js"
 import * as reviewsRepo from "../repositories/reviews.repo.js"
 import { getDetail, type SessionDetailRow } from "../repositories/sessions.repo.js"
 
@@ -66,41 +65,8 @@ export const reviewFromDetail = (sessionId: string, detail: SessionDetailRow): S
 }
 
 /**
- * Every candidate as an upsert-by-fingerprint, for both analyzers: the heuristic path below
- * and the AI pipeline, which maps its lenses to this same shape. Curation stays a human
- * decision, so everything lands as `candidate`.
- */
-export const persistCandidates = async (
-  db: Querier,
-  projectId: string,
-  sessionId: string,
-  reviewId: string,
-  candidates: ReadonlyArray<LearningCandidate>,
-): Promise<void> => {
-  for (const candidate of candidates) {
-    await reviewsRepo.upsertLearning(
-      db,
-      {
-        projectId,
-        audience: candidate.audience,
-        category: candidate.category,
-        title: candidate.title,
-        detail: candidate.detail,
-        evidence: candidate.evidence as unknown as object,
-        fingerprint: candidate.fingerprint,
-        status: "candidate",
-        occurrenceCount: 1,
-        sourceReviewId: reviewId,
-      },
-      sessionId,
-    )
-  }
-}
-
-/**
- * Analyze and persist in one pass: the review row first (its id keys the learnings'
- * sourceReviewId), then every candidate as an upsert-by-fingerprint. Re-running on the same
- * session replaces the review and bumps occurrences rather than duplicating.
+ * Analyze and persist in one pass. Re-running on the same session replaces the review rather
+ * than duplicating it.
  */
 export const reviewAndPersist = async (
   db: Db,
@@ -121,9 +87,5 @@ export const reviewAndPersist = async (
     summary: review.summary,
     signals: review.signals as unknown as object,
   })
-  await persistCandidates(db, projectId, sessionId, row.id, [
-    ...review.agentLearnings,
-    ...review.humanFeedback,
-  ])
   return { review, reviewId: row.id }
 }

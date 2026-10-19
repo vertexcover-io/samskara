@@ -225,6 +225,13 @@
       "when": 1790768957763,
       "tag": "0031_strong_changeling",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1792416134754,
+      "tag": "0032_low_thundra",
+      "breakpoints": true
     }
   ]
 }
