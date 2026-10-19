@@ -14,9 +14,8 @@ import {
   checkEvidence,
   LIMITS,
   type ProblemReview,
-  parseEvidenceLine,
   parseReviewMd,
-  quoteChecker,
+  recordText,
   section,
 } from "./reviewMd.js"
 import { readOr } from "./workspace.js"
@@ -25,30 +24,70 @@ import { readOr } from "./workspace.js"
 export const MAX_REVIEW_MD_BYTES = 1024 * 1024
 
 /**
- * A dropped answer: `dropped (<case>) — rest`, where the case is one of Step 2's in the base
- * instructions. Group 1 is the case, group 2 the rest. `LEAD_CHECK_SCRIPT` embeds this same
- * pattern, so the script and `answerHolds` read a drop the same way.
+ * The rules for answering leads, as plain JavaScript source, written once: the reviewer's
+ * check.mjs embeds this text, and the server turns the same text into functions (`LEAD_RULES`)
+ * to check the answers again after the run, so the two can never disagree. No imports: the
+ * reviewer's workspace has node and nothing else.
+ *
+ * - `DROPPED`: a dropped answer, `dropped (<case>) — rest`, where the case is one of Step 2's
+ *   in the base instructions. Group 1 is the case, group 2 the rest.
+ * - `answersOf`: each answer in leads-answered.md, by lead id — the text after `- L4:`.
+ * - `answerHolds`: whether an answer accounts for its lead: a problem, or a drop that names its
+ *   case. The person's own message (`msgId` set) is dropped only with a quote of that message,
+ *   read like an evidence quote; `textOf` gives a record's text by its msg id.
  */
+const LEAD_RULES_JS = String.raw`
+const QUOTE_MIN = ${LIMITS.quoteMin}
 const DROPPED =
   /^dropped\s*\((did not happen|no kind|exception:\s*(?:repeated-failures|repeated-command|idle-gap))\)\s+[—–]\s+(.+)$/
+const JSON_ESCAPES = { n: " ", r: " ", t: " " }
+const squash = (text) =>
+  String(text)
+    .replace(/\\(["\\/nrt])/g, (_, char) => JSON_ESCAPES[char] ?? char)
+    .replace(/["“”]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase()
+const answersOf = (text) =>
+  new Map([...String(text).matchAll(/^\s*-\s+(L\d+):\s*(.*)$/gm)].map((m) => [m[1], m[2]]))
+const answerHolds = (answer, msgId, textOf) => {
+  if (answer === undefined) return false
+  if (/^problem\b/.test(answer)) return true
+  const rest = DROPPED.exec(answer)?.[2]
+  if (rest === undefined) return false
+  if (msgId === undefined) return true
+  const m = /^(msg-\d+)\s+[—–]\s+["“](.+)["”]\s+[—–]\s+\S/.exec(rest)
+  if (m === null || m[1] !== msgId) return false
+  const text = textOf(msgId)
+  if (text === undefined) return false
+  const haystack = squash(text)
+  const pieces = m[2].split(/…|\.\.\./).map(squash).filter(Boolean)
+  return pieces.join("").length >= QUOTE_MIN && pieces.every((piece) => haystack.includes(piece))
+}
+`
+
+const LEAD_RULES = new Function(`${LEAD_RULES_JS}\nreturn { answersOf, answerHolds }`)() as {
+  answersOf: (text: string) => Map<string, string>
+  answerHolds: (
+    answer: string | undefined,
+    msgId: string | undefined,
+    textOf: (msgId: string) => string | undefined,
+  ) => boolean
+}
 
 /**
- * A script the reviewer runs before it finishes: it lists every lead id in leads.md that
- * leads-answered.md has not answered, every drop that names no case (`DROPPED`), and every
- * person's message dropped without quoting that message. Plain node, no dependencies — the
- * workspace has node and nothing else. Must check answers the same way as `answersOf` and
- * `answerHolds`, which check them again after the run; the quote is read like an evidence
- * quote (`quoteChecker`).
+ * The script the reviewer runs before it finishes: it lists every lead id in leads.md that
+ * leads-answered.md has not answered, every drop that names no case, and every person's message
+ * dropped without quoting that message. The rules are `LEAD_RULES_JS`, the same the server
+ * checks the answers with after the run.
  */
 const LEAD_CHECK_SCRIPT = String.raw`import { readFileSync } from "node:fs"
-const QUOTE_MIN = ${LIMITS.quoteMin}
-const DROPPED = ${DROPPED}
+${LEAD_RULES_JS}
 const leadsMd = readFileSync("leads.md", "utf8")
 const leads = [...leadsMd.matchAll(/^- (L\d+) /gm)].map((m) => m[1])
 const humanPart = leadsMd.split(/^## /m).find((part) => part.startsWith("${HUMAN_SECTION}\n")) ?? ""
 const human = new Map([...humanPart.matchAll(/^- (L\d+) (msg-\d+):/gm)].map((m) => [m[1], m[2]]))
-const answersMd = readFileSync("leads-answered.md", "utf8")
-const answers = new Map([...answersMd.matchAll(/^\s*-\s+(L\d+):\s*(.*)$/gm)].map((m) => [m[1], m[2]]))
+const answers = answersOf(readFileSync("leads-answered.md", "utf8"))
 const records = new Map(
   readFileSync("session.json", "utf8")
     .split("\n")
@@ -56,22 +95,11 @@ const records = new Map(
     .map((line) => JSON.parse(line.replace(/,$/, "")))
     .map((record) => [record.id, record]),
 )
-const JSON_ESCAPES = { n: " ", r: " ", t: " " }
-const squash = (text) =>
-  text
-    .replace(/\\(["\\/nrt])/g, (_, char) => JSON_ESCAPES[char] ?? char)
-    .replace(/["“”]/g, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase()
-const quotesOwnMessage = (answer, msgId) => {
-  if (/^problem\b/.test(answer)) return true
-  const m = /^(msg-\d+)\s+[—–]\s+["“](.+)["”]\s+[—–]\s+\S/.exec(DROPPED.exec(answer)?.[2] ?? "")
-  if (m === null || m[1] !== msgId) return false
-  const record = records.get(msgId) ?? {}
-  const text = squash([record.text, record.toolName, record.input, record.output].filter(Boolean).join(" "))
-  const pieces = m[2].split(/…|\.\.\./).map(squash).filter(Boolean)
-  return pieces.join("").length >= QUOTE_MIN && pieces.every((piece) => text.includes(piece))
+const textOf = (msgId) => {
+  const record = records.get(msgId)
+  return record === undefined
+    ? undefined
+    : [record.text, record.toolName, record.input, record.output].filter(Boolean).join(" ")
 }
 const missing = leads.filter((id) => !answers.has(id))
 if (missing.length > 0) {
@@ -83,49 +111,13 @@ if (noCase.length > 0) {
   console.log("Drops that name no case: " + noCase.join(", ") + ". Write - " + noCase[0] + ": dropped (did not happen | no kind | exception: repeated-failures | exception: repeated-command | exception: idle-gap) — why")
   process.exit(1)
 }
-const unquoted = leads.filter((id) => human.has(id) && !quotesOwnMessage(answers.get(id), human.get(id)))
+const unquoted = leads.filter((id) => human.has(id) && !answerHolds(answers.get(id), human.get(id), textOf))
 if (unquoted.length > 0) {
   console.log("Human messages dropped without quoting the message itself: " + unquoted.join(", ") + ". Write - " + unquoted[0] + ': dropped (<case>) — ' + human.get(unquoted[0]) + ' — "their exact words" — why it is an ordinary answer')
   process.exit(1)
 }
 console.log("All " + leads.length + " leads accounted for.")
 `
-
-/**
- * Each answer in leads-answered.md, by lead id: the text after `- L4:`. Must read answers the
- * same way as `LEAD_CHECK_SCRIPT`.
- */
-const answersOf = (answers: string): Map<string, string> =>
-  new Map(
-    [...answers.matchAll(/^\s*-\s+(L\d+):\s*(.*)$/gm)].map((match) => [
-      match[1] as string,
-      match[2] as string,
-    ]),
-  )
-
-/**
- * Whether an answer accounts for its lead: a problem, or a drop that names its case (see
- * `DROPPED`). The person's own message (`msgId` set) is dropped only with a quote of the
- * message itself. Must hold answers to the same rules as `LEAD_CHECK_SCRIPT`.
- */
-const answerHolds = (
-  answer: string | undefined,
-  msgId: string | undefined,
-  quote: ReturnType<typeof quoteChecker>,
-): boolean => {
-  if (answer === undefined) return false
-  if (/^problem\b/.test(answer)) return true
-  const dropped = DROPPED.exec(answer)?.[2]
-  if (dropped === undefined) return false
-  if (msgId === undefined) return true
-  const evidence = parseEvidenceLine(dropped)
-  return (
-    evidence !== undefined &&
-    evidence.from === msgId &&
-    evidence.to === msgId &&
-    quote(evidence) === undefined
-  )
-}
 
 export type PreparedProblems = {
   readonly found: FoundLeads
@@ -244,15 +236,19 @@ export const readProblemReview = (
     return missing.length === 0
   })
   const checked = checkEvidence({ ...parsed.value, problems: complete }, records)
-  const answers = answersOf(options.leadAnswers ?? "")
+  const answers = LEAD_RULES.answersOf(options.leadAnswers ?? "")
   const ownMessage = new Map((options.humanLeads ?? []).map((lead) => [lead.id, lead.msgId]))
-  const quote = quoteChecker(records)
+  const byId = new Map(records.map((record) => [record.id, record]))
+  const textOf = (msgId: string): string | undefined => {
+    const record = byId.get(msgId)
+    return record === undefined ? undefined : recordText(record)
+  }
   return {
     ok: true,
     review: checked.review,
     dropped: [...parsed.dropped, ...missingExtra, ...checked.dropped],
     unaccountedLeads: (options.leadIds ?? []).filter(
-      (id) => !answerHolds(answers.get(id), ownMessage.get(id), quote),
+      (id) => !LEAD_RULES.answerHolds(answers.get(id), ownMessage.get(id), textOf),
     ),
   }
 }
