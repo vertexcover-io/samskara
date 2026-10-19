@@ -350,7 +350,7 @@ const squash = (text: string): string =>
     .toLowerCase()
 
 /** Everything a record says, as one searchable string. */
-const recordText = (record: SessionExportRecord): string =>
+export const recordText = (record: SessionExportRecord): string =>
   [record.text, record.toolName, record.input, record.output].filter(Boolean).join(" ")
 
 /**
