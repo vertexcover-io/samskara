@@ -1039,12 +1039,9 @@ The agent claimed the build was fixed after the tests failed.
     ) => {
       const seen: Array<{ files: string[]; contract?: string; user?: string; leads?: string }> = []
       const runner: HarnessRunner = {
-        run: async ({ workspaceDir }) => {
+        run: async ({ workspaceDir, oneShot }) => {
           const has = (name: string) => existsSync(join(workspaceDir, name))
-          if (has("READER.md")) {
-            writeFileSync(join(workspaceDir, "leads.md"), readerLeads)
-            return { stdout: "read", firstByteMs: 1 }
-          }
+          if (oneShot) return { stdout: readerLeads, firstByteMs: 1 }
           if (has("USER.md")) {
             seen.push({
               files: ["USER.md"],
@@ -1240,7 +1237,7 @@ The agent claimed the build was fixed after the tests failed.
         problemsMd("the build is fixed"),
         undefined,
         undefined,
-        "- L1: dropped — the opening request\n",
+        "- L1: dropped (no kind) — the opening request\n",
       )
       await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "problems" })
       const signals = (await persistedSignals()) as {
@@ -1272,11 +1269,8 @@ The agent claimed the build was fixed after the tests failed.
 
     test("PR13: a reviewer whose harness fails after the readers ends the run as harnessFailed, and saves nothing", async () => {
       const runner: HarnessRunner = {
-        run: async ({ workspaceDir }) => {
-          if (existsSync(join(workspaceDir, "READER.md"))) {
-            writeFileSync(join(workspaceDir, "leads.md"), "Nothing found.")
-            return { stdout: "read", firstByteMs: 1 }
-          }
+        run: async ({ oneShot }) => {
+          if (oneShot) return { stdout: "Nothing found.", firstByteMs: 1 }
           throw new Error("claude exited with code 1")
         },
       }

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process"
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, test } from "vitest"
@@ -105,10 +105,13 @@ describe("problem review run", () => {
 
 describe("leads the reviewer must answer", () => {
   /** Runs the staged check.mjs against `answers`, the way the reviewer does. */
-  const runCheck = (answers: string): { code: number; out: string } => {
+  const runCheck = (
+    answers: string,
+    session: SessionExport = exported,
+  ): { code: number; out: string } => {
     const dir = mkdtempSync(join(tmpdir(), "rr-check-"))
     try {
-      const { files } = problemReviewFiles(exported, "# How to review")
+      const { files } = problemReviewFiles(session, "# How to review")
       for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text)
       writeFileSync(join(dir, "leads-answered.md"), answers)
       try {
@@ -135,17 +138,85 @@ describe("leads the reviewer must answer", () => {
     // L1 is the person's "fix the build", msg-0.
     const unquoted = {
       code: 1,
-      out: 'Human messages dropped without quoting the message itself: L1. Write - L1: dropped — msg-N — "their exact words" — why it is an ordinary answer\n',
+      out: 'Human messages dropped without quoting the message itself: L1. Write - L1: dropped (<case>) — msg-0 — "their exact words" — why it is an ordinary answer\n',
     }
-    expect(runCheck("- L1: dropped — fine\n")).toEqual(unquoted)
-    expect(runCheck('- L1: dropped — msg-1 — "all tests pass" — the agent said so\n')).toEqual(
+    expect(runCheck("- L1: dropped (did not happen) — fine\n")).toEqual(unquoted)
+    expect(
+      runCheck('- L1: dropped (no kind) — msg-1 — "all tests pass" — the agent said so\n'),
+    ).toEqual(unquoted)
+    expect(runCheck('- L1: dropped (no kind) — msg-0 — "something else" — the ask\n')).toEqual(
       unquoted,
     )
-    expect(runCheck('- L1: dropped — msg-0 — "something else" — the ask\n')).toEqual(unquoted)
-    expect(runCheck('- L1: dropped — msg-0 — "Fix the build" — the opening ask\n')).toEqual({
+    expect(
+      runCheck('- L1: dropped (no kind) — msg-0 — "Fix the build" — the opening ask\n'),
+    ).toEqual({
       code: 0,
       out: "All 1 leads accounted for.\n",
     })
+  })
+
+  /** A session whose one code lead is not the person's: a command failing three times. */
+  const failing: SessionExport = {
+    ...exported,
+    records: [0, 1, 2].map((n) => ({
+      seq: n,
+      id: `msg-${n}`,
+      msgType: "toolCall" as const,
+      toolName: "Bash",
+      track: "main",
+      input: "bun test",
+      status: "failure" as const,
+      output: "1 failed",
+    })),
+  }
+  const noCase = {
+    code: 1,
+    out: "Drops that name no case: L1. Write - L1: dropped (did not happen | no kind | exception: repeated-failures | exception: repeated-command | exception: idle-gap) — why\n",
+  }
+
+  test("RR8d: check.mjs rejects a drop that names no case, and accepts each case", () => {
+    // Code finds five leads in `failing`; the rest are answered so only L1's answer counts.
+    const rest = ["L2", "L3", "L4", "L5"].map(
+      (id) => `- ${id}: dropped (no kind) — msg-1 — "1 failed" — ${id} failed as planned\n`,
+    )
+    const checkL1 = (answer: string, session: SessionExport) =>
+      runCheck(`${answer}${rest.join("")}`, session)
+    expect(checkL1("- L1: dropped — minor\n", failing)).toEqual(noCase)
+    expect(checkL1("- L1: dropped (minor) — small\n", failing)).toEqual(noCase)
+    expect(checkL1("- L1: dropped (exception: whatever) — small\n", failing)).toEqual(noCase)
+    for (const kase of [
+      "did not happen",
+      "no kind",
+      "exception: repeated-failures",
+      "exception: repeated-command",
+      "exception: idle-gap",
+    ])
+      expect(
+        checkL1(`- L1: dropped (${kase}) — msg-0 — "bun test" — the red step\n`, failing).code,
+      ).toBe(0)
+    expect(
+      checkL1("- L1: problem (kind: repeated-failures) — Tests kept failing\n", failing).code,
+    ).toBe(0)
+  })
+
+  test("RR9d: code agrees with check.mjs: a drop must name its case", () => {
+    const read = (leadAnswers: string) => {
+      const result = readProblemReview(reviewMd("all tests pass"), exported.records, {
+        leadIds: ["L1"],
+        leadAnswers,
+      })
+      return result.ok && result.unaccountedLeads
+    }
+    expect(read("- L1: dropped — minor\n")).toEqual(["L1"])
+    expect(read("- L1: dropped (minor) — small\n")).toEqual(["L1"])
+    expect(read("- L1: dropped (exception: whatever) — small\n")).toEqual(["L1"])
+    expect(
+      read('- L1: dropped (exception: idle-gap) — msg-1 — "all tests pass" — the turn had ended\n'),
+    ).toEqual([])
+    expect(
+      read('- L1: dropped (did not happen) — msg-1 — "all tests pass" — no such failure\n'),
+    ).toEqual([])
+    expect(read("- L1: problem (kind: false-done) — Claimed tests passed\n")).toEqual([])
   })
 
   test("RR9: code agrees with check.mjs on which leads the review skipped", () => {
@@ -156,7 +227,7 @@ describe("leads the reviewer must answer", () => {
       })
     const none = read()
     expect(none.ok && none.unaccountedLeads).toEqual(["L1", "L2"])
-    const some = read("  - L1: dropped — fine\n")
+    const some = read("  - L1: dropped (did not happen) — fine\n")
     expect(some.ok && some.unaccountedLeads).toEqual(["L2"])
   })
 
@@ -169,10 +240,14 @@ describe("leads the reviewer must answer", () => {
       })
       return result.ok && result.unaccountedLeads
     }
-    expect(read("- L1: dropped — fine\n")).toEqual(["L1"])
-    expect(read('- L1: dropped — msg-1 — "all tests pass" — the agent said so\n')).toEqual(["L1"])
-    expect(read('- L1: dropped — msg-0 — "fix the build" — the opening ask\n')).toEqual([])
-    expect(read("- L1: problem — Claimed tests passed\n")).toEqual([])
+    expect(read("- L1: dropped (did not happen) — fine\n")).toEqual(["L1"])
+    expect(
+      read('- L1: dropped (no kind) — msg-1 — "all tests pass" — the agent said so\n'),
+    ).toEqual(["L1"])
+    expect(read('- L1: dropped (no kind) — msg-0 — "fix the build" — the opening ask\n')).toEqual(
+      [],
+    )
+    expect(read("- L1: problem (kind: false-done) — Claimed tests passed\n")).toEqual([])
   })
 })
 
@@ -264,10 +339,9 @@ describe("prepareProblems", () => {
   test("ST1: readers read the session, and their leads come first in leads.md, before code's", async () => {
     const runs: string[] = []
     const runner: HarnessRunner = {
-      run: async ({ workspaceDir: dir }) => {
-        runs.push(readFileSync(join(dir, "READER.md"), "utf8").slice(0, 20))
-        writeFileSync(join(dir, "leads.md"), '- msg-1 — "all tests pass" — nothing ran first')
-        return { stdout: "done", firstByteMs: 1 }
+      run: async ({ prompt }) => {
+        runs.push(prompt.slice(0, 20))
+        return { stdout: '- msg-1 — "all tests pass" — nothing ran first', firstByteMs: 1 }
       },
     }
     const result = await prepareProblems({
@@ -318,7 +392,8 @@ describe("readProblemWorkspace", () => {
     const read1 = await withFiles(
       {
         "review.md": reviewMd("all tests pass"),
-        "leads-answered.md": '- L1: dropped — msg-0 — "fix the build" — the opening ask\n',
+        "leads-answered.md":
+          '- L1: dropped (no kind) — msg-0 — "fix the build" — the opening ask\n',
       },
       read,
     )

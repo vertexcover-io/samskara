@@ -610,18 +610,12 @@ describe("reviewSessionCommand", () => {
       stderr,
       stdout: capture(),
       createRunner: () => ({
-        run: async ({ workspaceDir }) => {
-          const isReader = await readFile(join(workspaceDir, "READER.md"), "utf8").then(
-            () => true,
-            () => false,
-          )
-          if (isReader) {
-            await writeFile(
-              join(workspaceDir, "leads.md"),
-              `- ${record.id} — "hi" — said nothing about what it was looking for\n`,
-            )
-            return { stdout: "read", firstByteMs: 1 }
-          }
+        run: async ({ workspaceDir, oneShot }) => {
+          if (oneShot)
+            return {
+              stdout: `- ${record.id} — "hi" — said nothing about what it was looking for\n`,
+              firstByteMs: 1,
+            }
           await writeFile(join(workspaceDir, "review.md"), reviewMd(record.id))
           return { stdout: "done", firstByteMs: 1 }
         },

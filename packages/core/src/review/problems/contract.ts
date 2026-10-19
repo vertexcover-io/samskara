@@ -16,24 +16,47 @@ so every problem must make sense on its own.
 
 ## Step 1: find leads
 
-A lead is something worth a closer look, not yet a problem. Look for these:
+A lead is something worth a closer look, not yet a problem. Look for these kinds, each with
+the short name you cite it by:
 
-- A human message that corrects, redirects, repeats an earlier ask, or asks what something means
-- A question the agent asked when the answer was already in the session
-- The person interrupting or stopping the agent
-- Three or more failures of the same kind of command
-- The same command run three or more times
-- A gap over 5 minutes. It counts only if no helper agent was running and no question was
-  waiting for an answer
-- Blocked permissions, hook errors, API errors, a helper agent that died
-- The agent saying something is done, and later it turns out it was not
-- Checks run against fake, mocked or injected data
-- The same fact worked out twice
+- \`human-message\`: a human message that corrects, redirects, repeats an earlier ask, or asks
+  what something means
+- \`needless-question\`: a question the agent asked when the answer was already in the session
+- \`interrupted\`: the person interrupting or stopping the agent
+- \`repeated-failures\`: three or more failures of the same kind of command
+- \`repeated-command\`: the same command run three or more times
+- \`idle-gap\`: a gap over 5 minutes. It counts only if no helper agent was running and no
+  question was waiting for an answer
+- \`tool-error\`: blocked permissions, hook errors, API errors, a helper agent that died
+- \`not-done\`: the agent saying something is done, and later it turns out it was not
+- \`fake-data\`: checks run against fake, mocked or injected data
+- \`worked-twice\`: the same fact worked out twice
+- \`wrong-claim\`: a claim the agent makes that turns out wrong
+- \`workaround\`: a blocked command worked around instead of reported
+- \`hidden-warning\`: a warning or a secret in the output of a command that succeeded
+- \`wrong-check\`: a step that tested or checked the wrong thing
+- \`rules-disagree\`: two rules or documents that disagree
+- \`by-hand\`: work done by hand that a step should have done
 
 ## Step 2: check each lead
 
-Read about 10 records before and 10 after it. Answer: what was the agent doing, what
-happened, what happened next, what did it cost. Drop a lead that turns out to be fine.
+Read about 10 records before and 10 after it. Answer: what happened, and what did it cost.
+
+Every Step 1 item that really happened is a problem. Drop a lead only in one of these cases:
+
+- \`did not happen\`: the session shows it did not happen.
+- \`no kind\`: it matches no kind in Step 1.
+- \`exception\`: it is one of these three kinds, and its exception holds:
+  - \`exception: repeated-failures\`: the agent said beforehand that it expected the failure
+    (for example the red step of a test-first change), and its next step went as planned.
+  - \`exception: repeated-command\`: a file was edited or the input changed between every two
+    runs.
+  - \`exception: idle-gap\`: right before the gap, the agent had finished its turn with nothing
+    pending.
+
+Small is not a reason to drop: give it low severity. Recovered is not a reason to drop: its
+class is slow. A person asking and getting an answer is still a \`human-message\` problem when
+the message corrects, repeats or asks what something means.
 
 ## Step 3: one root cause, one problem
 
@@ -41,9 +64,8 @@ Leads with the same cause become one problem, with each incident listed under it
 
 ## Step 4: label each problem
 
-- Class: missed (nobody caught it; report only if it matters), blocked (a human had to step
-  in), slow (the agent recovered but lost time), caught (a check found it; report only if a
-  rule would have prevented it).
+- Class: who caught it. missed (nobody caught it), blocked (a human had to step in), slow (the
+  agent recovered but lost time), caught (a check or review found it).
 - Severity: high, medium or low, with one sentence why. A wrong result ranks above lost time.
   A human catching it does not make it less serious.
 - Fix type: where the fix goes. skill (a skill or instruction file the agent follows), code (a
@@ -72,22 +94,30 @@ export const REVIEW_OUTPUT_CONTRACT = `# Files and output (fixed)
 ## Your working directory
 
 - \`leads.md\` — leads in this session, one per line with an id (\`L1\`, \`L2\`, …): what readers
-  found going through every piece of it, then what code found. This is Step 1, done for you. A
-  lead is a place to look, not yet a problem, and its own summary may be wrong.
+  found going through every piece of it, then what code found. Readers looked for the kinds in
+  Step 1. A lead is a place to look, not yet a problem, and its own summary may be wrong.
 - \`session.json\` — the session, one record per line. Every record has \`id\` (\`msg-N\`),
   \`seq\`, \`msgType\`, \`role\`, \`track\`, \`ts\` (epoch ms), and \`text\`, or for a tool call
   \`toolName\`, \`input\`, \`status\` and \`output\`. It can be large: search it with grep or a
   short node script, and read ranges around what you look up. Do not read it whole.
 - \`review.md\` — the review you write. It starts with the header filled with placeholders.
 - \`leads-answered.md\` — your answer to every lead, which you write.
-- \`check.mjs\` — lists the leads you have not answered yet.
+- \`check.mjs\` — lists the leads you have not answered yet, drops that name no case, and the
+  person's messages dropped without quoting them.
 
-Do Steps 2 to 4 for the leads: check each one in the session, put leads with the same cause
-into one problem, and write the real problems in review.md. Answer every lead in \`leads-answered.md\`, one line each:
-\`- L4: problem — <title of its problem>\` or \`- L4: dropped — <why it did not happen or is
-fine>\`. A lead under "Human messages" is the person's own message: drop it only by quoting
-it, \`- L4: dropped — msg-3911 — "their exact words" — why it is an ordinary answer\`. Then run
-\`node check.mjs\`. You are not done until it says all are accounted for.
+Do Steps 2 to 4 for the leads: check each one in the session against the kinds in Step 1, put
+leads with the same cause into one problem, and write the real problems in review.md. Answer
+every lead in \`leads-answered.md\`, one line each:
+
+- \`- L4: problem (kind: <kind>) — <title of its problem>\`, or
+- \`- L4: dropped (<case>) — msg-N — "exact words" — why\`, where the case is one of Step 2's:
+  \`did not happen\`, \`no kind\`, or \`exception: <kind>\`.
+
+A lead under "Human messages" is the person's own message: drop it only by quoting it, with
+its own msg-N, \`- L4: dropped (no kind) — msg-3911 — "their exact words" — why it is an ordinary
+answer\`.
+
+Then run \`node check.mjs\`. You are not done until it says all are accounted for.
 
 ## review.md
 

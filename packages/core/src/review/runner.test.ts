@@ -493,3 +493,84 @@ describe("createMsbWrappedRunner", () => {
     expect(terminateHarnessChildren()).toBe(0)
   }, 30_000)
 })
+
+describe("one-shot runs", () => {
+  /** A fake harness that records its argv and stdin, then replies with `reply`. */
+  const writeEcho = (workspaceDir: string, capturePath: string, reply: string): string => {
+    const script = join(workspaceDir, "fake-harness.sh")
+    writeFileSync(
+      script,
+      [
+        "#!/usr/bin/env bash",
+        `node -e 'const fs = require("fs"); fs.writeFileSync(process.argv[1], JSON.stringify({argv: process.argv.slice(2), stdin: fs.readFileSync(0, "utf8")}))' "${capturePath}" "$@"`,
+        `echo '${reply}'`,
+      ].join("\n"),
+    )
+    chmodSync(script, 0o755)
+    return script
+  }
+  const captured = (path: string) =>
+    JSON.parse(readFileSync(path, "utf8")) as { argv: string[]; stdin: string }
+  /** Far past Linux's 128 KiB cap on one argv string, which is why it goes on stdin. */
+  const bigPrompt = `read this ${"x".repeat(300_000)}`
+
+  test("R5: claude answers once with no tools, the prompt on stdin and the reply as stdout", async () => {
+    const workspaceDir = mkdtempSync(join(tmpdir(), "samskara-claude-test-"))
+    const capturePath = join(workspaceDir, "captured.json")
+    const runner = createClaudeRunner({
+      model: "sonnet",
+      timeoutMs: 30_000,
+      log: log(),
+      command: writeEcho(workspaceDir, capturePath, "- msg-1 — lead"),
+    })
+    const result = await runner.run({ prompt: bigPrompt, workspaceDir, oneShot: true })
+    expect(captured(capturePath)).toEqual({
+      argv: [
+        "-p",
+        "--model",
+        "sonnet",
+        "--output-format",
+        "text",
+        "--tools",
+        "",
+        "--strict-mcp-config",
+      ],
+      stdin: bigPrompt,
+    })
+    expect(result.stdout.trim()).toBe("- msg-1 — lead")
+  })
+
+  test("R6: opencode gets a one-shot prompt on stdin too, with no message argument", async () => {
+    const workspaceDir = mkdtempSync(join(tmpdir(), "samskara-runner-test-"))
+    const capturePath = join(workspaceDir, "captured.json")
+    const runner = createOpencodeRunner({
+      model: "fake-model",
+      timeoutMs: 30_000,
+      log: log(),
+      command: writeEcho(workspaceDir, capturePath, "Nothing found."),
+    })
+    const result = await runner.run({ prompt: bigPrompt, workspaceDir, oneShot: true })
+    expect(captured(capturePath)).toEqual({
+      argv: ["run", "--model", "fake-model"],
+      stdin: bigPrompt,
+    })
+    expect(result.stdout.trim()).toBe("Nothing found.")
+  })
+
+  test("MR10: msb reads a one-shot prompt from a file in the workspace, not from the command line", async () => {
+    const workspaceDir = mkdtempSync(join(tmpdir(), "samskara-msb-test-"))
+    const capturePath = join(workspaceDir, "captured.json")
+    const runner = createMsbWrappedRunner({
+      model: "x",
+      timeoutMs: 30_000,
+      log: log(),
+      msbBin: writeFakeMsb(workspaceDir, capturePath),
+    })
+    await runner.run({ prompt: bigPrompt, workspaceDir, oneShot: true })
+    const argv = (JSON.parse(readFileSync(capturePath, "utf8")) as CapturedInvocation).argv
+    const inner = argv[argv.indexOf("-lc") + 1] ?? ""
+    expect(inner.trimEnd().endsWith("opencode run --model 'x' </work/prompt.txt")).toBe(true)
+    expect(argv.join(" ")).not.toContain("read this")
+    expect(readFileSync(join(workspaceDir, "prompt.txt"), "utf8")).toBe(bigPrompt)
+  })
+})
