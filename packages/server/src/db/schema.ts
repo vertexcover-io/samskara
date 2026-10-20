@@ -1,4 +1,4 @@
-import { MSG_TYPES } from "@samskara/core"
+import { FIX_TYPES, MSG_TYPES, PROBLEM_CLASSES, PROBLEM_SEVERITIES } from "@samskara/core"
 import { sql } from "drizzle-orm"
 import {
   type AnyPgColumn,
@@ -63,6 +63,9 @@ const searchVector = (table: SearchTable) =>
   )
 
 const msgTypeValues = MSG_TYPES.map((t) => `'${t}'`).join(", ")
+const problemClassValues = PROBLEM_CLASSES.map((v) => `'${v}'`).join(", ")
+const problemSeverityValues = PROBLEM_SEVERITIES.map((v) => `'${v}'`).join(", ")
+const fixTypeValues = FIX_TYPES.map((v) => `'${v}'`).join(", ")
 
 const createdAt = timestamp("createdAt", { withTimezone: true }).notNull().defaultNow()
 const updatedAt = timestamp("updatedAt", { withTimezone: true }).notNull().defaultNow()
@@ -559,5 +562,50 @@ export const learningSessions = pgTable(
   (t) => [
     primaryKey({ columns: [t.learningId, t.sessionId] }),
     index("learningSessions_sessionId_idx").on(t.sessionId),
+  ],
+)
+
+/**
+ * One problem a review found in a session, exactly as the reviewer wrote it and code checked
+ * it: never merged with another row, so the same problem in two sessions is two rows and the
+ * grouping step decides what repeats. Replaced as a set when the review is redone. Kept apart
+ * from `learnings`, which the lens reviewer writes and merges by title.
+ */
+export const reviewProblems = pgTable(
+  "reviewProblems",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    reviewId: uuid("reviewId")
+      .notNull()
+      .references(() => sessionReviews.id, { onDelete: "cascade" }),
+    sessionId: text("sessionId")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    projectId: uuid("projectId")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    /** Order within the review, as the reviewer wrote it. */
+    position: integer("position").notNull(),
+    title: text("title").notNull(),
+    class: text("class").notNull(),
+    severity: text("severity").notNull(),
+    severityReason: text("severityReason").notNull(),
+    fixType: text("fixType").notNull(),
+    description: text("description").notNull(),
+    /** `{ from, to, quote, why }[]`, every quote checked against the session before saving. */
+    evidence: jsonb("evidence").notNull(),
+    learning: text("learning").notNull(),
+    extra: jsonb("extra").notNull().default({}),
+    createdAt,
+  },
+  (t) => [
+    check("reviewProblems_class_check", sql`${t.class} in (${sql.raw(problemClassValues)})`),
+    check(
+      "reviewProblems_severity_check",
+      sql`${t.severity} in (${sql.raw(problemSeverityValues)})`,
+    ),
+    check("reviewProblems_fixType_check", sql`${t.fixType} in (${sql.raw(fixTypeValues)})`),
+    index("reviewProblems_reviewId_idx").on(t.reviewId),
+    index("reviewProblems_projectId_idx").on(t.projectId),
   ],
 )
