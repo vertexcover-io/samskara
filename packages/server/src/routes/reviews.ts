@@ -405,7 +405,7 @@ export const reviewRoutes = ({
         return c.json({ error: "noAiReview" }, 404)
       const rows = await listReviewsForSession(db, userId, sessionId)
       const row = rows.find((review) => review.analyzer === PROBLEMS_ANALYZER)
-      const job = aiReviewJobs.activeJobForSession(sessionId)
+      const job = aiReviewJobs.activeJobForSession(sessionId, "problems")
       if (row === undefined && job === undefined) return c.json({ error: "noAiReview" }, 404)
       const problems =
         row === undefined ? [] : await listProblemsForSession(db, userId, sessionId, row.id)
@@ -456,7 +456,7 @@ export const reviewRoutes = ({
         return c.json({ error: "noAiReview" }, 404)
       const rows = await listReviewsForSession(db, c.get("user").id, sessionId)
       const row = rows.find((review) => review.analyzer === AI_ANALYZER)
-      const job = aiReviewJobs.activeJobForSession(sessionId)
+      const job = aiReviewJobs.activeJobForSession(sessionId, "lenses")
       if (row === undefined && job === undefined) return c.json({ error: "noAiReview" }, 404)
       return c.json(
         {

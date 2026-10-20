@@ -375,7 +375,7 @@ export const reviewSessionCommand = async (
       ? null
       : missingCredentialMessage(settings.harness, env)
 
-  // The run's model settings, used for the merge agent and the reviewer alike.
+  // The run's model settings, used for the merge and the reviewer alike.
   const makeRunner = (): HarnessRunner => {
     if (missingCredential !== null) throw new Error(missingCredential)
     return (options.createRunner ?? defaultRunner)({

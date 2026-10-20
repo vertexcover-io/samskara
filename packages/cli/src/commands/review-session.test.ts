@@ -54,6 +54,9 @@ One short session with a single read.
 - **Learning:** Say what you are looking for before reading a file.
 `
 
+/** The user's prompt when a run is the prompt merge, which carries it between USER markers. */
+const mergedUser = (prompt: string) => /^<<<USER\n([\s\S]*?)\nUSER>>>$/m.exec(prompt)?.[1]
+
 /** A filled-in lens deliverable citing the first record the export actually produced. */
 const reviewXml = (messageId: string, seq: number) => `<?xml version="1.0" encoding="UTF-8"?>
 <review outcome="productive" friction="moderate" model="?" harness="?">
@@ -467,12 +470,10 @@ describe("reviewSessionCommand", () => {
       stderr: capture(),
       stdout: capture(),
       createRunner: () => ({
-        run: async ({ workspaceDir }) => {
-          const user = await readFile(join(workspaceDir, "USER.md"), "utf8").catch(() => undefined)
-          if (user !== undefined) {
-            await writeFile(join(workspaceDir, "MERGED.md"), `# How to review\n\n${user}`)
-            return { stdout: "merged", firstByteMs: 1 }
-          }
+        run: async ({ workspaceDir, prompt }) => {
+          const user = mergedUser(prompt)
+          if (user !== undefined)
+            return { stdout: `<<<MERGED\n# How to review\n\n${user}\nMERGED>>>`, firstByteMs: 1 }
           // Readers have no CONTRACT.md; only the reviewer does.
           const isReviewer = await readFile(join(workspaceDir, "CONTRACT.md"), "utf8").then(
             () => true,
@@ -527,15 +528,13 @@ describe("reviewSessionCommand", () => {
       stderr,
       stdout: capture(),
       createRunner: () => ({
-        run: async ({ workspaceDir }) => {
-          const user = await readFile(join(workspaceDir, "USER.md"), "utf8").catch(() => undefined)
-          if (user !== undefined) {
-            await writeFile(
-              join(workspaceDir, "MERGED.md"),
-              "# How to review\n\n## Extra fields\n\n- topic: what was asked\n",
-            )
-            return { stdout: "merged", firstByteMs: 1 }
-          }
+        run: async ({ workspaceDir, prompt }) => {
+          if (mergedUser(prompt) !== undefined)
+            return {
+              stdout:
+                "<<<MERGED\n# How to review\n\n## Extra fields\n\n- topic: what was asked\nMERGED>>>",
+              firstByteMs: 1,
+            }
           await writeFile(join(workspaceDir, "review.md"), reviewMd("msg-0"))
           return { stdout: "done", firstByteMs: 1 }
         },

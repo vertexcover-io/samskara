@@ -108,12 +108,14 @@ describe("leads the reviewer must answer", () => {
   const runCheck = (
     answers: string,
     session: SessionExport = exported,
+    review: string = reviewMd("all tests pass"),
   ): { code: number; out: string } => {
     const dir = mkdtempSync(join(tmpdir(), "rr-check-"))
     try {
       const { files } = problemReviewFiles(session, "# How to review")
       for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text)
       writeFileSync(join(dir, "leads-answered.md"), answers)
+      writeFileSync(join(dir, "review.md"), review)
       try {
         return { code: 0, out: execFileSync("node", ["check.mjs"], { cwd: dir, encoding: "utf8" }) }
       } catch (error) {
@@ -128,10 +130,39 @@ describe("leads the reviewer must answer", () => {
   test("RR8: check.mjs names the leads not yet answered, and accepts an indented answer", () => {
     // Code finds one lead here: the person's "fix the build".
     expect(runCheck("")).toEqual({ code: 1, out: "Not yet answered in leads-answered.md: L1\n" })
-    expect(runCheck("  - L1: problem — Claimed tests passed\n")).toEqual({
+    expect(runCheck("  - L1: problem (kind: false-done) — Claimed tests passed\n")).toEqual({
       code: 0,
       out: "All 1 leads accounted for.\n",
     })
+  })
+
+  test("RR8e: check.mjs counts a problem answer only in full form, naming a problem in review.md", () => {
+    const noProblem = {
+      code: 1,
+      out: "Problem answers that do not name a problem in review.md: L1. Write - L1: problem (kind: <kind>) — <the ### title of its problem in review.md>\n",
+    }
+    expect(runCheck("- L1: problem\n")).toEqual(noProblem)
+    expect(runCheck("- L1: problem — Claimed tests passed\n")).toEqual(noProblem)
+    expect(runCheck("- L1: problem (kind: false-done) — Something else\n")).toEqual(noProblem)
+    expect(
+      runCheck(
+        "- L1: problem (kind: false-done) — Claimed tests passed\n",
+        exported,
+        reviewMd("all tests pass").replace("## Problems", "## Summary2"),
+      ).code,
+    ).toBe(1)
+    expect(runCheck("- L1: problem (kind: false-done) — claimed  TESTS passed\n").code).toBe(0)
+  })
+
+  test("RR8f: check.mjs rejects a Problems section with no problem that does not say Nothing to change", () => {
+    const answered = '- L1: dropped (no kind) — msg-0 — "Fix the build" — the opening ask\n'
+    const withProblems = (text: string) =>
+      reviewMd("all tests pass").replace(/## Problems[\s\S]*/, `## Problems\n\n${text}\n`)
+    expect(runCheck(answered, exported, withProblems("I could not finish the review"))).toEqual({
+      code: 1,
+      out: "## Problems has no ### problem and does not start with Nothing to change.\n",
+    })
+    expect(runCheck(answered, exported, withProblems("Nothing to change. All okay.")).code).toBe(0)
   })
 
   test("RR8b: check.mjs lets the person's message be dropped only by quoting that message", () => {
@@ -195,7 +226,7 @@ describe("leads the reviewer must answer", () => {
         checkL1(`- L1: dropped (${kase}) — msg-0 — "bun test" — the red step\n`, failing).code,
       ).toBe(0)
     expect(
-      checkL1("- L1: problem (kind: repeated-failures) — Tests kept failing\n", failing).code,
+      checkL1("- L1: problem (kind: repeated-failures) — Claimed tests passed\n", failing).code,
     ).toBe(0)
   })
 
@@ -217,6 +248,23 @@ describe("leads the reviewer must answer", () => {
       read('- L1: dropped (did not happen) — msg-1 — "all tests pass" — no such failure\n'),
     ).toEqual([])
     expect(read("- L1: problem (kind: false-done) — Claimed tests passed\n")).toEqual([])
+  })
+
+  test("RR9e: code agrees with check.mjs: a problem answer must name a problem the review kept", () => {
+    const read = (leadAnswers: string, quote = "all tests pass") => {
+      const result = readProblemReview(reviewMd(quote), exported.records, {
+        leadIds: ["L1"],
+        leadAnswers,
+      })
+      return result.ok && result.unaccountedLeads
+    }
+    expect(read("- L1: problem\n")).toEqual(["L1"])
+    expect(read("- L1: problem — Claimed tests passed\n")).toEqual(["L1"])
+    expect(read("- L1: problem (kind: false-done) — Something else\n")).toEqual(["L1"])
+    // The problem is in review.md, but its quote is not in the session, so it was thrown away.
+    expect(read("- L1: problem (kind: false-done) — Claimed tests passed\n", "never said")).toEqual(
+      ["L1"],
+    )
   })
 
   test("RR9: code agrees with check.mjs on which leads the review skipped", () => {

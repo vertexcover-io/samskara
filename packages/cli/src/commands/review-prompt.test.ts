@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises"
+import { mkdtemp, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { BASE_REVIEW_INSTRUCTIONS, type HarnessRunner } from "@samskara/core"
@@ -7,19 +7,17 @@ import { resolveReviewInstructions } from "./review-prompt.js"
 
 const quiet = { write: () => undefined }
 
-/** A merge agent that writes MERGED.md from what it was given, and counts its runs. */
+/** A merge that replies with a merged prompt from what it was given, and counts its runs. */
 const mergeAgent = () => {
   const calls: string[] = []
   const runner: HarnessRunner = {
-    run: async ({ workspaceDir }) => {
-      const user = await readFile(join(workspaceDir, "USER.md"), "utf8")
+    run: async ({ prompt }) => {
+      const user = /^<<<USER\n([\s\S]*?)\nUSER>>>$/m.exec(prompt)?.[1] ?? ""
       calls.push(user)
-      await writeFile(
-        join(workspaceDir, "MERGED.md"),
-        `# How to review\n\nmerged: ${user.trim()}\n`,
-      )
-      await writeFile(join(workspaceDir, "CHANGES.md"), "- Added to Step 1: port check\n")
-      return { stdout: "merged", firstByteMs: 5 }
+      return {
+        stdout: `<<<MERGED\n# How to review\n\nmerged: ${user.trim()}\nMERGED>>>\n<<<CHANGES\n- Added to Step 1: port check\nCHANGES>>>`,
+        firstByteMs: 5,
+      }
     },
   }
   return { runner, calls }
@@ -101,7 +99,7 @@ describe("resolveReviewInstructions", () => {
     expect(await resolve(undefined, agent.runner)).toMatchObject({ kind: "ready", source: "saved" })
   })
 
-  test("RP7: a merge agent that writes nothing is an error, and nothing is saved", async () => {
+  test("RP7: a merge that replies with nothing is an error, and nothing is saved", async () => {
     await writeFile(join(dir, "my-system.md"), "Always check the port.\n")
     const silent: HarnessRunner = { run: async () => ({ stdout: "", firstByteMs: null }) }
     const result = await resolve("my-system.md", silent)

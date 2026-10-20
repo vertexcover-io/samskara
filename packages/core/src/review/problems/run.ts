@@ -13,6 +13,8 @@ import { findLeads, HUMAN_SECTION, type Leads } from "./leads.js"
 import {
   checkEvidence,
   LIMITS,
+  NO_PROBLEMS_ERROR,
+  NOTHING_TO_CHANGE,
   type ProblemReview,
   parseReviewMd,
   recordText,
@@ -31,15 +33,20 @@ export const MAX_REVIEW_MD_BYTES = 1024 * 1024
  *
  * - `DROPPED`: a dropped answer, `dropped (<case>) — rest`, where the case is one of Step 2's
  *   in the base instructions. Group 1 is the case, group 2 the rest.
+ * - `PROBLEM`: a problem answer, `problem (kind: <kind>) — <title>`. Group 1 is the title.
+ * - `squash`: text as quotes and titles are compared — escapes, quote marks, spacing and case
+ *   ignored.
  * - `answersOf`: each answer in leads-answered.md, by lead id — the text after `- L4:`.
- * - `answerHolds`: whether an answer accounts for its lead: a problem, or a drop that names its
- *   case. The person's own message (`msgId` set) is dropped only with a quote of that message,
- *   read like an evidence quote; `textOf` gives a record's text by its msg id.
+ * - `answerHolds`: whether an answer accounts for its lead: a problem whose title is one of
+ *   `titles` (squashed), or a drop that names its case. The person's own message (`msgId` set)
+ *   is dropped only with a quote of that message, read like an evidence quote; `textOf` gives a
+ *   record's text by its msg id.
  */
 const LEAD_RULES_JS = String.raw`
 const QUOTE_MIN = ${LIMITS.quoteMin}
 const DROPPED =
   /^dropped\s*\((did not happen|no kind|exception:\s*(?:repeated-failures|repeated-command|idle-gap))\)\s+[—–]\s+(.+)$/
+const PROBLEM = /^problem\s*\(kind:\s*[^)]+\)\s+[—–]\s+(.+)$/
 const JSON_ESCAPES = { n: " ", r: " ", t: " " }
 const squash = (text) =>
   String(text)
@@ -50,9 +57,12 @@ const squash = (text) =>
     .toLowerCase()
 const answersOf = (text) =>
   new Map([...String(text).matchAll(/^\s*-\s+(L\d+):\s*(.*)$/gm)].map((m) => [m[1], m[2]]))
-const answerHolds = (answer, msgId, textOf) => {
+const answerHolds = (answer, msgId, textOf, titles) => {
   if (answer === undefined) return false
-  if (/^problem\b/.test(answer)) return true
+  if (/^problem\b/.test(answer)) {
+    const title = PROBLEM.exec(answer)?.[1]
+    return title !== undefined && titles.has(squash(title))
+  }
   const rest = DROPPED.exec(answer)?.[2]
   if (rest === undefined) return false
   if (msgId === undefined) return true
@@ -66,20 +76,27 @@ const answerHolds = (answer, msgId, textOf) => {
 }
 `
 
-const LEAD_RULES = new Function(`${LEAD_RULES_JS}\nreturn { answersOf, answerHolds }`)() as {
+const LEAD_RULES = new Function(
+  `${LEAD_RULES_JS}\nreturn { squash, answersOf, answerHolds }`,
+)() as {
+  squash: (text: string) => string
   answersOf: (text: string) => Map<string, string>
   answerHolds: (
     answer: string | undefined,
     msgId: string | undefined,
     textOf: (msgId: string) => string | undefined,
+    titles: ReadonlySet<string>,
   ) => boolean
 }
 
 /**
  * The script the reviewer runs before it finishes: it lists every lead id in leads.md that
- * leads-answered.md has not answered, every drop that names no case, and every person's message
- * dropped without quoting that message. The rules are `LEAD_RULES_JS`, the same the server
- * checks the answers with after the run.
+ * leads-answered.md has not answered, every drop that names no case, every problem answer that
+ * names no problem in review.md, and every person's message dropped without quoting that
+ * message; then it checks that a Problems section with no problem says Nothing to change. The
+ * rules are `LEAD_RULES_JS` and `NOTHING_TO_CHANGE`, the same the server checks with after the
+ * run. The server counts only problems that survive all its checks, so a title here can still
+ * be lost there — check.mjs reads only the ### headings.
  */
 const LEAD_CHECK_SCRIPT = String.raw`import { readFileSync } from "node:fs"
 ${LEAD_RULES_JS}
@@ -88,6 +105,14 @@ const leads = [...leadsMd.matchAll(/^- (L\d+) /gm)].map((m) => m[1])
 const humanPart = leadsMd.split(/^## /m).find((part) => part.startsWith("${HUMAN_SECTION}\n")) ?? ""
 const human = new Map([...humanPart.matchAll(/^- (L\d+) (msg-\d+):/gm)].map((m) => [m[1], m[2]]))
 const answers = answersOf(readFileSync("leads-answered.md", "utf8"))
+const reviewLines = readFileSync("review.md", "utf8").split("\n")
+const problemsStart = reviewLines.findIndex((line) => line.trim().toLowerCase() === "## problems")
+const problemLines = problemsStart === -1 ? [] : reviewLines.slice(problemsStart + 1)
+const problemsEnd = problemLines.findIndex((line) => /^##\s/.test(line))
+const problemsPart = problemsEnd === -1 ? problemLines : problemLines.slice(0, problemsEnd)
+const titles = new Set(
+  problemsPart.map((line) => /^###\s+(.+)$/.exec(line.trim())?.[1]).filter(Boolean).map(squash),
+)
 const records = new Map(
   readFileSync("session.json", "utf8")
     .split("\n")
@@ -111,9 +136,18 @@ if (noCase.length > 0) {
   console.log("Drops that name no case: " + noCase.join(", ") + ". Write - " + noCase[0] + ": dropped (did not happen | no kind | exception: repeated-failures | exception: repeated-command | exception: idle-gap) — why")
   process.exit(1)
 }
-const unquoted = leads.filter((id) => human.has(id) && !answerHolds(answers.get(id), human.get(id), textOf))
+const noProblem = leads.filter((id) => /^problem\b/.test(answers.get(id)) && !answerHolds(answers.get(id), undefined, textOf, titles))
+if (noProblem.length > 0) {
+  console.log("Problem answers that do not name a problem in review.md: " + noProblem.join(", ") + ". Write - " + noProblem[0] + ": problem (kind: <kind>) — <the ### title of its problem in review.md>")
+  process.exit(1)
+}
+const unquoted = leads.filter((id) => human.has(id) && !answerHolds(answers.get(id), human.get(id), textOf, titles))
 if (unquoted.length > 0) {
   console.log("Human messages dropped without quoting the message itself: " + unquoted.join(", ") + ". Write - " + unquoted[0] + ': dropped (<case>) — ' + human.get(unquoted[0]) + ' — "their exact words" — why it is an ordinary answer')
+  process.exit(1)
+}
+if (titles.size === 0 && !${NOTHING_TO_CHANGE}.test(problemsPart.join("\n").trim())) {
+  console.log(${JSON.stringify(NO_PROBLEMS_ERROR)})
   process.exit(1)
 }
 console.log("All " + leads.length + " leads accounted for.")
@@ -237,6 +271,8 @@ export const readProblemReview = (
   })
   const checked = checkEvidence({ ...parsed.value, problems: complete }, records)
   const answers = LEAD_RULES.answersOf(options.leadAnswers ?? "")
+  // A problem answer counts only for a problem the review kept, after every check above.
+  const titles = new Set(checked.review.problems.map((problem) => LEAD_RULES.squash(problem.title)))
   const ownMessage = new Map((options.humanLeads ?? []).map((lead) => [lead.id, lead.msgId]))
   const byId = new Map(records.map((record) => [record.id, record]))
   const textOf = (msgId: string): string | undefined => {
@@ -248,7 +284,7 @@ export const readProblemReview = (
     review: checked.review,
     dropped: [...parsed.dropped, ...missingExtra, ...checked.dropped],
     unaccountedLeads: (options.leadIds ?? []).filter(
-      (id) => !LEAD_RULES.answerHolds(answers.get(id), ownMessage.get(id), textOf),
+      (id) => !LEAD_RULES.answerHolds(answers.get(id), ownMessage.get(id), textOf, titles),
     ),
   }
 }

@@ -395,7 +395,10 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
       run: () => new Promise<AiReviewResult>(() => {}),
       now: () => new Date("2026-08-26T20:00:00Z"),
     })
-    await request(`/api/sessions/${sessionId}/analyze`, { method: "POST" })
+    await request(`/api/sessions/${sessionId}/analyze`, {
+      method: "POST",
+      body: { reviewer: "lenses" },
+    })
 
     const res = await request(`/api/sessions/${sessionId}/aireview`)
     expect(res.status).toBe(200)
@@ -426,6 +429,25 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
     const body = (await settled.json()) as { review: unknown; job?: unknown }
     expect(body.job).toBeUndefined()
     expect(body.review).toMatchObject({ outcome: "productive" })
+  })
+
+  test("A8b: each endpoint shows only its own review's running job", async () => {
+    registry = createAiReviewJobRegistry({ run: () => new Promise<AiReviewResult>(() => {}) })
+    await request(`/api/sessions/${sessionId}/analyze`, {
+      method: "POST",
+      body: { reviewer: "lenses" },
+    })
+    // A lens review is running: the problems endpoint has nothing to show.
+    expect((await request(`/api/sessions/${sessionId}/v2/aireview`)).status).toBe(404)
+    expect((await request(`/api/sessions/${sessionId}/aireview`)).status).toBe(200)
+
+    registry = createAiReviewJobRegistry({ run: () => new Promise<AiReviewResult>(() => {}) })
+    await request(`/api/sessions/${sessionId}/analyze`, { method: "POST" })
+    // A problems review is running: the lens endpoint has nothing to show.
+    expect((await request(`/api/sessions/${sessionId}/aireview`)).status).toBe(404)
+    const v2 = await request(`/api/sessions/${sessionId}/v2/aireview`)
+    expect(v2.status).toBe(200)
+    expect(await v2.json()).toMatchObject({ review: null, job: { status: "running" } })
   })
 
   test("A9: analyze accepts a per-run harness and model in the body, and the run uses them", async () => {
@@ -618,7 +640,10 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
     registry = createAiReviewJobRegistry({
       run: () => new Promise<AiReviewResult>(() => {}),
     })
-    const started = await request(`/api/sessions/${sessionId}/analyze`, { method: "POST" })
+    const started = await request(`/api/sessions/${sessionId}/analyze`, {
+      method: "POST",
+      body: { reviewer: "lenses" },
+    })
     const { jobId } = (await started.json()) as { jobId: string }
 
     const [stranger] = await db
