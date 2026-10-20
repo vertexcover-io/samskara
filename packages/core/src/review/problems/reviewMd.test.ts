@@ -112,9 +112,23 @@ describe("parseReviewMd", () => {
     ])
   })
 
-  test("RM3: 'Nothing to change' under Problems is an empty list", () => {
-    const parsed = parseReviewMd(review("Nothing to change."))
-    expect(parsed.ok && parsed.value.problems).toEqual([])
+  test("RM3: 'Nothing to change' under Problems is an empty list, whatever follows it", () => {
+    for (const text of [
+      "Nothing to change.",
+      "Nothing to change. All okay. No problems.",
+      "nothing to change — the run went smoothly",
+    ]) {
+      const parsed = parseReviewMd(review(text))
+      expect(parsed.ok && parsed.value.problems).toEqual([])
+    }
+  })
+
+  test("RM3b: Problems with no problem and no 'Nothing to change' is an error, not an empty review", () => {
+    for (const text of ["", "No problems found.", "I could not finish the review"])
+      expect(parseReviewMd(review(text))).toEqual({
+        ok: false,
+        errors: ["## Problems has no ### problem and does not start with Nothing to change."],
+      })
   })
 
   test("RM4: a broken problem is dropped with its reasons, and the rest of the review is kept", () => {

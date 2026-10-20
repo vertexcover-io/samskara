@@ -37,7 +37,7 @@ export type ResolveInstructionsInput = {
   /** Where the saved prompt lives, `~/.samskara/review` in real use. */
   readonly configDir: string
   readonly stderr: Writer
-  /** The merge agent. Only called when a prompt is new or has changed. */
+  /** Runs the merge. Only called when a prompt is new or has changed. */
   readonly createRunner: () => HarnessRunner
   /** A dry run never calls a model, so a prompt that needs merging falls back to the base. */
   readonly dryRun?: boolean

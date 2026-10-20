@@ -1039,17 +1039,17 @@ The agent claimed the build was fixed after the tests failed.
     ) => {
       const seen: Array<{ files: string[]; contract?: string; user?: string; leads?: string }> = []
       const runner: HarnessRunner = {
-        run: async ({ workspaceDir, oneShot }) => {
+        run: async ({ workspaceDir, oneShot, prompt }) => {
           const has = (name: string) => existsSync(join(workspaceDir, name))
-          if (oneShot) return { stdout: readerLeads, firstByteMs: 1 }
-          if (has("USER.md")) {
-            seen.push({
-              files: ["USER.md"],
-              user: readFileSync(join(workspaceDir, "USER.md"), "utf8"),
-            })
-            if (merged !== "") writeFileSync(join(workspaceDir, "MERGED.md"), merged)
-            return { stdout: "merged", firstByteMs: 1 }
+          const user = /^<<<USER\n([\s\S]*?)\nUSER>>>$/m.exec(prompt)?.[1]
+          if (user !== undefined) {
+            seen.push({ files: [], user })
+            return {
+              stdout: merged === "" ? "merged" : `<<<MERGED\n${merged}\nMERGED>>>`,
+              firstByteMs: 1,
+            }
           }
+          if (oneShot) return { stdout: readerLeads, firstByteMs: 1 }
           seen.push({
             files: ["session.json", "leads.md", "CONTRACT.md"].filter((name) => has(name)),
             contract: readFileSync(join(workspaceDir, "CONTRACT.md"), "utf8"),

@@ -148,6 +148,16 @@ const blocksOf = (lines: ReadonlyArray<string>): Array<{ title: string; body: st
   return blocks
 }
 
+/**
+ * How a review with no problems says so: its Problems section starts with these words. Anything
+ * else there with no `###` problem — a note that it could not finish, a placeholder — is not an
+ * empty review. check.mjs embeds this pattern, so the reviewer hears about it before it stops.
+ */
+export const NOTHING_TO_CHANGE = /^nothing to change\b/i
+
+export const NO_PROBLEMS_ERROR =
+  "## Problems has no ### problem and does not start with Nothing to change."
+
 /** A section's body: every line after `## name` up to the next `## ` heading. */
 export const section = (lines: ReadonlyArray<string>, name: string): string[] | undefined => {
   const start = lines.findIndex((line) => line.trim().toLowerCase() === `## ${name}`)
@@ -319,6 +329,8 @@ export const parseReviewMd = (markdown: string): ParseResult => {
     return { ok: false, errors }
 
   const blocks = blocksOf(problemLines)
+  if (blocks.length === 0 && !NOTHING_TO_CHANGE.test(problemLines.join("\n").trim()))
+    return { ok: false, errors: [NO_PROBLEMS_ERROR] }
 
   const problems: Problem[] = []
   const dropped: string[] = []
