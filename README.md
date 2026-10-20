@@ -41,6 +41,12 @@ A `SessionStart` hook keeps the watcher alive: when you start a configured Claud
 makes sure the background watcher is running. The watcher polls transcripts, keeps a per-session
 checkpoint so it only sends what is new, and uploads artifacts in the background.
 
+OpenCode has no command hooks, so `samskara install-hooks --agent opencode` writes a small plugin
+to `~/.config/opencode/plugins/samskara.js` (`$XDG_CONFIG_HOME` is honoured; a non-default profile
+gets `samskara-PROFILE.js`). OpenCode loads it at startup and on every new session it runs
+`samskara ensure` from the session's directory. It only revives the watcher; capture still comes
+from `opencode.db`. Install refuses to overwrite a `samskara.js` it did not write.
+
 ## Codex capture
 
 Codex CLI 0.163.0 is the tested minimum. Install it on the capturing machine and keep `codex` on the watcher's
@@ -280,7 +286,7 @@ turns capture off for every project, and signs you out. It stops there — run `
 | `samskara tags add\|rm\|ls [TAG...] [--session-id ID]` | Read and change a session's tags, printing the resulting set. Without `--session-id` the session is `$CLAUDE_CODE_SESSION_ID`, which Claude Code exports into every command it runs; for Codex or a plain terminal, pass the native root thread ID explicitly. Tags are lowercased and may not contain spaces or commas. |
 | `samskara review-session SESSION_ID\|PATH [--source claude\|codex] [--harness opencode\|claude] [--model NAME] [--out DIR] [--dry-run]` | Review a local session with a coding harness, entirely on this machine — no login, no server, no ingest. Needs `OPENCODE_API_KEY` (opencode) or `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` (claude) exported; `AI_REVIEW_HARNESS` and `AI_REVIEW_MODEL` set the defaults, and the flags win over both. Writes `session.json`, `review.xml`, `review.json` and `agent.log` under `./review-out/SESSION_ID`. `--dry-run` stages the export and stops before calling a model. |
 | `samskara search [QUERY]` | Search captured sessions from the terminal and print each hit's URL. Add `--tags a,b` to keep only sessions carrying at least one of them. |
-| `samskara install-hooks` / `uninstall-hooks` | Install or remove the `SessionStart` hook by hand. Add `--agent claude\|codex\|all` (default: `claude`). |
+| `samskara install-hooks` / `uninstall-hooks` | Install or remove the `SessionStart` hook (or, for OpenCode, the plugin) by hand. Add `--agent claude\|codex\|opencode\|all` (default: `claude`). |
 | `samskara watch [--foreground]` | Start the watcher daemon directly; `--foreground` runs the loop in this terminal. |
 
 `samskara tags` needs the session to have reached the server. A session started moments ago may not
