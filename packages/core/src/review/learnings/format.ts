@@ -294,6 +294,13 @@ const indent = (text: string): string =>
     .map((line) => (line === "" ? line : `    ${line}`))
     .join("\n")
 
+/**
+ * How many times it happened: each evidence line is one incident. A review writes one problem
+ * per cause, so a mistake repeated in one session is one problem with several incidents.
+ */
+const incidents = (problems: ReadonlyArray<ProblemInput>): number =>
+  problems.reduce((sum, problem) => sum + problem.evidence.length, 0)
+
 const count = <T extends string>(values: ReadonlyArray<string>, names: ReadonlyArray<T>): string =>
   names.map((name) => `${values.filter((value) => value === name).length} ${name}`).join(", ")
 
@@ -344,7 +351,7 @@ export const groupsForWriter = (
               `  - Fix type: ${group.existing.fixType}`,
               `  - Fix: ${group.existing.fix}`,
             ].join("\n"),
-        `- **Numbers:** ${group.problems.length} problems in ${sessions} sessions; severity: ${count(
+        `- **Numbers:** ${group.problems.length} problems in ${sessions} sessions, ${incidents(group.problems)} incidents; severity: ${count(
           group.problems.map((problem) => problem.severity),
           PROBLEM_SEVERITIES,
         )}; class: ${count(
