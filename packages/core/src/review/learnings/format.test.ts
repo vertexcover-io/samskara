@@ -154,7 +154,7 @@ describe("what agent 2 reads and writes", () => {
     expect(md).toContain("- **Cause:** No wait rule.")
     expect(md).toContain("Agents return early")
     expect(md).toContain("Add a wait rule to skills/implement/SKILL.md.")
-    expect(md).toContain("3 problems in 2 sessions")
+    expect(md).toContain("3 problems in 2 sessions, 3 incidents")
     expect(md).toContain("severity: 1 high, 2 medium, 0 low")
     expect(md).toContain("class: 1 missed, 0 blocked, 2 slow, 0 caught")
   })
@@ -172,7 +172,23 @@ describe("what agent 2 reads and writes", () => {
 - **Why:** One session, medium and slow, a one-off typo.
 `
 
-  test("LW2: a learning and a drop are both read back", () => {
+  test("LW2: incidents count every evidence line, so a mistake repeated in one session shows", () => {
+    const repeated = problem("a", {
+      evidence: [1, 2, 3, 4].map((n) => ({
+        from: `msg-${n}`,
+        to: `msg-${n}`,
+        quote: "waiting on jest",
+        why: "returned early again",
+      })),
+    })
+    const md = groupsForWriter(
+      [{ id: "G1", cause: "x", existing: null, problems: [repeated] }],
+      ROOM,
+    )
+    expect(md).toContain("1 problems in 1 sessions, 4 incidents")
+  })
+
+  test("LW3: a learning and a drop are both read back", () => {
     const parsed = parseWrittenMd(written, ["G1", "G2"], FIX_TYPES, ANY)
     expect(parsed.errors).toEqual([])
     expect(parsed.answers.G1).toEqual({
@@ -190,7 +206,7 @@ describe("what agent 2 reads and writes", () => {
     })
   })
 
-  test("LW3: a group left unanswered, a bad priority, or a fix type outside the list is an error", () => {
+  test("LW4: a group left unanswered, a bad priority, or a fix type outside the list is an error", () => {
     const parsed = parseWrittenMd(
       written.replace("high —", "urgent —").replace("Fix type:** skill", "Fix type:** prompts"),
       ["G1", "G2", "G3"],
@@ -203,7 +219,7 @@ describe("what agent 2 reads and writes", () => {
     expect(errors).toMatch(/G1: Fix type must be one of/)
   })
 
-  test("LW4: a group that updates an existing learning cannot be dropped", () => {
+  test("LW5: a group that updates an existing learning cannot be dropped", () => {
     const parsed = parseWrittenMd(
       "## G1\n- **Verdict:** drop\n- **Why:** one-off\n",
       ["G1"],
@@ -213,7 +229,7 @@ describe("what agent 2 reads and writes", () => {
     expect(parsed.errors.join("\n")).toMatch(/G1: it updates an existing learning/)
   })
 
-  test("LW5: new learnings over the high limit fail; updated ones do not count", () => {
+  test("LW6: new learnings over the high limit fail; updated ones do not count", () => {
     const high = (id: string) =>
       `## ${id}\n- **Verdict:** learning\n- **Title:** t\n- **Problem:** p\n- **Priority:** high — why\n- **Fix type:** skill\n- **Fix:** f\n`
     const md = ["G1", "G2", "G3"].map(high).join("\n")
@@ -231,7 +247,7 @@ describe("what agent 2 reads and writes", () => {
     expect(updated.errors).toEqual([])
   })
 
-  test("LW6: agent 2's file says how many high and medium this batch may still make", () => {
+  test("LW7: agent 2's file says how many high and medium this batch may still make", () => {
     const md = groupsForWriter(
       [{ id: "G1", cause: "x", existing: null, problems: [problem("a")] }],
       {
@@ -242,7 +258,7 @@ describe("what agent 2 reads and writes", () => {
     expect(md).toContain("at most 2 new high-priority and 8 new medium-priority learnings")
   })
 
-  test("LW7: a drop needs one sentence why, and is read back", () => {
+  test("LW8: a drop needs one sentence why, and is read back", () => {
     const parsed = parseWrittenMd(
       "## G1\n- **Verdict:** drop\n- **Why:** One session, medium and slow, nothing makes it recur.\n\n## G2\n- **Verdict:** drop\n",
       ["G1", "G2"],
@@ -256,7 +272,7 @@ describe("what agent 2 reads and writes", () => {
     expect(parsed.errors.join("\n")).toMatch(/G2: a drop needs - \*\*Why:\*\*/)
   })
 
-  test("LW8: a new problem's excerpt is shown under it; a problem without one shows none", () => {
+  test("LW9: a new problem's excerpt is shown under it; a problem without one shows none", () => {
     const md = groupsForWriter(
       [
         {
@@ -279,12 +295,12 @@ describe("what agent 2 reads and writes", () => {
     expect(md.match(/Evidence, with the session around it/g)).toHaveLength(1)
   })
 
-  test("LW9: a learning with many problems lists only the newest, but counts them all", () => {
+  test("LW10: a learning with many problems lists only the newest, but counts them all", () => {
     const many = Array.from({ length: 35 }, (_, index) =>
       problem(`p${index}`, { title: `Problem number ${index}` }),
     )
     const md = groupsForWriter([{ id: "G1", cause: "x", existing: null, problems: many }], ROOM)
-    expect(md).toContain("35 problems in 35 sessions")
+    expect(md).toContain("35 problems in 35 sessions, 35 incidents")
     expect(md).toContain("5 earlier problems not listed")
     expect(md).not.toContain("Problem number 4 ")
     expect(md).toContain("Problem number 34")

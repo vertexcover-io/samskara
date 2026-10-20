@@ -96,6 +96,8 @@ Take these steps in order.
 
 1. **Can it be dropped on its numbers?** Drop it when all of these hold:
    - all its problems come from one session (the Numbers line says "in 1 sessions");
+   - it happened fewer than 3 times (the Numbers line's incidents: each is one time it
+     happened). A mistake the agent kept making in one session is not a one-off;
    - none of them is high severity;
    - none of them is missed (nobody caught it) or blocked (a person had to step in);
    - it cannot happen again: it does not come from a step, skill or part of the system that
@@ -113,7 +115,9 @@ Take these steps in order.
 
 Set it from the problems and their evidence:
 
-- how often: how many problems, in how many sessions;
+- how often: how many problems, in how many sessions, and how many times it happened in all —
+  the same mistake made again and again in one session counts, since the agent did not learn
+  even within that session;
 - who it stopped: a person had to step in, or a wrong result shipped or nearly did;
 - the cost each time, against how simple the fix is: a one-line rule that stops a costly
   problem ranks above a large change for the same pain.
