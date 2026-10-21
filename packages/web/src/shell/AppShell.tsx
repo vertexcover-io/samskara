@@ -41,7 +41,7 @@ export const AppShell = ({ children }: { children: ReactNode }) => {
               <nav aria-label="Primary" className="flex items-center gap-4">
                 <NavItem to="/projects">Projects</NavItem>
                 <NavItem to="/sessions">Sessions</NavItem>
-                <NavItem to="/learnings">Lessons</NavItem>
+                <NavItem to="/learnings">Learnings</NavItem>
                 <NavItem to="/learn-events">Compound learning evaluation</NavItem>
                 <NavItem to="/orgs">Orgs</NavItem>
                 <NavItem to="/sync-status">Sync</NavItem>

@@ -3,7 +3,6 @@ import type {
   AiReviewJobStatus,
   ProblemsReview,
   ReviewerOptions,
-  SessionLearning,
   SessionReviewSummary,
 } from "./types.js"
 
@@ -12,13 +11,6 @@ export const fetchSessionReviews = (
 ): Promise<ApiResult<ReadonlyArray<SessionReviewSummary>>> =>
   request(() => client.api.sessions[":id"].review.$get({ param: { id: sessionId } })).then(
     (result) => (result.ok ? { ok: true, data: result.data.reviews } : result),
-  )
-
-export const fetchSessionLearnings = (
-  sessionId: string,
-): Promise<ApiResult<ReadonlyArray<SessionLearning>>> =>
-  request(() => client.api.sessions[":id"].learnings.$get({ param: { id: sessionId } })).then(
-    (result) => (result.ok ? { ok: true, data: result.data.learnings } : result),
   )
 
 /** A per-run reviewer choice from the modal; empty fields keep the server's env defaults. */

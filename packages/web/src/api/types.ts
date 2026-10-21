@@ -48,13 +48,14 @@ export type CapturedArtifact = Ok<
   Client["api"]["sessions"][":id"]["artifacts"]["$get"]
 >["artifacts"][number]
 
+type LearningList = Ok<Client["api"]["learnings"]["$get"]>
+export type LearningSummary = LearningList["learnings"][number]
+export type LearningRun = NonNullable<LearningList["latestRun"]>
+export type LearningProblem = Ok<Client["api"]["learnings"][":id"]["$get"]>["problems"][number]
+
 export type SessionReviewSummary = Ok<
   Client["api"]["sessions"][":id"]["review"]["$get"]
 >["reviews"][number]
-
-export type SessionLearning = Ok<
-  Client["api"]["sessions"][":id"]["learnings"]["$get"]
->["learnings"][number]
 
 /**
  * The ai-v1 review's `signals` column, as persisted by the server after

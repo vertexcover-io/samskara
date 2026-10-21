@@ -210,7 +210,6 @@ const renderDetail = (
   entry = "/sessions/s-1",
   extras: {
     readonly review?: Reply
-    readonly learnings?: Reply
     readonly analyze?: Reply
     /** A reply sequence for GET /analyze/:jobId (job status), consumed in order. */
     readonly analyzeJob?: Reply | ReadonlyArray<Reply>
@@ -224,7 +223,6 @@ const renderDetail = (
   } = {},
 ) => {
   const review = extras.review ?? { status: 200, body: { reviews: [] } }
-  const learnings = extras.learnings ?? { status: 200, body: { learnings: [] } }
   const analyze = extras.analyze ?? { status: 202, body: { jobId: "job-1" } }
   const analyzeJobQueue: ReadonlyArray<Reply> =
     extras.analyzeJob === undefined
@@ -304,9 +302,6 @@ const renderDetail = (
       const after = aiLanded || existsConflict ? extras.reviewAfterAi : undefined
       return respond(after ?? review)
     }
-    if (url.includes("/learnings")) {
-      return respond(learnings)
-    }
     if (url.includes("/api/sessions/")) {
       return respond({ status: 200, body: payload })
     }
@@ -331,7 +326,7 @@ type FetchImpl = (input: RequestInfo | URL, init?: RequestInit) => Promise<Respo
 const isPatch = (init: RequestInit | undefined): boolean => init?.method === "PATCH"
 
 /**
- * The detail view always loads the review tab's two lists, so a test that only cares about
+ * The detail view always loads the review tab's review list, so a test that only cares about
  * the header still has to answer them. Handled here rather than in every caller: these tests
  * assert on renaming, and an empty review list is the uninteresting case for all of them.
  */
@@ -342,7 +337,6 @@ const renderDetailWithFetch = (impl: FetchImpl, entry = "/sessions/s-1") => {
     if (url.includes("/review") && !isPatch(init)) {
       return Promise.resolve(jsonResponse(200, { reviews: [] }))
     }
-    if (url.includes("/learnings")) return Promise.resolve(jsonResponse(200, { learnings: [] }))
     return impl(input, init)
   }
   vi.spyOn(globalThis, "fetch").mockImplementation(withReviewLists)
@@ -1143,26 +1137,10 @@ const REVIEW = {
   createdAt: "2026-08-25T10:00:00.000Z",
 }
 
-const LESSON = {
-  id: "l-1",
-  projectId: "22222222-2222-4222-8222-222222222222",
-  audience: "agent",
-  category: "tool-retry",
-  title: "Bash failed 3 times in a row",
-  detail: "After the second failure of the same call shape, change the approach.",
-  evidence: [{ seq: 4, what: "failure 1 of Bash" }],
-  fingerprint: "fp-1",
-  status: "candidate",
-  occurrenceCount: 3,
-  firstSeenAt: "2026-08-25T10:00:00.000Z",
-  lastSeenAt: "2026-08-25T12:00:00.000Z",
-}
-
-test("the Review tab renders no verdict card for a static-only review, and still lists this session's lessons", async () => {
+test("the Review tab renders no verdict card for a static-only review", async () => {
   const user = userEvent.setup()
   renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1", {
     review: { status: 200, body: { reviews: [REVIEW] } },
-    learnings: { status: 200, body: { learnings: [LESSON] } },
   })
 
   await tabsLoaded()
@@ -1175,14 +1153,9 @@ test("the Review tab renders no verdict card for a static-only review, and still
   expect(
     within(panel).queryByText("The agent spent most of the session stuck."),
   ).not.toBeInTheDocument()
-
-  expect(within(panel).getByText("Bash failed 3 times in a row")).toBeInTheDocument()
-  expect(within(panel).getByText(/For agents · tool-retry/)).toBeInTheDocument()
-  expect(within(panel).getByText(/seen 3 times/)).toBeInTheDocument()
-  expect(within(panel).getByText("Candidate")).toBeInTheDocument()
 })
 
-test("the Review tab stays quiet when no review exists — no verdict, no lessons section", async () => {
+test("the Review tab stays quiet when no review exists — no verdict", async () => {
   const user = userEvent.setup()
   renderDetail()
 
@@ -1193,7 +1166,6 @@ test("the Review tab stays quiet when no review exists — no verdict, no lesson
     await within(panelOf()).findByText("This session has not been reviewed yet."),
   ).toBeInTheDocument()
   const panel = panelOf()
-  expect(within(panel).queryByText(/No lessons from this session/)).not.toBeInTheDocument()
   // The static analyzer stays server-triggered; the one button here is the AI review's.
   expect(within(panel).getAllByRole("button")).toHaveLength(1)
   expect(within(panel).getByRole("button", { name: /analyze with ai/i })).toBeInTheDocument()
@@ -1539,7 +1511,6 @@ test("AI review: an old-shape ai-v1 row renders its verdict sentence, audience g
   const user = userEvent.setup()
   renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1", {
     review: { status: 200, body: { reviews: [AI_REVIEW_ROW, REVIEW] } },
-    learnings: { status: 200, body: { learnings: [LESSON] } },
   })
 
   await tabsLoaded()
