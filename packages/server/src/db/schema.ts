@@ -510,17 +510,17 @@ export const sessionReviews = pgTable(
 )
 
 /**
- * One run of the learning step: the problems no run had considered yet, grouped by cause and
- * turned into learnings. Every problem the run considered points back at it, which is how the
- * next run knows what is new.
+ * One run of the learning step over one project: the problems no run had considered yet,
+ * grouped by cause and turned into learnings. Every problem the run considered points back at
+ * it, which is how the next run knows what is new.
  */
 export const learningRuns = pgTable(
   "learningRuns",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    orgId: uuid("orgId")
+    projectId: uuid("projectId")
       .notNull()
-      .references(() => orgs.id, { onDelete: "cascade" }),
+      .references(() => projects.id, { onDelete: "cascade" }),
     status: text("status").notNull().default("running"),
     /** The harness repo and the commit its code was read at, e.g. `yok@3f2c...`. */
     harnessRef: text("harnessRef"),
@@ -531,24 +531,26 @@ export const learningRuns = pgTable(
   },
   (t) => [
     check("learningRuns_status_check", sql`${t.status} in ('running', 'done', 'failed')`),
-    index("learningRuns_orgId_startedAt_idx").on(t.orgId, t.startedAt),
-    // One run at a time per org: a second would read the same unmarked problems.
-    uniqueIndex("learningRuns_one_running_per_org").on(t.orgId).where(sql`${t.status} = 'running'`),
+    index("learningRuns_projectId_startedAt_idx").on(t.projectId, t.startedAt),
+    // One run at a time per project: a second would read the same unmarked problems.
+    uniqueIndex("learningRuns_one_running_per_project")
+      .on(t.projectId)
+      .where(sql`${t.status} = 'running'`),
   ],
 )
 
 /**
- * One cause behind problems in many sessions, and what to change about it. A row is a group:
- * its problems point at it through `reviewProblems.learningId`. A later run that finds more
- * problems with the same cause links them here and sets the priority and fix again.
+ * One cause behind problems in many sessions of a project, and what to change about it. A row
+ * is a group: its problems point at it through `reviewProblems.learningId`. A later run that
+ * finds more problems with the same cause links them here and sets the priority and fix again.
  */
 export const learnings = pgTable(
   "learnings",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    orgId: uuid("orgId")
+    projectId: uuid("projectId")
       .notNull()
-      .references(() => orgs.id, { onDelete: "cascade" }),
+      .references(() => projects.id, { onDelete: "cascade" }),
     /**
      * The last run that created or changed this learning. `restrict`: a run that wrote a
      * learning is part of its history, so deleting the run is refused rather than losing it.
@@ -569,7 +571,7 @@ export const learnings = pgTable(
   (t) => [
     check("learnings_priority_check", sql`${t.priority} in (${sql.raw(learningPriorityValues)})`),
     check("learnings_fixType_check", sql`${t.fixType} in (${sql.raw(fixTypeValues)})`),
-    index("learnings_orgId_idx").on(t.orgId),
+    index("learnings_projectId_idx").on(t.projectId),
   ],
 )
 

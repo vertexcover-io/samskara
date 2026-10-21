@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { gunzipSync } from "node:zlib"
-import type { HarnessRunner } from "@samskara/core"
+import type { HarnessRunner, Problem } from "@samskara/core"
 import { eq, isNull } from "drizzle-orm"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import type { Db } from "../../db/client.js"
@@ -17,6 +17,7 @@ import {
   harnessRepoFixture,
   problemFixture,
   seedOrg,
+  seedProject,
   seedSession as seedSessionFixture,
 } from "./testFixtures.js"
 
@@ -31,29 +32,37 @@ describe.skipIf(!dockerAvailable())("runLearnings", () => {
   let teardown: () => Promise<void>
   let db: Db
   let userId: string
-  let orgId: string
+  let projectId: string
   let harnessPath: string
   let logDir: string
   let counter = 0
 
-  /** A session with one problem per title; `texts` become its messages (see the fixture). */
-  const seedSession = async (titles: ReadonlyArray<string>, texts?: ReadonlyArray<string>) => {
+  /**
+   * A session with one problem per title, each with `fields`; `texts` become its messages (see
+   * the fixture). A single medium session is a one-off code drops, so tests that need agent 2
+   * use two sessions or a high-severity problem.
+   */
+  const seedSession = async (
+    titles: ReadonlyArray<string>,
+    options: { texts?: ReadonlyArray<string>; fields?: Partial<Problem> } = {},
+  ) => {
     counter += 1
     await seedSessionFixture(db, {
       sessionId: `run-learn-${counter}`,
-      orgId,
+      projectId,
       userId,
-      problems: titles.map((title) => problemFixture(title)),
-      ...(texts === undefined ? {} : { texts }),
+      problems: titles.map((title) => problemFixture(title, options.fields)),
+      ...(options.texts === undefined ? {} : { texts: options.texts }),
     })
   }
+  const high = { fields: { severity: "high" } } as const
 
   const run = (
     runner: HarnessRunner,
     batchSize?: number,
     priorityLimits?: { high: number; medium: number },
   ) =>
-    runLearnings({ db, runner, env, log: captureLogger().log, logDir }, orgId, {
+    runLearnings({ db, runner, env, log: captureLogger().log, logDir }, projectId, {
       harnessPath,
       ...(batchSize === undefined ? {} : { batchSize }),
       ...(priorityLimits === undefined ? {} : { priorityLimits }),
@@ -85,7 +94,7 @@ describe.skipIf(!dockerAvailable())("runLearnings", () => {
     await db.delete(learnings)
     await db.delete(learningRuns)
     counter += 1
-    orgId = await seedOrg(db, `run-org-${counter}`)
+    projectId = await seedProject(db, await seedOrg(db, `run-org-${counter}`), `run-${counter}`)
   })
 
   afterAll(async () => {
@@ -106,7 +115,7 @@ describe.skipIf(!dockerAvailable())("runLearnings", () => {
       .where(eq(learningRuns.id, runIdOf(result)))
     expect(saved).toMatchObject({ status: "done", error: null })
     expect(saved?.harnessRef).toMatch(/^harness-repo-\w+@[0-9a-f]{12}$/)
-    const list = await learningsRepo.listLearnings(db, orgId)
+    const list = await learningsRepo.listLearnings(db, projectId)
     expect(list).toHaveLength(1)
     expect(list[0]).toMatchObject({
       cause: "No wait rule.",
@@ -120,7 +129,8 @@ describe.skipIf(!dockerAvailable())("runLearnings", () => {
   })
 
   test("LS2: the run's log is gzipped JSONL, one line per step, with the decisions as fields", async () => {
-    await seedSession(["A", "B"])
+    await seedSession(["A"])
+    await seedSession(["B"])
     const result = await run(fakeAgents().runner)
     const lines = readLog(runIdOf(result))
     expect(lines.map((line) => line.step)).toEqual([
@@ -129,6 +139,7 @@ describe.skipIf(!dockerAvailable())("runLearnings", () => {
       "batch.start",
       "agent1.ids",
       "agent1.answer",
+      "batch.one_offs",
       "agent2.answer",
       "batch.saved",
       "run.end",
@@ -142,7 +153,7 @@ describe.skipIf(!dockerAvailable())("runLearnings", () => {
       ],
     })
     expect(lines.find((line) => line.step === "batch.saved")).toMatchObject({
-      groups: [{ group: "G1", action: "created", priority: "high" }],
+      groups: [{ group: 1, writerGroup: "G1", action: "created", priority: "high" }],
       priorityUsedThisBatch: { high: 1, medium: 0 },
     })
     expect(lines.at(-1)).toMatchObject({ step: "run.end", status: "done" })
@@ -155,7 +166,7 @@ describe.skipIf(!dockerAvailable())("runLearnings", () => {
     const texts = Array.from({ length: 10 }, (_, index) => `message number ${index}`)
     // The problem's evidence cites msg-1 ("waiting on jest" in the fixture), so put it there.
     texts[1] = "I am waiting on jest before I report"
-    await seedSession(["A"], texts)
+    await seedSession(["A"], { texts, ...high })
     const { runner, seen } = fakeAgents()
     await run(runner)
     expect(seen.writerMd[0]).toContain("Evidence, with the session around it:")
@@ -165,8 +176,8 @@ describe.skipIf(!dockerAvailable())("runLearnings", () => {
     expect(seen.writerMd[0]).not.toContain("message number 5")
   })
 
-  test("LS4: a group agent 2 drops as a one-off makes no learning; its problems are marked and the reason logged", async () => {
-    await seedSession(["A"])
+  test("LS4: a group agent 2 drops makes no learning; its problems are marked and the reason logged", async () => {
+    await seedSession(["A"], high)
     const result = await run(fakeAgents({ verdict: "drop" }).runner)
     expect(result.status).toBe("done")
     expect(await db.select().from(learnings)).toEqual([])
@@ -178,7 +189,7 @@ describe.skipIf(!dockerAvailable())("runLearnings", () => {
   })
 
   test("LS5: the high limit is for the whole run: each batch is told what is left", async () => {
-    await seedSession(["A", "B", "C"])
+    await seedSession(["A", "B", "C"], high)
     const { runner, seen } = fakeAgents({ oneGroupEach: true })
     await run(runner, 1, { high: 2, medium: 8 })
     expect(seen.writerMd.map((md) => /at most (\d+) new high/.exec(md)?.[1])).toEqual([
@@ -186,20 +197,20 @@ describe.skipIf(!dockerAvailable())("runLearnings", () => {
       "1",
       "0",
     ])
-    const list = await learningsRepo.listLearnings(db, orgId)
+    const list = await learningsRepo.listLearnings(db, projectId)
     expect(list.filter((learning) => learning.priority === "high")).toHaveLength(2)
   })
 
   test("LS6: a later run joins the learning, and agent 2 sees its old problems with the new", async () => {
-    await seedSession(["A"])
+    await seedSession(["A"], high)
     await run(fakeAgents().runner)
-    await seedSession(["B"])
+    await seedSession(["B"], high)
     const { runner, seen } = fakeAgents()
     await run(runner)
     expect(seen.knownLearningsMd[0]).toMatch(/## K1: Helpers report early/)
     expect(seen.writerMd[0]).toContain("update this one")
     expect(seen.writerMd[0]).toContain("2 problems in 2 sessions")
-    const list = await learningsRepo.listLearnings(db, orgId)
+    const list = await learningsRepo.listLearnings(db, projectId)
     expect(list).toHaveLength(1)
     expect(list[0]?.problemCount).toBe(2)
   })
@@ -219,7 +230,7 @@ describe.skipIf(!dockerAvailable())("runLearnings", () => {
   })
 
   test("LS8: a long backlog goes in batches, and each batch sees the learnings before it", async () => {
-    await seedSession(["A", "B", "C"])
+    await seedSession(["A", "B", "C"], high)
     const { runner, seen } = fakeAgents()
     const result = await run(runner, 2)
     expect(result.status).toBe("done")
@@ -244,8 +255,43 @@ describe.skipIf(!dockerAvailable())("runLearnings", () => {
   })
 
   test("LS10: a second run while one is going is refused", async () => {
-    await learningsRepo.startRun(db, orgId)
+    await learningsRepo.startRun(db, projectId)
     const result = await run(fakeAgents().runner)
     expect(result.status).toBe("busy")
+  })
+
+  test("LS11: a one-off — one session, nothing high, under 3 times — is dropped by code; agent 2 never sees it", async () => {
+    await seedSession(["A", "B"])
+    const { runner, seen } = fakeAgents()
+    const result = await run(runner)
+    expect(result.status).toBe("done")
+    expect(seen.writerMd).toEqual([])
+    expect(await db.select().from(learnings)).toEqual([])
+    const rows = await db.select().from(reviewProblems)
+    expect(rows.every((row) => row.learningRunId === runIdOf(result))).toBe(true)
+    expect(readLog(runIdOf(result)).find((line) => line.step === "batch.saved")).toMatchObject({
+      groups: [
+        {
+          writerGroup: null,
+          action: "dropped",
+          reason: "One session, no high-severity problem, and it happened 2 times.",
+        },
+      ],
+    })
+  })
+
+  test("LS12: a mistake made 3 times in one session is not a one-off: agent 2 decides it", async () => {
+    const three = [1, 2, 3].map((n) => ({
+      from: `msg-${n}`,
+      to: `msg-${n}`,
+      quote: "waiting on jest",
+      why: "returned early again",
+    }))
+    await seedSession(["A"], { fields: { evidence: three } })
+    const { runner, seen } = fakeAgents()
+    await run(runner)
+    expect(seen.writerMd).toHaveLength(1)
+    expect(seen.writerMd[0]).toContain("1 problems in 1 sessions, happened 3 times")
+    expect(await learningsRepo.listLearnings(db, projectId)).toHaveLength(1)
   })
 })

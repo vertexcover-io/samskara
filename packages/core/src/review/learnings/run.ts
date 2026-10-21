@@ -224,15 +224,10 @@ export const snapshotHarness = async (
 }
 
 /** A scratch copy of the harness for one run: snapshotted, used, removed. */
-export const withHarnessSnapshot = async <T>(
+export const withHarnessSnapshot = <T>(
   repo: string,
   work: (snapshot: { readonly dir: string; readonly ref: string }) => Promise<T>,
-): Promise<T> => {
-  const dir = await mkdtemp(join(tmpdir(), "samskara-harness-snapshot-"))
-  try {
-    const { ref } = await snapshotHarness(repo, dir)
-    return await work({ dir, ref })
-  } finally {
-    await rm(dir, { recursive: true, force: true })
-  }
-}
+): Promise<T> =>
+  withWorkspace("samskara-harness-snapshot-", {}, async (dir) =>
+    work({ dir, ref: (await snapshotHarness(repo, dir)).ref }),
+  )

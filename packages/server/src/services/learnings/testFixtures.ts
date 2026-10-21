@@ -11,8 +11,8 @@ import * as reviewsRepo from "../../repositories/reviews.repo.js"
 import * as sessionsRepo from "../../repositories/sessions.repo.js"
 
 /**
- * Shared by the learning tests (repository, run, routes): a problem, an org with sessions and
- * problems in it, a harness repo, and both agents faked. Test-only, like `db/testDb.ts`.
+ * Shared by the learning tests (repository, run, routes): a problem, a project with sessions
+ * and problems in it, a harness repo, and both agents faked. Test-only, like `db/testDb.ts`.
  */
 
 /** A problem as a review saves it; its evidence cites msg-1. */
@@ -35,26 +35,31 @@ export const seedOrg = async (db: Db, slug: string): Promise<string> => {
   return org.id
 }
 
+/** A project owned by the org, so its members can read it and start runs. */
+export const seedProject = async (db: Db, orgId: string, slug: string): Promise<string> =>
+  (
+    await projectsRepo.upsertOwned(db, {
+      identity: { name: slug, slug },
+      owner: { kind: "org", orgId },
+    })
+  ).id
+
 /**
- * A session in its own project owned by `orgId`, with one problems review holding
- * `problems`. With `texts`, the session gets those messages, and the review saves their ids
- * as its record order, so evidence excerpts can be built from it.
+ * A session in the project, with one problems review holding `problems`. With `texts`, the
+ * session gets those messages, and the review saves their ids as its record order, so
+ * evidence excerpts can be built from it.
  */
 export const seedSession = async (
   db: Db,
   input: {
     readonly sessionId: string
-    readonly orgId: string
+    readonly projectId: string
     readonly userId: string
     readonly problems: ReadonlyArray<Problem>
     readonly texts?: ReadonlyArray<string>
   },
-): Promise<{ readonly projectId: string; readonly reviewId: string }> => {
-  const { sessionId } = input
-  const { id: projectId } = await projectsRepo.upsertOwned(db, {
-    identity: { name: sessionId, slug: `slug-${sessionId}` },
-    owner: { kind: "org", orgId: input.orgId },
-  })
+): Promise<{ readonly reviewId: string }> => {
+  const { sessionId, projectId } = input
   await sessionsRepo.upsert(db, {
     id: sessionId,
     source: "claude_code",
@@ -99,7 +104,7 @@ export const seedSession = async (
     projectId,
     problems: input.problems,
   })
-  return { projectId, reviewId: review.id }
+  return { reviewId: review.id }
 }
 
 /** A git repo with one committed SKILL.md, standing in for the agent harness. */

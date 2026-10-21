@@ -7,11 +7,13 @@ import { dockerAvailable, startTestDb } from "../db/testDb.js"
 import type { Env } from "../lib/env.js"
 import { signToken } from "../lib/jwt.js"
 import * as learningsRepo from "../repositories/learnings.repo.js"
+import * as projectsRepo from "../repositories/projects.repo.js"
 import {
   fakeAgents,
   harnessRepoFixture,
   problemFixture,
   seedOrg,
+  seedProject,
   seedSession,
 } from "../services/learnings/testFixtures.js"
 
@@ -40,16 +42,17 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
   let harnessPath: string
   let userId: string
   let strangerId: string
-  let orgId: string
-  let orgSlug: string
+  let projectId: string
   let counter = 0
 
+  /** With `serverHarness`, the server has its own LEARNINGS_HARNESS_PATH. */
   const request = async (
     path: string,
-    init: { method?: string; body?: unknown; as?: string } = {},
+    init: { method?: string; body?: unknown; as?: string; serverHarness?: boolean } = {},
   ) => {
     const token = await signToken(env, { sub: init.as ?? userId, aud: "cli" })
-    return buildApp(db, env, { aiReviewRunner: agents }).request(path, {
+    const appEnv = init.serverHarness ? { ...env, learningsHarnessPath: harnessPath } : env
+    return buildApp(db, appEnv, { aiReviewRunner: agents }).request(path, {
       method: init.method ?? "GET",
       headers: {
         authorization: `Bearer ${token}`,
@@ -59,13 +62,14 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
     })
   }
 
+  /** High severity, so one session is not a one-off code drops before agent 2. */
   const seedProblems = async (titles: ReadonlyArray<string>) => {
     counter += 1
     await seedSession(db, {
       sessionId: `route-learn-${counter}`,
-      orgId,
+      projectId,
       userId,
-      problems: titles.map((title) => problemFixture(title)),
+      problems: titles.map((title) => problemFixture(title, { severity: "high" })),
     })
   }
 
@@ -101,9 +105,10 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
     await db.delete(learnings)
     await db.delete(learningRuns)
     counter += 1
-    orgSlug = `acme-${counter}`
-    orgId = await seedOrg(db, orgSlug)
+    const orgId = await seedOrg(db, `acme-${counter}`)
+    // An org member is the project's editor: it may read and start runs, not pick a harness.
     await db.insert(userOrgs).values({ userId, orgId })
+    projectId = await seedProject(db, orgId, `learn-${counter}`)
   })
 
   afterAll(async () => {
@@ -111,19 +116,18 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
     await teardown?.()
   })
 
-  const slug = () => orgSlug
-
-  test("LRT1: a member starts a run with a harness path, and then reads the learnings and their problems", async () => {
+  test("LRT1: a project admin starts a run with a harness path, and then reads the learnings and their problems", async () => {
+    await projectsRepo.grant(db, userId, projectId, "admin")
     await seedProblems(["A", "B"])
     const started = await request("/api/learnings/runs", {
       method: "POST",
-      body: { org: slug(), harnessPath },
+      body: { project: projectId, harnessPath },
     })
     expect(started.status).toBe(202)
     const { runId } = (await started.json()) as { runId: string }
     expect((await waitForRun(runId)).status).toBe("done")
 
-    const list = await request(`/api/learnings?org=${slug()}`)
+    const list = await request(`/api/learnings?project=${projectId}`)
     const body = (await list.json()) as {
       learnings: Array<{
         id: string
@@ -153,30 +157,75 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
   })
 
   test("LRT2: without a path in the request or the server's settings, a run is refused", async () => {
-    const res = await request("/api/learnings/runs", { method: "POST", body: { org: slug() } })
+    const res = await request("/api/learnings/runs", {
+      method: "POST",
+      body: { project: projectId },
+    })
     expect(res.status).toBe(400)
     expect(await res.json()).toEqual({ error: "noHarnessPath" })
   })
 
   test("LRT3: a second run while one is going is a 409", async () => {
-    await learningsRepo.startRun(db, orgId)
+    await learningsRepo.startRun(db, projectId)
     const res = await request("/api/learnings/runs", {
       method: "POST",
-      body: { org: slug(), harnessPath },
+      body: { project: projectId },
+      serverHarness: true,
     })
     expect(res.status).toBe(409)
   })
 
-  test("LRT4: someone outside the org sees nothing and cannot start a run", async () => {
+  test("LRT4: someone who cannot see the project sees nothing and cannot start a run", async () => {
     await seedProblems(["A"])
-    const run = await learningsRepo.startRun(db, orgId)
-    expect((await request(`/api/learnings?org=${slug()}`, { as: strangerId })).status).toBe(404)
+    const run = await learningsRepo.startRun(db, projectId)
+    expect((await request(`/api/learnings?project=${projectId}`, { as: strangerId })).status).toBe(
+      404,
+    )
     expect((await request(`/api/learnings/runs/${run?.id}`, { as: strangerId })).status).toBe(404)
     const post = await request("/api/learnings/runs", {
       method: "POST",
-      body: { org: slug(), harnessPath },
+      body: { project: projectId },
       as: strangerId,
+      serverHarness: true,
     })
     expect(post.status).toBe(404)
+  })
+
+  test("LRT5: an editor runs on the server's harness, but may not point the server at a path", async () => {
+    await seedProblems(["A"])
+    const pathPost = await request("/api/learnings/runs", {
+      method: "POST",
+      body: { project: projectId, harnessPath },
+      serverHarness: true,
+    })
+    expect(pathPost.status).toBe(403)
+    expect(await pathPost.json()).toEqual({ error: "harnessPathNeedsAdmin" })
+    const started = await request("/api/learnings/runs", {
+      method: "POST",
+      body: { project: projectId },
+      serverHarness: true,
+    })
+    expect(started.status).toBe(202)
+    const { runId } = (await started.json()) as { runId: string }
+    expect((await waitForRun(runId)).status).toBe("done")
+  })
+
+  test("LRT6: a viewer may read the learnings but not start a run", async () => {
+    const [viewer] = await db
+      .insert(users)
+      .values({ githubId: 8200 + counter, githubLogin: `viewer-${counter}` })
+      .returning()
+    await projectsRepo.grant(db, viewer?.id as string, projectId, "viewer")
+    expect((await request(`/api/learnings?project=${projectId}`, { as: viewer?.id })).status).toBe(
+      200,
+    )
+    const post = await request("/api/learnings/runs", {
+      method: "POST",
+      body: { project: projectId },
+      as: viewer?.id,
+      serverHarness: true,
+    })
+    expect(post.status).toBe(403)
+    expect(await post.json()).toEqual({ error: "notEditable" })
   })
 })

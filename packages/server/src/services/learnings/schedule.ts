@@ -1,14 +1,14 @@
 import * as learningsRepo from "../../repositories/learnings.repo.js"
 import { type LearningRunDeps, startLearningRun } from "./run.js"
 
-/** How often an org gets a learning run on its own. */
+/** How often a project gets a learning run on its own. */
 export const LEARNING_RUN_EVERY_MS = 7 * 24 * 60 * 60 * 1000
 
-/** How often the schedule looks for an org that is due. */
+/** How often the schedule looks for a project that is due. */
 const CHECK_EVERY_MS = 60 * 60 * 1000
 
 /**
- * The weekly learning run: every hour, each due org gets a run, one org at a time, since every
+ * The weekly learning run: every hour, each due project gets a run, one at a time, since every
  * run starts two agents. A check still going when the next hour comes is not doubled.
  */
 export const startLearningSchedule = (
@@ -25,11 +25,13 @@ export const startLearningSchedule = (
     if (ticking) return
     ticking = true
     try {
-      for (const orgId of await learningsRepo.orgsDueForRun(
+      for (const projectId of await learningsRepo.projectsDueForRun(
         deps.db,
         new Date(now().getTime() - LEARNING_RUN_EVERY_MS),
       )) {
-        const started = await startLearningRun(deps, orgId, { harnessPath: options.harnessPath })
+        const started = await startLearningRun(deps, projectId, {
+          harnessPath: options.harnessPath,
+        })
         if (started.status === "started") await started.finished
       }
     } catch (error) {

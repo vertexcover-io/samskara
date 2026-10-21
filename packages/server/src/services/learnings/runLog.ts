@@ -16,8 +16,6 @@ export type RunLog = {
   readonly event: (step: string, fields?: Readonly<Record<string, unknown>>) => void
   /** Waits for every queued line, then compresses the file and removes the plain copy. */
   readonly close: () => Promise<void>
-  /** The finished file; null when the log could not be written. */
-  readonly path: string | null
 }
 
 /**
@@ -34,7 +32,7 @@ export const openRunLog = async (dir: string, runId: string, log: pino.Logger): 
     await mkdir(dir, { recursive: true })
   } catch (error) {
     log.warn({ err: error, dir }, "learning run log could not be created")
-    return { event: () => {}, close: async () => {}, path: null }
+    return { event: () => {}, close: async () => {} }
   }
   let pending: Promise<void> = Promise.resolve()
   let failed = false
@@ -43,7 +41,6 @@ export const openRunLog = async (dir: string, runId: string, log: pino.Logger): 
     failed = true
   }
   return {
-    path: gz,
     event: (step, fields = {}) => {
       const line = `${JSON.stringify({ ts: new Date().toISOString(), runId, step, ...fields })}\n`
       pending = pending.then(() => appendFile(plain, line).catch(warn))
