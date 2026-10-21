@@ -8,6 +8,7 @@ import { enableCommand } from "./commands/enable.js"
 import { ensureCommand } from "./commands/ensure.js"
 import { initCommand } from "./commands/init.js"
 import { installHooksCommand, uninstallHooksCommand } from "./commands/install-hooks.js"
+import { learnCommand } from "./commands/learn.js"
 import { logoutCommand } from "./commands/logout.js"
 import { logsCommand } from "./commands/logs.js"
 import { reassignCommand } from "./commands/reassign.js"
@@ -209,6 +210,23 @@ program
       { ...flags, ...(query === undefined ? {} : { query }) },
       { fetch: globalThis.fetch },
     )
+  })
+
+program
+  .command("learn")
+  .description(
+    "Group the review problems no run has read yet by cause, turn them into learnings, and print them",
+  )
+  .requiredOption("--project <id>", "the id of the project whose problems to read")
+  .option(
+    "--harness-path <path>",
+    "a checkout of the agent harness to check learnings against (project admins only); defaults to the server's setting",
+  )
+  .action(async (flags: { project: string; harnessPath?: string }) => {
+    process.exitCode = await learnCommand({
+      project: flags.project,
+      ...(flags.harnessPath === undefined ? {} : { harnessPath: flags.harnessPath }),
+    })
   })
 
 const artifacts = program.command("artifacts").description("Work with session artifacts")

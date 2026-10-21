@@ -33,6 +33,7 @@ describe("loadEnv", () => {
       aiReviewHarness: "opencode",
       aiReviewModel: "opencode-go/glm-5.3-flash",
       aiReviewTimeoutMs: 600_000,
+      learningsModel: "opencode-go/glm-5.3-flash",
     })
   })
 
@@ -50,6 +51,15 @@ describe("loadEnv", () => {
     expect(() =>
       loadEnv({ ...noOpencodeKey, AI_REVIEW_HARNESS: "claude", ANTHROPIC_API_KEY: "sk-ant" }),
     ).not.toThrow()
+  })
+
+  test("LEARNINGS_MODEL: opus on claude unless set, the reviewer's model on opencode", () => {
+    const { OPENCODE_API_KEY: _dropped, ...noKey } = complete
+    const claude = { ...noKey, AI_REVIEW_HARNESS: "claude", CLAUDE_CODE_OAUTH_TOKEN: "tok" }
+    expect(loadEnv(claude).learningsModel).toBe("opus")
+    expect(loadEnv({ ...claude, LEARNINGS_MODEL: "sonnet" }).learningsModel).toBe("sonnet")
+    expect(loadEnv(complete).learningsModel).toBe(loadEnv(complete).aiReviewModel)
+    expect(() => loadEnv({ ...claude, LEARNINGS_MODEL: "opus; rm -rf /" })).toThrow()
   })
 
   test("a set LOCAL_LOGIN_SECRET makes the GitHub app optional - both keys may be blank", () => {

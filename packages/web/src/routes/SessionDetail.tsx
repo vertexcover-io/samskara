@@ -6,7 +6,6 @@ import { type ApiError, client, request } from "../api/client.js"
 import {
   fetchAiReview,
   fetchAiReviewJob,
-  fetchSessionLearnings,
   fetchSessionReviews,
   type ReviewerChoice,
   startAiReview,
@@ -23,7 +22,6 @@ import type {
   ReviewerTranscriptEntry,
   SessionDetailPayload,
   SessionFacts,
-  SessionLearning,
   SessionReviewSummary,
   TokenTotals,
 } from "../api/types.js"
@@ -606,11 +604,6 @@ const ArtifactsPanel = ({ detail, captured }: { detail: Detail; captured: Captur
     />
   </div>
 )
-
-const LESSON_AUDIENCE_LABEL: Readonly<Record<string, string>> = {
-  agent: "For agents",
-  human: "For humans",
-}
 
 // The analyzer id the AI pipeline persists; picked out of the session's review list so the
 // block renders from the same fetch the static review already rides on.
@@ -1370,36 +1363,6 @@ const AnalyzeSection = ({
   )
 }
 
-// The same word treatment the Lessons page uses, so a status reads identically in both places.
-const statusWord = (status: string): { readonly label: string; readonly className: string } =>
-  status === "accepted"
-    ? { label: "Accepted", className: "font-semibold text-ok" }
-    : status === "superseded"
-      ? { label: "Retired", className: "text-faded line-through" }
-      : status === "candidate"
-        ? { label: "Candidate", className: "font-semibold text-stamp" }
-        : { label: status, className: "text-ink-soft" }
-
-const StatusWord = ({ status }: { status: string }) => {
-  const { label, className } = statusWord(status)
-  return <span className={className}>{label}</span>
-}
-
-const LessonRow = ({ row }: { row: SessionLearning }) => (
-  <li className="border border-rule bg-panel p-3">
-    <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-      <p className="text-[0.9375rem] font-semibold leading-snug">{row.title}</p>
-      <p className="font-mono text-[0.72rem] text-ink-soft">
-        <StatusWord status={row.status} />
-        {` · seen ${row.occurrenceCount} ${row.occurrenceCount === 1 ? "time" : "times"}`}
-      </p>
-    </div>
-    <p className="mt-1 font-mono text-[0.72rem] text-ink-soft">
-      {LESSON_AUDIENCE_LABEL[row.audience] ?? row.audience} · {row.category}
-    </p>
-  </li>
-)
-
 // Reading plus one write: the AI review is the analyzers' only UI trigger, and its run is
 // asynchronous — 202 here means a job, not a verdict.
 const AI_POLL_INTERVAL_MS = 3000
@@ -1584,22 +1547,6 @@ const ReviewPanel = ({
       ) : (
         <AiReviewCard review={ai} analysis={analysis} onRedo={onAnalyze} />
       )}
-      {review.reviews.length === 0 ? null : (
-        <section>
-          <h2 className="mb-2 text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-faded">
-            Lessons from this session
-          </h2>
-          {review.learnings.length === 0 ? (
-            <p className="text-ink-soft">No lessons from this session.</p>
-          ) : (
-            <ul className="flex flex-col gap-3">
-              {review.learnings.map((row) => (
-                <LessonRow key={row.id} row={row} />
-              ))}
-            </ul>
-          )}
-        </section>
-      )}
     </div>
   )
 }
@@ -1675,11 +1622,7 @@ const useCapturedArtifacts = (sessionId: string): CapturedState => {
 
 type ReviewState =
   | { readonly phase: "loading" }
-  | {
-      readonly phase: "ready"
-      readonly reviews: ReadonlyArray<SessionReviewSummary>
-      readonly learnings: ReadonlyArray<SessionLearning>
-    }
+  | { readonly phase: "ready"; readonly reviews: ReadonlyArray<SessionReviewSummary> }
   | { readonly phase: "failed"; readonly error: ApiError }
 
 const useSessionReview = (
@@ -1688,7 +1631,7 @@ const useSessionReview = (
   const [state, setState] = useState<ReviewState>({ phase: "loading" })
   const [reloadCount, setReloadCount] = useState(0)
   // A reload is how the AI review's arrival becomes visible: the poller calls refresh and the
-  // same two fetches repaint the tab.
+  // same fetch repaints the tab.
   const refresh = useCallback(() => setReloadCount((count) => count + 1), [])
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: reloadCount is never read, only bumped — a change is the refresh.
@@ -1699,20 +1642,14 @@ const useSessionReview = (
     // scroll position back to the top — mid-read.
     setState((prev) => (prev.phase === "ready" ? prev : { phase: "loading" }))
 
-    Promise.all([fetchSessionReviews(sessionId), fetchSessionLearnings(sessionId)]).then(
-      ([reviews, learnings]) => {
-        if (!active) return
-        if (!reviews.ok) {
-          setState({ phase: "failed", error: reviews.error })
-          return
-        }
-        if (!learnings.ok) {
-          setState({ phase: "failed", error: learnings.error })
-          return
-        }
-        setState({ phase: "ready", reviews: reviews.data, learnings: learnings.data })
-      },
-    )
+    fetchSessionReviews(sessionId).then((reviews) => {
+      if (!active) return
+      setState(
+        reviews.ok
+          ? { phase: "ready", reviews: reviews.data }
+          : { phase: "failed", error: reviews.error },
+      )
+    })
 
     return () => {
       active = false

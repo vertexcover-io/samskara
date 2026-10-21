@@ -30,3 +30,6 @@ scripts/deploy.sh
 
 # Local secrets for deploy/ provisioning, never committed
 /samskara-deploy.env
+
+# Learning run logs: hold problem text, which can quote a secret.
+.samskara/

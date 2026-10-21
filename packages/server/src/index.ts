@@ -1,9 +1,11 @@
 import { serve } from "@hono/node-server"
 import { createLogger, terminateHarnessChildren } from "@samskara/core"
-import { buildApp } from "./app.js"
+import { buildApp, defaultAiReviewRunner } from "./app.js"
 import { createDb } from "./db/client.js"
 import { installCrashHandlers } from "./lib/crash-handlers.js"
 import { loadEnv } from "./lib/env.js"
+import { failInterruptedRuns } from "./repositories/learnings.repo.js"
+import { startLearningSchedule } from "./services/learnings/schedule.js"
 
 const rootLog = createLogger({ service: "samskara-server" })
 installCrashHandlers(rootLog)
@@ -13,7 +15,22 @@ const databaseUrl = process.env.DATABASE_URL
 if (!databaseUrl) throw new Error("DATABASE_URL is required")
 
 const { db } = createDb(databaseUrl)
-const app = buildApp(db, env, { rootLog })
+// One runner for the review routes and the learning schedule, so both share one sandbox setup.
+const aiReviewRunner = defaultAiReviewRunner(env, rootLog)
+const app = buildApp(db, env, { rootLog, aiReviewRunner })
+
+// A learning run lives in this process; one still marked running was cut off by a restart.
+const interrupted = await failInterruptedRuns(db)
+if (interrupted > 0)
+  rootLog.warn({ interrupted }, "learning runs cut off by a restart marked failed")
+if (env.learningsHarnessPath === undefined) {
+  rootLog.info("LEARNINGS_HARNESS_PATH is unset, so no weekly learning run")
+} else {
+  startLearningSchedule(
+    { db, runner: aiReviewRunner, env, log: rootLog.child({ component: "learnings" }) },
+    { harnessPath: env.learningsHarnessPath },
+  )
+}
 
 const port = Number(process.env.PORT ?? 3000)
 

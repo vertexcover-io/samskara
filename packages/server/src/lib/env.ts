@@ -3,6 +3,7 @@ import {
   DEFAULT_REVIEW_MODEL,
   hasCredential,
   REVIEW_HARNESSES,
+  REVIEW_MODEL_PATTERN,
   type ReviewHarness,
 } from "@samskara/core"
 import { z } from "zod"
@@ -52,6 +53,16 @@ const BaseEnvSchema = z.object({
     .regex(/^\d+$/, "AI_REVIEW_TIMEOUT_MS must be digits (milliseconds)")
     .default("600000")
     .transform((value) => Number(value)),
+  /**
+   * A local checkout of the agent harness the sessions ran (yok, for us). The weekly learning
+   * run reads its code to check each learning; unset, the run never starts on its own.
+   */
+  LEARNINGS_HARNESS_PATH: z.string().min(1).optional(),
+  /**
+   * The model both learning agents use. Unset: opus on the claude harness; on opencode, which
+   * has no model by that name, the reviewer's own model.
+   */
+  LEARNINGS_MODEL: z.string().min(1).regex(REVIEW_MODEL_PATTERN).optional(),
 })
 
 const requireSignInMethod = (data: z.infer<typeof BaseEnvSchema>, ctx: z.RefinementCtx): void => {
@@ -102,6 +113,9 @@ export type Env = {
   readonly aiReviewHarness: ReviewHarness
   readonly aiReviewModel: string
   readonly aiReviewTimeoutMs: number
+  readonly learningsHarnessPath?: string | undefined
+  /** Set by `loadEnv`; an Env built by hand (in tests) may leave it out for the review model. */
+  readonly learningsModel?: string | undefined
 }
 
 type Source = Record<string, string | undefined>
@@ -114,6 +128,8 @@ export const loadEnv = (source: Source = process.env): Env => {
     const keys = parsed.error.issues.map((issue) => issue.path.join(".")).join(", ")
     throw new Error(`Invalid environment configuration: ${keys}`)
   }
+  const aiReviewModel =
+    parsed.data.AI_REVIEW_MODEL ?? DEFAULT_REVIEW_MODEL[parsed.data.AI_REVIEW_HARNESS]
   return {
     githubClientId: parsed.data.GITHUB_CLIENT_ID,
     githubClientSecret: parsed.data.GITHUB_CLIENT_SECRET,
@@ -130,8 +146,11 @@ export const loadEnv = (source: Source = process.env): Env => {
     localLoginSecret: parsed.data.LOCAL_LOGIN_SECRET,
     localLoginLogin: parsed.data.LOCAL_LOGIN_LOGIN,
     aiReviewHarness: parsed.data.AI_REVIEW_HARNESS,
-    aiReviewModel:
-      parsed.data.AI_REVIEW_MODEL ?? DEFAULT_REVIEW_MODEL[parsed.data.AI_REVIEW_HARNESS],
+    aiReviewModel,
     aiReviewTimeoutMs: parsed.data.AI_REVIEW_TIMEOUT_MS,
+    learningsHarnessPath: parsed.data.LEARNINGS_HARNESS_PATH,
+    learningsModel:
+      parsed.data.LEARNINGS_MODEL ??
+      (parsed.data.AI_REVIEW_HARNESS === "claude" ? "opus" : aiReviewModel),
   }
 }
