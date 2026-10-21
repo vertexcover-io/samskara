@@ -4,27 +4,24 @@ import {
   type ProblemInput,
   type WrittenLearning,
 } from "@samskara/core"
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notExists, sql } from "drizzle-orm"
+import { and, asc, desc, eq, gt, inArray, isNull, notExists, sql } from "drizzle-orm"
 import type { Db, Querier } from "../db/client.js"
-import {
-  learningRuns,
-  learnings,
-  projects,
-  reviewProblems,
-  sessionReviews,
-  sessions,
-} from "../db/schema.js"
+import { learningRuns, learnings, reviewProblems, sessionReviews, sessions } from "../db/schema.js"
 
 export type LearningRunRow = typeof learningRuns.$inferSelect
 export type LearningRow = typeof learnings.$inferSelect
 
 /**
- * Starts a run for the org, or returns null when one is already running there: two runs at
+ * Starts a run for the project, or returns null when one is already running there: two runs at
  * once would read the same unmarked problems. The partial unique index is the guard, so two
  * starts racing each other cannot both win.
  */
-export const startRun = async (db: Querier, orgId: string): Promise<LearningRunRow | null> => {
-  const [row] = await db.insert(learningRuns).values({ orgId }).onConflictDoNothing().returning()
+export const startRun = async (db: Querier, projectId: string): Promise<LearningRunRow | null> => {
+  const [row] = await db
+    .insert(learningRuns)
+    .values({ projectId })
+    .onConflictDoNothing()
+    .returning()
   return row ?? null
 }
 
@@ -54,7 +51,7 @@ export const finishRun = async (db: Querier, runId: string, result: RunOutcome):
 
 /**
  * A run lives in the server process; one still `running` when the server starts again was cut
- * off by the restart. Failing it frees the org for the next run, and its problems were never
+ * off by the restart. Failing it frees the project for the next run, and its problems were never
  * marked, so that run reads them again.
  */
 export const failInterruptedRuns = async (db: Querier): Promise<number> => {
@@ -72,37 +69,38 @@ export const getRun = async (db: Querier, runId: string): Promise<LearningRunRow
 }
 
 /**
- * Orgs with problems no run has read whose last run started before `since` (or that never had
- * one) — the ones the weekly schedule starts a run for. A failed run counts: it is retried a
- * week later, not every hour.
+ * Projects with problems no run has read whose last run started before `since` (or that never
+ * had one) — the ones the weekly schedule starts a run for. A failed run counts: it is retried
+ * a week later, not every hour.
  */
-export const orgsDueForRun = async (db: Querier, since: Date): Promise<string[]> =>
+export const projectsDueForRun = async (db: Querier, since: Date): Promise<string[]> =>
   db
-    .selectDistinct({ orgId: projects.ownerOrgId })
+    .selectDistinct({ projectId: reviewProblems.projectId })
     .from(reviewProblems)
-    .innerJoin(projects, eq(projects.id, reviewProblems.projectId))
     .where(
       and(
         isNull(reviewProblems.learningRunId),
-        isNotNull(projects.ownerOrgId),
         notExists(
           db
             .select({ one: sql`1` })
             .from(learningRuns)
             .where(
-              and(eq(learningRuns.orgId, projects.ownerOrgId), gt(learningRuns.startedAt, since)),
+              and(
+                eq(learningRuns.projectId, reviewProblems.projectId),
+                gt(learningRuns.startedAt, since),
+              ),
             ),
         ),
       ),
     )
-    .then((rows) => rows.flatMap((row) => (row.orgId === null ? [] : [row.orgId])))
+    .then((rows) => rows.map((row) => row.projectId))
 
-/** The org's most recent run, whatever its status. */
-export const latestRun = async (db: Querier, orgId: string): Promise<LearningRunRow | null> => {
+/** The project's most recent run, whatever its status. */
+export const latestRun = async (db: Querier, projectId: string): Promise<LearningRunRow | null> => {
   const [row] = await db
     .select()
     .from(learningRuns)
-    .where(eq(learningRuns.orgId, orgId))
+    .where(eq(learningRuns.projectId, projectId))
     .orderBy(desc(learningRuns.startedAt))
     .limit(1)
   return row ?? null
@@ -127,19 +125,18 @@ const asProblem = (row: Record<keyof typeof problemColumns, unknown>): ProblemIn
   row as ProblemInput
 
 /**
- * Problems in the org's projects that no run has considered yet, oldest first. `limit` is the
- * batch size: a first run over a long history works through it a batch at a time.
+ * The project's problems that no run has considered yet, oldest first. `limit` is the batch
+ * size: a first run over a long history works through it a batch at a time.
  */
 export const unmarkedProblems = async (
   db: Querier,
-  orgId: string,
+  projectId: string,
   limit: number,
 ): Promise<ProblemInput[]> =>
   db
     .select(problemColumns)
     .from(reviewProblems)
-    .innerJoin(projects, eq(projects.id, reviewProblems.projectId))
-    .where(and(eq(projects.ownerOrgId, orgId), isNull(reviewProblems.learningRunId)))
+    .where(and(eq(reviewProblems.projectId, projectId), isNull(reviewProblems.learningRunId)))
     .orderBy(
       asc(reviewProblems.createdAt),
       asc(reviewProblems.reviewId),
@@ -151,12 +148,12 @@ export const unmarkedProblems = async (
 /** What agent 1 is shown of each learning so far: enough to tell whether a cause is the same. */
 export const learningsForGrouping = async (
   db: Querier,
-  orgId: string,
+  projectId: string,
 ): Promise<Array<Pick<LearningInput, "id" | "title" | "cause">>> =>
   db
     .select({ id: learnings.id, title: learnings.title, cause: learnings.cause })
     .from(learnings)
-    .where(eq(learnings.orgId, orgId))
+    .where(eq(learnings.projectId, projectId))
     .orderBy(asc(learnings.createdAt))
 
 /** Learnings in full, each with every problem already linked to it, for agent 2. */
@@ -240,7 +237,7 @@ export const saveBatch = async (
   db: Db,
   input: {
     readonly runId: string
-    readonly orgId: string
+    readonly projectId: string
     readonly groups: ReadonlyArray<SavedGroup>
   },
 ): Promise<SavedOutcome[]> =>
@@ -274,7 +271,7 @@ export const saveBatch = async (
             .insert(learnings)
             .values({
               ...fields,
-              orgId: input.orgId,
+              projectId: input.projectId,
               cause: group.cause,
               updatedByRunId: input.runId,
             })
@@ -315,15 +312,15 @@ export type ListedLearning = LearningRow & {
 /** High first: a priority's place in `LEARNING_PRIORITIES`. */
 const PRIORITY_ORDER = sql`array_position(${sql.raw(`array[${LEARNING_PRIORITIES.map((p) => `'${p}'`).join(", ")}]`)}::text[], ${learnings.priority})`
 
-/** The org's learnings, high priority first, then by how many sessions they came up in. */
-export const listLearnings = async (db: Querier, orgId: string): Promise<ListedLearning[]> => {
+/** The project's learnings, high priority first, then by how many sessions they came up in. */
+export const listLearnings = async (db: Querier, projectId: string): Promise<ListedLearning[]> => {
   const problemCount = sql<number>`count(${reviewProblems.id})::int`
   const sessionCount = sql<number>`count(distinct ${reviewProblems.sessionId})::int`
   const rows = await db
     .select({ learning: learnings, problemCount, sessionCount })
     .from(learnings)
     .leftJoin(reviewProblems, eq(reviewProblems.learningId, learnings.id))
-    .where(eq(learnings.orgId, orgId))
+    .where(eq(learnings.projectId, projectId))
     .groupBy(learnings.id)
     .orderBy(PRIORITY_ORDER, desc(sessionCount), desc(problemCount), asc(learnings.createdAt))
   return rows.map((row) => ({

@@ -507,8 +507,8 @@
           "notNull": true,
           "default": "gen_random_uuid()"
         },
-        "orgId": {
-          "name": "orgId",
+        "projectId": {
+          "name": "projectId",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
@@ -577,11 +577,11 @@
         }
       },
       "indexes": {
-        "learnings_orgId_idx": {
-          "name": "learnings_orgId_idx",
+        "learnings_projectId_idx": {
+          "name": "learnings_projectId_idx",
           "columns": [
             {
-              "expression": "orgId",
+              "expression": "projectId",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -594,12 +594,12 @@
         }
       },
       "foreignKeys": {
-        "learnings_orgId_orgs_id_fk": {
-          "name": "learnings_orgId_orgs_id_fk",
+        "learnings_projectId_projects_id_fk": {
+          "name": "learnings_projectId_projects_id_fk",
           "tableFrom": "learnings",
-          "tableTo": "orgs",
+          "tableTo": "projects",
           "columnsFrom": [
-            "orgId"
+            "projectId"
           ],
           "columnsTo": [
             "id"
@@ -2962,8 +2962,8 @@
           "notNull": true,
           "default": "gen_random_uuid()"
         },
-        "orgId": {
-          "name": "orgId",
+        "projectId": {
+          "name": "projectId",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
@@ -3002,11 +3002,11 @@
         }
       },
       "indexes": {
-        "learningRuns_orgId_startedAt_idx": {
-          "name": "learningRuns_orgId_startedAt_idx",
+        "learningRuns_projectId_startedAt_idx": {
+          "name": "learningRuns_projectId_startedAt_idx",
           "columns": [
             {
-              "expression": "orgId",
+              "expression": "projectId",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -3023,11 +3023,11 @@
           "method": "btree",
           "with": {}
         },
-        "learningRuns_one_running_per_org": {
-          "name": "learningRuns_one_running_per_org",
+        "learningRuns_one_running_per_project": {
+          "name": "learningRuns_one_running_per_project",
           "columns": [
             {
-              "expression": "orgId",
+              "expression": "projectId",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -3041,12 +3041,12 @@
         }
       },
       "foreignKeys": {
-        "learningRuns_orgId_orgs_id_fk": {
-          "name": "learningRuns_orgId_orgs_id_fk",
+        "learningRuns_projectId_projects_id_fk": {
+          "name": "learningRuns_projectId_projects_id_fk",
           "tableFrom": "learningRuns",
-          "tableTo": "orgs",
+          "tableTo": "projects",
           "columnsFrom": [
-            "orgId"
+            "projectId"
           ],
           "columnsTo": [
             "id"

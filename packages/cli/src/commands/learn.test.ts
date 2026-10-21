@@ -45,7 +45,7 @@ describe("samskara learn", () => {
         { status: 200, body: { run: { id: "r1", status: "running", error: null } } },
         { status: 200, body: { run: { id: "r1", status: "done", error: null } } },
       ],
-      "/api/learnings?org=acme": [
+      "/api/learnings?project=p1": [
         {
           status: 200,
           body: {
@@ -68,7 +68,7 @@ describe("samskara learn", () => {
     const stdout = writer()
     const code = await learnCommand({
       ...base,
-      org: "acme",
+      project: "p1",
       harnessPath: "../yok",
       fetch,
       stdout,
@@ -77,8 +77,8 @@ describe("samskara learn", () => {
     expect(code).toBe(0)
     expect(calls[0]?.method).toBe("POST")
     expect(calls[0]?.auth).toBe("Bearer tok")
-    const sent = JSON.parse(calls[0]?.body ?? "{}") as { org: string; harnessPath: string }
-    expect(sent.org).toBe("acme")
+    const sent = JSON.parse(calls[0]?.body ?? "{}") as { project: string; harnessPath: string }
+    expect(sent.project).toBe("p1")
     expect(sent.harnessPath).toMatch(/^\/.*\/yok$/)
     expect(calls.filter((call) => call.path === "/api/learnings/runs/r1")).toHaveLength(2)
     expect(stdout.text()).toContain("1. [high] Says tests pass without running them")
@@ -94,7 +94,7 @@ describe("samskara learn", () => {
       ],
     })
     const stderr = writer()
-    expect(await learnCommand({ ...base, org: "acme", fetch, stdout: writer(), stderr })).toBe(1)
+    expect(await learnCommand({ ...base, project: "p1", fetch, stdout: writer(), stderr })).toBe(1)
     expect(stderr.text()).toContain("The learning run failed: grouping failed")
   })
 
@@ -103,7 +103,28 @@ describe("samskara learn", () => {
       "/api/learnings/runs": [{ status: 400, body: { error: "noHarnessPath" } }],
     })
     const stderr = writer()
-    expect(await learnCommand({ ...base, org: "acme", fetch, stdout: writer(), stderr })).toBe(1)
+    expect(await learnCommand({ ...base, project: "p1", fetch, stdout: writer(), stderr })).toBe(1)
     expect(stderr.text()).toContain("pass --harness-path")
+  })
+
+  test("LC4: a run still going past the wait limit stops the wait, not the run", async () => {
+    const { fetch, calls } = server({
+      "/api/learnings/runs": [{ status: 202, body: { runId: "r1" } }],
+      "/api/learnings/runs/r1": [
+        { status: 200, body: { run: { id: "r1", status: "running", error: null } } },
+      ],
+    })
+    const stderr = writer()
+    const code = await learnCommand({
+      ...base,
+      project: "p1",
+      maxWaitMs: 10_000,
+      fetch,
+      stdout: writer(),
+      stderr,
+    })
+    expect(code).toBe(1)
+    expect(stderr.text()).toContain("Stopped waiting for learning run r1")
+    expect(calls.filter((call) => call.path === "/api/learnings/runs/r1")).toHaveLength(3)
   })
 })

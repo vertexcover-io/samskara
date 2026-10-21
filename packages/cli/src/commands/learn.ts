@@ -31,7 +31,8 @@ const listSchema = z.object({
 })
 
 export type LearnOptions = {
-  readonly org: string
+  /** The project's id. */
+  readonly project: string
   /** A checkout of the harness on the server's machine; the server's own setting otherwise. */
   readonly harnessPath?: string
   readonly stdout?: Writer
@@ -40,23 +41,34 @@ export type LearnOptions = {
   readonly readToken?: () => Promise<string | null>
   readonly fetch?: typeof globalThis.fetch
   readonly sleep?: (ms: number) => Promise<void>
+  /** How long to wait for the run before giving up; `MAX_WAIT_MS` when absent. */
+  readonly maxWaitMs?: number
 }
 
 /** A run is two agents per batch of problems, so minutes, not seconds. */
 const POLL_MS = 5_000
 
+/**
+ * A long first run is up to 40 batches; past this the run is likely stuck (a server that could
+ * not mark it finished keeps it `running`), so stop waiting rather than poll forever.
+ */
+export const MAX_WAIT_MS = 3 * 60 * 60 * 1000
+
 const startedSchema = z.object({ runId: z.string() })
 
 const ERRORS: Record<string, string> = {
-  orgNotFound: "No such org, or this account is not in it.",
+  projectNotFound: "No such project, or this account cannot see it.",
+  notEditable: "Only an editor of the project can start a learning run.",
+  harnessPathNeedsAdmin: "Only a project admin can pass --harness-path.",
   noHarnessPath:
     "No harness to check against: pass --harness-path, or set LEARNINGS_HARNESS_PATH on the server.",
-  learningRunAlreadyRunning: "A learning run is already going for this org. Wait for it to finish.",
+  learningRunAlreadyRunning:
+    "A learning run is already going for this project. Wait for it to finish.",
 }
 
 /**
- * `samskara learn`: starts a learning run for the org, waits for it, and prints the org's
- * learnings, high priority first. The run itself happens on the server.
+ * `samskara learn`: starts a learning run for the project, waits for it, and prints the
+ * project's learnings, high priority first. The run itself happens on the server.
  */
 export const learnCommand = async (options: LearnOptions): Promise<number> => {
   const { stdout, stderr } = resolveIo(options)
@@ -91,7 +103,7 @@ export const learnCommand = async (options: LearnOptions): Promise<number> => {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          org: options.org,
+          project: options.project,
           // The server resolves a relative path against its own folder, not this one.
           ...(options.harnessPath === undefined
             ? {}
@@ -101,16 +113,21 @@ export const learnCommand = async (options: LearnOptions): Promise<number> => {
     )
     stderr.write(`Learning run ${started.runId} started. Waiting for it to finish…\n`)
 
-    for (;;) {
+    const maxWaitMs = options.maxWaitMs ?? MAX_WAIT_MS
+    for (let waited = 0; ; waited += POLL_MS) {
       const { run } = runSchema.parse(await call(`/api/learnings/runs/${started.runId}`))
       if (run.status === "failed")
         throw new Error(`The learning run failed: ${run.error ?? "no reason given"}`)
       if (run.status === "done") break
+      if (waited >= maxWaitMs)
+        throw new Error(
+          `Stopped waiting for learning run ${started.runId}: still running after ${Math.round(maxWaitMs / 60_000)} minutes.`,
+        )
       await sleep(POLL_MS)
     }
 
     const { learnings } = listSchema.parse(
-      await call(`/api/learnings?org=${encodeURIComponent(options.org)}`),
+      await call(`/api/learnings?project=${encodeURIComponent(options.project)}`),
     )
     if (learnings.length === 0) {
       stdout.write("No learnings yet.\n")

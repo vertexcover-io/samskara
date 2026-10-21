@@ -3,9 +3,13 @@ import {
   groupProblems,
   type HarnessRunner,
   type LearningInput,
+  type LearningTrace,
+  oneOffReason,
+  type ProblemGroup,
   type ProblemInput,
   problemExcerpt,
   recordsInReviewOrder,
+  type WrittenLearning,
   withHarnessSnapshot,
   writeLearnings,
   writerGroupId,
@@ -50,7 +54,10 @@ const MAX_BATCHES = 40
 
 type PriorityCount = { high: number; medium: number }
 
-/** The model both learning agents run on: `LEARNINGS_MODEL`, else the reviewer's own. */
+/**
+ * The model both learning agents run on: `LEARNINGS_MODEL`, which `loadEnv` defaults to opus
+ * on the claude harness; the reviewer's own when an Env built by hand leaves it out.
+ */
 const learningsModelOf = (env: Env): string => env.learningsModel ?? env.aiReviewModel
 
 export type StartedLearningRun =
@@ -62,17 +69,17 @@ export type StartedLearningRun =
     }
 
 /**
- * Starts a learning run for the org and returns as soon as its row exists; `finished` settles
- * when it ends and never rejects. Busy when the org already has one running.
+ * Starts a learning run for the project and returns as soon as its row exists; `finished`
+ * settles when it ends and never rejects. Busy when the project already has one running.
  */
 export const startLearningRun = async (
   deps: LearningRunDeps,
-  orgId: string,
+  projectId: string,
   options: LearningRunOptions,
 ): Promise<StartedLearningRun> => {
-  const run = await learningsRepo.startRun(deps.db, orgId)
+  const run = await learningsRepo.startRun(deps.db, projectId)
   if (run === null) return { status: "busy" }
-  const log = deps.log.child({ learningRunId: run.id, orgId })
+  const log = deps.log.child({ learningRunId: run.id, projectId })
   const finished = (async (): Promise<"done" | "failed"> => {
     const runLog = await openRunLog(
       deps.logDir ?? join(process.cwd(), LEARNING_RUNS_DIR),
@@ -80,14 +87,14 @@ export const startLearningRun = async (
       log,
     )
     runLog.event("run.start", {
-      orgId,
+      projectId,
       harnessPath: options.harnessPath,
       harness: deps.env.aiReviewHarness,
       model: learningsModelOf(deps.env),
     })
     let outcome: learningsRepo.RunOutcome
     try {
-      await work(deps, log, runLog, run.id, orgId, options)
+      await work(deps, log, runLog, run.id, projectId, options)
       outcome = { status: "done" }
     } catch (error) {
       log.warn({ err: error }, "learning run failed")
@@ -98,7 +105,7 @@ export const startLearningRun = async (
     try {
       await learningsRepo.finishRun(deps.db, run.id, outcome)
     } catch (error) {
-      // The row stays `running` and blocks the org until the next restart fails it
+      // The row stays `running` and blocks the project until the next restart fails it
       // (`failInterruptedRuns`); say so rather than reject a promise nobody may await.
       log.error({ err: error }, "learning run could not be marked finished")
       return "failed"
@@ -112,12 +119,12 @@ export const startLearningRun = async (
 /** A whole run, start to end, awaited: for scripts and tests. The routes and the schedule start one. */
 export const runLearnings = async (
   deps: LearningRunDeps,
-  orgId: string,
+  projectId: string,
   options: LearningRunOptions,
 ): Promise<
   { readonly status: "busy" } | { readonly status: "done" | "failed"; readonly runId: string }
 > => {
-  const started = await startLearningRun(deps, orgId, options)
+  const started = await startLearningRun(deps, projectId, options)
   if (started.status === "busy") return started
   return { status: await started.finished, runId: started.runId }
 }
@@ -132,11 +139,11 @@ const work = async (
   log: pino.Logger,
   runLog: RunLog,
   runId: string,
-  orgId: string,
+  projectId: string,
   options: LearningRunOptions,
 ): Promise<void> => {
   // Nothing to do costs no snapshot and no agent.
-  if ((await learningsRepo.unmarkedProblems(deps.db, orgId, 1)).length === 0) {
+  if ((await learningsRepo.unmarkedProblems(deps.db, projectId, 1)).length === 0) {
     runLog.event("run.nothing_to_do")
     return
   }
@@ -150,7 +157,7 @@ const work = async (
       const counted = await runBatch(deps, {
         batch,
         runId,
-        orgId,
+        projectId,
         harnessDir: harness.dir,
         batchSize: options.batchSize ?? LEARNING_BATCH_SIZE,
         left: { high: limits.high - used.high, medium: limits.medium - used.medium },
@@ -166,30 +173,31 @@ const work = async (
 
 /**
  * One batch: agent 1 groups the oldest unmarked problems by cause, joining learnings already
- * found; agent 2 checks each group against the harness and its evidence and writes it up or
- * drops it; then the batch is saved in one transaction. Returns how many new high and medium
- * learnings it made, or null when no problem was left.
+ * found; code drops the new groups that are one-offs; agent 2 checks each other group against
+ * the harness and its evidence and writes it up or drops it; then the batch is saved in one
+ * transaction. Returns how many new high and medium learnings it saved, or null when no
+ * problem was left.
  */
 const runBatch = async (
   deps: LearningRunDeps,
   input: {
     readonly batch: number
     readonly runId: string
-    readonly orgId: string
+    readonly projectId: string
     readonly harnessDir: string
     readonly batchSize: number
     /** New high and medium learnings the run may still make. */
     readonly left: PriorityCount
-    readonly trace: (step: string, fields?: Readonly<Record<string, unknown>>) => void
+    readonly trace: (step: string, fields?: Parameters<LearningTrace>[1]) => void
     readonly log: pino.Logger
   },
 ): Promise<PriorityCount | null> => {
   const { db, runner, env } = deps
   const { trace } = input
   const choice = { harness: env.aiReviewHarness, model: learningsModelOf(env) }
-  const problems = await learningsRepo.unmarkedProblems(db, input.orgId, input.batchSize)
+  const problems = await learningsRepo.unmarkedProblems(db, input.projectId, input.batchSize)
   if (problems.length === 0) return null
-  const known = await learningsRepo.learningsForGrouping(db, input.orgId)
+  const known = await learningsRepo.learningsForGrouping(db, input.projectId)
   trace("batch.start", {
     problems: problems.length,
     learningsSoFar: known.length,
@@ -198,63 +206,52 @@ const runBatch = async (
 
   const grouped = await groupProblems({ problems, learnings: known, runner, run: choice, trace })
   if (!grouped.ok) throw new Error(`grouping failed: ${grouped.errors.join("; ")}`)
+  const groups = await writerGroups(db, grouped.groups, problems)
 
-  const joined = new Map(
-    (
-      await learningsRepo.learningsWithProblems(
-        db,
-        grouped.groups.flatMap((group) => (group.learningId === null ? [] : [group.learningId])),
-      )
-    ).map((learning) => [learning.id, learning]),
-  )
-  const byId = new Map((await withExcerpts(db, problems)).map((problem) => [problem.id, problem]))
-  const groups = grouped.groups.map((group) => {
-    const found = group.learningId === null ? undefined : joined.get(group.learningId)
-    const { problems: linked = [], ...existing } = found ?? {}
-    return {
-      // A joined learning keeps the cause it was found with.
-      cause: found?.cause ?? group.cause,
-      existing: found === undefined ? null : (existing as LearningInput),
-      problems: [...linked, ...group.problemIds.map((id) => byId.get(id) as ProblemInput)],
-      learningId: group.learningId,
-      newProblemIds: group.problemIds,
-    }
+  // A one-off is dropped here, whatever agent 2 would say; only the rest reach it.
+  const answers: Array<WrittenLearning | undefined> = groups.map((group) => {
+    const reason = group.existing === null ? oneOffReason(group.problems) : null
+    return reason === null ? undefined : { verdict: "drop", reason }
   })
-
-  const written = await writeLearnings({
-    groups,
-    harnessDir: input.harnessDir,
-    priorityLimits: input.left,
-    runner,
-    run: choice,
-    trace,
-  })
-  if (!written.ok) throw new Error(`writing learnings failed: ${written.errors.join("; ")}`)
-
-  const counted: PriorityCount = { high: 0, medium: 0 }
-  for (const [index, answer] of written.answers.entries())
-    if (
-      answer.verdict === "learning" &&
-      groups[index]?.existing === null &&
-      (answer.priority === "high" || answer.priority === "medium")
-    )
-      counted[answer.priority] += 1
+  const toWrite = groups.filter((_, index) => answers[index] === undefined)
+  // Agent 2 numbers only the groups it gets; this maps a batch group to its id there.
+  const writerIds = new Map<number, string>()
+  for (const index of answers.keys())
+    if (answers[index] === undefined) writerIds.set(index, writerGroupId(writerIds.size))
+  trace("batch.one_offs", { dropped: groups.length - toWrite.length, toWriter: toWrite.length })
+  if (toWrite.length > 0) {
+    const written = await writeLearnings({
+      groups: toWrite,
+      harnessDir: input.harnessDir,
+      priorityLimits: input.left,
+      runner,
+      run: choice,
+      trace,
+    })
+    if (!written.ok) throw new Error(`writing learnings failed: ${written.errors.join("; ")}`)
+    const writtenAnswers = [...written.answers]
+    for (const [index, answer] of answers.entries())
+      if (answer === undefined) answers[index] = writtenAnswers.shift()
+  }
+  const final = answers as WrittenLearning[]
 
   const saved = await learningsRepo.saveBatch(db, {
     runId: input.runId,
-    orgId: input.orgId,
+    projectId: input.projectId,
     groups: groups.map((group, index) => ({
       cause: group.cause,
       learningId: group.learningId,
       problemIds: group.newProblemIds,
-      answer: written.answers[index] as (typeof written.answers)[number],
+      answer: final[index] as WrittenLearning,
     })),
   })
+  const counted = newPrioritiesSaved(saved, final)
   trace("batch.saved", {
     groups: saved.map((outcome, index) => {
-      const answer = written.answers[index]
+      const answer = final[index]
       return {
-        group: writerGroupId(index),
+        group: index + 1,
+        writerGroup: writerIds.get(index) ?? null,
         action: outcome.action,
         learningId: outcome.learningId,
         problemIds: outcome.problemIds,
@@ -269,10 +266,63 @@ const runBatch = async (
       batch: input.batch,
       problems: problems.length,
       groups: groups.length,
-      dropped: written.answers.filter((answer) => answer.verdict === "drop").length,
+      dropped: final.filter((answer) => answer.verdict === "drop").length,
     },
     "learning batch saved",
   )
+  return counted
+}
+
+/**
+ * Agent 1's groups as agent 2 reads them: a group that joins a learning carries it, with the
+ * problems already linked to it, and keeps the cause it was found with; every new problem
+ * carries its evidence excerpt.
+ */
+const writerGroups = async (
+  db: Db,
+  grouped: ReadonlyArray<ProblemGroup>,
+  problems: ReadonlyArray<ProblemInput>,
+) => {
+  const joined = new Map(
+    (
+      await learningsRepo.learningsWithProblems(
+        db,
+        grouped.flatMap((group) => (group.learningId === null ? [] : [group.learningId])),
+      )
+    ).map((learning) => [learning.id, learning]),
+  )
+  const byId = new Map((await withExcerpts(db, problems)).map((problem) => [problem.id, problem]))
+  return grouped.map((group) => {
+    const found = group.learningId === null ? undefined : joined.get(group.learningId)
+    const { problems: linked = [], ...existing } = found ?? {}
+    return {
+      cause: found?.cause ?? group.cause,
+      existing: found === undefined ? null : (existing as LearningInput),
+      problems: [...linked, ...group.problemIds.map((id) => byId.get(id) as ProblemInput)],
+      learningId: group.learningId,
+      newProblemIds: group.problemIds,
+    }
+  })
+}
+
+/**
+ * The new high and medium learnings a batch actually saved, which is what the run's limits
+ * count: a group skipped at save (its review was redone mid-run) used no slot.
+ */
+const newPrioritiesSaved = (
+  saved: ReadonlyArray<learningsRepo.SavedOutcome>,
+  answers: ReadonlyArray<WrittenLearning>,
+): PriorityCount => {
+  const counted: PriorityCount = { high: 0, medium: 0 }
+  for (const [index, outcome] of saved.entries()) {
+    const answer = answers[index]
+    if (
+      outcome.action === "created" &&
+      answer?.verdict === "learning" &&
+      (answer.priority === "high" || answer.priority === "medium")
+    )
+      counted[answer.priority] += 1
+  }
   return counted
 }
 

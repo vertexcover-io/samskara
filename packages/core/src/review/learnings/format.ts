@@ -19,7 +19,11 @@ export const WRITTEN_LIMITS = { title: 120, problem: 600, priorityReason: 300, f
  * node and nothing else.
  */
 const PARSERS_JS = String.raw`
-/** "## heading" sections, each with its "- **Name:** value" fields; a field may wrap. */
+/**
+ * "## heading" sections, each with its "- **Name:** value" fields; a field may wrap. The same
+ * job as fieldsOf in problems/reviewMd.ts, written again here because the check scripts
+ * have no imports; change both together.
+ */
 const sections = (text) => {
   const out = []
   let current = null
@@ -58,7 +62,7 @@ const parseGroupsMd = (text, problemIds, learningIds, causeMax) => {
     const problems = (section.fields.problems ?? "").split(/[\s,]+/).filter(Boolean)
     if (joins === "") errors.push('"' + name + '" has no Joins: write "- **Joins:** new" or a learning id like K1')
     else if (joins.toLowerCase() !== "new" && !learningIds.includes(joins))
-      errors.push('"' + name + '": ' + joins + " is not a learning id in learnings.md")
+      errors.push('"' + name + '": ' + joins + " is not a learning id in known-learnings.md")
     else if (joins.toLowerCase() !== "new") {
       if (joined.has(joins)) errors.push(joins + " is joined by more than one group: merge them")
       joined.set(joins, name)
@@ -295,11 +299,27 @@ const indent = (text: string): string =>
     .join("\n")
 
 /**
- * How many times it happened: each evidence line is one incident. A review writes one problem
- * per cause, so a mistake repeated in one session is one problem with several incidents.
+ * How many times it happened: each evidence line is one time. A review writes one problem per
+ * cause, so a mistake repeated in one session is one problem with several evidence lines.
  */
-const incidents = (problems: ReadonlyArray<ProblemInput>): number =>
+const timesHappened = (problems: ReadonlyArray<ProblemInput>): number =>
   problems.reduce((sum, problem) => sum + problem.evidence.length, 0)
+
+/** A mistake made this many times in one session is not a one-off: the agent did not learn. */
+export const ONE_OFF_BELOW = 3
+
+/**
+ * Why a new group is a one-off, or null when it is not: all its problems from one session, none
+ * of them high severity, and it happened fewer than `ONE_OFF_BELOW` times. Code drops these
+ * before agent 2 reads them, so the rule holds whatever the agent decides.
+ */
+export const oneOffReason = (problems: ReadonlyArray<ProblemInput>): string | null => {
+  const sessions = new Set(problems.map((problem) => problem.sessionId)).size
+  const times = timesHappened(problems)
+  if (sessions !== 1 || problems.some((problem) => problem.severity === "high")) return null
+  if (times >= ONE_OFF_BELOW) return null
+  return `One session, no high-severity problem, and it happened ${times} times.`
+}
 
 const count = <T extends string>(values: ReadonlyArray<string>, names: ReadonlyArray<T>): string =>
   names.map((name) => `${values.filter((value) => value === name).length} ${name}`).join(", ")
@@ -351,7 +371,7 @@ export const groupsForWriter = (
               `  - Fix type: ${group.existing.fixType}`,
               `  - Fix: ${group.existing.fix}`,
             ].join("\n"),
-        `- **Numbers:** ${group.problems.length} problems in ${sessions} sessions, ${incidents(group.problems)} incidents; severity: ${count(
+        `- **Numbers:** ${group.problems.length} problems in ${sessions} sessions, happened ${timesHappened(group.problems)} times; severity: ${count(
           group.problems.map((problem) => problem.severity),
           PROBLEM_SEVERITIES,
         )}; class: ${count(

@@ -1,4 +1,4 @@
-import { CAUSE_MAX, WRITTEN_LIMITS } from "./format.js"
+import { CAUSE_MAX, ONE_OFF_BELOW, WRITTEN_LIMITS } from "./format.js"
 
 /** Agent 1's instructions: put the new problems into groups by cause. */
 export const GROUPER_CONTRACT = `# Group problems by cause
@@ -92,22 +92,17 @@ dropped. The existing fix did not stop them:
 
 ## A new group
 
+One-offs are already gone: code dropped every new group whose problems all come from one
+session, none of them high severity, that happened fewer than ${ONE_OFF_BELOW} times. Each new
+group here came up in more than one session, has a high-severity problem, or kept happening.
 Take these steps in order.
 
-1. **Can it be dropped on its numbers?** Drop it when all of these hold:
-   - all its problems come from one session (the Numbers line says "in 1 sessions");
-   - it happened fewer than 3 times (the Numbers line's incidents: each is one time it
-     happened). A mistake the agent kept making in one session is not a one-off;
-   - none of them is high severity;
-   - none of them is missed (nobody caught it) or blocked (a person had to step in);
-   - it cannot happen again: it does not come from a step, skill or part of the system that
-     every run, or every change to that part, goes through.
-2. **Does it clearly matter?** For every new group still here, read its evidence and the
-   session records around it, and look for its cause in \`harness/\`. Keep it only when they
-   clearly show it matters: it cost real time or a wrong result, a person had to step in, it
-   keeps happening, or it will happen whenever that part of the system is used. When unsure,
-   drop it: a learning that is not worth fixing costs the reader more than a missed one.
-3. **Write the learning.** If \`harness/\` already has a rule, doc, hook or code for this
+1. **Does it clearly matter?** Read its evidence and the session records around it, and look
+   for its cause in \`harness/\`. Keep it only when they clearly show it matters: it caused a
+   wrong result, a person had to step in, it keeps happening, or it will happen whenever that
+   part of the system is used. When unsure, drop it: a learning that is not worth fixing costs
+   the reader more than a missed one.
+2. **Write the learning.** If \`harness/\` already has a rule, doc, hook or code for this
    cause, it did not stop these problems: the fix says what to change about it, not "add a
    rule" again.
 
@@ -165,7 +160,7 @@ One section per group, headed by its id:
 ## G2
 
 - **Verdict:** drop
-- **Why:** One session, a medium slow problem: a typo in one branch name cost a minute, and
+- **Why:** Step 1: the evidence shows a typo in one branch name that cost a minute, and
   nothing in the harness makes it likely again.
 \`\`\`
 

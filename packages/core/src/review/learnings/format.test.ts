@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest"
 import {
   groupsForWriter,
   knownLearningsMd,
+  oneOffReason,
   parseGroupsMd,
   parseWrittenMd,
   problemsMd,
@@ -154,7 +155,7 @@ describe("what agent 2 reads and writes", () => {
     expect(md).toContain("- **Cause:** No wait rule.")
     expect(md).toContain("Agents return early")
     expect(md).toContain("Add a wait rule to skills/implement/SKILL.md.")
-    expect(md).toContain("3 problems in 2 sessions, 3 incidents")
+    expect(md).toContain("3 problems in 2 sessions, happened 3 times")
     expect(md).toContain("severity: 1 high, 2 medium, 0 low")
     expect(md).toContain("class: 1 missed, 0 blocked, 2 slow, 0 caught")
   })
@@ -172,7 +173,7 @@ describe("what agent 2 reads and writes", () => {
 - **Why:** One session, medium and slow, a one-off typo.
 `
 
-  test("LW2: incidents count every evidence line, so a mistake repeated in one session shows", () => {
+  test("LW2: the times it happened count every evidence line, so a mistake repeated in one session shows", () => {
     const repeated = problem("a", {
       evidence: [1, 2, 3, 4].map((n) => ({
         from: `msg-${n}`,
@@ -185,7 +186,7 @@ describe("what agent 2 reads and writes", () => {
       [{ id: "G1", cause: "x", existing: null, problems: [repeated] }],
       ROOM,
     )
-    expect(md).toContain("1 problems in 1 sessions, 4 incidents")
+    expect(md).toContain("1 problems in 1 sessions, happened 4 times")
   })
 
   test("LW3: a learning and a drop are both read back", () => {
@@ -300,9 +301,32 @@ describe("what agent 2 reads and writes", () => {
       problem(`p${index}`, { title: `Problem number ${index}` }),
     )
     const md = groupsForWriter([{ id: "G1", cause: "x", existing: null, problems: many }], ROOM)
-    expect(md).toContain("35 problems in 35 sessions, 35 incidents")
+    expect(md).toContain("35 problems in 35 sessions, happened 35 times")
     expect(md).toContain("5 earlier problems not listed")
     expect(md).not.toContain("Problem number 4 ")
     expect(md).toContain("Problem number 34")
+  })
+})
+
+describe("one-off groups, dropped by code before agent 2", () => {
+  const times = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      from: `msg-${i}`,
+      to: `msg-${i}`,
+      quote: "waiting on jest",
+      why: "returned early",
+    }))
+
+  test("LO1: one session, nothing high, under 3 times is a one-off, with the reason", () => {
+    expect(oneOffReason([problem("a", { sessionId: "s1", evidence: times(2) })])).toBe(
+      "One session, no high-severity problem, and it happened 2 times.",
+    )
+  })
+
+  test("LO2: a second session, a high-severity problem, or 3 times in one session keeps it", () => {
+    const two = [problem("a", { sessionId: "s1" }), problem("b", { sessionId: "s2" })]
+    expect(oneOffReason(two)).toBeNull()
+    expect(oneOffReason([problem("a", { severity: "high" })])).toBeNull()
+    expect(oneOffReason([problem("a", { evidence: times(3) })])).toBeNull()
   })
 })

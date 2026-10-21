@@ -218,14 +218,14 @@ program
   .description(
     "Group the review problems no run has read yet by cause, turn them into learnings, and print them",
   )
-  .requiredOption("--org <slug>", "the org whose problems to read")
+  .requiredOption("--project <id>", "the id of the project whose problems to read")
   .option(
     "--harness-path <path>",
-    "a checkout of the agent harness to check learnings against; defaults to the server's setting",
+    "a checkout of the agent harness to check learnings against (project admins only); defaults to the server's setting",
   )
-  .action(async (flags: { org: string; harnessPath?: string }) => {
+  .action(async (flags: { project: string; harnessPath?: string }) => {
     process.exitCode = await learnCommand({
-      org: flags.org,
+      project: flags.project,
       ...(flags.harnessPath === undefined ? {} : { harnessPath: flags.harnessPath }),
     })
   })

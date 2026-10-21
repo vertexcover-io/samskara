@@ -7,6 +7,7 @@ import { dockerAvailable, startTestDb } from "../db/testDb.js"
 import {
   problemFixture,
   seedOrg,
+  seedProject,
   seedSession as seedSessionFixture,
 } from "../services/learnings/testFixtures.js"
 import * as learningsRepo from "./learnings.repo.js"
@@ -28,17 +29,18 @@ describe.skipIf(!dockerAvailable())("learnings repository", () => {
   let db: Db
   let counter = 0
   let orgId: string
+  let projectId: string
   let userId: string
 
-  /** A session in a project owned by `owner`, with one review holding `problems`. */
-  const seedSession = async (problems: ReadonlyArray<Problem>, owner = orgId) => {
+  /** A session in `project`, with one review holding `problems`. */
+  const seedSession = async (problems: ReadonlyArray<Problem>, project = projectId) => {
     counter += 1
     const sessionId = `learn-session-${counter}`
-    await seedSessionFixture(db, { sessionId, orgId: owner, userId, problems })
+    await seedSessionFixture(db, { sessionId, projectId: project, userId, problems })
     return sessionId
   }
 
-  const newOrg = (slug: string): Promise<string> => seedOrg(db, slug)
+  const newProject = (slug: string): Promise<string> => seedProject(db, orgId, slug)
 
   beforeAll(async () => {
     const started = await startTestDb()
@@ -57,37 +59,41 @@ describe.skipIf(!dockerAvailable())("learnings repository", () => {
     await db.delete(learnings)
     await db.delete(learningRuns)
     counter += 1
-    orgId = await newOrg(`org-${counter}`)
+    orgId = await seedOrg(db, `org-${counter}`)
+    projectId = await newProject(`project-${counter}`)
   })
 
   afterAll(async () => {
     await teardown?.()
   })
 
-  test("LDB1: only one run per org can be running; a second start gets null", async () => {
-    const first = await learningsRepo.startRun(db, orgId)
+  test("LDB1: only one run per project can be running; a second start gets null", async () => {
+    const other = await learningsRepo.startRun(db, await newProject(`side-${counter}`))
+    expect(other?.status).toBe("running")
+    const first = await learningsRepo.startRun(db, projectId)
     expect(first?.status).toBe("running")
-    expect(await learningsRepo.startRun(db, orgId)).toBeNull()
+    expect(await learningsRepo.startRun(db, projectId)).toBeNull()
     await learningsRepo.finishRun(db, first?.id as string, { status: "done" })
-    expect(await learningsRepo.startRun(db, orgId)).not.toBeNull()
+    expect(await learningsRepo.startRun(db, projectId)).not.toBeNull()
   })
 
-  test("LDB2: unmarked problems are this org's problems no run has considered, oldest first", async () => {
+  test("LDB2: unmarked problems are this project's problems no run has considered, oldest first", async () => {
     await seedSession([problem("First"), problem("Second")])
-    await seedSession([problem("Elsewhere")], await newOrg("other-org"))
-    const picked = await learningsRepo.unmarkedProblems(db, orgId, 10)
+    // Another project, even in the same org, has its own learnings.
+    await seedSession([problem("Elsewhere")], await newProject(`other-${counter}`))
+    const picked = await learningsRepo.unmarkedProblems(db, projectId, 10)
     expect(picked.map((row) => row.title)).toEqual(["First", "Second"])
     expect(picked[0]).toMatchObject({ class: "slow", severity: "medium", fixType: "skill" })
-    expect(await learningsRepo.unmarkedProblems(db, orgId, 1)).toHaveLength(1)
+    expect(await learningsRepo.unmarkedProblems(db, projectId, 1)).toHaveLength(1)
   })
 
   test("LDB3: saving a batch creates learnings, links their problems, and marks every problem", async () => {
     await seedSession([problem("A"), problem("B"), problem("C")])
-    const run = await learningsRepo.startRun(db, orgId)
-    const [a, b, c] = await learningsRepo.unmarkedProblems(db, orgId, 10)
+    const run = await learningsRepo.startRun(db, projectId)
+    const [a, b, c] = await learningsRepo.unmarkedProblems(db, projectId, 10)
     await learningsRepo.saveBatch(db, {
       runId: run?.id as string,
-      orgId,
+      projectId,
       groups: [
         {
           cause: "No wait rule.",
@@ -103,7 +109,7 @@ describe.skipIf(!dockerAvailable())("learnings repository", () => {
         },
       ],
     })
-    expect(await learningsRepo.unmarkedProblems(db, orgId, 10)).toEqual([])
+    expect(await learningsRepo.unmarkedProblems(db, projectId, 10)).toEqual([])
     const saved = await db.select().from(learnings)
     expect(saved).toHaveLength(1)
     expect(saved[0]).toMatchObject({
@@ -122,11 +128,11 @@ describe.skipIf(!dockerAvailable())("learnings repository", () => {
 
   test("LDB4: a later run updates the learning it joins and links its problems too", async () => {
     await seedSession([problem("A")])
-    const first = await learningsRepo.startRun(db, orgId)
-    const [a] = await learningsRepo.unmarkedProblems(db, orgId, 10)
+    const first = await learningsRepo.startRun(db, projectId)
+    const [a] = await learningsRepo.unmarkedProblems(db, projectId, 10)
     await learningsRepo.saveBatch(db, {
       runId: first?.id as string,
-      orgId,
+      projectId,
       groups: [
         {
           cause: "No wait rule.",
@@ -137,14 +143,14 @@ describe.skipIf(!dockerAvailable())("learnings repository", () => {
       ],
     })
     await learningsRepo.finishRun(db, first?.id as string, { status: "done" })
-    const [existing] = await learningsRepo.learningsForGrouping(db, orgId)
+    const [existing] = await learningsRepo.learningsForGrouping(db, projectId)
 
     await seedSession([problem("B")])
-    const second = await learningsRepo.startRun(db, orgId)
-    const [b] = await learningsRepo.unmarkedProblems(db, orgId, 10)
+    const second = await learningsRepo.startRun(db, projectId)
+    const [b] = await learningsRepo.unmarkedProblems(db, projectId, 10)
     await learningsRepo.saveBatch(db, {
       runId: second?.id as string,
-      orgId,
+      projectId,
       groups: [
         {
           cause: "No wait rule.",
@@ -164,11 +170,11 @@ describe.skipIf(!dockerAvailable())("learnings repository", () => {
   test("LDB5: the list shows each learning with its problem and session counts, high priority first", async () => {
     await seedSession([problem("A"), problem("B")])
     await seedSession([problem("C")])
-    const run = await learningsRepo.startRun(db, orgId)
-    const [a, b, c] = await learningsRepo.unmarkedProblems(db, orgId, 10)
+    const run = await learningsRepo.startRun(db, projectId)
+    const [a, b, c] = await learningsRepo.unmarkedProblems(db, projectId, 10)
     await learningsRepo.saveBatch(db, {
       runId: run?.id as string,
-      orgId,
+      projectId,
       groups: [
         {
           cause: "x",
@@ -184,7 +190,7 @@ describe.skipIf(!dockerAvailable())("learnings repository", () => {
         },
       ],
     })
-    const list = await learningsRepo.listLearnings(db, orgId)
+    const list = await learningsRepo.listLearnings(db, projectId)
     expect(list.map((row) => [row.title, row.problemCount, row.sessionCount])).toEqual([
       ["Helpers report while their run is still going", 2, 2],
       ["Low one", 1, 1],
@@ -193,19 +199,19 @@ describe.skipIf(!dockerAvailable())("learnings repository", () => {
 
   test("LDB6: a group whose problems were replaced by a redone review makes no empty learning", async () => {
     await seedSession([problem("A")])
-    const run = await learningsRepo.startRun(db, orgId)
-    const [a] = await learningsRepo.unmarkedProblems(db, orgId, 10)
+    const run = await learningsRepo.startRun(db, projectId)
+    const [a] = await learningsRepo.unmarkedProblems(db, projectId, 10)
     await db.delete(reviewProblems).where(eq(reviewProblems.id, a?.id as string))
     await learningsRepo.saveBatch(db, {
       runId: run?.id as string,
-      orgId,
+      projectId,
       groups: [{ cause: "x", learningId: null, problemIds: [a?.id as string], answer: written }],
     })
     expect(await db.select().from(learnings)).toEqual([])
   })
 
   test("LDB7: runs left running by a stopped server are marked failed", async () => {
-    const run = await learningsRepo.startRun(db, orgId)
+    const run = await learningsRepo.startRun(db, projectId)
     await learningsRepo.failInterruptedRuns(db)
     const [row] = await db
       .select()
@@ -214,14 +220,16 @@ describe.skipIf(!dockerAvailable())("learnings repository", () => {
     expect(row).toMatchObject({ status: "failed", error: "the server stopped during the run" })
   })
 
-  test("LDB8: an org is due when it has unread problems and no run since the cutoff", async () => {
+  test("LDB8: a project is due when it has unread problems and no run since the cutoff", async () => {
     await seedSession([problem("A")])
     const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
-    expect(await learningsRepo.orgsDueForRun(db, weekAgo)).toContain(orgId)
-    const run = await learningsRepo.startRun(db, orgId)
+    expect(await learningsRepo.projectsDueForRun(db, weekAgo)).toContain(projectId)
+    const run = await learningsRepo.startRun(db, projectId)
     await learningsRepo.finishRun(db, run?.id as string, { status: "failed", error: "x" })
-    // A failed run counts: the org waits until the next week.
-    expect(await learningsRepo.orgsDueForRun(db, weekAgo)).not.toContain(orgId)
-    expect(await learningsRepo.orgsDueForRun(db, new Date(Date.now() + 1000))).toContain(orgId)
+    // A failed run counts: the project waits until the next week.
+    expect(await learningsRepo.projectsDueForRun(db, weekAgo)).not.toContain(projectId)
+    expect(await learningsRepo.projectsDueForRun(db, new Date(Date.now() + 1000))).toContain(
+      projectId,
+    )
   })
 })
