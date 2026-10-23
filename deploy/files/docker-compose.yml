@@ -4,6 +4,7 @@
 # and (via env_file) as the app's environment.
 #   POSTGRES_PASSWORD  generated once by provisioning
 #   APP_BIND           127.0.0.1 behind Caddy, 0.0.0.0 behind a platform proxy
+#   SAMSKARA_IMAGE     ghcr.io/OWNER/REPO, this repo's image by default
 #   SAMSKARA_TAG       written by every deploy
 
 name: samskara
@@ -25,7 +26,7 @@ services:
       retries: 10
 
   app:
-    image: ghcr.io/vertexcover-io/samskara:${SAMSKARA_TAG}
+    image: ${SAMSKARA_IMAGE:-ghcr.io/vertexcover-io/samskara}:${SAMSKARA_TAG}
     restart: unless-stopped
     env_file: .env
     ports:

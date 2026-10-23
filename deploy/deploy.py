@@ -97,6 +97,7 @@ if not host.get_fact(File, path=f"{APP_DIR}/.env"):
         mode="600",
         domain=d.domain,
         app_bind=d.app_bind,
+        image=d.image,
         client_id=d.client_id,
         client_secret=d.client_secret,
         super_admins=d.super_admins,
