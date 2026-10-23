@@ -33,6 +33,12 @@ export type SessionFields = {
   readonly title?: string
   readonly startCwd?: string
   readonly startCommit?: string
+  readonly sourceContext?: {
+    readonly startedAt: string
+    readonly lastActiveAt: string
+    readonly modelSnapshot?: string
+    readonly provider?: string
+  }
 }
 
 export type UpsertSessionInput = {
@@ -64,11 +70,23 @@ export const upsert = async (db: Querier, input: UpsertSessionInput): Promise<vo
       title: fields.title,
       cwd: fields.startCwd,
       startCommit: fields.startCommit,
+      startedAt: fields.sourceContext ? new Date(fields.sourceContext.startedAt) : undefined,
+      lastMessageAt: fields.sourceContext ? new Date(fields.sourceContext.lastActiveAt) : undefined,
+      model: fields.sourceContext?.modelSnapshot,
+      provider: fields.sourceContext?.provider,
     })
     .onConflictDoUpdate({
       target: sessions.id,
       set: {
         title: enrich(sessions.title),
+        ...(fields.sourceContext
+          ? {
+              startedAt: sql`least(${sessions.startedAt}, excluded."startedAt")`,
+              lastMessageAt: sql`greatest(${sessions.lastMessageAt}, excluded."lastMessageAt")`,
+              model: enrich(sessions.model),
+              provider: enrich(sessions.provider),
+            }
+          : {}),
         updatedAt: sql`now()`,
       },
     })
@@ -709,6 +727,7 @@ export const findVisibleProjectById = async (
 }
 
 export type SessionFactsRow = {
+  readonly modelSnapshot?: string | null
   readonly id: string
   readonly title: string | null
   readonly name: string | null
@@ -799,6 +818,7 @@ export type SessionPullRequestRow = {
 }
 
 export type SessionDetailRow = {
+  readonly tokenUsageAvailable: boolean
   readonly session: SessionFactsRow
   readonly messages: ReadonlyArray<MessageRow>
   readonly toolCalls: ReadonlyArray<ToolCallRow>
@@ -838,6 +858,7 @@ export const findVisibleSession = async (
       projectSlug: projects.slug,
       userLogin: users.githubLogin,
       source: sessions.source,
+      modelSnapshot: sessions.model,
       ...repoColumns,
       durationMs,
       messageCount,
@@ -938,6 +959,7 @@ export const getDetail = async (
           outputTokens: sql<number>`coalesce(sum(${tokenUsage.outputTokens}), 0)::bigint`,
           cachedTokens: sql<number>`coalesce(sum(${tokenUsage.cachedTokens}), 0)::bigint`,
           thinkingTokens: sql<number>`coalesce(sum(${tokenUsage.thinkingTokens}), 0)::bigint`,
+          reportCount: sql<number>`count(*)::int`,
         })
         .from(tokenUsage)
         .innerJoin(messages, eq(messages.id, tokenUsage.messageId))
@@ -985,6 +1007,7 @@ export const getDetail = async (
     toolCalls: toolCallRows,
     subagents: subagentRows,
     tokenUsage: countedTokens(tokenRows[0]),
+    tokenUsageAvailable: (tokenRows[0]?.reportCount ?? 0) > 0,
     commits: commitRows.map(({ repoHost, repoOwner, repoName, ...commit }) => ({
       ...commit,
       repo: { host: repoHost, owner: repoOwner, repoName },

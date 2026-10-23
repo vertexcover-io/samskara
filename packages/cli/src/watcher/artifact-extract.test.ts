@@ -64,6 +64,31 @@ const writeLine = (path: string, over: WriteOptions = {}) => recordOf([wrote(pat
 const LATER = "2026-07-28T12:01:00.000Z"
 
 describe("collectArtifacts", () => {
+  test("Codex multi-file results use the command cwd and keep an unknown base", () => {
+    const message: NormalizedMessage = {
+      ...base,
+      source: "codex",
+      cwd: "/work/other",
+      subIndex: 1,
+      msgType: "toolResult",
+      details: {
+        callId: "patch",
+        status: "success",
+        output: "done",
+        metadata: {
+          type: "writes",
+          files: [
+            { path: "a.md", created: true },
+            { path: "b.md", created: false },
+          ],
+        },
+      },
+    }
+    expect(collectArtifacts([recordOf([message])], CWD)).toEqual([
+      { path: "/work/other/a.md", created: true },
+      { path: "/work/other/b.md", created: false },
+    ])
+  })
   test("SC1: a written file is captured by its absolute path, with no base when none was recorded", () => {
     const [artifact] = collectArtifacts([writeLine("src/a.ts")], CWD)
 

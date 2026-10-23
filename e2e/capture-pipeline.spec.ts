@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 import postgres from "postgres"
 import { cliVersion } from "../packages/cli/src/version.js"
+import { createCodexTranscriptWriter } from "./codex-transcript.js"
 import { requireDatabaseUrl } from "./db.js"
 import { expect, mintCliToken, mintSessionToken, test } from "./fixtures/auth.js"
 import { assertApiAcceptsCliToken, daemonEnv, pollUntil, stopWatcher } from "./pipeline.js"
@@ -51,6 +52,7 @@ type Harness = {
 }
 
 type HarnessOptions = {
+  readonly codex?: boolean
   /** What `projects.json` records for this project; omit the entry entirely with `null`. */
   readonly enabled?: boolean | null
   /** The cutoff `samskara enable` would have stored; omitted means capture everything. */
@@ -75,11 +77,13 @@ const startHarness = async (options: HarnessOptions = {}): Promise<Harness> => {
   const cwd = join(home, "work", PROJECT_NAME)
   await mkdir(cwd, { recursive: true })
   await mkdir(samskaraHome, { recursive: true })
+  if (options.codex) await mkdir(join(home, ".codex"), { recursive: true })
 
   // A real git remote, so the daemon's own resolver derives `acme-widgets` from it. Without
   // this the slug would be the machine-specific path.
   await execFileAsync("git", ["init", "-q"], { cwd })
   await execFileAsync("git", ["remote", "add", "origin", GIT_REMOTE], { cwd })
+  if (options.codex) await createCodexTranscriptWriter(home, cwd, SESSION_ID).start()
 
   // The watcher only captures projects marked enabled, and reads its token from disk —
   // both are the real files `samskara login` and `samskara enable` would have written.
@@ -202,6 +206,64 @@ test.afterEach(harnessTeardown)
 
 test.describe("capture pipeline", () => {
   test.describe.configure({ timeout: 45_000 })
+
+  test("Codex: native history reaches the viewer, late results, artifacts, restart, search and replay", async ({
+    authedPage: page,
+  }) => {
+    const { home, cwd, sql, samskaraHome } = await useHarness({ codex: true, viaEnable: true })
+    const writer = createCodexTranscriptWriter(home, cwd, SESSION_ID)
+    await pollUntil(
+      () => sql`select * from messages where "sessionId" = ${SESSION_ID} and role = 'user'`,
+      (rows) => rows.length === 1,
+      (rows) => `${rows.length} native prompts`,
+    )
+    await writer.finish()
+    await pollUntil(
+      () =>
+        sql`select * from messages where "sessionId" = ${SESSION_ID} and "msgType" = 'toolResult'`,
+      (rows) => rows.length === 1,
+      (rows) => `${rows.length} terminal results`,
+    )
+    await pollUntil(
+      () => sql`select * from artifact where "sessionId" = ${SESSION_ID}`,
+      (rows) => rows.length === 2,
+      (rows) => `${rows.length} artifacts`,
+    )
+    await page.goto(`/sessions/${SESSION_ID}`)
+    await expect(page.getByText("Native Codex capture complete", { exact: true })).toBeVisible()
+    await expect(page.getByText("Codex", { exact: true }).first()).toBeVisible()
+    const detail = await fetch(`${API_BASE}/api/sessions/${SESSION_ID}`, {
+      headers: { cookie: `session=${await mintSessionToken()}` },
+    }).then((response) => response.json())
+    expect(detail).toMatchObject({
+      tokenUsageAvailable: false,
+      session: { source: "codex", modelSnapshot: "gpt-5.4" },
+    })
+    const before = await sql`select id from messages where "sessionId" = ${SESSION_ID}`
+    await execFileAsync("bun", [CLI_ENTRY, "restart"], {
+      env: daemonEnv(home, samskaraHome),
+      cwd: REPO_ROOT,
+    })
+    await writer.resume()
+    await pollUntil(
+      () => sql`select id from messages where "sessionId" = ${SESSION_ID}`,
+      (rows) => rows.length === before.length + 3,
+      (rows) => `${rows.length} records after resume`,
+    )
+    const search = await fetch(`${API_BASE}/api/sessions?q=Resumed%20Codex`, {
+      headers: { cookie: `session=${await mintSessionToken()}` },
+    }).then((response) => response.json())
+    expect(JSON.stringify(search)).toContain(SESSION_ID)
+    await execFileAsync("bun", [CLI_ENTRY, "replay", SESSION_ID], {
+      env: daemonEnv(home, samskaraHome),
+      cwd: REPO_ROOT,
+    })
+    await pollUntil(
+      () => sql`select id from messages where "sessionId" = ${SESSION_ID}`,
+      (rows) => rows.length === before.length + 3,
+      (rows) => `${rows.length} records after replay`,
+    )
+  })
 
   test("SC15: the real CLI reads an old-format task notification and it is not shown as the user's words", async () => {
     const { writer, sql } = await useHarness()

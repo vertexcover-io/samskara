@@ -6,10 +6,12 @@ import type {
   SessionFacts,
   TokenTotals,
 } from "../api/types.js"
+import { sourceName } from "./source.js"
 
 export type ToolEvidence = RawToolCall
 
 type RecordBase = {
+  readonly source?: string
   readonly id: string
   readonly lineNumber: number
   readonly timestamp: string | null
@@ -38,7 +40,7 @@ export type TimelineRecord = RecordBase &
         readonly actor: string
         readonly block?: BlockStats
       }
-    | { readonly kind: "tool"; readonly calls: ReadonlyArray<ToolEvidence> }
+    | { readonly kind: "tool"; readonly calls: ReadonlyArray<ToolEvidence>; readonly actor: string }
     | { readonly kind: "agentSpawn"; readonly agent: RawSubagent }
     | { readonly kind: "agentReturn"; readonly agent: RawSubagent }
     | { readonly kind: "artifact"; readonly artifact: Artifact }
@@ -73,6 +75,7 @@ export type Artifact = {
 }
 
 export type SessionDetail = {
+  readonly tokenUsageAvailable: boolean
   readonly session: SessionFacts
   readonly records: ReadonlyArray<TimelineRecord>
   readonly branches: ReadonlyMap<string, ReadonlyArray<TimelineRecord>>
@@ -186,8 +189,6 @@ const injectionLabel = (subType: string, body: string): string | null => {
   return skill === undefined ? label : `Skill Loaded — ${skill}`
 }
 
-const SPAWN_TOOLS = new Set(["Agent", "Task"])
-
 const SPAWN_SUBTYPES = new Set(["agentSpawn", "subagentSpawn", "spawn"])
 const RETURN_SUBTYPES = new Set(["agentReturn", "subagentReturn", "return"])
 
@@ -219,15 +220,24 @@ const base = (raw: RawMessage): RecordBase => ({
 
 const eventLabel = (raw: RawMessage): string => raw.subType ?? raw.msgType
 
+const agentActor = (
+  raw: RawMessage,
+  agents: ReadonlyMap<string, RawSubagent>,
+  mainLabel: string,
+): string => {
+  if (!raw.isSubagent || raw.agentId === null) return mainLabel
+  const agent = agents.get(raw.agentId)
+  return agent?.agentType ?? agent?.agentId ?? "Subagent"
+}
+
 const actorFor = (
   raw: RawMessage,
   agents: ReadonlyMap<string, RawSubagent>,
   userLogin: string,
+  mainLabel: string,
 ): string => {
   if (raw.role === "user") return raw.isSubagent ? "Parent → branch" : userLogin
-  if (!raw.isSubagent || raw.agentId === null) return "Claude"
-  const agent = agents.get(raw.agentId)
-  return agent?.agentType ?? agent?.agentId ?? "Subagent"
+  return agentActor(raw, agents, mainLabel)
 }
 
 const toRecord = (
@@ -235,6 +245,7 @@ const toRecord = (
   callsByMessage: ReadonlyMap<string, ReadonlyArray<ToolEvidence>>,
   agents: ReadonlyMap<string, RawSubagent>,
   userLogin: string,
+  mainLabel: string,
 ): TimelineRecord | null => {
   if (isArtifact(raw)) return { ...base(raw), kind: "artifact", artifact: artifactFrom(raw) }
 
@@ -251,7 +262,9 @@ const toRecord = (
   if (raw.msgType === "toolCall" || raw.msgType === "toolResult") {
     const calls = callsByMessage.get(raw.id) ?? []
     // Results are joined onto their call, so a message carrying none is a duplicate of it.
-    return calls.length === 0 ? null : { ...base(raw), kind: "tool", calls }
+    return calls.length === 0
+      ? null
+      : { ...base(raw), kind: "tool", calls, actor: agentActor(raw, agents, mainLabel) }
   }
 
   if (raw.msgType === "message" && raw.role === "user") {
@@ -263,7 +276,7 @@ const toRecord = (
       ...base(raw),
       kind: "prompt",
       parts: promptParts(raw),
-      actor: actorFor(raw, agents, userLogin),
+      actor: actorFor(raw, agents, userLogin, mainLabel),
     }
   }
 
@@ -290,7 +303,7 @@ const toRecord = (
       body: proseOf(raw.content),
       thinking: thinkingOf(raw.content),
       model: raw.model,
-      actor: actorFor(raw, agents, userLogin),
+      actor: actorFor(raw, agents, userLogin, mainLabel),
     }
   }
 
@@ -337,9 +350,13 @@ export const toDetail = (payload: SessionDetailPayload): SessionDetail => {
   const branches = new Map<string, Array<TimelineRecord>>()
   const placed = new Set<string>()
 
-  const bySpawnCall = new Map<string, RawSubagent>()
+  const bySpawnCall = new Map<string, RawSubagent[]>()
   for (const agent of payload.subagents) {
-    if (agent.spawnToolUseId !== null) bySpawnCall.set(agent.spawnToolUseId, agent)
+    if (agent.spawnToolUseId !== null) {
+      const spawned = bySpawnCall.get(agent.spawnToolUseId)
+      if (spawned) spawned.push(agent)
+      else bySpawnCall.set(agent.spawnToolUseId, [agent])
+    }
   }
 
   const trackOf = (track: string | null): Array<TimelineRecord> => {
@@ -352,8 +369,15 @@ export const toDetail = (payload: SessionDetailPayload): SessionDetail => {
   }
 
   for (const raw of payload.messages) {
-    const record = toRecord(raw, callsByMessage, agents, payload.session.userLogin)
-    if (record === null) continue
+    const mapped = toRecord(
+      raw,
+      callsByMessage,
+      agents,
+      payload.session.userLogin,
+      sourceName(payload.session.source),
+    )
+    if (mapped === null) continue
+    const record = { ...mapped, source: payload.session.source }
 
     const track = belongsToBranch(raw, agents) ? raw.agentId : null
     const into = trackOf(track)
@@ -363,19 +387,19 @@ export const toDetail = (payload: SessionDetailPayload): SessionDetail => {
 
     if (record.kind !== "tool") continue
     for (const call of record.calls) {
-      if (!SPAWN_TOOLS.has(call.toolName)) continue
-      const agent = bySpawnCall.get(call.toolId)
-      if (agent === undefined || placed.has(agent.agentId)) continue
-      placed.add(agent.agentId)
-      // No sources: this marker is synthesised from the tool call rendered just above it, and
-      // that message must resolve to the tool record rather than to whichever came last.
-      into.push({
-        ...base(raw),
-        id: `spawn-${agent.agentId}`,
-        sources: [],
-        kind: "agentSpawn",
-        agent,
-      })
+      for (const agent of bySpawnCall.get(call.toolId) ?? []) {
+        if (placed.has(agent.agentId)) continue
+        placed.add(agent.agentId)
+        // No sources: this marker is synthesised from the tool call rendered just above it, and
+        // that message must resolve to the tool record rather than to whichever came last.
+        into.push({
+          ...base(raw),
+          id: `spawn-${agent.agentId}`,
+          sources: [],
+          kind: "agentSpawn",
+          agent,
+        })
+      }
     }
   }
 
@@ -404,6 +428,7 @@ export const toDetail = (payload: SessionDetailPayload): SessionDetail => {
     agents: payload.subagents,
     toolCalls: payload.toolCalls,
     tokenUsage: payload.tokenUsage,
+    tokenUsageAvailable: payload.tokenUsageAvailable,
   }
 }
 

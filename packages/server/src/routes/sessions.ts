@@ -68,6 +68,7 @@ const serializeDetail = (detail: SessionDetailRow) => ({
   toolCalls: detail.toolCalls,
   subagents: detail.subagents,
   tokenUsage: detail.tokenUsage,
+  tokenUsageAvailable: detail.tokenUsageAvailable,
   commits: detail.commits.map((commit) => ({
     ...commit,
     recordedAt: new Date(commit.recordedAt).toISOString(),

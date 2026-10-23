@@ -510,7 +510,7 @@ const Provenance = ({ exhibit }: { exhibit: Exhibit }) => (
     <Fact label="Last written">
       {exhibit.timestamp === null ? "unavailable" : absoluteTime(exhibit.timestamp)}
     </Fact>
-    <Fact label="By">{exhibit.agent ?? "Claude"}</Fact>
+    <Fact label="By">{exhibit.agent ?? "unavailable"}</Fact>
     <Fact label="Type">{displayType(exhibit.mimeType)}</Fact>
     {exhibit.editCount !== null && exhibit.editCount > 1 ? (
       <Fact label="Edits">{exhibit.editCount}</Fact>

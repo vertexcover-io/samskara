@@ -165,6 +165,12 @@ const syncTrack = async (
   messageCap: number,
 ): Promise<Checkpoint | undefined> => {
   const records = await attributeRepos(track.records, track.project.root)
+  if (records.length === 0 && track.source === "codex") {
+    const result = await deps.sink.send(payloadFor(track, [], origin, []))
+    return result.status >= 200 && result.status < 300
+      ? wrap(track, deps.clock, track.checkpointAt(track.lastLineProcessed))
+      : undefined
+  }
   // Collected once over the whole track, then attached to the chunk holding each event's
   // *result*: the call may sit in an earlier chunk, already persisted by the time the event
   // arrives, and the server resolves the callId from its stored rows.
@@ -233,6 +239,9 @@ const syncTrack = async (
  */
 const originFor = async (track: SessionTrack, prev: CheckpointStore): Promise<SessionOrigin> => {
   if (track.type !== "main") return {}
+  if (track.startCwd !== undefined || track.startCommit !== undefined) {
+    return { startCwd: track.startCwd, startCommit: track.startCommit }
+  }
   if (prev.checkpoints[track.checkpointKey]) return {}
   const startCwd = track.records
     .flatMap((record) => record.messages)
@@ -249,9 +258,20 @@ const syncSession = async (
   messageCap: number,
 ): Promise<Record<string, Checkpoint>> => {
   const updated: Record<string, Checkpoint> = {}
+  const failedAgents = new Set<string>()
   for (const track of batch.tracks) {
+    if (
+      track.type === "subagent" &&
+      track.agent.parentAgentId &&
+      failedAgents.has(track.agent.parentAgentId)
+    ) {
+      failedAgents.add(track.agent.agentId)
+      continue
+    }
     const checkpoint = await syncTrack(track, await originFor(track, prev), deps, messageCap)
     if (checkpoint) updated[track.checkpointKey] = checkpoint
+    else if (track.type === "main") break
+    else failedAgents.add(track.agent.agentId)
   }
   return updated
 }

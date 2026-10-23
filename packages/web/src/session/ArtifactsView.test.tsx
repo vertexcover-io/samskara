@@ -437,3 +437,15 @@ test("S53: the wrap toggle is off by default and switches the body between scrol
   expect(toggle).toBeChecked()
   expect(screen.getByText("+A long added line.")).toHaveClass("whitespace-pre-wrap")
 })
+
+test("an artifact with no recorded author reads as unavailable, never as the main agent", () => {
+  render(
+    <TestRouter initialEntries={["/s/1?tab=artifacts"]}>
+      <ArtifactsView artifacts={ARTIFACTS} />
+    </TestRouter>,
+  )
+  const viewer = screen.getByRole("region", { name: /artifact viewer/i })
+  expect(
+    within(viewer).getByText((_, element) => element?.textContent === "By unavailable"),
+  ).toBeInTheDocument()
+})

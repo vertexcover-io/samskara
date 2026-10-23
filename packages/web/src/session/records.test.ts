@@ -8,6 +8,33 @@ const kindsOf = (payload: SessionDetailPayload): ReadonlyArray<string> =>
   toDetail(payload).records.map((record) => record.kind)
 
 describe("toDetail", () => {
+  test("all native Codex children join their proven spawn call before later replies", () => {
+    const payload = buildPayload({
+      session: { source: "codex" },
+      messages: [
+        message({ id: "spawn", lineNumber: 1, msgType: "toolCall" }),
+        message({ lineNumber: 2, role: "assistant" }),
+      ],
+      toolCalls: [
+        {
+          toolId: "native-spawn",
+          messageId: "spawn",
+          toolName: "spawnAgent",
+          toolInput: {},
+          result: null,
+          status: "success",
+        },
+      ],
+      subagents: ["a", "b"].map((agentId) => ({
+        agentId,
+        parentAgentId: null,
+        agentType: null,
+        description: null,
+        spawnToolUseId: "native-spawn",
+      })),
+    })
+    expect(kindsOf(payload)).toEqual(["tool", "agentSpawn", "agentSpawn", "assistant"])
+  })
   test("S38: each msgType maps to its own record kind - a fileEvent artifact never collapses into a generic event", () => {
     const payload = buildPayload({
       messages: [
@@ -174,6 +201,44 @@ describe("toDetail", () => {
 
     expect(detail.records).toHaveLength(1)
     expect(detail.branches.get("a1")?.map((record) => record.kind)).toEqual(["prompt", "assistant"])
+  })
+
+  test("a tool call inside a subagent branch is attributed to that agent, not the main one", () => {
+    const payload = buildPayload({
+      session: { source: "codex" },
+      subagents: [
+        {
+          agentId: "a1",
+          agentType: "explorer",
+          description: null,
+          parentAgentId: null,
+          spawnToolUseId: null,
+        },
+      ],
+      messages: [
+        message({ id: "main-tool", lineNumber: 1, msgType: "toolCall" }),
+        message({
+          id: "branch-tool",
+          lineNumber: 2,
+          msgType: "toolCall",
+          agentId: "a1",
+          isSubagent: true,
+        }),
+      ],
+      toolCalls: ["main-tool", "branch-tool"].map((messageId) => ({
+        toolId: `${messageId}-call`,
+        messageId,
+        toolName: "exec",
+        toolInput: {},
+        result: null,
+        status: "success",
+      })),
+    })
+    const detail = toDetail(payload)
+    const actorOf = (record: { readonly kind: string } | undefined) =>
+      record?.kind === "tool" && "actor" in record ? record.actor : undefined
+    expect(actorOf(detail.records[0])).toBe("Codex")
+    expect(actorOf(detail.branches.get("a1")?.[0])).toBe("explorer")
   })
 
   test("SC21: a message whose content is arbitrary JSON still becomes a timeline record - its text blocks read as prose, a tool call attaches to the record that produced it, and a subagent's spawn and return both appear", () => {

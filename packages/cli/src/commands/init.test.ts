@@ -24,6 +24,7 @@ vi.mock("../config/daemon.js", () => ({
 }))
 vi.mock("../login.js", () => ({ login: vi.fn(async () => 0) }))
 vi.mock("./install-hooks.js", () => ({
+  detectedAgents: vi.fn(() => ["claude"]),
   installHooksCommand: vi.fn(() => 0),
   isManagedHookInstalled: vi.fn(() => false),
 }))

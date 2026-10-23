@@ -20,7 +20,7 @@ import {
   type Writer,
 } from "../io.js"
 import { login } from "../login.js"
-import { installHooksCommand, isManagedHookInstalled } from "./install-hooks.js"
+import { detectedAgents, installHooksCommand, isManagedHookInstalled } from "./install-hooks.js"
 
 export type InitOptions = {
   readonly stdout?: Writer
@@ -148,8 +148,13 @@ export const initCommand = async (options: InitOptions = {}): Promise<number> =>
     stdout.write("already logged in\n")
   }
 
-  const hadHook = isManagedHookInstalled()
-  if (installHooksCommand({ stdout, stderr }) !== 0) return 1
+  const agents = detectedAgents()
+  const hadHook = agents.every((agent) => isManagedHookInstalled({ agent }))
+  for (const agent of agents) if (installHooksCommand({ agent, stdout, stderr }) !== 0) return 1
+  if (agents.length === 0)
+    stdout.write(
+      "No Claude Code, Codex or OpenCode configuration found. Install hooks after setting up your agent.\n",
+    )
 
   const existingPid = watcherPid()
   if (existingPid === null) {

@@ -59,6 +59,7 @@ const SYSTEM_ROOTS: ReadonlyArray<string> = [
   "/Library",
   join(HOME, ".claude"),
   join(HOME, ".agent"),
+  join(HOME, ".codex"),
 ]
 
 const NOISE_GLOBS = [
@@ -118,7 +119,8 @@ export const isSecret = (path: string): boolean => {
   return segmentsOf(path).some((segment) => SECRET_DIRS.has(segment))
 }
 
-const isSystem = (path: string): boolean => SYSTEM_ROOTS.some((root) => isInside(path, root))
+const isSystem = (path: string, roots: ReadonlyArray<string>): boolean =>
+  roots.some((root) => isInside(path, root))
 
 const isNoise = (path: string, zoneRoot: string): boolean => {
   if (NOISE_GLOBS.some((glob) => matchesGlob(basename(path), glob))) return true
@@ -126,9 +128,9 @@ const isNoise = (path: string, zoneRoot: string): boolean => {
 }
 
 /** Ordered most severe first, so a file named `.env.log` is reported as a secret rather than noise. */
-const deniedBy = (path: string, zoneRoot: string): string | null => {
+const deniedBy = (path: string, zoneRoot: string, roots: ReadonlyArray<string>): string | null => {
   if (isSecret(path)) return "looks like a secret or credential"
-  if (isSystem(path)) return "inside a system or agent directory"
+  if (isSystem(path, roots)) return "inside a system or agent directory"
   if (isNoise(path, zoneRoot)) return "excluded as build output or noise"
   return null
 }
@@ -156,6 +158,7 @@ const decide = async (
   input: string,
   projectRoot: string,
   allowScratch: boolean,
+  roots: ReadonlyArray<string>,
 ): Promise<CaptureDecision> => {
   const path = await realpath(resolve(input)).catch(() => null)
   if (path === null) return { ok: false, reason: "path does not resolve" }
@@ -163,7 +166,7 @@ const decide = async (
   const root = await rootFor(path, projectRoot, allowScratch)
   if (root === undefined) return { ok: false, reason: "outside the project root" }
 
-  const denial = deniedBy(path, root)
+  const denial = deniedBy(path, root, roots)
   if (denial !== null) return { ok: false, reason: denial }
 
   const info = await stat(path).catch(() => null)
@@ -187,5 +190,13 @@ export const shouldCaptureArtifacts = async (
     return paths.map(() => ({ ok: false, reason: "project root is not an absolute path" }))
   }
   const projectRoot = await canonical(opts.projectRoot)
-  return Promise.all(paths.map((path) => decide(path, projectRoot, opts.allowScratch)))
+  const roots = await Promise.all(
+    [
+      ...SYSTEM_ROOTS,
+      ...[process.env.CODEX_HOME, process.env.CODEX_SQLITE_HOME].filter(
+        (value): value is string => !!value,
+      ),
+    ].map(canonical),
+  )
+  return Promise.all(paths.map((path) => decide(path, projectRoot, opts.allowScratch, roots)))
 }

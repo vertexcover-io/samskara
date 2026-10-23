@@ -1,5 +1,14 @@
 import { describe, expect, test } from "vitest"
-import { pullRequestFlags } from "./gitCommands.js"
+import { isGitCommitCommand, isPrCreateCommand, pullRequestFlags } from "./gitCommands.js"
+
+test("native Codex shell wrappers expose the executed command for Git evidence", () => {
+  expect(isGitCommitCommand('/usr/bin/zsh -lc "git commit -m capture"')).toBe(true)
+  expect(isPrCreateCommand('/bin/bash -lc "gh pr create --title \\"Capture\\""')).toBe(true)
+  expect(pullRequestFlags('/bin/bash -lc "gh pr create --title \\"Capture\\""')).toEqual({
+    title: "Capture",
+  })
+  expect(isGitCommitCommand("/bin/bash -lc \"grep 'git commit' docs.md\"")).toBe(false)
+})
 
 const bodyNamingFlags = [
   "gh pr create --base master --head feat/x --title 'Real title'",

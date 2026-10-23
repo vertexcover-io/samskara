@@ -6,13 +6,13 @@
 
 Samskara is a shared, searchable record of the work your team does with AI coding agents.
 
-When a developer works with Claude Code or OpenCode, the full conversation is stored only on
+When a developer works with Claude Code, OpenCode or Codex, the full conversation is stored only on
 their machine. After the pull request is merged, the rest of the team has no way to see what was
 asked, which approaches were tried, or why the final change looks the way it does. Samskara
 collects those sessions on a server the team operates and provides a web interface for browsing
 and searching them.
 
-Samskara supports Claude Code and OpenCode. It captures sessions only from folders a developer
+Samskara supports Claude Code, OpenCode and Codex. It captures sessions only from folders a developer
 has explicitly enabled, and no data leaves a machine until `samskara enable` has been run there.
 
 ## Contents
@@ -24,6 +24,7 @@ has explicitly enabled, and no data leaves a machine until `samskara enable` has
 - [Installing the CLI](#installing-the-cli)
 - [Connecting the CLI to your account](#connecting-the-cli-to-your-account)
 - [CLI reference](#cli-reference)
+- [Codex capture](#codex-capture)
 - [Running the server locally](#running-the-server-locally)
 - [Deployment](#deployment)
 - [Releases](#releases)
@@ -54,7 +55,8 @@ it was after, and as a diff.
 **Git context.** The branch, commits and pull request associated with the session, so that a
 session can be located from the code it produced.
 
-**Usage.** Token consumption and session duration.
+**Usage.** Token consumption, where the agent records it, and session duration. Codex does not
+record historical token usage, so its sessions show usage as unavailable.
 
 ## How it works
 
@@ -64,9 +66,10 @@ session can be located from the code it produced.
 2. The server receives the sessions and stores them in a Postgres database.
 3. The web interface reads from that database and is what the team uses in a browser.
 
-Claude Code notifies Samskara at the start of each session. Samskara uses that notification to
-restart the background process if it is not running, so capture continues after a reboot
-without manual intervention.
+Claude Code and Codex notify Samskara at the start of each session, through a hook. OpenCode has
+no hooks, so Samskara installs a small OpenCode plugin that does the same on startup and on every
+new session. Samskara uses that notification to restart the background process if it is not
+running, so capture continues after a reboot without manual intervention.
 
 ## Getting started
 
@@ -122,9 +125,9 @@ This is done once, with a single-use code generated in the web interface.
 3. From the account menu, select **Pair the CLI**, then **Generate code**.
 4. Enter the code in the terminal.
 
-`init` also installs the Claude Code hook and starts the background process. The server issues
-the CLI a token, stored at `~/.samskara/token` with permissions that allow only the current user
-to read it. A code can be used once and has no expiry, but it is invalidated if the server
+`init` also installs the hook for each agent it finds on the machine and starts the background
+process. The server issues the CLI a token, stored at `~/.samskara/token` with permissions that
+allow only the current user to read it. A code can be used once and has no expiry, but it is invalidated if the server
 restarts before it is used.
 
 The token expires after seven days by default; the server setting is `JWT_EXPIRES_IN`. When it
@@ -146,7 +149,7 @@ again afterwards.
 
 | Command | Purpose | Example |
 |---|---|---|
-| `init` | Select a server, connect to an account, install the Claude Code hook and start the background process. | `samskara init --server https://samskara.example.org --web https://samskara.example.org` |
+| `init` | Select a server, connect to an account, install the hooks for the agents it finds and start the background process. | `samskara init --server https://samskara.example.org --web https://samskara.example.org` |
 | `login` | Connect again and obtain a new token. | `samskara login --code 4F7K2Q` |
 | `logout` | Stop the background process and delete the token. | `samskara logout` |
 | `enable [path]` | Begin capturing a folder. Sessions recorded before this point are skipped unless requested. | `samskara enable --all` |
@@ -156,13 +159,13 @@ again afterwards.
 | `search [query]` | Search sessions from the terminal and print links to the results. | `samskara search "rate limit" --here --open` |
 | `tags add\|rm\|ls` | Add, remove or list the tags on a session. | `samskara tags add bug hotfix --session-id abc123` |
 | `artifacts upload` | Attach files or directories to a session. | `samskara artifacts upload abc123 ./dist --base-dir .` |
-| `review-session` | Run an AI review of a local session. Runs on the developer's machine, not the server. | `samskara review-session abc123 --harness claude` |
+| `review-session` | Run an AI review of a local session. Runs on the developer's machine, not the server. `--source codex` reviews a Codex thread. | `samskara review-session abc123 --harness claude` |
 | `replay SESSION_ID` | Delete a session locally and on the server, then capture it again. | `samskara replay abc123` |
 | `logs` | Show the background process log. | `samskara logs -f` |
 | `restart` | Restart the background process. | `samskara restart` |
 | `upgrade` | Install the newest release. | `samskara upgrade --check` |
 | `watch` | Start the background process manually. | `samskara watch --foreground` |
-| `install-hooks` / `uninstall-hooks` | Install or remove the Claude Code hook manually. | `samskara install-hooks` |
+| `install-hooks` / `uninstall-hooks` | Install or remove an agent's hook manually; for OpenCode, its plugin. `--agent` is `claude` (default), `codex`, `opencode` or `all`. | `samskara install-hooks --agent codex` |
 
 `--verbose` on any command prints diagnostic output. `samskara COMMAND --help` lists every flag.
 
@@ -172,6 +175,34 @@ folder.
 
 All CLI state is stored under `~/.samskara`. Setting `SAMSKARA_PROFILE=NAME` switches to a fully
 separate installation under `~/.samskara-NAME`, for keeping two configurations on one machine.
+
+## Codex capture
+
+Codex CLI 0.163.0 or newer must be installed on the developer's machine and on the background
+process's `PATH`. Samskara reads Codex history through Codex's own local app-server; the server
+needs no Codex binary or OpenAI credential. Deploy a server that accepts Codex sessions before
+upgrading the CLIs that capture them.
+
+```sh
+samskara install-hooks --agent codex
+samskara review-session --source codex THREAD_ID --dry-run
+```
+
+The hook lives in `$CODEX_HOME/hooks.json`, by default `~/.codex/hooks.json`. Codex runs it only
+after it has been reviewed and trusted under `/hooks` in Codex. A Codex installed after the
+background process started is picked up without a restart. `tags` cannot detect a Codex
+session by itself; pass the root thread ID with `--session-id`.
+
+A session is a root thread together with the subagent threads it spawned; a fork is a separate
+session. Enabling capture and its cutoff apply to the root thread. A thread is read again only
+when Codex reports it changed, and then only from its oldest unfinished turn. A running command
+or MCP call is uploaded as soon as it starts and its result when it finishes.
+
+Codex history has gaps that Samskara leaves visible rather than filling: token usage, per-message
+model and many per-item timestamps are unavailable, and local image references are not uploaded.
+Successful native patches are captured as changed files; shell writes and deleted files are not.
+An older CLI cannot read Codex checkpoints, so after a downgrade, replay the affected sessions.
+[CODEX_SUPPORT_PLAN.md](CODEX_SUPPORT_PLAN.md) has the full compatibility notes.
 
 ## Running the server locally
 
@@ -245,7 +276,7 @@ The repository contains four packages.
 
 | Package | Contents |
 |---|---|
-| `@samskara/core` | Shared types and the collectors that read sessions from Claude Code and OpenCode |
+| `@samskara/core` | Shared types and the collectors that read sessions from Claude Code, OpenCode and Codex |
 | `@vertexcover/samskara` (`packages/cli`) | The `samskara` command |
 | `@samskara/server` | The API and database layer (Hono, Drizzle, Postgres with pgvector) |
 | `@samskara/web` | The web interface (React and Vite) |
@@ -253,7 +284,7 @@ The repository contains four packages.
 ```sh
 bun run dev           # API and web interface, rebuilding on change
 bun run test          # unit tests; the server's tests require Docker
-bun run e2e           # browser tests with Playwright, against a throwaway database
+bun run e2e           # browser tests with Playwright, against a throwaway database (the Codex case needs codex on PATH)
 bun run lint          # biome
 bun run typecheck
 bun run cli -- status # run the CLI from source, with its own separate profile

@@ -70,6 +70,22 @@ const PAYLOAD: SessionDetailPayload = buildPayload({
   ],
 })
 
+test("Codex capture labels the actor and leaves missing usage unavailable", async () => {
+  renderDetail(
+    buildPayload({
+      session: { ...facts(), source: "codex", modelSnapshot: "gpt-5.4" },
+      tokenUsageAvailable: false,
+      messages: [message({ role: "assistant", content: text("Captured from Codex") })],
+    }),
+  )
+  await tabsLoaded()
+  expect(within(panelOf()).getByText("Codex")).toBeInTheDocument()
+  expect(within(panelOf()).queryByText("Claude")).not.toBeInTheDocument()
+  const factsPanel = screen.getByRole("group", { name: "Session facts" })
+  expect(factsPanel.textContent).toContain("Model snapshotgpt-5.4")
+  expect(factsPanel.textContent).toContain("Tokens inunavailable")
+})
+
 const BRANCH_PAYLOAD: SessionDetailPayload = buildPayload({
   subagents: [
     {

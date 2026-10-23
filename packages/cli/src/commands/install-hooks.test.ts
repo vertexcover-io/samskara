@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs"
-import { mkdtemp, readFile, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, test } from "vitest"
@@ -26,6 +26,21 @@ const entryIn = (command: string): string => {
 }
 
 describe("hook commands", () => {
+  test("Codex hooks preserve other handlers and include profile and stdin routing", async () => {
+    const path = await settingsFile()
+    installHooksCommand({ settingsPath: path, agent: "codex" })
+    const initial = JSON.parse(await readFile(path, "utf8"))
+    initial.hooks.Stop = [{ hooks: [{ type: "command", command: "echo unrelated" }] }]
+    await writeFile(path, JSON.stringify(initial))
+    expect(installHooksCommand({ settingsPath: path, agent: "codex" })).toBe(0)
+    const saved = await readFile(path, "utf8")
+    expect(saved.match(/samskara:ensure/g)).toHaveLength(1)
+    expect(saved).toContain("ensure --agent codex")
+    expect(saved).toContain("echo unrelated")
+    expect(uninstallHooksCommand({ settingsPath: path, agent: "codex" })).toBe(0)
+    expect(await readFile(path, "utf8")).toContain("echo unrelated")
+    expect(await readFile(path, "utf8")).not.toContain("samskara:ensure")
+  })
   test("REQ-018,EDGE-015: installs one absolute managed SessionStart hook idempotently", async () => {
     const path = await settingsFile()
     const output: string[] = []
@@ -140,6 +155,103 @@ describe("hook commands", () => {
 
     expect([installCode, uninstallCode]).toEqual([1, 1])
     expect(await readFile(path, "utf8")).toBe(contents)
+  })
+})
+
+describe("OpenCode plugin", () => {
+  const pluginFile = async (): Promise<string> =>
+    join(await mkdtemp(join(tmpdir(), "samskara-opencode-")), "plugins", "samskara.js")
+  const opencode = (settingsPath: string, output: string[] = []) => ({
+    agent: "opencode",
+    settingsPath,
+    stdout: { write: (text: string) => output.push(text) },
+    stderr: { write: (text: string) => output.push(text) },
+  })
+
+  test("installs a managed plugin that runs ensure from the session's directory", async () => {
+    const path = await pluginFile()
+    const output: string[] = []
+
+    expect(installHooksCommand(opencode(path, output))).toBe(0)
+    expect(installHooksCommand(opencode(path, output))).toBe(0)
+
+    const source = await readFile(path, "utf8")
+    expect(source.split("\n")[0]).toBe("// samskara:ensure")
+    expect(source).toContain(JSON.stringify(process.execPath))
+    expect(source).toContain(JSON.stringify(resolveCliEntry()))
+    expect(source).toContain('"session.created"')
+    expect(output.join("")).toContain("installed OpenCode plugin")
+    expect(output.join("")).toContain("plugin already installed")
+    const plugin = await import(path)
+    expect(Object.values(plugin).every((value) => typeof value === "function")).toBe(true)
+  })
+
+  test("repairs a managed plugin whose entry path went stale", async () => {
+    const path = await pluginFile()
+    installHooksCommand(opencode(path))
+    await writeFile(path, `// samskara:ensure\nspawn("/nope/node")\n`, "utf8")
+
+    expect(installHooksCommand(opencode(path))).toBe(0)
+    expect(await readFile(path, "utf8")).not.toContain("/nope/")
+  })
+
+  test("never overwrites or removes a plugin it did not write", async () => {
+    const path = await pluginFile()
+    installHooksCommand(opencode(path))
+    await writeFile(path, "export const Mine = async () => ({})\n", "utf8")
+    const output: string[] = []
+
+    expect(installHooksCommand(opencode(path, output))).toBe(1)
+    expect(uninstallHooksCommand(opencode(path, output))).toBe(1)
+    expect(await readFile(path, "utf8")).toBe("export const Mine = async () => ({})\n")
+    expect(output.join("")).toContain("not managed by samskara")
+  })
+
+  test("uninstall deletes only the managed plugin file", async () => {
+    const path = await pluginFile()
+    installHooksCommand(opencode(path))
+
+    expect(uninstallHooksCommand(opencode(path))).toBe(0)
+    expect(existsSync(path)).toBe(false)
+    expect(uninstallHooksCommand(opencode(path))).toBe(0)
+  })
+
+  test("a non-default profile travels inside the plugin", async () => {
+    const original = process.env.SAMSKARA_PROFILE
+    process.env.SAMSKARA_PROFILE = "dev"
+    try {
+      const path = await pluginFile()
+      installHooksCommand(opencode(path))
+      const source = await readFile(path, "utf8")
+      expect(source.split("\n")[0]).toBe("// samskara:ensure:dev")
+      expect(source).toContain('SAMSKARA_PROFILE: "dev"')
+    } finally {
+      if (original === undefined) delete process.env.SAMSKARA_PROFILE
+      else process.env.SAMSKARA_PROFILE = original
+    }
+  })
+
+  test("the default plugin pins the default profile so a dev shell cannot redirect it", async () => {
+    const path = await pluginFile()
+    installHooksCommand(opencode(path))
+    expect(await readFile(path, "utf8")).toContain('SAMSKARA_PROFILE: "default"')
+  })
+
+  test("uninstall reports a filesystem error instead of throwing", async () => {
+    const path = await pluginFile()
+    await mkdir(path, { recursive: true })
+    const output: string[] = []
+
+    expect(uninstallHooksCommand(opencode(path, output))).toBe(1)
+    expect(output.join("")).toContain("EISDIR")
+  })
+
+  test("rejects an unknown agent and names opencode as an option", () => {
+    const output: string[] = []
+    expect(installHooksCommand({ agent: "cursor", stderr: { write: (t) => output.push(t) } })).toBe(
+      1,
+    )
+    expect(output.join("")).toContain("claude, codex, opencode, or all")
   })
 })
 
