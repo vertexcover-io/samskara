@@ -22,8 +22,8 @@ Samskara is a process-provenance layer for AI-assisted software development. Its
 
 ## Operating Context
 
-- Developers and teams work in Git repositories and use Claude Code as the first supported coding agent.
-- The local watcher discovers Claude session files, captures them, and sends structured records to the Samskara server.
+- Developers and teams work in Git repositories and use Claude Code, OpenCode, or Codex.
+- The local watcher discovers Claude transcripts, OpenCode sessions and Codex app-server history, captures enabled projects, and sends structured records to the Samskara server.
 - Sessions may include main-agent messages, subagents, tool calls, tool results, and planning or design material.
 - Users need to revisit context during code review, collaboration, handoff, debugging, and future maintenance.
 - GitHub identity and organization membership are part of the current access model.
@@ -33,7 +33,7 @@ Samskara is a process-provenance layer for AI-assisted software development. Its
 
 Confirmed capabilities:
 
-- Claude Code session capture through the `samskara watch` CLI daemon.
+- Claude Code, OpenCode and Codex session capture through the `samskara watch` CLI daemon. Codex history has explicit usage and timestamp gaps; its latest model is a session snapshot.
 - Structured persistence of sessions, messages, raw source records, tool calls, tool results, and subagents.
 - Authenticated server ingest using an audience-scoped CLI token.
 - GitHub OAuth web authentication with organization gating.
@@ -78,7 +78,7 @@ Recommended constraints to confirm before production rollout:
   `packages/web/src/components/DeleteProjectDialog.tsx` the typed-slug delete confirmation,
   `packages/web/src/session/` the session detail viewer, `packages/web/src/sync/` the sync-status
   page's sort/filter logic, and `packages/web/src/index.css` the Tailwind v4 design tokens.
-- Current implementation supports Claude Code first; additional agent adapters, summarization, search, embeddings, MCP, and artifact storage are not yet established as shipped capabilities.
+- Capture supports Claude Code, OpenCode and Codex. Search, captured artifacts and review views share the normalized session contract. Codex reviewer execution is outside the capture integration.
 
 ## Product Principles
 

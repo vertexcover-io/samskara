@@ -8,8 +8,8 @@
 Samskara records what your AI coding agent actually did, and makes it searchable.
 
 Claude Code already writes a transcript of every session to `~/.claude/projects`, and OpenCode
-keeps its sessions in `~/.local/share/opencode/opencode.db`. Both are local, per-machine, and hard
-to read. Samskara watches them, ships the sessions you opt into to a server you run, and gives you
+keeps its sessions in `~/.local/share/opencode/opencode.db`. Codex exposes local thread history
+through its app-server. Samskara reads these sources, ships the sessions you opt into to a server you run, and gives you
 a web UI to browse and search them — across projects, across machines, across everyone on the
 team.
 
@@ -21,26 +21,77 @@ Capture is opt-in per folder: no session content leaves your machine until you r
 - **The conversation** — prompts, replies, and the tool calls in between, including subagent branches.
 - **Artifacts** — files the agent created or edited, stored as *before*, *after*, and the diff.
 - **Git context** — the branch, commits, and pull requests a session touched.
-- **Token usage** and session duration, per session.
+- **Token usage**, when the source supplies it, and the recorded session activity span.
 
 ## How it works
 
 ```
-Claude Code / OpenCode      samskara CLI                  server + web UI
-~/.claude/projects/  ──▶  watcher (background)  ──POST──▶  Postgres + pgvector
-opencode.db               reads enabled folders   /api/ingest      ▲
-                                                                   │
-                                                          browse & search at :8000
+Claude / OpenCode / Codex     samskara CLI                 server + web UI
+local agent history  ──▶  watcher (enabled folders)  ──▶  Postgres + pgvector
+                                                         ▲
+                                                browse & search at :8000
 ```
 
 OpenCode capture is automatic when its database exists and switches itself off, with a debug log
 line, when it does not. Each harness has a collector plugin in `@samskara/core` that turns its own
-format into the same normalized messages; everything downstream reads those, never the raw
-transcript, so adding a third harness means adding a plugin and nothing else.
+format into the same normalized messages. The watcher, ingest API, search and viewer share that
+contract.
 
-A `SessionStart` hook keeps the watcher alive: every time you start a Claude Code session, the hook
+A `SessionStart` hook keeps the watcher alive: when you start a configured Claude Code or Codex session, the hook
 makes sure the background watcher is running. The watcher polls transcripts, keeps a per-session
 checkpoint so it only sends what is new, and uploads artifacts in the background.
+
+## Codex capture
+
+Codex CLI 0.163.0 is the tested minimum. Install it on the capturing machine and keep `codex` on the watcher's
+`PATH`. Samskara starts a local stdio app-server and uses its history-read methods. The server
+accepting `source: codex` must be deployed before upgrading capturing CLIs. No Codex binary or
+OpenAI credential is needed on the Samskara server for capture.
+
+```sh
+samskara init
+samskara enable                 # new sessions from this folder
+samskara install-hooks --agent codex
+samskara review-session --source codex THREAD_ID --dry-run
+```
+
+`init` detects existing agent configuration directories and installs only those hooks. Codex hooks
+live in `$CODEX_HOME/hooks.json`, defaulting to `~/.codex/hooks.json`. Open `/hooks` in Codex to
+review and trust the installed definition; disabled or untrusted hooks do not run. The hook reads
+the native cwd from stdin, preserves other hook handlers, and keeps Samskara profiles separate.
+A manually started watcher works independently of hooks. [Codex hooks](https://learn.chatgpt.com/docs/hooks)
+
+Discovery includes archived and active local threads across source kinds and model providers.
+Project opt-in and the enable cutoff apply to the root session before history is loaded. Use
+`enable --all` for older sessions. Explicit native parent relationships form subagent branches;
+forks remain separate sessions and retain the ancestry exposed by Codex, so shared ancestor messages
+can appear in both sessions. An orphan child waits until its root is discoverable. A removed
+worktree can still sync when Samskara previously cached its project identity.
+
+Codex supplies curated history. Saved reasoning, tools, inputs and images are captured when
+exposed; unsupported items retain their redacted API snapshot. Local image references are not
+uploaded automatically. The history API does not provide exact historical token usage, so usage
+is displayed as unavailable. The model shown is the latest thread snapshot. Missing per-item
+timestamps and per-message models remain unset. Recorded start and last-activity times describe
+an activity span, including idle time. [Codex app-server](https://learn.chatgpt.com/docs/app-server)
+
+A thread is read again only when its native update time changes, and then only from its oldest
+unfinished turn. A running command or MCP call uploads its call first and its result later, at the
+same line; other unfinished items wait. Retries retain stable identities. Native revert or deletion leaves already captured audit history intact.
+`replay THREAD_ID` deletes the captured session and rereads the currently available native history,
+including its branches. Older CLIs cannot read Codex checkpoints; upgrade again or back up the
+state file and replay affected sessions after restoring a compatible CLI.
+
+Successful native patch effects can capture multiple files. Edits without a recorded pre-edit
+base retain the current snapshot without an invented diff; deleted files and arbitrary shell writes do not
+produce file snapshots. Commands can still supply proven Git commit and PR creation evidence.
+Codex state directories, including custom `CODEX_HOME` and `CODEX_SQLITE_HOME` roots, are excluded
+from artifacts. The existing project containment and secret filtering rules still apply.
+
+Transcript source and review execution are independent: `review-session --source codex THREAD_ID`
+uses either existing `--harness opencode` or `--harness claude`. For tags, pass
+`--session-id THREAD_ID`. The Codex capture E2E test requires the supported `codex` binary on
+`PATH`, Chromium installed through Playwright, and the usual isolated test database.
 
 ## Requirements
 
@@ -208,7 +259,7 @@ turns capture off for every project, and signs you out. It stops there — run `
 
 | Command | What it does |
 |---|---|
-| `samskara init` | Choose the server, log in, install the Claude Code `SessionStart` hook, start the watcher. Refuses once a server is configured — see `--force`. |
+| `samskara init` | Choose the server, log in, install `SessionStart` hooks for detected Claude Code and Codex installations, start the watcher. Refuses once a server is configured — see `--force`. |
 | `samskara init --server URL --web URL` | Same, without the questions. |
 | `samskara init --force` | Point a configured install at a different server: back up and clear the local state, disable every project, sign out. Does not log in or enable anything for you. |
 | `samskara login [--code CODE]` | Pair with the web UI and store a CLI token. |
@@ -226,10 +277,10 @@ turns capture off for every project, and signs you out. It stops there — run `
 | `samskara upgrade [--check] [--json]` | Install the newest GitHub release over this one and restart the watcher; `--check` only reports whether one exists, `--json` prints the result as JSON. |
 | `samskara replay SESSION_ID` | Delete a session server-side and locally, then re-capture it from scratch. |
 | `samskara artifacts upload SESSION_ID PATH... [--base-dir DIR] [--no-created] [--dry-run]` | Upload files, or directories walked recursively, as artifacts of that session. Prints `ok`, `updated` or `failed` per file and exits 1 if any failed. `--base-dir` stores each path relative to `DIR` rather than the current directory, `--no-created` records the files as edited rather than created, and `--dry-run` prints what would upload without sending it. |
-| `samskara tags add\|rm\|ls [TAG...] [--session-id ID]` | Read and change a session's tags, printing the resulting set. Without `--session-id` the session is `$CLAUDE_CODE_SESSION_ID`, which Claude Code exports into every command it runs; a plain terminal exports nothing, so name the session there. Tags are lowercased and may not contain spaces or commas. |
-| `samskara review-session SESSION_ID\|PATH [--harness opencode\|claude] [--model NAME] [--out DIR] [--dry-run]` | Review one locally captured Claude Code session with a coding harness, entirely on this machine — no login, no server, no ingest. Needs `OPENCODE_API_KEY` (opencode) or `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` (claude) exported; `AI_REVIEW_HARNESS` and `AI_REVIEW_MODEL` set the defaults, and the flags win over both. Writes `session.json`, `review.xml`, `review.json` and `agent.log` under `./review-out/SESSION_ID`. `--dry-run` stages the export and stops before calling a model. |
+| `samskara tags add\|rm\|ls [TAG...] [--session-id ID]` | Read and change a session's tags, printing the resulting set. Without `--session-id` the session is `$CLAUDE_CODE_SESSION_ID`, which Claude Code exports into every command it runs; for Codex or a plain terminal, pass the native root thread ID explicitly. Tags are lowercased and may not contain spaces or commas. |
+| `samskara review-session SESSION_ID\|PATH [--source claude\|codex] [--harness opencode\|claude] [--model NAME] [--out DIR] [--dry-run]` | Review a local session with a coding harness, entirely on this machine — no login, no server, no ingest. Needs `OPENCODE_API_KEY` (opencode) or `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` (claude) exported; `AI_REVIEW_HARNESS` and `AI_REVIEW_MODEL` set the defaults, and the flags win over both. Writes `session.json`, `review.xml`, `review.json` and `agent.log` under `./review-out/SESSION_ID`. `--dry-run` stages the export and stops before calling a model. |
 | `samskara search [QUERY]` | Search captured sessions from the terminal and print each hit's URL. Add `--tags a,b` to keep only sessions carrying at least one of them. |
-| `samskara install-hooks` / `uninstall-hooks` | Install or remove the `SessionStart` hook by hand. |
+| `samskara install-hooks` / `uninstall-hooks` | Install or remove the `SessionStart` hook by hand. Add `--agent claude\|codex\|all` (default: `claude`). |
 | `samskara watch [--foreground]` | Start the watcher daemon directly; `--foreground` runs the loop in this terminal. |
 
 `samskara tags` needs the session to have reached the server. A session started moments ago may not
@@ -303,7 +354,7 @@ The same query and filters are available from the terminal with `samskara search
 
 | Package | What it holds |
 |---|---|
-| `@samskara/core` | Shared types, the collector framework (`AgentPlugin` + the Claude Code and OpenCode plugins), the logging factory |
+| `@samskara/core` | Shared types, the collector framework (`AgentPlugin` + the Claude Code, OpenCode and Codex plugins), the logging factory |
 | `@vertexcover/samskara` (`packages/cli`) | The `samskara` binary — pairing, capture opt-in, the watcher |
 | `@samskara/server` | Hono API on Node, Drizzle + postgres-js + pgvector |
 | `@samskara/web` | Vite + React + Tailwind UI |
