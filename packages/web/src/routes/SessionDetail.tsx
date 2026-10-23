@@ -340,7 +340,15 @@ const SessionHead = ({
   )
 }
 
-const Masthead = ({ session, tokens }: { session: SessionFacts; tokens: TokenTotals }) => (
+const Masthead = ({
+  session,
+  tokens,
+  usageAvailable,
+}: {
+  session: SessionFacts
+  tokens: TokenTotals
+  usageAvailable: boolean
+}) => (
   <div className="border-b-2 border-ink pb-4">
     <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[0.78rem] text-ink-soft">
       <span>{session.projectName}</span>
@@ -376,9 +384,19 @@ const Masthead = ({ session, tokens }: { session: SessionFacts; tokens: TokenTot
       <Fact label="Messages" value={session.messageCount.toLocaleString("en-US")} />
       <Fact label="Tool calls" value={session.toolCallCount.toLocaleString("en-US")} />
       <Fact label="Subagents" value={session.subagentCount.toLocaleString("en-US")} />
-      <Fact label="Tokens in" value={tokens.inputTokens.toLocaleString("en-US")} />
-      <Fact label="Tokens out" value={tokens.outputTokens.toLocaleString("en-US")} />
-      <Fact label="Tokens cached" value={tokens.cachedTokens.toLocaleString("en-US")} />
+      {session.modelSnapshot ? <Fact label="Model snapshot" value={session.modelSnapshot} /> : null}
+      <Fact
+        label="Tokens in"
+        value={usageAvailable ? tokens.inputTokens.toLocaleString("en-US") : <Unavailable />}
+      />
+      <Fact
+        label="Tokens out"
+        value={usageAvailable ? tokens.outputTokens.toLocaleString("en-US") : <Unavailable />}
+      />
+      <Fact
+        label="Tokens cached"
+        value={usageAvailable ? tokens.cachedTokens.toLocaleString("en-US") : <Unavailable />}
+      />
       {tokens.thinkingTokens === 0 ? null : (
         <Fact label="Tokens thinking" value={tokens.thinkingTokens.toLocaleString("en-US")} />
       )}
@@ -552,7 +570,7 @@ const Conversation = ({ detail, inlineTools }: { detail: Detail; inlineTools: bo
   // Counts come from the full record set: hiding inline tools must not make the
   // rail report zero of them.
   const entries = useMemo(
-    () => agentEntries(detail.records, detail.agents, detail.branches),
+    () => agentEntries(detail.records, detail.agents, detail.branches, detail.session.source),
     [detail],
   )
 
@@ -1805,7 +1823,11 @@ const Ready = ({
     // below it, and a permalinked message scrolls to just under it rather than behind it.
     <section style={{ "--sticky-head": `${headHeight + tabsHeight}px` } as React.CSSProperties}>
       <SessionHead session={detail.session} measure={headRef} onSaved={onSessionSaved} />
-      <Masthead session={detail.session} tokens={detail.tokenUsage} />
+      <Masthead
+        session={detail.session}
+        tokens={detail.tokenUsage}
+        usageAvailable={detail.tokenUsageAvailable}
+      />
 
       {/* Measured rather than a fixed offset: the head's height moves with the reader's font size. */}
       <div ref={tabsRef} className="sticky z-20 mt-4 bg-paper" style={{ top: headHeight }}>

@@ -1,5 +1,6 @@
 import type { RawSubagent } from "../api/types.js"
 import type { TimelineRecord } from "./records.js"
+import { sourceName } from "./source.js"
 
 const LANES = [
   "var(--color-agent-audit)",
@@ -52,6 +53,7 @@ export const agentEntries = (
   records: ReadonlyArray<TimelineRecord>,
   agents: ReadonlyArray<RawSubagent>,
   branches: ReadonlyMap<string, ReadonlyArray<TimelineRecord>>,
+  source?: string,
 ): ReadonlyArray<AgentEntry> => {
   const main = countsOf(records)
 
@@ -60,7 +62,7 @@ export const agentEntries = (
   return [
     {
       id: null,
-      name: "Claude",
+      name: sourceName(source),
       kind: null,
       lane: "var(--color-custody)",
       messages: main.messages,
@@ -141,7 +143,7 @@ export const AgentRail = ({ entries, selectedId, onSelect }: Props) => (
     <p className="mt-2 border-t border-dashed border-rule pt-2 text-[0.6875rem] text-faded">
       {selectedId === null
         ? "Showing the main record. Choose a branch to inspect it on its own."
-        : "Showing one branch. Choose Claude to return to the main record."}
+        : `Showing one branch. Choose ${entries[0]?.name ?? "the main agent"} to return to the main record.`}
     </p>
   </aside>
 )
