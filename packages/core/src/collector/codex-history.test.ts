@@ -93,12 +93,12 @@ test.each(["timeout", "malformed", "unsupported"])(
       home,
       command: process.execPath,
       args: [script],
-      timeoutMs: 200,
+      timeoutMs: mode === "timeout" ? 200 : 10_000,
       log: createLogger({ service: "codex-test" }, { level: "silent" }),
     })
     try {
       await expect(client.listThreads()).rejects.toThrow(
-        mode === "unsupported" ? /0.163.0/ : /closed|timed out|Invalid/,
+        { timeout: /timed out/, malformed: /Invalid/, unsupported: /0.163.0/ }[mode],
       )
     } finally {
       await client.close()
