@@ -98,8 +98,9 @@ program
 
 program
   .command("review-session <sessionId|path>")
+  .option("--source <source>", "transcript source: claude or codex", "claude")
   .description(
-    "Review a locally captured Claude Code session with a coding harness, entirely on this machine",
+    "Review a local Claude Code or Codex session with a coding harness, entirely on this machine",
   )
   .option("--harness <name>", "reviewer CLI: opencode or claude (default: opencode)")
   .option("--model <name>", "model override (default: the harness's own)")
@@ -283,23 +284,26 @@ program
 
 program
   .command("install-hooks")
-  .description("Install the Claude Code SessionStart hook")
-  .action(() => {
-    process.exitCode = installHooksCommand()
+  .description("Install a SessionStart hook")
+  .option("--agent <agent>", "claude, codex, or all", "claude")
+  .action((options: { agent: string }) => {
+    process.exitCode = installHooksCommand(options)
   })
 
 program
   .command("uninstall-hooks")
   .description("Remove the Samskara SessionStart hook")
-  .action(() => {
-    process.exitCode = uninstallHooksCommand()
+  .option("--agent <agent>", "claude, codex, or all", "claude")
+  .action((options: { agent: string }) => {
+    process.exitCode = uninstallHooksCommand(options)
   })
 
 program
   .command("ensure", { hidden: true })
   .description("SessionStart hook entry point")
-  .action(async () => {
-    process.exitCode = await ensureCommand()
+  .option("--agent <agent>", "agent invoking the hook", "claude")
+  .action(async (options: { agent: string }) => {
+    process.exitCode = await ensureCommand(options)
   })
 
 if (isMain) void program.parseAsync()

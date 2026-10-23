@@ -1,3 +1,5 @@
+import { isAbsolute } from "node:path"
+import { z } from "zod"
 import { readToken } from "../config/credentials.js"
 import { reviveWatcher, watcherPid } from "../config/daemon.js"
 import { watchLogDir } from "../config/paths.js"
@@ -8,10 +10,37 @@ import { checkToken } from "../login.js"
 import { resolveProject } from "../watcher/resolveProject.js"
 
 export type EnsureOptions = {
+  readonly agent?: string
+  readonly input?: string
   readonly cwd?: string
   readonly stdout?: Writer
   readonly stderr?: Writer
 }
+
+const readHookInput = (): Promise<string> =>
+  new Promise((resolve) => {
+    let input = ""
+    const finish = (): void => {
+      clearTimeout(timer)
+      process.stdin.off("data", onData)
+      process.stdin.off("end", finish)
+      process.stdin.pause()
+      resolve(input)
+    }
+    const onData = (chunk: Buffer): void => {
+      if (input.length + chunk.length > 131_072) {
+        input = ""
+        finish()
+        return
+      }
+      input += chunk.toString("utf8")
+    }
+    const timer = setTimeout(finish, 1_000)
+    process.stdin.on("data", onData)
+    process.stdin.once("end", finish)
+    process.stdin.resume()
+  })
+const hookSchema = z.object({ cwd: z.string().refine(isAbsolute) })
 
 const emitContext = (stdout: Writer, lines: ReadonlyArray<string>): void => {
   if (lines.length === 0) return
@@ -28,6 +57,10 @@ const emitContext = (stdout: Writer, lines: ReadonlyArray<string>): void => {
 export const ensureCommand = async (options: EnsureOptions = {}): Promise<number> => {
   const { stdout, stderr } = resolveIo(options)
   try {
+    const cwd =
+      options.agent === "codex"
+        ? hookSchema.parse(JSON.parse(options.input ?? (await readHookInput()))).cwd
+        : (options.cwd ?? process.cwd())
     const token = await readToken()
     if (!token) {
       emitContext(stdout, [
@@ -54,7 +87,7 @@ export const ensureCommand = async (options: EnsureOptions = {}): Promise<number
       }
     }
 
-    const project = await resolveProject(options.cwd ?? process.cwd())
+    const project = await resolveProject(cwd)
     if (project === null || !(await isProjectEnabled(project.slug))) {
       context.push(
         project === null

@@ -115,6 +115,38 @@ describe("replayCommand", () => {
   })
 
   const readState = async () => JSON.parse(await readFile(paths.state, "utf8"))
+
+  test("Codex replay clears the entire family and preserves cached projects", async () => {
+    const checkpoint = {
+      source: "codex",
+      filePath: "codex/root",
+      lastUpdatedAt: "x",
+      threadId: "root",
+      sessionId: SESSION,
+      metadataHash: "hash",
+      updatedAt: 0,
+      pending: [],
+    }
+    const projects = { "/deleted/worktree": { name: "widget", slug: "widget" } }
+    await writeFile(
+      paths.state,
+      JSON.stringify({
+        apiBase: "https://one.example",
+        projects,
+        checkpoints: {
+          root: checkpoint,
+          child: { ...checkpoint, threadId: "child" },
+          other: { ...checkpoint, sessionId: OTHER },
+        },
+      }),
+    )
+    expect(await replayCommand(SESSION, deps())).toBe(0)
+    expect(await readState()).toMatchObject({
+      projects,
+      checkpoints: { other: { sessionId: OTHER } },
+    })
+    expect(Object.keys((await readState()).checkpoints)).toEqual(["other"])
+  })
   const readArtifacts = async () => JSON.parse(await readFile(paths.artifacts, "utf8"))
   const readQueue = async () => JSON.parse(await readFile(paths.queue, "utf8"))
 

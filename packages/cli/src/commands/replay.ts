@@ -39,12 +39,15 @@ const clearCheckpoints = async (path: string, sessionId: string): Promise<number
     const parsed = checkpointStoreSchema.safeParse(await readJson(path))
     if (!parsed.success) return 0
 
-    const kept = Object.entries(parsed.data.checkpoints).filter(
-      ([, checkpoint]) => !belongsToSession(checkpoint.filePath, sessionId),
+    const kept = Object.entries(parsed.data.checkpoints).filter(([, checkpoint]) =>
+      checkpoint.source === "codex"
+        ? checkpoint.sessionId !== sessionId
+        : !belongsToSession(checkpoint.filePath, sessionId),
     )
     const dropped = Object.keys(parsed.data.checkpoints).length - kept.length
     if (dropped > 0)
       await atomicWriteJson(path, {
+        ...parsed.data,
         ...carried(parsed.data),
         checkpoints: Object.fromEntries(kept),
       })
