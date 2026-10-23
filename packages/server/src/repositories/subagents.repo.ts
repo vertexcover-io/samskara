@@ -1,8 +1,8 @@
 import type { AgentInfo } from "@samskara/core"
-import { sql } from "drizzle-orm"
+import { and, eq, sql } from "drizzle-orm"
 import type { PgColumn } from "drizzle-orm/pg-core"
 import type { Querier } from "../db/client.js"
-import { subagents } from "../db/schema.js"
+import { sessions, subagents } from "../db/schema.js"
 
 export type UpsertSubagentInput = {
   readonly sessionId: string
@@ -15,6 +15,29 @@ const keepExisting = (column: PgColumn) =>
 
 export const upsert = async (db: Querier, input: UpsertSubagentInput): Promise<void> => {
   const { sessionId, sourceRelativePath, agent } = input
+  if (agent.parentAgentId)
+    await db.execute(
+      sql`select ${sessions.id} from ${sessions} where ${sessions.id} = ${sessionId} for update`,
+    )
+  const [parent] =
+    agent.parentAgentId && agent.parentAgentId !== agent.agentId
+      ? await db
+          .select({ agentId: subagents.agentId })
+          .from(subagents)
+          .where(
+            and(
+              eq(subagents.sessionId, sessionId),
+              eq(subagents.agentId, agent.parentAgentId),
+              sql`not exists (
+              with recursive ancestors as (
+                select "agentId", "parentAgentId" from "subagents" where "sessionId" = ${sessionId} and "agentId" = ${agent.parentAgentId}
+                union
+                select p."agentId", p."parentAgentId" from "subagents" p join ancestors a on p."agentId" = a."parentAgentId" where p."sessionId" = ${sessionId}
+              ) select 1 from ancestors where "agentId" = ${agent.agentId}
+            )`,
+            ),
+          )
+      : []
   await db
     .insert(subagents)
     .values({
@@ -24,6 +47,7 @@ export const upsert = async (db: Querier, input: UpsertSubagentInput): Promise<v
       description: agent.description,
       spawnDepth: agent.spawnDepth,
       spawnToolUseId: agent.spawnToolUseId,
+      parentAgentId: parent?.agentId,
       sourceRelativePath,
     })
     .onConflictDoUpdate({
@@ -33,6 +57,7 @@ export const upsert = async (db: Querier, input: UpsertSubagentInput): Promise<v
         description: keepExisting(subagents.description),
         spawnDepth: keepExisting(subagents.spawnDepth),
         spawnToolUseId: keepExisting(subagents.spawnToolUseId),
+        parentAgentId: keepExisting(subagents.parentAgentId),
         updatedAt: sql`now()`,
       },
     })

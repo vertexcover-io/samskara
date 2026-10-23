@@ -41,6 +41,7 @@ const abortedTurn = (lineNumber: number): MessageRow =>
   })
 
 const detailWith = (overrides: Partial<SessionDetailRow> = {}): SessionDetailRow => ({
+  tokenUsageAvailable: false,
   session: {
     id: "s1",
     title: "fix the build",

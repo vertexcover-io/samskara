@@ -64,6 +64,7 @@ export const tokens = (overrides: Partial<TokenTotals> = {}): TokenTotals => ({
 })
 
 type PayloadParts = {
+  readonly tokenUsageAvailable?: boolean
   readonly session?: Partial<SessionFacts>
   readonly messages?: ReadonlyArray<RawMessage>
   readonly toolCalls?: ReadonlyArray<RawToolCall>
@@ -88,6 +89,7 @@ export const buildPayload = (parts: PayloadParts = {}): SessionDetailPayload => 
     toolCalls,
     subagents,
     tokenUsage: tokens(parts.tokenUsage),
+    tokenUsageAvailable: parts.tokenUsageAvailable ?? true,
     commits: parts.commits ?? [],
     pullRequests: parts.pullRequests ?? [],
   }

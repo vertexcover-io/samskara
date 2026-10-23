@@ -60,8 +60,8 @@ const legacyCommandOf = (toolInput: unknown): string | null => {
   return parsed.success ? parsed.data.command : null
 }
 
-const commandOf = (metadata: unknown, toolInput: unknown): string | null => {
-  if (metadata === null) return legacyCommandOf(toolInput)
+const commandOf = (metadata: unknown, toolInput: unknown, toolName: string): string | null => {
+  if (metadata === null) return toolName === "Bash" ? legacyCommandOf(toolInput) : null
   const parsed = toolCallMetadataSchema.safeParse(metadata)
   return parsed.success && parsed.data.type === "shell" ? parsed.data.command : null
 }
@@ -94,7 +94,7 @@ export const callsByIds = async (
       {
         messageId: row.messageId,
         toolName: row.toolName,
-        command: commandOf(row.metadata, row.toolInput),
+        command: commandOf(row.metadata, row.toolInput, row.toolName),
         repoId: row.repoId,
       },
     ]),
