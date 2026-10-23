@@ -16,7 +16,7 @@ export const MSG_TYPES = [
   "custom",
 ] as const
 
-export const SESSION_SOURCES = ["claude_code", "opencode"] as const
+export const SESSION_SOURCES = ["claude_code", "opencode", "codex"] as const
 export type SessionSource = (typeof SESSION_SOURCES)[number]
 
 const nonemptyString = z.string().min(1)
@@ -100,6 +100,22 @@ export const toolCallMetadataSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("shell"), command: nonemptyString }).strict(),
 ])
 export const toolResultMetadataSchema = z.discriminatedUnion("type", [
+  z
+    .object({
+      type: z.literal("writes"),
+      files: z
+        .array(
+          z
+            .object({
+              path: nonemptyString,
+              created: z.boolean(),
+              base: z.string().optional(),
+            })
+            .strict(),
+        )
+        .readonly(),
+    })
+    .strict(),
   z
     .object({
       type: z.literal("wrote"),
@@ -476,6 +492,7 @@ export const agentInfoSchema = z
     description: z.string().optional(),
     spawnDepth: nonnegativeInteger.optional(),
     spawnToolUseId: nonemptyString.optional(),
+    parentAgentId: nonemptyString.optional(),
   })
   .strict()
 
@@ -538,6 +555,15 @@ const ingestBaseShape = {
 const sessionOriginShape = {
   startCwd: nonemptyString.optional(),
   startCommit: nonemptyString.optional(),
+  sourceContext: z
+    .object({
+      startedAt: timestamp,
+      lastActiveAt: timestamp,
+      modelSnapshot: nonemptyString.optional(),
+      provider: nonemptyString.optional(),
+    })
+    .strict()
+    .optional(),
 }
 
 /**

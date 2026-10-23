@@ -32,9 +32,32 @@ export const opencodeCheckpointSchema = checkpointBaseSchema.extend({
   lastMessageId: z.string(),
 })
 
+const codexItemPointerSchema = z.object({
+  turnId: z.string(),
+  itemId: z.string(),
+  ordinal: z.number().int().positive(),
+})
+
+/**
+ * `end` is the last item saved; everything after it is new. `pending` holds items seen but not yet
+ * finished, and `partial` marks those whose tool call was already sent. `updatedAt` is the thread's
+ * native update time, saved only once every record was acknowledged.
+ */
+export const codexCheckpointSchema = checkpointBaseSchema.extend({
+  source: z.literal("codex"),
+  threadId: z.string(),
+  sessionId: z.string(),
+  metadataHash: z.string(),
+  spawnToolUseId: z.string().optional(),
+  updatedAt: z.number(),
+  end: codexItemPointerSchema.readonly().optional(),
+  pending: z.array(codexItemPointerSchema.extend({ partial: z.boolean() }).readonly()).readonly(),
+})
+
 export const checkpointSchema = z.discriminatedUnion("source", [
   claudeCheckpointSchema,
   opencodeCheckpointSchema,
+  codexCheckpointSchema,
 ])
 export const checkpointStoreSchema = z
   .object({
@@ -51,11 +74,13 @@ export const checkpointStoreSchema = z
 export type CheckpointBase = z.infer<typeof checkpointBaseSchema>
 export type ClaudeCheckpoint = z.infer<typeof claudeCheckpointSchema>
 export type OpencodeCheckpoint = z.infer<typeof opencodeCheckpointSchema>
+export type CodexCheckpoint = z.infer<typeof codexCheckpointSchema>
 export type Checkpoint = z.infer<typeof checkpointSchema>
 export type CheckpointStore = z.infer<typeof checkpointStoreSchema>
 export type CheckpointBody =
   | Omit<ClaudeCheckpoint, keyof CheckpointBase>
   | Omit<OpencodeCheckpoint, keyof CheckpointBase>
+  | Omit<CodexCheckpoint, keyof CheckpointBase>
 
 export type CollectDeps = {
   readonly fs: FileSystem
@@ -90,4 +115,5 @@ export type SessionBatch = {
 export interface AgentPlugin {
   readonly source: SessionSource
   collect(store: CheckpointStore, deps: CollectDeps): Promise<ReadonlyArray<SessionBatch>>
+  close?(): Promise<void>
 }

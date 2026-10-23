@@ -65,6 +65,32 @@ const toolCall = (name: string, input: Record<string, unknown>) =>
   }) as unknown as NormalizedMessage
 
 describe("edit events across harnesses", () => {
+  test("Codex successful patch effects count every edited file", () => {
+    const result: NormalizedMessage = {
+      subIndex: 1,
+      sessionId: "s",
+      source: "codex",
+      sourceSchemaVersion: 1,
+      trackId: "main",
+      msgType: "toolResult",
+      details: {
+        callId: "patch",
+        status: "success",
+        output: "done",
+        metadata: {
+          type: "writes",
+          files: [
+            { path: "a.ts", created: false },
+            { path: "b.ts", created: true },
+          ],
+        },
+      },
+    }
+    expect(reviewEventsFromMessages([result]).filter((event) => event.kind === "edit")).toEqual([
+      { seq: 1, kind: "edit", path: "a.ts" },
+      { seq: 2, kind: "edit", path: "b.ts" },
+    ])
+  })
   test.each([
     {
       id: "P4",
