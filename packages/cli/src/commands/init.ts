@@ -153,7 +153,7 @@ export const initCommand = async (options: InitOptions = {}): Promise<number> =>
   for (const agent of agents) if (installHooksCommand({ agent, stdout, stderr }) !== 0) return 1
   if (agents.length === 0)
     stdout.write(
-      "No Claude Code or Codex configuration found. Install hooks after setting up your agent.\n",
+      "No Claude Code, Codex or OpenCode configuration found. Install hooks after setting up your agent.\n",
     )
 
   const existingPid = watcherPid()

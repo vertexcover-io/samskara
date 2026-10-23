@@ -285,7 +285,7 @@ program
 program
   .command("install-hooks")
   .description("Install a SessionStart hook")
-  .option("--agent <agent>", "claude, codex, or all", "claude")
+  .option("--agent <agent>", "claude, codex, opencode, or all", "claude")
   .action((options: { agent: string }) => {
     process.exitCode = installHooksCommand(options)
   })
@@ -293,7 +293,7 @@ program
 program
   .command("uninstall-hooks")
   .description("Remove the Samskara SessionStart hook")
-  .option("--agent <agent>", "claude, codex, or all", "claude")
+  .option("--agent <agent>", "claude, codex, opencode, or all", "claude")
   .action((options: { agent: string }) => {
     process.exitCode = uninstallHooksCommand(options)
   })
