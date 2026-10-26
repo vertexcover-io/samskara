@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { Route, Routes } from "react-router-dom"
+import type { ReactNode } from "react"
+import { Link, Route, Routes } from "react-router-dom"
 import { afterEach, beforeEach, expect, test, vi } from "vitest"
 import type { SessionDetailPayload } from "../api/types.js"
 import {
@@ -218,6 +219,8 @@ const renderDetail = (
     /** What GET /review answers once an aireview reply landed 200: analyze writes the ai-v1 row. */
     readonly reviewAfterAi?: Reply
     readonly reviewerOptions?: Reply
+    /** Rendered inside the router beside the page, so a test can navigate without remounting it. */
+    readonly beside?: ReactNode
   } = {},
 ) => {
   const review = extras.review ?? { status: 200, body: { reviews: [] } }
@@ -316,6 +319,7 @@ const renderDetail = (
         <Routes>
           <Route path="/sessions/:sessionId" element={<SessionDetail />} />
         </Routes>
+        {extras.beside}
       </TestRouter>,
     ),
     analyzeBodies,
@@ -2514,4 +2518,34 @@ test("SC9: a 40-line reply inside an opened subagent branch gets collapse button
 
   const branch = screen.getByRole("region", { name: /auditor conversation/i })
   expect(collapseButtons(articleOf(branch, /BRANCHSAY/))).toHaveLength(2)
+})
+
+test("following a permalink to a collapsed long reply reopens it in the conversation", async () => {
+  const user = userEvent.setup()
+  renderDetail(
+    buildPayload({
+      messages: [
+        message({
+          id: "long-say",
+          lineNumber: 1,
+          msgType: "message",
+          role: "assistant",
+          content: text(longText("LONGSAY")),
+        }),
+      ],
+    }),
+    OK_EMPTY,
+    "/sessions/s-1",
+    { beside: <Link to="/sessions/s-1?m=long-say">follow permalink</Link> },
+  )
+
+  await tabsLoaded()
+  const [top] = collapseButtons(articleOf(panelOf(), /LONGSAY/))
+  if (top === undefined) throw new Error("no collapse button")
+  await user.click(top)
+  expect(collapseButtons(articleOf(panelOf(), /LONGSAY/))).toHaveLength(0)
+
+  await user.click(screen.getByRole("link", { name: "follow permalink" }))
+
+  expect(collapseButtons(articleOf(panelOf(), /LONGSAY/))).toHaveLength(2)
 })
