@@ -105,3 +105,23 @@ test("collapsing from the top button with the keyboard moves focus to the Show f
 
   expect(screen.getByRole("button", { name: "Show full message" })).toHaveFocus()
 })
+
+test("a collapsed body is inert, so Tab cannot reach a link clipped out of view, and reopening makes it reachable again", async () => {
+  const user = userEvent.setup()
+  render(
+    <Fold long linked={false} anchor="m-1">
+      <a href="#below">a link below the clip</a>
+    </Fold>,
+  )
+
+  const [top] = screen.getAllByRole("button", { name: "Collapse message" })
+  if (top === undefined) throw new Error("no collapse button")
+  await user.click(top)
+  const expand = screen.getByRole("button", { name: "Show full message" })
+  const body = document.getElementById(expand.getAttribute("aria-controls") ?? "")
+  expect(body).toHaveAttribute("inert")
+  expect(screen.getByText("a link below the clip")).toBeInTheDocument()
+
+  await user.click(expand)
+  expect(body).not.toHaveAttribute("inert")
+})
