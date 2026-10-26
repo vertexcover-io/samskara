@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useState } from "react"
 import { copyText } from "../account/copyText.js"
 import { absoluteTime, clockTime } from "../time.js"
+import { Fold, isLong } from "./Fold.js"
 import { Markdown } from "./Markdown.js"
 import {
   type Artifact,
@@ -139,6 +140,9 @@ const Prose = ({ body }: { body: string }) =>
     <Markdown source={body} />
   )
 
+const promptText = (parts: ReadonlyArray<PromptPart>): string =>
+  parts.flatMap((part) => (part.kind === "text" ? [part.value] : [])).join("\n")
+
 const PromptBody = ({ parts }: { parts: ReadonlyArray<PromptPart> }) => {
   if (parts.length === 0) return <Prose body="" />
   return (
@@ -267,7 +271,9 @@ export const RecordItem = ({ record, showTools = true, annex, link, linked = fal
         <div
           className={`mt-2 w-fit max-w-[104ch] rounded-xs border border-rule ${gutter} bg-panel-2 px-3 py-3`}
         >
-          <PromptBody parts={record.parts} />
+          <Fold long={isLong(promptText(record.parts))} linked={linked} anchor={shell.anchor}>
+            <PromptBody parts={record.parts} />
+          </Fold>
         </div>
       </Shell>
     )
@@ -328,7 +334,11 @@ export const RecordItem = ({ record, showTools = true, annex, link, linked = fal
             className={`mt-2 w-fit max-w-[104ch] rounded-xs border border-rule ${gutter} bg-panel-2 px-3 py-3`}
           >
             {record.thinking === null ? null : <Thinking thinking={record.thinking} />}
-            {record.body === "" ? null : <Prose body={record.body} />}
+            {record.body === "" ? null : (
+              <Fold long={isLong(record.body)} linked={linked} anchor={shell.anchor}>
+                <Prose body={record.body} />
+              </Fold>
+            )}
           </div>
         )}
       </Shell>
