@@ -2549,3 +2549,33 @@ test("following a permalink to a collapsed long reply reopens it in the conversa
 
   expect(collapseButtons(articleOf(panelOf(), /LONGSAY/))).toHaveLength(2)
 })
+
+test("collapsing a long reply scrolled above the screen scrolls that reply's own record back to its start", async () => {
+  const user = userEvent.setup()
+  const scrolled = recordScrolls()
+  vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue(
+    new DOMRect(0, -500, 100, 100),
+  )
+  renderDetail(
+    buildPayload({
+      messages: [
+        message({
+          id: "long-say",
+          lineNumber: 1,
+          msgType: "message",
+          role: "assistant",
+          content: text(longText("LONGSAY")),
+        }),
+      ],
+    }),
+  )
+
+  await tabsLoaded()
+  const article = articleOf(panelOf(), /LONGSAY/)
+  const [, bottom] = collapseButtons(article)
+  if (bottom === undefined) throw new Error("no bottom collapse button")
+  await user.click(bottom)
+
+  expect(article.id).not.toBe("")
+  expect(scrolled).toContainEqual({ id: article.id, block: "start" })
+})
