@@ -50,28 +50,37 @@ test("SC3: a short body renders its children and no toggle", () => {
   expect(screen.queryByRole("button")).toBeNull()
 })
 
-test("SC4: collapsing scrolls the anchor element to the nearest edge once, and expanding does not scroll", async () => {
-  const user = userEvent.setup()
-  const scroll = vi.spyOn(Element.prototype, "scrollIntoView")
-  render(
-    <article id="m-7">
-      <Fold long linked={false} anchor="m-7">
-        <p>the body text</p>
-      </Fold>
-    </article>,
-  )
+test.each([
+  { where: "scrolled above the screen", top: -500, head: "0px", scrolled: true },
+  { where: "under the pinned header", top: 50, head: "100px", scrolled: true },
+  { where: "already on screen", top: 300, head: "100px", scrolled: false },
+])(
+  "SC4: collapsing with the record's top $where scrolls it to the start: $scrolled, and expanding never scrolls",
+  async ({ top, head, scrolled }) => {
+    const user = userEvent.setup()
+    const scroll = vi.spyOn(Element.prototype, "scrollIntoView")
+    render(
+      <article id="m-7">
+        <Fold long linked={false} anchor="m-7">
+          <p>the body text</p>
+        </Fold>
+      </article>,
+    )
+    const article = document.getElementById("m-7")
+    if (article === null) throw new Error("no article")
+    article.style.setProperty("--sticky-head", head)
+    vi.spyOn(article, "getBoundingClientRect").mockReturnValue(new DOMRect(0, top, 100, 100))
 
-  const [, bottom] = screen.getAllByRole("button", { name: "Collapse message" })
-  if (bottom === undefined) throw new Error("no bottom collapse button")
-  await user.click(bottom)
-  expect(scroll).toHaveBeenCalledTimes(1)
-  expect(scroll).toHaveBeenCalledWith({ block: "nearest" })
-  expect(scroll.mock.contexts[0]).toBe(document.getElementById("m-7"))
+    const [, bottom] = screen.getAllByRole("button", { name: "Collapse message" })
+    if (bottom === undefined) throw new Error("no bottom collapse button")
+    await user.click(bottom)
+    await user.click(screen.getByRole("button", { name: "Show full message" }))
 
-  await user.click(screen.getByRole("button", { name: "Show full message" }))
-  expect(scroll).toHaveBeenCalledTimes(1)
-  scroll.mockRestore()
-})
+    expect(scroll.mock.calls).toEqual(scrolled ? [[{ block: "start" }]] : [])
+    expect(scroll.mock.contexts).toEqual(scrolled ? [article] : [])
+    scroll.mockRestore()
+  },
+)
 
 test("SC5: a collapsed message reopens when it becomes the linked one", async () => {
   const user = userEvent.setup()
