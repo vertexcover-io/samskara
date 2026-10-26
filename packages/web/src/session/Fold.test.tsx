@@ -89,3 +89,19 @@ test("SC5: a collapsed message reopens when it becomes the linked one", async ()
   rerender(body(true))
   expect(screen.getAllByRole("button", { name: "Collapse message" })).toHaveLength(2)
 })
+
+test("collapsing from the top button with the keyboard moves focus to the Show full message button, not the page body", async () => {
+  const user = userEvent.setup()
+  render(
+    <Fold long linked={false} anchor="m-1">
+      <p>the body text</p>
+    </Fold>,
+  )
+
+  const [top] = screen.getAllByRole("button", { name: "Collapse message" })
+  if (top === undefined) throw new Error("no collapse button")
+  top.focus()
+  await user.keyboard("{Enter}")
+
+  expect(screen.getByRole("button", { name: "Show full message" })).toHaveFocus()
+})

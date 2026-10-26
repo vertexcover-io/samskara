@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useId, useRef, useState } from "react"
+import { type ReactNode, type RefObject, useEffect, useId, useRef, useState } from "react"
 
 const LONG_LINES = 30
 const LONG_CHARS = 2500
@@ -10,10 +10,12 @@ type ToggleProps = {
   readonly open: boolean
   readonly controls: string
   readonly onToggle: () => void
+  readonly buttonRef?: RefObject<HTMLButtonElement>
 }
 
-const Toggle = ({ open, controls, onToggle }: ToggleProps) => (
+const Toggle = ({ open, controls, onToggle, buttonRef }: ToggleProps) => (
   <button
+    ref={buttonRef}
     type="button"
     aria-expanded={open}
     aria-controls={controls}
@@ -35,6 +37,7 @@ type Props = {
 export const Fold = ({ long, linked, anchor, children }: Props) => {
   const [open, setOpen] = useState(true)
   const collapsing = useRef(false)
+  const bottom = useRef<HTMLButtonElement>(null)
   const bodyId = useId()
 
   useEffect(() => {
@@ -45,6 +48,7 @@ export const Fold = ({ long, linked, anchor, children }: Props) => {
   useEffect(() => {
     if (open || !collapsing.current) return
     collapsing.current = false
+    bottom.current?.focus({ preventScroll: true })
     document.getElementById(anchor)?.scrollIntoView({ block: "nearest" })
   }, [open, anchor])
 
@@ -72,7 +76,7 @@ export const Fold = ({ long, linked, anchor, children }: Props) => {
         )}
       </div>
       <div className="mt-1">
-        <Toggle open={open} controls={bodyId} onToggle={toggle} />
+        <Toggle open={open} controls={bodyId} onToggle={toggle} buttonRef={bottom} />
       </div>
     </div>
   )
