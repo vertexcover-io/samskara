@@ -55,7 +55,11 @@ export const Fold = ({ long, linked, anchor, children }: Props) => {
     if (open || !collapsing.current) return
     collapsing.current = false
     bottom.current?.focus({ preventScroll: true })
-    document.getElementById(anchor)?.scrollIntoView({ block: "nearest" })
+    const record = document.getElementById(anchor)
+    if (record === null) return
+    const head = Number.parseFloat(getComputedStyle(record).getPropertyValue("--sticky-head")) || 0
+    if (record.getBoundingClientRect().top >= head) return
+    record.scrollIntoView({ block: "start" })
   }, [open, anchor])
 
   if (!long) return <>{children}</>
