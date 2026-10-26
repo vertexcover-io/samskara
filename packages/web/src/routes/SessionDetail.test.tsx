@@ -2368,3 +2368,150 @@ test("ST8: typing a new tag sends it as an add, and removing a chip sends it as 
   await user.click(screen.getByRole("button", { name: "Remove harness" }))
   expect(sent).toEqual([{ add: ["harness"] }, { remove: ["harness"] }])
 })
+
+const longText = (marker: string): string =>
+  [marker, ...Array.from({ length: 39 }, (_, i) => `${marker} line ${i + 2}`)].join("\n")
+
+const articleOf = (root: HTMLElement, pattern: RegExp): HTMLElement => {
+  const article = within(root).getAllByText(pattern)[0]?.closest("article")
+  if (!(article instanceof HTMLElement)) throw new Error(`no article holds ${pattern}`)
+  return article
+}
+
+const collapseButtons = (article: HTMLElement) =>
+  within(article).queryAllByRole("button", { name: "Collapse message" })
+
+test("SC6: a 40-line prompt and a 40-line reply each get collapse buttons, while one-line ones get none", async () => {
+  renderDetail(
+    buildPayload({
+      messages: [
+        message({
+          lineNumber: 1,
+          msgType: "message",
+          role: "user",
+          content: text(longText("LONGASK")),
+        }),
+        message({
+          lineNumber: 2,
+          msgType: "message",
+          role: "assistant",
+          content: text(longText("LONGSAY")),
+        }),
+        message({ lineNumber: 3, msgType: "message", role: "user", content: text("SHORTASK") }),
+        message({
+          lineNumber: 4,
+          msgType: "message",
+          role: "assistant",
+          content: text("SHORTSAY"),
+        }),
+      ],
+    }),
+  )
+
+  await tabsLoaded()
+
+  const panel = panelOf()
+  expect(collapseButtons(articleOf(panel, /LONGASK/))).toHaveLength(2)
+  expect(collapseButtons(articleOf(panel, /LONGSAY/))).toHaveLength(2)
+  expect(collapseButtons(articleOf(panel, /SHORTASK/))).toHaveLength(0)
+  expect(collapseButtons(articleOf(panel, /SHORTSAY/))).toHaveLength(0)
+})
+
+test("SC7: collapsing a long reply leaves its thinking outside the folded body and still closed", async () => {
+  const user = userEvent.setup()
+  renderDetail(
+    buildPayload({
+      messages: [
+        message({
+          lineNumber: 1,
+          msgType: "message",
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "Weighing the upsert" },
+            { type: "text", text: longText("LONGSAY") },
+          ],
+        }),
+      ],
+    }),
+  )
+
+  await tabsLoaded()
+
+  const [top] = collapseButtons(articleOf(panelOf(), /LONGSAY/))
+  if (top === undefined) throw new Error("no collapse button")
+  await user.click(top)
+
+  const expand = screen.getByRole("button", { name: "Show full message" })
+  const body = document.getElementById(expand.getAttribute("aria-controls") ?? "")
+  expect(body).not.toBeNull()
+  const thinking = screen.getByText(/^Thinking$/).closest("details")
+  expect(body?.contains(thinking ?? null)).toBe(false)
+  expect(thinking).not.toHaveAttribute("open")
+})
+
+test("SC8: a 40-line slash command argument and a 40-line skill injection get no collapse buttons", async () => {
+  renderDetail(
+    buildPayload({
+      messages: [
+        message({
+          lineNumber: 1,
+          msgType: "localCommand",
+          details: { command: "/plan", commandType: "slash", args: longText("LONGARGS") },
+        }),
+        message({
+          lineNumber: 2,
+          msgType: "message",
+          role: "user",
+          subType: "toolInjection",
+          content: text(`Base directory for this skill: /skills/plan\n\n${longText("LONGSKILL")}`),
+        }),
+      ],
+    }),
+  )
+
+  await tabsLoaded()
+
+  const panel = panelOf()
+  const command = articleOf(panel, /LONGARGS/)
+  expect(collapseButtons(command)).toHaveLength(0)
+  expect(within(command).getAllByText(/LONGARGS/)[0]).toBeVisible()
+
+  const injected = within(panel).getByText("Skill Loaded — plan").closest("article")
+  if (!(injected instanceof HTMLElement)) throw new Error("no injection article")
+  expect(collapseButtons(injected)).toHaveLength(0)
+  expect(injected.querySelector("details")).not.toHaveAttribute("open")
+})
+
+test("SC9: a 40-line reply inside an opened subagent branch gets collapse buttons", async () => {
+  const user = userEvent.setup()
+  renderDetail(
+    buildPayload({
+      subagents: [
+        {
+          agentId: "a1",
+          agentType: "auditor",
+          description: "Audit keys",
+          parentAgentId: null,
+          spawnToolUseId: null,
+        },
+      ],
+      messages: [
+        message({ lineNumber: 1, msgType: "turnEvent", subType: "agentSpawn", agentId: "a1" }),
+        message({
+          lineNumber: 2,
+          msgType: "message",
+          role: "assistant",
+          agentId: "a1",
+          isSubagent: true,
+          content: text(longText("BRANCHSAY")),
+        }),
+      ],
+    }),
+  )
+
+  await tabsLoaded()
+  await user.click(screen.getByRole("button", { name: /open branch/i }))
+
+  const branch = screen.getByRole("region", { name: /auditor conversation/i })
+  expect(collapseButtons(articleOf(branch, /BRANCHSAY/))).toHaveLength(2)
+})
