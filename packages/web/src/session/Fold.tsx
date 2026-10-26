@@ -38,11 +38,17 @@ export const Fold = ({ long, linked, anchor, children }: Props) => {
   const [open, setOpen] = useState(true)
   const collapsing = useRef(false)
   const bottom = useRef<HTMLButtonElement>(null)
+  const body = useRef<HTMLDivElement>(null)
   const bodyId = useId()
 
   useEffect(() => {
     if (linked) setOpen(true)
   }, [linked])
+
+  // React 18 has no inert prop.
+  useEffect(() => {
+    body.current?.toggleAttribute("inert", !open)
+  }, [open])
 
   // Scrolling in the click handler would measure the body before React shrinks it.
   useEffect(() => {
@@ -66,7 +72,11 @@ export const Fold = ({ long, linked, anchor, children }: Props) => {
           <Toggle open={open} controls={bodyId} onToggle={toggle} />
         </div>
       ) : null}
-      <div id={bodyId} className={open ? undefined : "relative max-h-48 overflow-hidden"}>
+      <div
+        ref={body}
+        id={bodyId}
+        className={open ? undefined : "relative max-h-48 overflow-hidden"}
+      >
         {children}
         {open ? null : (
           <div
