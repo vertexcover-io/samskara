@@ -38,17 +38,11 @@ export const Fold = ({ long, linked, anchor, children }: Props) => {
   const [open, setOpen] = useState(true)
   const collapsing = useRef(false)
   const bottom = useRef<HTMLButtonElement>(null)
-  const body = useRef<HTMLDivElement>(null)
   const bodyId = useId()
 
   useEffect(() => {
     if (linked) setOpen(true)
   }, [linked])
-
-  // React 18 has no inert prop.
-  useEffect(() => {
-    body.current?.toggleAttribute("inert", !open)
-  }, [open])
 
   // Scrolling in the click handler would measure the body before React shrinks it.
   useEffect(() => {
@@ -76,9 +70,15 @@ export const Fold = ({ long, linked, anchor, children }: Props) => {
           <Toggle open={open} controls={bodyId} onToggle={toggle} />
         </div>
       ) : null}
+      {/* Opening on keyboard focus keeps Tab off a link clipped out of view; a mouse press is left
+          alone, since opening mid-click moves the link before the click lands. */}
+      {/* biome-ignore lint/a11y/useSemanticElements: a plain div grouping the message body, not a form */}
       <div
-        ref={body}
         id={bodyId}
+        role="group"
+        onFocus={(event) => {
+          if (event.target.matches(":focus-visible")) setOpen(true)
+        }}
         className={open ? undefined : "relative max-h-48 overflow-hidden"}
       >
         {children}

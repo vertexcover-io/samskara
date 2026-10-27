@@ -63,6 +63,22 @@ const SEED: SeedSpec = {
           ],
         },
         { id: "e2e-detail-2", title: "Wire the auth guard" },
+        {
+          id: "e2e-detail-3",
+          title: "Write up the migration",
+          messages: [
+            {
+              msgType: "message",
+              role: "assistant",
+              content: {
+                text: [
+                  "See [the auth guard session](/sessions/e2e-detail-2) first.",
+                  ...Array.from({ length: 40 }, (_, i) => `Step ${i + 1} of the write-up.`),
+                ].join("\n\n"),
+              },
+            },
+          ],
+        },
       ],
     },
   ],
@@ -189,4 +205,29 @@ test("SC21, A1: a rename typed in the browser survives a reload, and the session
   await page.getByRole("button", { name: "Search", exact: true }).click()
 
   await expect(page.getByRole("link", { name: /Idempotent ingest fixups zircon/ })).toBeVisible()
+})
+
+test("a link in the visible part of a collapsed long reply still opens on click", async ({
+  authedPage: page,
+}) => {
+  await page.goto("/sessions/e2e-detail-3")
+
+  await page.getByRole("button", { name: "Collapse message" }).first().click()
+  await expect(page.getByRole("button", { name: "Show full message" })).toBeVisible()
+  await page.getByRole("link", { name: "the auth guard session" }).click({ timeout: 3000 })
+
+  await expect(page).toHaveURL(/\/sessions\/e2e-detail-2$/)
+})
+
+test("tabbing back from Show full message onto a link in the collapsed reply opens the reply, so focus never sits on clipped text", async ({
+  authedPage: page,
+}) => {
+  await page.goto("/sessions/e2e-detail-3")
+
+  await page.getByRole("button", { name: "Collapse message" }).last().click()
+  await expect(page.getByRole("button", { name: "Show full message" })).toBeFocused()
+  await page.keyboard.press("Shift+Tab")
+
+  await expect(page.getByRole("link", { name: "the auth guard session" })).toBeFocused()
+  await expect(page.getByRole("button", { name: "Collapse message" })).toHaveCount(2)
 })
