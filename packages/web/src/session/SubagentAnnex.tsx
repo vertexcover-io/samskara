@@ -16,6 +16,7 @@ export type AnnexContext = {
   readonly showTools: boolean
   readonly linkFor: (record: TimelineRecord) => string | undefined
   readonly linkedAnchor: string | null
+  readonly linkedMessage: string | null
 }
 
 type Props = AnnexContext & { readonly agent: RawSubagent }
@@ -26,7 +27,8 @@ export const annexFor = (record: TimelineRecord, context: AnnexContext): ReactNo
   record.kind === "agentSpawn" ? <SubagentAnnex agent={record.agent} {...context} /> : undefined
 
 export const SubagentAnnex = ({ agent, ...context }: Props) => {
-  const { branches, openIds, onOpen, onExit, showTools, linkFor, linkedAnchor } = context
+  const { branches, openIds, onOpen, onExit, showTools, linkFor, linkedAnchor, linkedMessage } =
+    context
   const records = branches.get(agent.agentId) ?? []
   const open = openIds.has(agent.agentId)
   const name = nameOf(agent)
@@ -86,7 +88,7 @@ export const SubagentAnnex = ({ agent, ...context }: Props) => {
                     record={record}
                     showTools={showTools}
                     link={linkFor(record)}
-                    linked={anchorOf(record) === linkedAnchor}
+                    linkedMessage={anchorOf(record) === linkedAnchor ? linkedMessage : null}
                     annex={annexFor(record, context)}
                   />
                 </li>

@@ -42,6 +42,7 @@ const props = (open: boolean, overrides: Record<string, unknown> = {}) => ({
   showTools: true,
   linkFor: () => undefined,
   linkedAnchor: null,
+  linkedMessage: null,
   ...overrides,
 })
 
