@@ -256,10 +256,17 @@ type Props = {
   readonly showTools?: boolean
   readonly annex?: ReactNode
   readonly link?: string
-  readonly linked?: boolean
+  readonly linkedMessage?: string | null
 }
 
-export const RecordItem = ({ record, showTools = true, annex, link, linked = false }: Props) => {
+export const RecordItem = ({
+  record,
+  showTools = true,
+  annex,
+  link,
+  linkedMessage = null,
+}: Props) => {
+  const linked = linkedMessage !== null
   const tone = toneOf(record)
   const shell: ShellProps = { anchor: anchorOf(record), linked, tone }
   const gutter = GUTTER[tone]
@@ -271,7 +278,11 @@ export const RecordItem = ({ record, showTools = true, annex, link, linked = fal
         <div
           className={`mt-2 w-fit max-w-[104ch] rounded-xs border border-rule ${gutter} bg-panel-2 px-3 py-3`}
         >
-          <Fold long={isLong(promptText(record.parts))} linked={linked} anchor={shell.anchor}>
+          <Fold
+            long={isLong(promptText(record.parts))}
+            linkedMessage={linkedMessage}
+            anchor={shell.anchor}
+          >
             <PromptBody parts={record.parts} />
           </Fold>
         </div>
@@ -335,7 +346,7 @@ export const RecordItem = ({ record, showTools = true, annex, link, linked = fal
           >
             {record.thinking === null ? null : <Thinking thinking={record.thinking} />}
             {record.body === "" ? null : (
-              <Fold long={isLong(record.body)} linked={linked} anchor={shell.anchor}>
+              <Fold long={isLong(record.body)} linkedMessage={linkedMessage} anchor={shell.anchor}>
                 <Prose body={record.body} />
               </Fold>
             )}

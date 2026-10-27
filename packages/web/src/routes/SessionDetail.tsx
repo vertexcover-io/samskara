@@ -596,6 +596,7 @@ const Conversation = ({ detail, inlineTools }: { detail: Detail; inlineTools: bo
       onExit={focus.exit}
       linkFor={linkFor}
       linkedAnchor={site?.anchor ?? null}
+      linkedMessage={site === null ? null : target}
     />
   )
 

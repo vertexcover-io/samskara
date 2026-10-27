@@ -29,20 +29,20 @@ const Toggle = ({ open, controls, onToggle, buttonRef }: ToggleProps) => (
 
 type Props = {
   readonly long: boolean
-  readonly linked: boolean
+  readonly linkedMessage: string | null
   readonly anchor: string
   readonly children: ReactNode
 }
 
-export const Fold = ({ long, linked, anchor, children }: Props) => {
+export const Fold = ({ long, linkedMessage, anchor, children }: Props) => {
   const [open, setOpen] = useState(true)
   const collapsing = useRef(false)
   const bottom = useRef<HTMLButtonElement>(null)
   const bodyId = useId()
 
   useEffect(() => {
-    if (linked) setOpen(true)
-  }, [linked])
+    if (linkedMessage !== null) setOpen(true)
+  }, [linkedMessage])
 
   // Scrolling in the click handler would measure the body before React shrinks it.
   useEffect(() => {

@@ -18,7 +18,7 @@ test.each([
 test("SC2: a long body starts open with two collapse buttons, folds to one expand button with the text still there, and reopens", async () => {
   const user = userEvent.setup()
   render(
-    <Fold long linked={false} anchor="m-1">
+    <Fold long linkedMessage={null} anchor="m-1">
       <p>the body text</p>
     </Fold>,
   )
@@ -41,7 +41,7 @@ test("SC2: a long body starts open with two collapse buttons, folds to one expan
 
 test("SC3: a short body renders its children and no toggle", () => {
   render(
-    <Fold long={false} linked={false} anchor="m-1">
+    <Fold long={false} linkedMessage={null} anchor="m-1">
       <p>short</p>
     </Fold>,
   )
@@ -61,7 +61,7 @@ test.each([
     const scroll = vi.spyOn(Element.prototype, "scrollIntoView")
     render(
       <article id="m-7">
-        <Fold long linked={false} anchor="m-7">
+        <Fold long linkedMessage={null} anchor="m-7">
           <p>the body text</p>
         </Fold>
       </article>,
@@ -84,25 +84,25 @@ test.each([
 
 test("SC5: a collapsed message reopens when it becomes the linked one", async () => {
   const user = userEvent.setup()
-  const body = (linked: boolean) => (
-    <Fold long linked={linked} anchor="m-1">
+  const body = (linkedMessage: string | null) => (
+    <Fold long linkedMessage={linkedMessage} anchor="m-1">
       <p>the body text</p>
     </Fold>
   )
-  const { rerender } = render(body(false))
+  const { rerender } = render(body(null))
   const [top] = screen.getAllByRole("button", { name: "Collapse message" })
   if (top === undefined) throw new Error("no collapse button")
   await user.click(top)
   expect(screen.getByRole("button", { name: "Show full message" })).toBeInTheDocument()
 
-  rerender(body(true))
+  rerender(body("m-1"))
   expect(screen.getAllByRole("button", { name: "Collapse message" })).toHaveLength(2)
 })
 
 test("collapsing from the top button with the keyboard moves focus to the Show full message button, not the page body", async () => {
   const user = userEvent.setup()
   render(
-    <Fold long linked={false} anchor="m-1">
+    <Fold long linkedMessage={null} anchor="m-1">
       <p>the body text</p>
     </Fold>,
   )

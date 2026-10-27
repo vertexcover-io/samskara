@@ -2550,6 +2550,43 @@ test("following a permalink to a collapsed long reply reopens it in the conversa
   expect(collapseButtons(articleOf(panelOf(), /LONGSAY/))).toHaveLength(2)
 })
 
+test("following a permalink to a second message merged into an already-linked, collapsed reply reopens it", async () => {
+  const user = userEvent.setup()
+  renderDetail(
+    buildPayload({
+      messages: [
+        message({
+          id: "say-1",
+          lineNumber: 1,
+          msgType: "message",
+          role: "assistant",
+          content: text(longText("FIRSTSAY")),
+        }),
+        message({
+          id: "say-2",
+          lineNumber: 2,
+          msgType: "message",
+          role: "assistant",
+          content: text("SECONDSAY in the same run"),
+        }),
+      ],
+    }),
+    OK_EMPTY,
+    "/sessions/s-1?m=say-1",
+    { beside: <Link to="/sessions/s-1?m=say-2">follow second permalink</Link> },
+  )
+
+  await tabsLoaded()
+  const [top] = collapseButtons(articleOf(panelOf(), /FIRSTSAY/))
+  if (top === undefined) throw new Error("no collapse button")
+  await user.click(top)
+  expect(collapseButtons(articleOf(panelOf(), /SECONDSAY/))).toHaveLength(0)
+
+  await user.click(screen.getByRole("link", { name: "follow second permalink" }))
+
+  expect(collapseButtons(articleOf(panelOf(), /SECONDSAY/))).toHaveLength(2)
+})
+
 test("collapsing a long reply scrolled above the screen scrolls that reply's own record back to its start", async () => {
   const user = userEvent.setup()
   const scrolled = recordScrolls()

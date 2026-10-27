@@ -15,7 +15,7 @@ const dimmed = (record: TimelineRecord, openIds: ReadonlySet<string>): boolean =
 }
 
 export const RecordStream = ({ records, spine, ...context }: Props) => {
-  const { openIds, showTools, linkFor, linkedAnchor } = context
+  const { openIds, showTools, linkFor, linkedAnchor, linkedMessage } = context
 
   if (records.length === 0) {
     return (
@@ -52,7 +52,7 @@ export const RecordStream = ({ records, spine, ...context }: Props) => {
             record={record}
             showTools={showTools}
             link={linkFor(record)}
-            linked={anchorOf(record) === linkedAnchor}
+            linkedMessage={anchorOf(record) === linkedAnchor ? linkedMessage : null}
             annex={annexFor(record, context)}
           />
         </li>
