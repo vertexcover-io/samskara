@@ -211,7 +211,7 @@ export const Learnings = () => {
 
   return (
     <div>
-      <h1 className="mb-3 text-[1.375rem] font-semibold leading-tight">Learnings</h1>
+      <h1 className="mb-3 text-[1.375rem] font-semibold leading-tight">Fixes</h1>
       <HowThisWorks />
       <div className="mb-4 mt-4 flex flex-wrap items-end justify-between gap-2">
         <label className="flex flex-col gap-1">
