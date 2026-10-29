@@ -55,6 +55,23 @@ const RUN_REFUSED: Readonly<Record<string, string>> = {
   projectNotFound: "This project could not be found.",
 }
 
+/**
+ * How many learnings the page shows: the top few by default, since the server ranks them most
+ * important first and the point is what to fix next. `?show=` keeps the choice.
+ */
+const SHOW_CHOICES = [
+  { value: "5", label: "Top 5" },
+  { value: "10", label: "Top 10" },
+  { value: "20", label: "Top 20" },
+  { value: "all", label: "All" },
+] as const
+const DEFAULT_SHOW = "5"
+
+const showLimit = (value: string | null): { readonly value: string; readonly limit: number } => {
+  const choice = SHOW_CHOICES.find((c) => c.value === value)?.value ?? DEFAULT_SHOW
+  return { value: choice, limit: choice === "all" ? Number.POSITIVE_INFINITY : Number(choice) }
+}
+
 const plural = (count: number, word: string): string => `${count} ${word}${count === 1 ? "" : "s"}`
 
 const runLine = (run: LearningRun | null): string =>
@@ -186,6 +203,14 @@ export const Learnings = () => {
     }
   }, [])
 
+  const show = showLimit(searchParams.get("show"))
+  // Changes one search param and keeps the others, so the project and the count travel together.
+  const setParam = (name: string, value: string) => {
+    const next = new URLSearchParams(searchParams)
+    next.set(name, value)
+    setSearchParams(next)
+  }
+
   // Learnings belong to one project; with none chosen, the first project the viewer can read.
   const project =
     searchParams.get("project") ??
@@ -297,22 +322,40 @@ export const Learnings = () => {
       <h1 className="mb-3 text-[1.375rem] font-semibold leading-tight">Fixes</h1>
       <HowThisWorks />
       <div className="mb-4 mt-4 flex flex-wrap items-end justify-between gap-2">
-        <label className="flex flex-col gap-1">
-          <span className="text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-stamp">
-            Project
-          </span>
-          <select
-            className={controlClass}
-            value={project}
-            onChange={(e) => setSearchParams(new URLSearchParams({ project: e.target.value }))}
-          >
-            {projects.projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="flex flex-col gap-1">
+            <span className="text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-stamp">
+              Project
+            </span>
+            <select
+              className={controlClass}
+              value={project}
+              onChange={(e) => setParam("project", e.target.value)}
+            >
+              {projects.projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-stamp">
+              Show
+            </span>
+            <select
+              className={controlClass}
+              value={show.value}
+              onChange={(e) => setParam("show", e.target.value)}
+            >
+              {SHOW_CHOICES.map((choice) => (
+                <option key={choice.value} value={choice.value}>
+                  {choice.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
         <div className="flex flex-col items-end gap-1.5">
           <div className="flex flex-wrap items-center gap-3">
             {run.phase === "running" ? (
@@ -352,7 +395,10 @@ export const Learnings = () => {
         </section>
       ) : (
         <div className="flex flex-col gap-3">
-          {state.learnings.map((row) => (
+          <p className="font-mono text-[0.72rem] text-ink-soft">
+            Showing {Math.min(show.limit, state.learnings.length)} of {state.learnings.length}
+          </p>
+          {state.learnings.slice(0, show.limit).map((row) => (
             <LearningCard key={row.id} row={row} />
           ))}
         </div>

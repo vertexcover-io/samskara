@@ -134,7 +134,7 @@ test("LR3: choosing another project loads that project's learnings", async () =>
   renderPage()
   const user = userEvent.setup()
   await screen.findByText(LEARNING.title)
-  await user.selectOptions(screen.getByRole("combobox"), "p-2")
+  await user.selectOptions(screen.getByRole("combobox", { name: "Project" }), "p-2")
 
   await waitFor(() => {
     expect(urls.some((url) => url.includes("/api/learnings?project=p-2"))).toBe(true)
@@ -255,4 +255,45 @@ test("LR8: a refused run says why in plain words", async () => {
 
   expect(await screen.findByText(/LEARNINGS_HARNESS_PATH/)).toBeInTheDocument()
   expect(screen.getByRole("button", { name: "Run now" })).toBeEnabled()
+})
+
+/** Twelve learnings, numbered in the order the server ranks them. */
+const MANY = Array.from({ length: 12 }, (_, index) => ({
+  ...LEARNING,
+  id: `l-${index + 1}`,
+  title: `Learning number ${index + 1}`,
+}))
+
+test("LR9: shows the top 5 by default, and says how many there are", async () => {
+  stubFetch([
+    { match: "/api/learnings", status: 200, body: { learnings: MANY, latestRun: RUN } },
+    { match: "/api/projects", status: 200, body: projectsBody },
+  ])
+
+  renderPage()
+
+  expect(await screen.findByText("Learning number 1")).toBeInTheDocument()
+  expect(screen.getByText("Learning number 5")).toBeInTheDocument()
+  expect(screen.queryByText("Learning number 6")).not.toBeInTheDocument()
+  expect(screen.getByText("Showing 5 of 12")).toBeInTheDocument()
+})
+
+test("LR10: the Show filter picks how many, and the choice is kept in the URL", async () => {
+  stubFetch([
+    { match: "/api/learnings", status: 200, body: { learnings: MANY, latestRun: RUN } },
+    { match: "/api/projects", status: 200, body: projectsBody },
+  ])
+  renderPage("/learnings?show=10")
+  const user = userEvent.setup()
+
+  expect(await screen.findByText("Learning number 10")).toBeInTheDocument()
+  expect(screen.queryByText("Learning number 11")).not.toBeInTheDocument()
+
+  await user.selectOptions(screen.getByRole("combobox", { name: "Show" }), "all")
+  expect(screen.getByText("Learning number 12")).toBeInTheDocument()
+  expect(screen.getByText("Showing 12 of 12")).toBeInTheDocument()
+
+  // Changing project keeps the chosen count.
+  await user.selectOptions(screen.getByRole("combobox", { name: "Project" }), "p-2")
+  expect(await screen.findByText("Learning number 12")).toBeInTheDocument()
 })
