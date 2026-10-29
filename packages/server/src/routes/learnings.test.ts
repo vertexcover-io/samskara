@@ -45,13 +45,13 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
   let projectId: string
   let counter = 0
 
-  /** With `serverHarness`, the server has its own LEARNINGS_HARNESS_PATH. */
+  /** With `serverHarness`, the server has its own harness checkout (LEARNINGS_HARNESS_PATH). */
   const request = async (
     path: string,
     init: { method?: string; body?: unknown; as?: string; serverHarness?: boolean } = {},
   ) => {
     const token = await signToken(env, { sub: init.as ?? userId, aud: "cli" })
-    const appEnv = init.serverHarness ? { ...env, learningsHarnessPath: harnessPath } : env
+    const appEnv = init.serverHarness ? { ...env, learningsHarness: { path: harnessPath } } : env
     return buildApp(db, appEnv, { aiReviewRunner: agents }).request(path, {
       method: init.method ?? "GET",
       headers: {

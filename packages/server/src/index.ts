@@ -23,12 +23,14 @@ const app = buildApp(db, env, { rootLog, aiReviewRunner })
 const interrupted = await failInterruptedRuns(db)
 if (interrupted > 0)
   rootLog.warn({ interrupted }, "learning runs cut off by a restart marked failed")
-if (env.learningsHarnessPath === undefined) {
-  rootLog.info("LEARNINGS_HARNESS_PATH is unset, so no weekly learning run")
+if (env.learningsHarness === undefined) {
+  rootLog.info(
+    "Neither LEARNINGS_HARNESS_REPO nor LEARNINGS_HARNESS_PATH is set, so no weekly learning run",
+  )
 } else {
   startLearningSchedule(
     { db, runner: aiReviewRunner, env, log: rootLog.child({ component: "learnings" }) },
-    { harnessPath: env.learningsHarnessPath },
+    { harness: env.learningsHarness },
   )
 }
 

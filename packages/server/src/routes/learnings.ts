@@ -74,7 +74,8 @@ export const learningsRoutes = ({ db, env, runner }: Deps) => {
       /**
        * Start a run now; an editor of the project may. The harness path names a checkout on
        * the server's machine, so only a project admin may pass one — anyone else gets the
-       * server's own LEARNINGS_HARNESS_PATH. 202 with the run id, which the caller polls.
+       * server's own harness (LEARNINGS_HARNESS_REPO or LEARNINGS_HARNESS_PATH). 202 with the
+       * run id, which the caller polls.
        */
       .post(
         "/runs",
@@ -90,12 +91,13 @@ export const learningsRoutes = ({ db, env, runner }: Deps) => {
           if (scope === "viewer") return c.json({ error: "notEditable" }, 403)
           if (body.harnessPath !== undefined && scope !== "admin")
             return c.json({ error: "harnessPathNeedsAdmin" }, 403)
-          const harnessPath = body.harnessPath ?? env.learningsHarnessPath
-          if (harnessPath === undefined) return c.json({ error: "noHarnessPath" }, 400)
+          const harness =
+            body.harnessPath === undefined ? env.learningsHarness : { path: body.harnessPath }
+          if (harness === undefined) return c.json({ error: "noHarnessPath" }, 400)
           const started = await startLearningRun(
             { db, runner, env, log: c.get("log") },
             body.project,
-            { harnessPath },
+            { harness },
           )
           if (started.status === "busy") return c.json({ error: "learningRunAlreadyRunning" }, 409)
           return c.json({ runId: started.runId }, 202)

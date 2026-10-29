@@ -1,7 +1,9 @@
-import { basename, join, resolve } from "node:path"
+import { join } from "node:path"
 import {
   groupProblems,
   type HarnessRunner,
+  type HarnessSource,
+  harnessName,
   type LearningInput,
   type LearningTrace,
   oneOffReason,
@@ -32,8 +34,8 @@ export type LearningRunDeps = {
 }
 
 export type LearningRunOptions = {
-  /** A local checkout of the harness; its committed code is what each learning is checked against. */
-  readonly harnessPath: string
+  /** Where the harness code comes from; it is what each learning is checked against. */
+  readonly harness: HarnessSource
   /** Problems per batch. Agent 1 reads a whole batch at once, so this keeps its input small. */
   readonly batchSize?: number
   /** New high and medium learnings this run may make; `PRIORITY_LIMITS` when absent. */
@@ -88,7 +90,8 @@ export const startLearningRun = async (
     )
     runLog.event("run.start", {
       projectId,
-      harnessPath: options.harnessPath,
+      // The source without its token: a run log is for reading.
+      harnessSource: "path" in options.harness ? options.harness.path : options.harness.github,
       harness: deps.env.aiReviewHarness,
       model: learningsModelOf(deps.env),
     })
@@ -147,8 +150,8 @@ const work = async (
     runLog.event("run.nothing_to_do")
     return
   }
-  await withHarnessSnapshot(options.harnessPath, async (harness) => {
-    const harnessRef = `${basename(resolve(options.harnessPath))}@${harness.ref.slice(0, 12)}`
+  await withHarnessSnapshot(options.harness, async (harness) => {
+    const harnessRef = `${harnessName(options.harness)}@${harness.ref.slice(0, 12)}`
     await learningsRepo.setHarnessRef(deps.db, runId, harnessRef)
     runLog.event("harness.snapshot", { harnessRef })
     const limits = options.priorityLimits ?? PRIORITY_LIMITS

@@ -62,6 +62,33 @@ describe("loadEnv", () => {
     expect(() => loadEnv({ ...claude, LEARNINGS_MODEL: "opus; rm -rf /" })).toThrow()
   })
 
+  test("the learning harness is a GitHub repo or a local checkout, never both", () => {
+    expect(loadEnv(complete).learningsHarness).toBeUndefined()
+    expect(loadEnv({ ...complete, LEARNINGS_HARNESS_PATH: "/srv/yok" }).learningsHarness).toEqual({
+      path: "/srv/yok",
+    })
+    expect(
+      loadEnv({ ...complete, LEARNINGS_HARNESS_REPO: "vertexcover-io/yok" }).learningsHarness,
+    ).toEqual({ github: "vertexcover-io/yok" })
+    expect(
+      loadEnv({
+        ...complete,
+        LEARNINGS_HARNESS_REPO: "vertexcover-io/yok",
+        LEARNINGS_HARNESS_GITHUB_TOKEN: "ghp_x",
+      }).learningsHarness,
+    ).toEqual({ github: "vertexcover-io/yok", token: "ghp_x" })
+    expect(() =>
+      loadEnv({
+        ...complete,
+        LEARNINGS_HARNESS_REPO: "vertexcover-io/yok",
+        LEARNINGS_HARNESS_PATH: "/srv/yok",
+      }),
+    ).toThrow(/LEARNINGS_HARNESS_REPO/)
+    expect(() =>
+      loadEnv({ ...complete, LEARNINGS_HARNESS_REPO: "https://github.com/vertexcover-io/yok" }),
+    ).toThrow(/LEARNINGS_HARNESS_REPO/)
+  })
+
   test("a set LOCAL_LOGIN_SECRET makes the GitHub app optional - both keys may be blank", () => {
     const env = loadEnv({
       ...complete,

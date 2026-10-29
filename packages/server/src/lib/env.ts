@@ -1,6 +1,7 @@
 import {
   CREDENTIAL_ENV,
   DEFAULT_REVIEW_MODEL,
+  type HarnessSource,
   hasCredential,
   REVIEW_HARNESSES,
   REVIEW_MODEL_PATTERN,
@@ -54,9 +55,19 @@ const BaseEnvSchema = z.object({
     .default("600000")
     .transform((value) => Number(value)),
   /**
-   * A local checkout of the agent harness the sessions ran (yok, for us). The weekly learning
-   * run reads its code to check each learning; unset, the run never starts on its own.
+   * The agent harness the sessions ran (yok, for us), whose code the learning run checks each
+   * learning against: a GitHub repo as `owner/name`, cloned fresh for every run, or a local
+   * checkout. One or the other; with neither, the run never starts on its own.
    */
+  LEARNINGS_HARNESS_REPO: z
+    .string()
+    .regex(
+      /^[\w.-]+\/[\w.-]+$/,
+      "LEARNINGS_HARNESS_REPO must be owner/name, e.g. vertexcover-io/yok",
+    )
+    .optional(),
+  /** Only for a private LEARNINGS_HARNESS_REPO: a token that can read it. */
+  LEARNINGS_HARNESS_GITHUB_TOKEN: z.string().min(1).optional(),
   LEARNINGS_HARNESS_PATH: z.string().min(1).optional(),
   /**
    * The model both learning agents use. Unset: opus on the claude harness; on opencode, which
@@ -64,6 +75,25 @@ const BaseEnvSchema = z.object({
    */
   LEARNINGS_MODEL: z.string().min(1).regex(REVIEW_MODEL_PATTERN).optional(),
 })
+
+/** A repo and a local checkout both set would leave which one the run reads to chance. */
+const oneLearningsHarness = (data: z.infer<typeof BaseEnvSchema>, ctx: z.RefinementCtx): void => {
+  if (data.LEARNINGS_HARNESS_REPO !== undefined && data.LEARNINGS_HARNESS_PATH !== undefined)
+    ctx.addIssue({
+      code: "custom",
+      path: ["LEARNINGS_HARNESS_REPO"],
+      message: "set LEARNINGS_HARNESS_REPO or LEARNINGS_HARNESS_PATH, not both",
+    })
+}
+
+const learningsHarnessOf = (data: z.infer<typeof BaseEnvSchema>): HarnessSource | undefined => {
+  if (data.LEARNINGS_HARNESS_REPO !== undefined)
+    return data.LEARNINGS_HARNESS_GITHUB_TOKEN === undefined
+      ? { github: data.LEARNINGS_HARNESS_REPO }
+      : { github: data.LEARNINGS_HARNESS_REPO, token: data.LEARNINGS_HARNESS_GITHUB_TOKEN }
+  if (data.LEARNINGS_HARNESS_PATH !== undefined) return { path: data.LEARNINGS_HARNESS_PATH }
+  return undefined
+}
 
 const requireSignInMethod = (data: z.infer<typeof BaseEnvSchema>, ctx: z.RefinementCtx): void => {
   if (data.LOCAL_LOGIN_SECRET.length > 0) return
@@ -113,7 +143,7 @@ export type Env = {
   readonly aiReviewHarness: ReviewHarness
   readonly aiReviewModel: string
   readonly aiReviewTimeoutMs: number
-  readonly learningsHarnessPath?: string | undefined
+  readonly learningsHarness?: HarnessSource | undefined
   /** Set by `loadEnv`; an Env built by hand (in tests) may leave it out for the review model. */
   readonly learningsModel?: string | undefined
 }
@@ -123,6 +153,7 @@ type Source = Record<string, string | undefined>
 export const loadEnv = (source: Source = process.env): Env => {
   const parsed = BaseEnvSchema.superRefine(requireSignInMethod)
     .superRefine(requireHarnessCredential(source))
+    .superRefine(oneLearningsHarness)
     .safeParse(source)
   if (!parsed.success) {
     const keys = parsed.error.issues.map((issue) => issue.path.join(".")).join(", ")
@@ -148,7 +179,7 @@ export const loadEnv = (source: Source = process.env): Env => {
     aiReviewHarness: parsed.data.AI_REVIEW_HARNESS,
     aiReviewModel,
     aiReviewTimeoutMs: parsed.data.AI_REVIEW_TIMEOUT_MS,
-    learningsHarnessPath: parsed.data.LEARNINGS_HARNESS_PATH,
+    learningsHarness: learningsHarnessOf(parsed.data),
     learningsModel:
       parsed.data.LEARNINGS_MODEL ??
       (parsed.data.AI_REVIEW_HARNESS === "claude" ? "opus" : aiReviewModel),

@@ -1,3 +1,4 @@
+import type { HarnessSource } from "@samskara/core"
 import * as learningsRepo from "../../repositories/learnings.repo.js"
 import { type LearningRunDeps, startLearningRun } from "./run.js"
 
@@ -14,7 +15,7 @@ const CHECK_EVERY_MS = 60 * 60 * 1000
 export const startLearningSchedule = (
   deps: LearningRunDeps,
   options: {
-    readonly harnessPath: string
+    readonly harness: HarnessSource
     readonly now?: () => Date
     readonly checkEveryMs?: number
   },
@@ -29,9 +30,7 @@ export const startLearningSchedule = (
         deps.db,
         new Date(now().getTime() - LEARNING_RUN_EVERY_MS),
       )) {
-        const started = await startLearningRun(deps, projectId, {
-          harnessPath: options.harnessPath,
-        })
+        const started = await startLearningRun(deps, projectId, { harness: options.harness })
         if (started.status === "started") await started.finished
       }
     } catch (error) {

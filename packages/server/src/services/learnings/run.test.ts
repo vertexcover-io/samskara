@@ -63,7 +63,7 @@ describe.skipIf(!dockerAvailable())("runLearnings", () => {
     priorityLimits?: { high: number; medium: number },
   ) =>
     runLearnings({ db, runner, env, log: captureLogger().log, logDir }, projectId, {
-      harnessPath,
+      harness: { path: harnessPath },
       ...(batchSize === undefined ? {} : { batchSize }),
       ...(priorityLimits === undefined ? {} : { priorityLimits }),
     })

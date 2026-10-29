@@ -51,7 +51,7 @@ export const RUN_POLL_MS = 5_000
 const RUN_REFUSED: Readonly<Record<string, string>> = {
   notEditable: "You need edit rights on this project to start a run.",
   noHarnessPath:
-    "The server has no harness folder to check learnings against. Set LEARNINGS_HARNESS_PATH on the server.",
+    "The server has no harness to check learnings against. Set LEARNINGS_HARNESS_REPO (or LEARNINGS_HARNESS_PATH) on the server.",
   projectNotFound: "This project could not be found.",
 }
 

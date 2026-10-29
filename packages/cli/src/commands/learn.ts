@@ -61,7 +61,7 @@ const ERRORS: Record<string, string> = {
   notEditable: "Only an editor of the project can start a learning run.",
   harnessPathNeedsAdmin: "Only a project admin can pass --harness-path.",
   noHarnessPath:
-    "No harness to check against: pass --harness-path, or set LEARNINGS_HARNESS_PATH on the server.",
+    "No harness to check against: pass --harness-path, or set LEARNINGS_HARNESS_REPO (or LEARNINGS_HARNESS_PATH) on the server.",
   learningRunAlreadyRunning:
     "A learning run is already going for this project. Wait for it to finish.",
 }

@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process"
 import { cp, mkdir, mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { basename, join, resolve } from "node:path"
 import { promisify } from "node:util"
 import { FIX_TYPES } from "../problems/reviewMd.js"
 import { readOr, withWorkspace } from "../problems/workspace.js"
@@ -223,11 +223,55 @@ export const snapshotHarness = async (
   return { ref }
 }
 
-/** A scratch copy of the harness for one run: snapshotted, used, removed. */
+/**
+ * A clone of `url`'s default branch at `dest`, and the commit it is at. History is left out
+ * (`--depth 1`) and `.git` removed: the agent reads the code, not its log. A token goes to git
+ * as an auth header through its environment, never in the URL or the arguments, so it shows
+ * up in no process list and no error message.
+ */
+export const cloneHarness = async (
+  url: string,
+  dest: string,
+  token?: string,
+): Promise<{ readonly ref: string }> => {
+  const auth =
+    token === undefined
+      ? {}
+      : {
+          GIT_CONFIG_COUNT: "1",
+          GIT_CONFIG_KEY_0: "http.extraHeader",
+          GIT_CONFIG_VALUE_0: `Authorization: Basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`,
+        }
+  await execFileAsync("git", ["clone", "--quiet", "--depth", "1", url, dest], {
+    // A missing or private repo fails here rather than waiting on a password prompt.
+    env: { ...process.env, ...auth, GIT_TERMINAL_PROMPT: "0" },
+  })
+  const { stdout } = await execFileAsync("git", ["-C", dest, "rev-parse", "HEAD"])
+  await rm(join(dest, ".git"), { recursive: true, force: true })
+  return { ref: stdout.trim() }
+}
+
+/**
+ * Where a learning run reads the harness from: a local checkout's committed code, or a GitHub
+ * repo (`owner/name`) cloned fresh for the run, with a token when the repo is private.
+ */
+export type HarnessSource =
+  | { readonly path: string }
+  | { readonly github: string; readonly token?: string }
+
+/** The harness's short name for a run's record, e.g. `yok`. */
+export const harnessName = (source: HarnessSource): string =>
+  "path" in source ? basename(resolve(source.path)) : (source.github.split("/").at(-1) ?? "")
+
+/** A scratch copy of the harness for one run: snapshotted or cloned, used, removed. */
 export const withHarnessSnapshot = <T>(
-  repo: string,
+  source: HarnessSource,
   work: (snapshot: { readonly dir: string; readonly ref: string }) => Promise<T>,
 ): Promise<T> =>
-  withWorkspace("samskara-harness-snapshot-", {}, async (dir) =>
-    work({ dir, ref: (await snapshotHarness(repo, dir)).ref }),
-  )
+  withWorkspace("samskara-harness-snapshot-", {}, async (dir) => {
+    const { ref } =
+      "path" in source
+        ? await snapshotHarness(source.path, dir)
+        : await cloneHarness(`https://github.com/${source.github}.git`, dir, source.token)
+    return work({ dir, ref })
+  })

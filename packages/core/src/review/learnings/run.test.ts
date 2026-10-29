@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, test } from "vitest"
 import type { HarnessRunner } from "../runner.js"
-import { groupProblems, snapshotHarness, writeLearnings } from "./run.js"
+import { cloneHarness, groupProblems, snapshotHarness, writeLearnings } from "./run.js"
 import type { LearningInput, ProblemInput } from "./types.js"
 
 const problem = (id: string): ProblemInput => ({
@@ -288,6 +288,32 @@ describe("snapshotHarness", () => {
       const { ref } = await snapshotHarness(repo, join(out, "harness"))
       expect(ref).toMatch(/^[0-9a-f]{40}$/)
       expect(readFileSync(join(out, "harness", "SKILL.md"), "utf8")).toBe("committed\n")
+    } finally {
+      rmSync(repo, { recursive: true, force: true })
+      rmSync(out, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("cloneHarness", () => {
+  test("LR10: clones the default branch, names the commit, and leaves no .git behind", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "harness-remote-"))
+    const out = mkdtempSync(join(tmpdir(), "harness-clone-"))
+    try {
+      const git = (...args: string[]) =>
+        execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" })
+      git("init", "-q")
+      writeFileSync(join(repo, "SKILL.md"), "from the remote\n")
+      git("add", ".")
+      git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "first")
+      const head = git("rev-parse", "HEAD").trim()
+
+      const { ref } = await cloneHarness(`file://${repo}`, join(out, "harness"))
+
+      expect(ref).toBe(head)
+      expect(readFileSync(join(out, "harness", "SKILL.md"), "utf8")).toBe("from the remote\n")
+      // The agent reads the harness, not its history.
+      expect(existsSync(join(out, "harness", ".git"))).toBe(false)
     } finally {
       rmSync(repo, { recursive: true, force: true })
       rmSync(out, { recursive: true, force: true })
