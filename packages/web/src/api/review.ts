@@ -1,7 +1,7 @@
 import { type ApiResult, client, request } from "./client.js"
 import type {
-  AiReview,
   AiReviewJobStatus,
+  ProblemsReview,
   ReviewerOptions,
   SessionLearning,
   SessionReviewSummary,
@@ -73,29 +73,31 @@ export const fetchAiReviewJob = async (
 }
 
 /**
- * The persisted ai-v1 review plus any job still running for the session. A 404 noAiReview
- * is "not yet" rather than a failure, which is what makes the answer pollable; a non-null
- * `job` is the reload memory — it lets a freshly loaded page rejoin a run its previous
- * incarnation started.
+ * The problems review (ai-problems-v2, what Analyze runs) plus any job still running for the
+ * session. A 404 noAiReview is "not yet" rather than a failure, which is what makes the answer
+ * pollable; a non-null `job` is the reload memory — it lets a freshly loaded page rejoin a run
+ * its previous incarnation started.
  */
-export type AiReviewProbe = {
-  readonly review: AiReview | null
+export type ProblemsReviewProbe = {
+  readonly review: ProblemsReview | null
   readonly job: AiReviewJobStatus | null
 }
 
-export const fetchAiReview = async (sessionId: string): Promise<ApiResult<AiReviewProbe>> => {
+export const fetchProblemsReview = async (
+  sessionId: string,
+): Promise<ApiResult<ProblemsReviewProbe>> => {
   const result = await request(() =>
-    client.api.sessions[":id"].aireview.$get({ param: { id: sessionId } }),
+    client.api.sessions[":id"].v2.aireview.$get({ param: { id: sessionId } }),
   )
   if (result.ok) {
-    // The server persists the validated lens payload as opaque JSON, so the row arrives as
-    // JSONValue; the local AiReview types are the web's readonly view of that shape. The
-    // `job` field only exists while a run is in flight.
+    // Signals and evidence are stored as opaque JSON, so the row arrives as JSONValue; the
+    // local types are the web's readonly view of that shape. The `job` field only exists
+    // while a run is in flight.
     const body = result.data as { review?: unknown; job?: unknown }
     return {
       ok: true,
       data: {
-        review: (body.review ?? null) as AiReview,
+        review: (body.review ?? null) as ProblemsReview | null,
         job: (body.job ?? null) as AiReviewJobStatus | null,
       },
     }

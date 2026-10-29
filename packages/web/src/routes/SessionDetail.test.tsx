@@ -1583,6 +1583,95 @@ test("AI review: an old-shape ai-v1 row renders its verdict sentence, audience g
   expect(within(panel).queryByText("Static review · heuristic-v1")).not.toBeInTheDocument()
 })
 
+/** A problems review (ai-problems-v2) as the review list carries it: no lenses, run.recordIds. */
+const PROBLEMS_REVIEW_ROW = {
+  id: "rev-p",
+  analyzer: "ai-problems-v2",
+  outcome: "struggled",
+  friction: "heavy",
+  summary: "The agent wrote the upsert twice before finding the missing constraint.",
+  signals: {
+    model: "fake-model",
+    harness: "test-harness",
+    run: { recordIds: ["m-1", "m-2", "tool-msg"] },
+  },
+  createdAt: "2026-08-26T18:00:00.000Z",
+}
+
+const PROBLEM = {
+  id: "p-1",
+  title: "Wrote the upsert before checking for a unique constraint",
+  class: "slow",
+  severity: "high",
+  severityReason: "The first upsert failed and the work was redone.",
+  fixType: "skill",
+  description: "Expected a schema check first; the agent wrote the query and then found it.",
+  evidence: [
+    { from: "msg-1", to: "msg-2", quote: "Make it idempotent", why: "the ask needed a key" },
+  ],
+  learning: "Check the table's constraints before writing an upsert.",
+  extra: {},
+}
+
+const problemsReply = (problems: ReadonlyArray<unknown>): Reply => ({
+  status: 200,
+  body: {
+    review: {
+      ...PROBLEMS_REVIEW_ROW,
+      analyzedAt: PROBLEMS_REVIEW_ROW.createdAt,
+      problems,
+    },
+  },
+})
+
+test("AI review: a problems review renders its verdict, summary and problems with linked quotes", async () => {
+  const user = userEvent.setup()
+  renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1", {
+    review: { status: 200, body: { reviews: [PROBLEMS_REVIEW_ROW, REVIEW] } },
+    aireview: problemsReply([PROBLEM]),
+  })
+
+  await tabsLoaded()
+  await user.click(screen.getByRole("tab", { name: /Review/ }))
+
+  const panel = panelOf()
+  expect(within(panel).queryByRole("button", { name: /analyze with ai/i })).not.toBeInTheDocument()
+  expect(within(panel).getByText("AI review")).toBeInTheDocument()
+  expect(within(panel).getByText("The agent spent most of the session stuck.")).toBeInTheDocument()
+  expect(within(panel).getByText(/fake-model · test-harness/)).toBeInTheDocument()
+  expect(within(panel).getByText(/wrote the upsert twice/)).toBeInTheDocument()
+
+  const row = await within(panel).findByRole("button", { name: /Wrote the upsert before/ })
+  expect(within(row).getByText("high")).toBeInTheDocument()
+  expect(within(row).getByText(/slow · fix: skill/)).toBeInTheDocument()
+
+  await user.click(row)
+  expect(within(panel).getByText(/Expected a schema check first/)).toBeInTheDocument()
+  expect(within(panel).getByText(/The first upsert failed/)).toBeInTheDocument()
+  expect(within(panel).getByText(/Make it idempotent/)).toBeInTheDocument()
+  expect(within(panel).getByText(/Check the table's constraints/)).toBeInTheDocument()
+  // msg-1 is an export alias: run.recordIds turns it into the real message id.
+  const quote = within(panel).getByRole("link", { name: "msg-1 to msg-2" })
+  expect(quote).toHaveAttribute("href", expect.stringContaining("tab=conversation"))
+  expect(quote).toHaveAttribute("href", expect.stringContaining("m=m-2"))
+})
+
+test("AI review: a problems review that found nothing says so", async () => {
+  const user = userEvent.setup()
+  renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1", {
+    review: { status: 200, body: { reviews: [PROBLEMS_REVIEW_ROW] } },
+    aireview: problemsReply([]),
+  })
+
+  await tabsLoaded()
+  await user.click(screen.getByRole("tab", { name: /Review/ }))
+
+  expect(await within(panelOf()).findByText("No problems found.")).toBeInTheDocument()
+  expect(
+    within(panelOf()).queryByRole("button", { name: /analyze with ai/i }),
+  ).not.toBeInTheDocument()
+})
+
 test("AI review: a 403 from analyze explains edit rights instead of starting a run", async () => {
   const user = userEvent.setup()
   renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1", {
