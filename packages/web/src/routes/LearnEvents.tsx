@@ -128,12 +128,12 @@ export const LearnEvents = () => {
     setSearchParams(value === "" ? rest : { ...rest, [key]: value })
   }
 
-  if (state.phase === "loading") return <LoadingShell label="Retrieving learn events" />
+  if (state.phase === "loading") return <LoadingShell label="Retrieving compound learnings" />
   if (state.phase === "failed") return <Failed error={state.error} />
 
   return (
     <div>
-      <h1 className="mb-1 text-[1.375rem] font-semibold leading-tight">Learn events</h1>
+      <h1 className="mb-1 text-[1.375rem] font-semibold leading-tight">Compound learnings</h1>
       <p className="mb-4 text-ink-soft">
         Every learning the <span className="font-mono">/learn</span> skill proposed, and what the
         user did with it. Open one to read the conversation it came from.
@@ -159,7 +159,7 @@ export const LearnEvents = () => {
       </div>
       {state.events.length === 0 ? (
         <p className="border border-rule bg-panel p-6 text-center text-ink-soft">
-          No learn events yet.
+          No compound learnings yet.
         </p>
       ) : (
         <ul className="flex flex-col gap-2">
@@ -241,7 +241,7 @@ export const LearnEventDetail = () => {
   return (
     <div className="flex flex-col gap-4">
       <Link to="/learn-events" className="font-mono text-[0.78rem] text-ink-soft hover:text-ink">
-        ← Learn events
+        ← Compound learnings
       </Link>
       <section className="border border-rule bg-panel p-4">
         <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
