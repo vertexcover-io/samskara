@@ -346,7 +346,6 @@ const withExcerpts = async (
       reviewSessionExport({
         session: { id: review.sessionId, title: review.title, source: review.source },
         messages: await sessionMessages(db, review.sessionId),
-        full: true,
       }).records,
       review.recordIds,
     )

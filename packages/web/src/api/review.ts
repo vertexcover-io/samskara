@@ -79,7 +79,7 @@ export const fetchProblemsReview = async (
   sessionId: string,
 ): Promise<ApiResult<ProblemsReviewProbe>> => {
   const result = await request(() =>
-    client.api.sessions[":id"].v2.aireview.$get({ param: { id: sessionId } }),
+    client.api.sessions[":id"].aireview.$get({ param: { id: sessionId } }),
   )
   if (result.ok) {
     // Signals and evidence are stored as opaque JSON, so the row arrives as JSONValue; the

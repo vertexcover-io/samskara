@@ -1,6 +1,6 @@
 import { open } from "node:fs/promises"
 import { join } from "node:path"
-import type { SessionExport, SessionExportRecord } from "../lenses/export.js"
+import type { SessionExport, SessionExportRecord } from "../export.js"
 import type { HarnessRunInput, HarnessRunner } from "../runner.js"
 import {
   assembleReviewContract,

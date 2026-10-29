@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import type { SessionExport } from "../lenses/export.js"
+import type { SessionExport } from "../export.js"
 import { LIMITS } from "./reviewMd.js"
 
 /**

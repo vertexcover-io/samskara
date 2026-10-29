@@ -17,12 +17,7 @@ import { canWrite } from "../repositories/projects.repo.js"
 import { listProblemsForSession } from "../repositories/reviewProblems.repo.js"
 import { listReviewsForSession, visibleSessionProjectId } from "../repositories/reviews.repo.js"
 import type { AiReviewJobRegistry, RunningAiReviewJob } from "../services/ai-review/jobs.js"
-import {
-  AI_ANALYZER,
-  analyzerFor,
-  PROBLEMS_ANALYZER,
-  REVIEWERS,
-} from "../services/ai-review/pipeline.js"
+import { PROBLEMS_ANALYZER } from "../services/ai-review/pipeline.js"
 import { reviewAndPersist } from "../services/review.js"
 
 type Deps = {
@@ -61,11 +56,9 @@ const analyzeBodySchema = z
     // The charset is the guard, not just the quoting: this value reaches the msb runner's
     // in-guest shell command, and the guest has the workspace mounted at /work.
     model: z.string().trim().min(1).max(100).regex(REVIEW_MODEL_PATTERN).optional(),
-    /** Replace an existing review of the same kind — the Redo path. Supersedes in place. */
+    /** Replace an existing review — the Redo path. Supersedes in place. */
     force: z.boolean().optional(),
-    /** Which review: `problems` (the default) or the older `lenses`. */
-    reviewer: z.enum(REVIEWERS).optional(),
-    /** The user's own review prompt, any shape; merged into the problems review's base. */
+    /** The user's own review prompt, any shape; merged into the review's base instructions. */
     prompt: z.string().trim().min(1).max(MAX_USER_PROMPT_CHARS).optional(),
   })
   .strict()
@@ -194,7 +187,7 @@ export const reviewRoutes = ({
      * Start a harness-run AI review. Editor-gated, then refused synchronously when the chosen
      * harness has no credential. A job already running for this session answers 409
      * analysisAlreadyRunning (join it via GET /:id/aireview's `job` field rather than spawn a
-     * duplicate); a landed review of the same kind answers 409 analysisAlreadyExists unless the body
+     * duplicate); a landed review answers 409 analysisAlreadyExists unless the body
      * sets `force`, which supersedes the row in place. Otherwise 202, and the caller polls.
      */
     .post(
@@ -211,7 +204,6 @@ export const reviewRoutes = ({
           harness: "invalidHarness",
           model: "invalidModel",
           force: "invalidForce",
-          reviewer: "invalidReviewer",
           prompt: "invalidPrompt",
         }
         return c.json({ error: codes[String(field)] ?? "invalidAnalyzeBody" }, 400)
@@ -231,12 +223,7 @@ export const reviewRoutes = ({
           return c.json({ error: "analysisAlreadyRunning" }, 409)
         const rows = await listReviewsForSession(db, userId, sessionId)
         const body = c.req.valid("json")
-        // Only the problems review takes a prompt; accepting one for the lens review would
-        // run without it and say nothing.
-        if (body?.prompt !== undefined && body.reviewer === "lenses")
-          return c.json({ error: "invalidPrompt" }, 400)
-        const analyzer = analyzerFor(body?.reviewer ?? "problems")
-        const hasReview = rows.some((review) => review.analyzer === analyzer)
+        const hasReview = rows.some((review) => review.analyzer === PROBLEMS_ANALYZER)
         // A landed review blocks a re-run unless the caller asked to redo — the pipeline's
         // upsert supersedes the old row in place, so a redo replaces rather than duplicates.
         if (hasReview && body?.force !== true)
@@ -288,19 +275,22 @@ export const reviewRoutes = ({
       return c.json({ job: body }, 200)
     })
     /**
-     * The problems review (ai-problems-v2) with every problem it saved, in the same shape as
-     * GET /:id/aireview — plus `problems` — so a client reads either the same way, including
-     * rejoining a running job after a reload.
+     * The session's AI review with every problem it saved, visibility-scoped by the same join
+     * as GET /:id/review. While a job for this session is in flight, the response also carries
+     * it as `job` (review: null until the row lands) — that is what lets a reloaded page rejoin
+     * a run it started before the reload, the registry being in-memory and the page stateless.
      */
-    .get("/:id/v2/aireview", requireAuth({ db, env }, ["web", "cli"]), async (c) => {
+    .get("/:id/aireview", requireAuth({ db, env }, ["web", "cli"]), async (c) => {
       const sessionId = c.req.param("id")
       const userId = c.get("user").id
-      // Gated before the registry lookup, for the same reason as GET /:id/aireview.
+      // `listReviewsForSession` carries the visibility join, but the registry lookup below
+      // does not — so the session is gated explicitly before either is consulted. Otherwise
+      // an in-flight job answered 200 with its jobId for a session the caller cannot see.
       if ((await visibleSessionProjectId(db, userId, sessionId)) === null)
         return c.json({ error: "noAiReview" }, 404)
       const rows = await listReviewsForSession(db, userId, sessionId)
       const row = rows.find((review) => review.analyzer === PROBLEMS_ANALYZER)
-      const job = aiReviewJobs.activeJobForSession(sessionId, "problems")
+      const job = aiReviewJobs.activeJobForSession(sessionId)
       if (row === undefined && job === undefined) return c.json({ error: "noAiReview" }, 404)
       const problems =
         row === undefined ? [] : await listProblemsForSession(db, userId, sessionId, row.id)
@@ -312,6 +302,8 @@ export const reviewRoutes = ({
               : {
                   id: row.id,
                   createdAt: new Date(row.createdAt).toISOString(),
+                  // A redo replaces the row in place, so createdAt stays the original's —
+                  // updatedAt is when the current review was actually written.
                   analyzedAt: new Date(row.updatedAt).toISOString(),
                   outcome: row.outcome,
                   friction: row.friction,
@@ -329,45 +321,6 @@ export const reviewRoutes = ({
                     learning: problem.learning,
                     extra: problem.extra,
                   })),
-                },
-          ...(job === undefined ? {} : { job: serializeRunningJob(job) }),
-        },
-        200,
-      )
-    })
-    /**
-     * The persisted ai-v1 review, visibility-scoped by the same join as GET /:id/review; the
-     * ai-v1 analyzer row is picked out client-side from the session's scoped review list.
-     * While a job for this session is in flight, the response also carries it as `job`
-     * (review: null until the row lands) — that is what lets a reloaded page rejoin a run
-     * it started before the reload, the registry being in-memory and the page stateless.
-     */
-    .get("/:id/aireview", requireAuth({ db, env }, ["web", "cli"]), async (c) => {
-      const sessionId = c.req.param("id")
-      // `listReviewsForSession` carries the visibility join, but the registry lookup below
-      // does not — so the session is gated explicitly before either is consulted. Otherwise
-      // an in-flight job answered 200 with its jobId for a session the caller cannot see.
-      if ((await visibleSessionProjectId(db, c.get("user").id, sessionId)) === null)
-        return c.json({ error: "noAiReview" }, 404)
-      const rows = await listReviewsForSession(db, c.get("user").id, sessionId)
-      const row = rows.find((review) => review.analyzer === AI_ANALYZER)
-      const job = aiReviewJobs.activeJobForSession(sessionId, "lenses")
-      if (row === undefined && job === undefined) return c.json({ error: "noAiReview" }, 404)
-      return c.json(
-        {
-          review:
-            row === undefined
-              ? null
-              : {
-                  id: row.id,
-                  createdAt: new Date(row.createdAt).toISOString(),
-                  // A redo replaces the row in place, so createdAt stays the original's —
-                  // updatedAt is when the current verdict was actually written.
-                  analyzedAt: new Date(row.updatedAt).toISOString(),
-                  outcome: row.outcome,
-                  friction: row.friction,
-                  summary: row.summary,
-                  signals: row.signals,
                 },
           ...(job === undefined ? {} : { job: serializeRunningJob(job) }),
         },

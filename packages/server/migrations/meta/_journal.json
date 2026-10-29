@@ -239,6 +239,13 @@
       "when": 1793384275570,
       "tag": "0033_low_thundra",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1793384276570,
+      "tag": "0034_drop_ai_v1_reviews",
+      "breakpoints": true
     }
   ]
 }

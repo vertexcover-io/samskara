@@ -273,7 +273,7 @@ export type SessionListFilter = {
   readonly tags?: ReadonlyArray<string>
   readonly prNumber?: number
   readonly commit?: string
-  /** "done" keeps only sessions with a landed AI review (ai-v1 or ai-problems-v2); "missing" the rest. */
+  /** "done" keeps only sessions with a landed AI review; "missing" the rest. */
   readonly aiReview?: "done" | "missing"
   readonly searchQuery?: ParsedSessionQuery
   readonly since?: Date
@@ -304,10 +304,10 @@ const durationMs = sql<
   number | null
 >`(extract(epoch from ${sessions.lastMessageAt} - ${sessions.startedAt}) * 1000)::bigint`
 
-/** The badge's definition of "AI analysis ran": a landed row from either AI reviewer. */
+/** The badge's definition of "AI analysis ran": a landed AI review row. */
 const aiReviewExists = (sessionId: SQL): SQL => sql`exists (
   select 1 from "sessionReviews" sr
-  where sr."sessionId" = ${sessionId} and sr."analyzer" in ('ai-v1', 'ai-problems-v2')
+  where sr."sessionId" = ${sessionId} and sr."analyzer" = 'ai-problems-v2'
 )`
 
 const dominantRepoId = sql`(

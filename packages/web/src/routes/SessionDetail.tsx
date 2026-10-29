@@ -11,13 +11,6 @@ import {
   startAiReview,
 } from "../api/review.js"
 import type {
-  AiLearning,
-  AiReviewCounts,
-  AiReviewNumbers,
-  AiReviewPartial,
-  AiReviewSignals,
-  AiTimelineEntry,
-  AiTimelineEntryKind,
   CapturedArtifact,
   ProblemsReviewSignals,
   ReviewerTranscriptEntry,
@@ -626,36 +619,15 @@ const ArtifactsPanel = ({ detail, captured }: { detail: Detail; captured: Captur
   </div>
 )
 
-// The analyzer id the AI pipeline persists; picked out of the session's review list so the
-// block renders from the same fetch the static review already rides on.
-const AI_ANALYZER = "ai-v1"
-
-const aiReviewOf = (reviews: ReadonlyArray<SessionReviewSummary>): SessionReviewSummary | null =>
-  reviews.find((review) => review.analyzer === AI_ANALYZER) ?? null
-
-// What Analyze runs: the problems review, whose problems live in their own table.
+// The analyzer id the AI review persists; picked out of the session's review list so the card
+// renders from the same fetch the static review already rides on. Its problems live in their
+// own table and are fetched by the card.
 const PROBLEMS_ANALYZER = "ai-problems-v2"
 
 const problemsReviewOf = (
   reviews: ReadonlyArray<SessionReviewSummary>,
 ): SessionReviewSummary | null =>
   reviews.find((review) => review.analyzer === PROBLEMS_ANALYZER) ?? null
-
-const aiSignalsOf = (review: SessionReviewSummary): AiReviewSignals | null =>
-  review.signals as AiReviewSignals | null
-
-const timelineEntriesOf = (signals: AiReviewSignals | null): ReadonlyArray<AiTimelineEntry> => {
-  if (signals === null) return []
-  return signals.lenses.flatMap((lens) => (lens.lens === "timeline" ? lens.entries : []))
-}
-
-const learningsOf = (
-  signals: AiReviewSignals | null,
-  name: "humanLearnings" | "agentLearnings",
-): ReadonlyArray<AiLearning> => {
-  if (signals === null) return []
-  return signals.lenses.flatMap((lens) => (lens.lens === name ? lens.learnings : []))
-}
 
 /**
  * The verdict is a sentence, not a stamp: the owner ruled that SHIPPED/MODERATE carry no
@@ -711,253 +683,7 @@ const Verdict = ({ outcome, friction }: { outcome: string; friction: string }) =
   </p>
 )
 
-// Seconds for spans inside a session, clock form for the session itself — the same
-// distinction the mock makes: rows read "71s", totals read "4m 38s".
-const formatSeconds = (ms: number): string => `${Math.round(ms / 1000)}s`
-
-const formatClock = (ms: number): string => {
-  const totalSeconds = Math.round(ms / 1000)
-  if (totalSeconds < 60) return `${totalSeconds}s`
-  const hours = Math.floor(totalSeconds / 3600)
-  const minutes = Math.floor((totalSeconds % 3600) / 60)
-  const seconds = totalSeconds % 60
-  if (hours === 0) return `${minutes}m ${seconds}s`
-  return seconds === 0 ? `${hours}h ${minutes}m` : `${hours}h ${minutes}m ${seconds}s`
-}
-
-const compactCount = (value: number): string => {
-  if (value < 1_000) return `${value}`
-  if (value < 1_000_000) return `${(value / 1_000).toFixed(1)}k`
-  return `${(value / 1_000_000).toFixed(1)}M`
-}
-
-const MetaChip = ({ children }: { children: React.ReactNode }) => (
-  <span className="rounded-xs border border-rule bg-panel-2 px-1.5 py-0.5 tabular-nums">
-    {children}
-  </span>
-)
-
-// The numbers the server computed from the export — never the reviewer's own estimates.
-// Each chip renders only when its count is present, so a partial numbers block degrades
-// to fewer chips rather than zeros.
-const NumbersLine = ({ numbers }: { numbers: AiReviewNumbers }) => (
-  <p className="mt-3 flex flex-wrap gap-x-2 gap-y-1 font-mono text-[0.72rem] text-ink-soft">
-    {numbers.durationMs === undefined ? null : (
-      <MetaChip>{formatClock(numbers.durationMs)}</MetaChip>
-    )}
-    {numbers.recordCount === undefined ? null : (
-      <MetaChip>{`${numbers.recordCount} records`}</MetaChip>
-    )}
-    {numbers.toolCallCount === undefined ? null : (
-      <MetaChip>{`${numbers.toolCallCount} tool calls`}</MetaChip>
-    )}
-    {numbers.inputTokens === undefined && numbers.outputTokens === undefined ? null : (
-      <MetaChip>
-        {[
-          numbers.inputTokens === undefined ? null : `${compactCount(numbers.inputTokens)} in`,
-          numbers.outputTokens === undefined ? null : `${compactCount(numbers.outputTokens)} out`,
-        ]
-          .filter((part): part is string => part !== null)
-          .join(" / ")}{" "}
-        tokens
-      </MetaChip>
-    )}
-    {numbers.cachedTokens === undefined ? null : (
-      <MetaChip>{`${compactCount(numbers.cachedTokens)} cache reads`}</MetaChip>
-    )}
-  </p>
-)
-
-const sumCounts = (counts: AiReviewCounts): number =>
-  counts.timeline + counts.human + counts.agent + (counts.breadcrumbs ?? counts.harness ?? 0)
-
-/** Learning titles the healing dropped, with the reason, from the run record's recovery lines. */
-const droppedLearnings = (
-  recovered: ReadonlyArray<string>,
-): ReadonlyArray<{ title: string; reason: string | null }> =>
-  recovered.flatMap((line) =>
-    [...line.matchAll(/dropped <learning title="([^"]+)">(?: \(([^)]+)\))?/g)].map((m) => ({
-      title: m[1] ?? "",
-      reason: m[2] ?? null,
-    })),
-  )
-
-const REASON_LABEL: Readonly<Record<string, string>> = {
-  "no evidence ref": "no citation",
-  "no next time": "no next-time sentence",
-  empty: "empty",
-}
-
-// When the reviewer's self-count disagree with what survived parsing, say exactly that —
-// which entries were written and which fell out, with why — without the alarm words. With
-// the parser defaulting categories and keeping nothing-entries, what remains here is real
-// loss.
-const PartialBanner = ({
-  partial,
-  recovered,
-}: {
-  partial: AiReviewPartial
-  recovered: ReadonlyArray<string>
-}) => {
-  const dropped = droppedLearnings(recovered)
-  return (
-    <p className="mt-3 border border-dashed border-err/50 bg-panel px-3 py-2 text-[0.82rem] text-ink-soft">
-      The reviewer reported writing {sumCounts(partial.claimed)} entries;{" "}
-      {sumCounts(partial.parsed)} survived validation
-      {dropped.length === 0
-        ? "."
-        : `; its own notes that fell out: ${dropped
-            .map(
-              (d) =>
-                `“${d.title}”${d.reason === null ? "" : ` (${REASON_LABEL[d.reason] ?? d.reason})`}`,
-            )
-            .join(", ")}.`}
-    </p>
-  )
-}
-
-// One horizontal bar, proportional to the entries' own durations; a turning point is the
-// accent, everything else neutral. The sentence names the largest share of the session.
-const STRIP_SEGMENT: Readonly<Record<AiTimelineEntryKind, string>> = {
-  phase: "bg-faded",
-  event: "bg-faded",
-  "turning-point": "bg-stamp",
-}
-
-const TimeStrip = ({
-  entries,
-  totalMs,
-}: {
-  entries: ReadonlyArray<AiTimelineEntry>
-  totalMs: number
-}) => {
-  const timed = entries.filter((entry) => (entry.durationMs ?? 0) > 0)
-  if (timed.length === 0) return null
-  const segmentTotal = timed.reduce((sum, entry) => sum + (entry.durationMs ?? 0), 0)
-  let largest: AiTimelineEntry | null = null
-  for (const entry of timed) {
-    if (largest === null || (entry.durationMs ?? 0) > (largest.durationMs ?? 0)) largest = entry
-  }
-  const share =
-    largest !== null && totalMs > 0
-      ? `${formatSeconds(largest.durationMs ?? 0)} of ${formatSeconds(totalMs)} — ${Math.round(((largest.durationMs ?? 0) / totalMs) * 100)}% — went to ${largest.title}`
-      : null
-  return (
-    <section className="mt-4">
-      <LensHeading>Where the time went</LensHeading>
-      <div className="flex h-2.5 w-full overflow-hidden rounded-pill border border-rule bg-panel-2">
-        {timed.map((entry) => (
-          <div
-            key={entry.id}
-            className={STRIP_SEGMENT[entry.kind]}
-            style={{ width: `${((entry.durationMs ?? 0) / segmentTotal) * 100}%` }}
-            title={`${entry.title} · ${formatSeconds(entry.durationMs ?? 0)}`}
-          />
-        ))}
-      </div>
-      {share === null ? null : <p className="mt-1.5 text-[0.82rem] text-ink-soft">{share}</p>}
-    </section>
-  )
-}
-
 type GroundingHref = string | null
-
-// A stretch of work is a filled circle, an occurrence a square, the moment things turned
-// a diamond — the glyph is the kind, the color marks the turn.
-const TIMELINE_KIND_MARKER: Readonly<Record<AiTimelineEntryKind, string>> = {
-  phase: "● text-ink-soft",
-  event: "■ text-faded",
-  "turning-point": "◆ text-stamp",
-}
-
-/** How many timeline rows render before the "show all" toggle takes over. */
-const visibleTimelineEntries = (
-  entries: ReadonlyArray<AiTimelineEntry>,
-): ReadonlyArray<AiTimelineEntry> => entries
-
-// The whole row is the link: the owner asked for navigation from the timeline itself, not
-// just from the evidence chips, so the row rides the same ?m=+tab machinery they use.
-const TimelineEntryRow = ({
-  entry,
-  href,
-  totalMs,
-}: {
-  entry: AiTimelineEntry
-  href: GroundingHref
-  totalMs: number
-}) => {
-  const duration = entry.durationMs
-  const share =
-    duration !== undefined && totalMs > 0
-      ? `${Math.max(1, Math.round((duration / totalMs) * 100))}% of the session`
-      : null
-  const meta = [
-    duration === undefined ? null : formatSeconds(duration),
-    share,
-    entry.startMs === undefined || entry.startMs === 0
-      ? null
-      : `starts ${formatSeconds(entry.startMs)} in`,
-    `seq ${entry.fromSeq}–${entry.toSeq}`,
-  ]
-    .filter((part): part is string => part !== null)
-    .join(" · ")
-  const body = (
-    <>
-      <span
-        aria-hidden="true"
-        className={`mt-0.5 shrink-0 font-mono text-[0.9rem] leading-snug ${TIMELINE_KIND_MARKER[entry.kind]}`}
-      />
-      <span className="min-w-0">
-        <span className="block text-[0.9375rem] font-semibold leading-snug">{entry.title}</span>
-        <span className="mt-0.5 block font-mono text-[0.72rem] tabular-nums text-ink-soft">
-          {meta}
-        </span>
-        <span className="mt-1 block text-[0.82rem] text-ink-soft">{entry.summary}</span>
-      </span>
-    </>
-  )
-  return (
-    <li className="border border-rule bg-panel transition-colors hover:border-ink-soft">
-      {href === null ? (
-        <div className="flex gap-3 p-3">{body}</div>
-      ) : (
-        <Link to={href} className="flex gap-3 p-3">
-          {body}
-        </Link>
-      )}
-    </li>
-  )
-}
-
-const TimelineSection = ({
-  entries,
-  linkFor,
-  totalMs,
-}: {
-  entries: ReadonlyArray<AiTimelineEntry>
-  linkFor: (messageId: string) => GroundingHref
-  totalMs: number
-}) => {
-  const visible = visibleTimelineEntries(entries)
-  return (
-    <section className="mt-4">
-      <LensHeading>Timeline</LensHeading>
-      <ol aria-label="review timeline" className="flex flex-col gap-2">
-        {visible.map((entry) => {
-          const firstMessageId = entry.messageIds[0]
-          return (
-            <TimelineEntryRow
-              key={entry.id}
-              entry={entry}
-              href={firstMessageId === undefined ? null : linkFor(firstMessageId)}
-              totalMs={totalMs}
-            />
-          )
-        })}
-      </ol>
-    </section>
-  )
-}
 
 const ToneChip = ({ tone, children }: { tone: string; children: React.ReactNode }) => (
   <span
@@ -973,107 +699,11 @@ const SEVERITY_TONE: Readonly<Record<string, string>> = {
   high: "border-err/40 text-err",
 }
 
-// Titles beginning this way are explicit nothing-entries: the audience was considered and
-// came up empty (mirrors NOTHING_TO_CHANGE_PREFIX in @samskara/core's lens schema).
-const NOTHING_TO_CHANGE_PREFIX = "Nothing to change"
-
-const isNothingEntry = (title: string): boolean => title.startsWith(NOTHING_TO_CHANGE_PREFIX)
-
-// One learning, one accordion: the closed row carries severity + title + cost — the triage
-// view — and expanding reveals the situation, the imperative, and the transcript evidence.
-const LearningRow = ({
-  learning,
-  linkFor,
-}: {
-  learning: AiLearning
-  linkFor: (messageId: string) => GroundingHref
-}) => {
-  const [open, setOpen] = useState(false)
-
-  if (isNothingEntry(learning.title)) {
-    return (
-      <li className="border border-dashed border-rule bg-panel px-3 py-2">
-        <p className="text-[0.875rem] text-ink-soft">{learning.title}</p>
-      </li>
-    )
-  }
-
-  return (
-    <li className="border border-rule bg-panel">
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={() => setOpen(!open)}
-        className="flex w-full flex-wrap items-baseline gap-x-2 gap-y-1 p-3 text-left transition-colors hover:bg-panel-2"
-      >
-        {learning.severity === undefined ? null : (
-          <ToneChip tone={SEVERITY_TONE[learning.severity] ?? "border-rule text-ink-soft"}>
-            {learning.severity}
-          </ToneChip>
-        )}
-        <span className="text-[0.9375rem] font-semibold leading-snug">{learning.title}</span>
-        {learning.cost === undefined ? null : (
-          <span className="font-mono text-[0.72rem] text-ink-soft">{learning.cost}</span>
-        )}
-      </button>
-      {open ? (
-        <div className="border-t border-rule px-3 pb-3 pt-2">
-          <p className="text-[0.82rem] text-ink-soft">{learning.detail}</p>
-          {learning.nextTime === undefined || learning.nextTime.trim() === "" ? null : (
-            <p className="mt-1.5 text-[0.82rem] text-ink">
-              <span className="font-semibold">Next time:</span> {learning.nextTime}
-            </p>
-          )}
-          <ul className="mt-1.5 flex flex-wrap gap-1.5">
-            {learning.evidence.map((item) => {
-              const href = linkFor(item.messageId)
-              const line = `seq ${item.seq} · ${item.what}`
-              return (
-                <li key={`${item.seq}·${item.messageId}`}>
-                  {href === null ? (
-                    <span className="rounded-xs border border-rule px-1.5 py-0.5 font-mono text-[0.72rem] text-ink-soft">
-                      {line}
-                    </span>
-                  ) : (
-                    <Link
-                      to={href}
-                      className="rounded-xs border border-rule px-1.5 py-0.5 font-mono text-[0.72rem] text-custody hover:underline"
-                    >
-                      {line}
-                    </Link>
-                  )}
-                </li>
-              )
-            })}
-          </ul>
-        </div>
-      ) : null}
-    </li>
-  )
-}
-
-const LensHeading = ({ children }: { children: React.ReactNode }) => (
+const SectionHeading = ({ children }: { children: React.ReactNode }) => (
   <h3 className="mb-2 text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-faded">
     {children}
   </h3>
 )
-
-// The two audiences the owner ruled: what the person could do differently and what the
-// agent could do better. Breadcrumbs (reusable discoveries) render as their own section
-// below; the legacy harness lens is no longer shown at all.
-const LEARNING_GROUPS: ReadonlyArray<{
-  readonly heading: string
-  readonly name: "humanLearnings" | "agentLearnings"
-}> = [
-  { heading: "What you could do differently", name: "humanLearnings" },
-  { heading: "What the agent could do better", name: "agentLearnings" },
-]
-
-/** Reusable discoveries from the breadcrumbs lens: tools, queries, paths worth keeping. */ const breadcrumbsOf =
-  (signals: AiReviewSignals | null): ReadonlyArray<AiLearning> => {
-    if (signals === null) return []
-    return signals.lenses.flatMap((lens) => (lens.lens === "breadcrumbs" ? lens.learnings : []))
-  }
 
 // The reviewer's own session in a modal: role-labeled entries and inline tool calls, the
 // same actor treatment the conversation tab uses, so reading a review's provenance feels
@@ -1189,7 +819,7 @@ const useGroundingLink = (
   )
 }
 
-/** The top of either AI review card: label, time, redo, verdict, and the redo's own state. */
+/** The top of the AI review card: label, time, redo, verdict, and the redo's own state. */
 const AiReviewHeader = ({
   review,
   signals,
@@ -1263,94 +893,6 @@ const AiReviewHeader = ({
   )
 }
 
-const AiReviewCard = ({
-  review,
-  analysis,
-  onRedo,
-}: {
-  review: SessionReviewSummary
-  analysis: AiAnalysis
-  onRedo: (choice: ReviewerChoice) => void
-}) => {
-  const signals = aiSignalsOf(review)
-  const linkFor = useGroundingLink(signals?.run?.recordIds)
-  const entries = timelineEntriesOf(signals)
-  const groups = LEARNING_GROUPS.map((group) => ({
-    ...group,
-    learnings: learningsOf(signals, group.name),
-  })).filter((group) => group.learnings.length > 0)
-  const breadcrumbs = breadcrumbsOf(signals)
-  const numbers = signals?.numbers
-  const totalMs = numbers?.durationMs ?? signals?.totalDurationMs ?? 0
-  const [logOpen, setLogOpen] = useState(false)
-
-  return (
-    <article className="border border-rule bg-panel p-4">
-      <AiReviewHeader review={review} signals={signals} analysis={analysis} onRedo={onRedo} />
-      <p className="mt-2 text-ink">{review.summary}</p>
-      {numbers === undefined ? null : <NumbersLine numbers={numbers} />}
-      {signals?.partial === undefined ? null : (
-        <PartialBanner partial={signals.partial} recovered={signals.run?.recovered ?? []} />
-      )}
-
-      {entries.length === 0 ? null : (
-        <>
-          <TimeStrip entries={entries} totalMs={totalMs} />
-          <TimelineSection entries={entries} linkFor={linkFor} totalMs={totalMs} />
-        </>
-      )}
-
-      {groups.length === 0 ? null : (
-        <section className="mt-4">
-          <LensHeading>Learnings</LensHeading>
-          {groups.map((group) => (
-            <div key={group.heading} className="mt-3">
-              <h4 className="mb-1.5 text-[0.875rem] font-semibold">{group.heading}</h4>
-              <ul className="flex flex-col gap-2">
-                {group.learnings.map((learning) => (
-                  <LearningRow key={learning.title} learning={learning} linkFor={linkFor} />
-                ))}
-              </ul>
-            </div>
-          ))}
-        </section>
-      )}
-
-      {breadcrumbs.length === 0 ? null : (
-        <section className="mt-4">
-          <LensHeading>Breadcrumbs and tools worth keeping</LensHeading>
-          <ul className="flex flex-col gap-2">
-            {breadcrumbs.map((learning) => (
-              <LearningRow key={learning.title} learning={learning} linkFor={linkFor} />
-            ))}
-          </ul>
-        </section>
-      )}
-
-      {/* The reviewer's own session, rendered like the conversation tab: who said what and
-       * which tools ran, captured from its sandbox before the workspace was deleted. Falls
-       * back to the raw output tail when no structured transcript was captured. */}
-      {signals?.run?.transcript === undefined && signals?.run?.agentLog === undefined ? null : (
-        <>
-          <button
-            type="button"
-            onClick={() => setLogOpen(true)}
-            className="mt-4 rounded-xs border border-rule px-2 py-0.5 font-mono text-[0.72rem] text-ink-soft transition-colors hover:border-ink-soft hover:bg-panel-2"
-          >
-            Reviewer session
-          </button>
-          <ReviewerSessionModal
-            open={logOpen}
-            onClose={() => setLogOpen(false)}
-            transcript={signals?.run?.transcript ?? []}
-            tail={signals?.run?.agentLog}
-          />
-        </>
-      )}
-    </article>
-  )
-}
-
 // One problem, one accordion: the closed row is the triage view (severity, title, kind, where
 // the fix goes); opening it shows what went wrong, the quotes that prove it, and what to change.
 const ProblemRow = ({
@@ -1421,7 +963,7 @@ type ProblemsState =
   | { readonly phase: "failed"; readonly message: string }
   | { readonly phase: "ready"; readonly problems: ReadonlyArray<ReviewProblem> }
 
-/** The problems review (ai-problems-v2): the verdict and summary, then every problem it saved. */
+/** The AI review: the verdict and summary, then every problem it saved. */
 const ProblemsReviewCard = ({
   sessionId,
   review,
@@ -1436,6 +978,7 @@ const ProblemsReviewCard = ({
   const signals = review.signals as ProblemsReviewSignals | null
   const linkFor = useGroundingLink(signals?.run?.recordIds)
   const [problems, setProblems] = useState<ProblemsState>({ phase: "loading" })
+  const [logOpen, setLogOpen] = useState(false)
 
   // The review list carries the row but not its problems; they live in their own table.
   const reviewKey = `${review.id}·${review.analyzedAt ?? review.createdAt}`
@@ -1461,9 +1004,9 @@ const ProblemsReviewCard = ({
       <AiReviewHeader review={review} signals={signals} analysis={analysis} onRedo={onRedo} />
       <p className="mt-2 text-ink">{review.summary}</p>
       <section className="mt-4">
-        <LensHeading>
+        <SectionHeading>
           {problems.phase === "ready" ? `Problems (${problems.problems.length})` : "Problems"}
-        </LensHeading>
+        </SectionHeading>
         {problems.phase === "loading" ? null : problems.phase === "failed" ? (
           <p className="text-[0.82rem] text-ink-soft">
             The problems could not be retrieved. {problems.message}
@@ -1478,6 +1021,27 @@ const ProblemsReviewCard = ({
           </ul>
         )}
       </section>
+
+      {/* The reviewer's own session, rendered like the conversation tab: who said what and
+       * which tools ran, captured from its sandbox before the workspace was deleted. Falls
+       * back to the raw output tail when no structured transcript was captured. */}
+      {signals?.run?.transcript === undefined && signals?.run?.agentLog === undefined ? null : (
+        <>
+          <button
+            type="button"
+            onClick={() => setLogOpen(true)}
+            className="mt-4 rounded-xs border border-rule px-2 py-0.5 font-mono text-[0.72rem] text-ink-soft transition-colors hover:border-ink-soft hover:bg-panel-2"
+          >
+            Reviewer session
+          </button>
+          <ReviewerSessionModal
+            open={logOpen}
+            onClose={() => setLogOpen(false)}
+            transcript={signals?.run?.transcript ?? []}
+            tail={signals?.run?.agentLog}
+          />
+        </>
+      )}
     </article>
   )
 }
@@ -1555,8 +1119,6 @@ const FAILURE_REASONS: Readonly<Record<string, string>> = {
   deliverableMissing: "the reviewer finished but never wrote its review file",
   unparseable: "the reviewer's review file could not be parsed",
   promptMergeFailed: "your review prompt could not be merged into the base prompt",
-  invalidSchema: "the review failed schema validation",
-  ungrounded: "the review cited records this session does not contain",
 }
 
 const failureMessage = (code: string | undefined, detail: unknown): string => {
@@ -1722,14 +1284,11 @@ const ReviewPanel = ({
   // The AI review is the card. The static analyzer still runs server-side, but its counts
   // read as noise next to the AI verdict, so it no longer renders here.
   const problemsReview = problemsReviewOf(review.reviews)
-  const ai = aiReviewOf(review.reviews)
   return (
     <div className="flex flex-col gap-4">
       {review.reviews.length === 0 ? (
         <p className="text-ink-soft">This session has not been reviewed yet.</p>
       ) : null}
-      {/* The problems review is what Analyze runs now; an older ai-v1 row still shows when
-       * it is the only AI review the session has. */}
       {problemsReview !== null ? (
         <ProblemsReviewCard
           sessionId={sessionId}
@@ -1737,8 +1296,6 @@ const ReviewPanel = ({
           analysis={analysis}
           onRedo={onAnalyze}
         />
-      ) : ai !== null ? (
-        <AiReviewCard review={ai} analysis={analysis} onRedo={onAnalyze} />
       ) : (
         <AnalyzeSection analysis={analysis} onStart={onAnalyze} />
       )}

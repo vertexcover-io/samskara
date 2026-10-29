@@ -1,13 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
-import { mkdtemp as realMkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdtemp as realMkdtemp } from "node:fs/promises"
 import { join } from "node:path"
-import type { HarnessRunner, NormalizedMessage, ReviewCounts, SessionExport } from "@samskara/core"
-import {
-  buildSessionExport,
-  MAX_REVIEW_MD_BYTES,
-  reviewContractMd,
-  reviewXmlTemplate,
-} from "@samskara/core"
+import type { HarnessRunner, NormalizedMessage } from "@samskara/core"
+import { MAX_REVIEW_MD_BYTES } from "@samskara/core"
 import Database from "better-sqlite3"
 import { eq, sql } from "drizzle-orm"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
@@ -100,251 +95,6 @@ const normalizedFixtures: ReadonlyArray<NormalizedMessage> = [
   },
 ]
 
-const sessionExport: SessionExport = buildSessionExport({
-  sessionId,
-  title: "flaily session",
-  source: "claude_code",
-  messages: normalizedFixtures,
-})
-
-/**
- * The fixture payload, typed loosely enough to mutate in tests but discriminately enough
- * for the XML writer below to narrow on `lens`.
- */
-type FixtureTimelineEntry = {
-  readonly id: string
-  readonly kind: string
-  readonly title: string
-  readonly summary: string
-  readonly fromSeq: number
-  readonly toSeq: number
-  readonly messageIds: ReadonlyArray<string>
-  readonly tracks: ReadonlyArray<string>
-}
-type FixtureLearning = {
-  readonly title: string
-  readonly detail: string
-  readonly nextTime?: string
-  readonly category: string
-  readonly audience: string
-  readonly severity: string
-  readonly evidence: ReadonlyArray<{
-    readonly seq: number
-    readonly messageId: string
-    readonly what: string
-  }>
-}
-type FixturePayload = {
-  readonly analyzer?: string
-  readonly model?: string
-  readonly harness?: string
-  readonly outcome: string
-  readonly friction: string
-  readonly summary: string
-  readonly lenses: ReadonlyArray<
-    | { readonly lens: "timeline"; readonly entries: ReadonlyArray<FixtureTimelineEntry> }
-    | {
-        readonly lens: "humanLearnings" | "agentLearnings" | "breadcrumbs"
-        readonly learnings: ReadonlyArray<FixtureLearning>
-      }
-  >
-}
-
-/** A fully grounded, schema-valid payload built from the fixture export's index. */
-const validPayload = (index: SessionExport["index"]): FixturePayload => ({
-  analyzer: "ai-v1",
-  model: "fake-model",
-  harness: "test-harness",
-  outcome: "productive",
-  friction: "moderate",
-  summary: "A short session with one retry loop.",
-  lenses: [
-    {
-      lens: "timeline",
-      entries: [
-        {
-          id: "fix-attempted",
-          kind: "phase",
-          title: "Fixing the build",
-          summary: "One prompt, one failed attempt, one fix.",
-          fromSeq: index.seqs[0] as number,
-          toSeq: index.seqs[0] as number,
-          messageIds: [index.messageIds[0] as string],
-          tracks: ["main"],
-        },
-        {
-          id: "recovery",
-          kind: "turning-point",
-          title: "Recovery",
-          summary: "The failed call, then the fix.",
-          fromSeq: index.seqs[1] as number,
-          toSeq: index.seqs[index.seqs.length - 1] as number,
-          messageIds: [index.messageIds[1] as string],
-          tracks: ["main"],
-        },
-      ],
-    },
-    {
-      lens: "humanLearnings",
-      learnings: [
-        {
-          title: "Name the failing command",
-          detail: "The prompt said fix the build without naming the command that failed.",
-          nextTime: "Name the failing command in the prompt.",
-          category: "communication",
-          audience: "human",
-          severity: "medium",
-          evidence: [
-            {
-              seq: index.seqs[0] as number,
-              messageId: index.messageIds[0] as string,
-              what: "the vague prompt",
-            },
-          ],
-        },
-      ],
-    },
-    {
-      lens: "agentLearnings",
-      learnings: [
-        {
-          title: "Stop retrying a failing command",
-          detail: "The Bash call failed once; a different approach was available.",
-          nextTime: "Try a different approach after the first failure.",
-          category: "tool-use",
-          audience: "agent",
-          severity: "low",
-          evidence: [
-            {
-              seq: index.seqs[1] as number,
-              messageId: index.messageIds[1] as string,
-              what: "the failed Bash result",
-            },
-          ],
-        },
-      ],
-    },
-    {
-      lens: "breadcrumbs",
-      learnings: [
-        {
-          title: "Failed-jobs lookup",
-          detail: "The psql query that lists failed jobs with their last error.",
-          nextTime: "Reach for this query before writing a new one against the jobs table.",
-          category: "query",
-          audience: "agent",
-          severity: "low",
-          evidence: [
-            {
-              seq: index.seqs[1] as number,
-              messageId: index.messageIds[1] as string,
-              what: "the query was worked out here",
-            },
-          ],
-        },
-      ],
-    },
-  ],
-})
-
-/** The counts the fixture payload actually contains (timeline 2, one learning per section). */
-const fixtureCounts = (): ReviewCounts => ({ timeline: 2, human: 1, agent: 1, breadcrumbs: 1 })
-
-/**
- * Serializes a fixture payload into the model-facing v2 XML contract: sections directly under
- * the root (no legacy <lenses> wrapper), learnings carrying audience/severity/nextTime, and a
- * trailing <counts> block. `claimed` overrides the counts so the partial path is testable.
- */
-const xmlOf = (payload: FixturePayload, claimed?: ReviewCounts): string => {
-  const esc = (text: string): string =>
-    text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-  const count = (lens: string): number => {
-    const found = payload.lenses.find((candidate) => candidate.lens === lens)
-    if (found === undefined) return 0
-    return "entries" in found ? found.entries.length : found.learnings.length
-  }
-  const counts = claimed ?? {
-    timeline: count("timeline"),
-    human: count("humanLearnings"),
-    agent: count("agentLearnings"),
-    breadcrumbs: count("breadcrumbs"),
-  }
-  const lines: string[] = []
-  lines.push(
-    `<review outcome="${payload.outcome}" friction="${payload.friction}" model="${payload.model}" harness="${payload.harness}">`,
-  )
-  lines.push(`  <summary>${esc(payload.summary)}</summary>`)
-  for (const lens of payload.lenses) {
-    if (lens.lens === "timeline") {
-      lines.push("  <timeline>")
-      for (const entry of lens.entries) {
-        lines.push(
-          `    <entry id="${entry.id}" kind="${entry.kind}" from-seq="${entry.fromSeq}" to-seq="${entry.toSeq}" tracks="${entry.tracks.join(",")}">`,
-          `      <title>${esc(entry.title)}</title>`,
-          `      <summary>${esc(entry.summary)}</summary>`,
-          "      <message-ids>",
-          ...entry.messageIds.map((id) => `        <id>${id}</id>`),
-          "      </message-ids>",
-          "    </entry>",
-        )
-      }
-      lines.push("  </timeline>")
-    } else {
-      lines.push(`  <${lens.lens}>`)
-      for (const learning of lens.learnings) {
-        lines.push(
-          `    <learning category="${learning.category}" audience="${learning.audience}" severity="${learning.severity}">`,
-          `      <title>${esc(learning.title)}</title>`,
-          `      <detail>${esc(learning.detail)}</detail>`,
-          `      <nextTime>${esc(learning.nextTime ?? "")}</nextTime>`,
-          "      <evidence>",
-          ...learning.evidence.map(
-            (ref) =>
-              `        <ref seq="${ref.seq}" message-id="${ref.messageId}"><what>${esc(ref.what)}</what></ref>`,
-          ),
-          "      </evidence>",
-          "    </learning>",
-        )
-      }
-      lines.push(`  </${lens.lens}>`)
-    }
-  }
-  lines.push(
-    `  <counts timeline="${counts.timeline}" human="${counts.human}" agent="${counts.agent}" breadcrumbs="${counts.breadcrumbs}"/>`,
-  )
-  lines.push("</review>")
-  return lines.join("\n")
-}
-
-/** Legacy v1 delivery: the whole review fenced in stdout. */
-const stdoutWith = (payload: FixturePayload): string =>
-  [`Here is my review.`, "", "```xml", xmlOf(payload), "```"].join("\n")
-
-type CapturedRun = {
-  prompt: string
-  workspaceDir: string
-  sessionJson: unknown
-  /** review.xml as the harness found it — the template the pipeline staged pre-run. */
-  templateXml: string
-  /** CONTRACT.md as the harness found it — the reference doc staged beside the template. */
-  contractMd: string
-}
-
-/**
- * What the fake agent does with the workspace: write a deliverable, empty it, delete it, or
- * leave the staged template untouched; plus what the harness prints and reports.
- */
-type AgentBehaviour = {
-  readonly stdout: string
-  /** Written into workspace review.xml (the v2 deliverable) when non-null. "" empties it. */
-  readonly file?: string | null
-  /** Deletes review.xml entirely — an agent that never learned the file contract. */
-  readonly removeFile?: boolean
-  readonly firstByteMs?: number | null
-  readonly agentLog?: string
-  readonly logPath?: string
-}
-
 describe.skipIf(!dockerAvailable())("runAiReview", () => {
   let db: Db
   let teardown: () => Promise<void>
@@ -429,39 +179,7 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
     ...overrides,
   })
 
-  const fakeRunner = (
-    respond: (captured: CapturedRun) => AgentBehaviour,
-  ): { runner: HarnessRunner; runs: CapturedRun[] } => {
-    const runs: CapturedRun[] = []
-    const runner: HarnessRunner = {
-      run: async ({ prompt, workspaceDir }) => {
-        const sessionJson = JSON.parse(
-          readFileSync(`${workspaceDir}/session.json`, "utf8"),
-        ) as unknown
-        // What the agent found in the workspace BEFORE it started writing: the pipeline must
-        // have staged the pre-written template beside the export.
-        const templateXml = readFileSync(join(workspaceDir, "review.xml"), "utf8")
-        const contractMd = readFileSync(join(workspaceDir, "CONTRACT.md"), "utf8")
-        const captured = { prompt, workspaceDir, sessionJson, templateXml, contractMd }
-        runs.push(captured)
-        const behaviour = respond(captured)
-        if (behaviour.removeFile === true) {
-          await rm(join(workspaceDir, "review.xml"), { force: true })
-        } else if (behaviour.file !== undefined && behaviour.file !== null) {
-          await writeFile(join(workspaceDir, "review.xml"), behaviour.file)
-        }
-        return {
-          stdout: behaviour.stdout,
-          firstByteMs: behaviour.firstByteMs ?? null,
-          ...(behaviour.agentLog === undefined ? {} : { agentLog: behaviour.agentLog }),
-          ...(behaviour.logPath === undefined ? {} : { logPath: behaviour.logPath }),
-        }
-      },
-    }
-    return { runner, runs }
-  }
-
-  /** The signals jsonb of the single persisted ai-v1 review row. */
+  /** The signals jsonb of the single persisted review row. */
   const persistedSignals = async (): Promise<Record<string, unknown>> => {
     const rows = await db
       .select()
@@ -470,467 +188,6 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
     expect(rows).toHaveLength(1)
     return rows[0]?.signals as Record<string, unknown>
   }
-
-  const okBehaviour = (): AgentBehaviour => ({
-    stdout: "review.xml ready: 2 timeline entries",
-    file: xmlOf(validPayload(sessionExport.index)),
-  })
-
-  test("P1: ok path persists the ai-v1 review and cleans the workspace", async () => {
-    const { runner, runs } = fakeRunner(() => okBehaviour())
-    const result = await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
-
-    expect(result).toMatchObject({ kind: "ok" })
-    if (result.kind !== "ok") return
-    expect(result.payload?.analyzer).toBe("ai-v1")
-
-    const reviewRows = await db
-      .select()
-      .from(sessionReviews)
-      .where(eq(sessionReviews.sessionId, sessionId))
-    expect(reviewRows).toHaveLength(1)
-    expect(reviewRows[0]).toMatchObject({
-      id: result.reviewId,
-      projectId,
-      analyzer: "ai-v1",
-      outcome: "productive",
-      friction: "moderate",
-      summary: "A short session with one retry loop.",
-    })
-    expect(reviewRows[0]?.signals).toMatchObject({
-      model: "fake-model",
-      harness: "opencode",
-      lenses: expect.arrayContaining([expect.objectContaining({ lens: "timeline" })]),
-    })
-
-    // The runner saw the lean pointer-prompt — the workspace carries the contract, so the
-    // prompt names the files and defers to CONTRACT.md. The real sessionId never reaches
-    // the workspace — only the alias does.
-    expect(runs).toHaveLength(1)
-    expect(runs[0]?.prompt).toContain("session-under-review")
-    expect(runs[0]?.prompt).not.toContain(sessionId)
-    expect(runs[0]?.prompt).toContain("flaily session")
-    expect(runs[0]?.prompt).toContain("CONTRACT.md")
-    expect(runs[0]?.prompt).not.toContain("<review")
-    expect(runs[0]?.sessionJson).toMatchObject({ meta: { sessionId: "session-under-review" } })
-
-    // Workspace cleaned up: the mkdtemp dir existed during the run and is gone after.
-    expect(createdDirs).toHaveLength(1)
-    expect(existsSync(createdDirs[0] as string)).toBe(false)
-  })
-
-  test("P1b: the workspace stages the exact core template and contract beside session.json before the harness runs", async () => {
-    const { runner, runs } = fakeRunner(() => okBehaviour())
-    const result = await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
-    expect(result.kind).toBe("ok")
-    expect(runs[0]?.templateXml).toBe(reviewXmlTemplate())
-    expect(runs[0]?.contractMd).toBe(reviewContractMd())
-  })
-
-  test("P17: AI_REVIEW_HARNESS=claude persists the claude harness on the review instead of a hardcoded one", async () => {
-    const { runner } = fakeRunner(() => okBehaviour())
-    const result = await runAiReview(
-      depsWith(runner, { env: { ...env, aiReviewHarness: "claude", aiReviewModel: "sonnet" } }),
-      userId,
-      sessionId,
-      { reviewer: "lenses" },
-    )
-    expect(result.kind).toBe("ok")
-    if (result.kind !== "ok") return
-    expect(result.payload?.harness).toBe("claude")
-    expect(await persistedSignals()).toMatchObject({ model: "sonnet", harness: "claude" })
-  })
-
-  test("P15: the claude reviewer's transcript is captured from the workspace and persisted on the run", async () => {
-    const { runner } = fakeRunner((captured) => {
-      const projectDir = join(captured.workspaceDir, "claude-config", "projects", "work")
-      mkdirSync(projectDir, { recursive: true })
-      writeFileSync(
-        join(projectDir, "t.jsonl"),
-        `${[
-          JSON.stringify({
-            type: "user",
-            message: { role: "user", content: [{ type: "text", text: "review it" }] },
-          }),
-          JSON.stringify({
-            type: "assistant",
-            message: {
-              role: "assistant",
-              content: [
-                { type: "tool_use", name: "Read", input: { file_path: "/work/session.json" } },
-                { type: "text", text: "Done." },
-              ],
-            },
-          }),
-        ].join("\n")}\n`,
-      )
-      return okBehaviour()
-    })
-    const result = await runAiReview(
-      depsWith(runner, { env: { ...env, aiReviewHarness: "claude" } }),
-      userId,
-      sessionId,
-      { reviewer: "lenses" },
-    )
-    expect(result.kind).toBe("ok")
-    const run = (await persistedSignals()).run as {
-      transcript?: ReadonlyArray<{ role: string; text?: string; tools?: unknown }>
-      recordIds?: ReadonlyArray<string | null>
-    }
-    expect(run.transcript).toEqual([
-      { role: "user", text: "review it" },
-      { role: "assistant", text: "Done.", tools: [{ name: "Read", input: "/work/session.json" }] },
-    ])
-  })
-
-  test("P16: the opencode reviewer's transcript comes from the redirected XDG database", async () => {
-    const { runner } = fakeRunner((captured) => {
-      const dataDir = join(captured.workspaceDir, "xdg-data", "opencode")
-      mkdirSync(dataDir, { recursive: true })
-      const db = new Database(join(dataDir, "opencode.db"))
-      db.exec(
-        "CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, time_created INTEGER, time_updated INTEGER, agent TEXT, model TEXT, title TEXT)",
-      )
-      db.exec(
-        "CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT)",
-      )
-      db.exec(
-        "CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, data TEXT)",
-      )
-      db.prepare(
-        "INSERT INTO session (id, parent_id, time_created, time_updated) VALUES ('rs1', NULL, 1, 5)",
-      ).run()
-      db.prepare(
-        "INSERT INTO message (id, session_id, time_created, data) VALUES ('rm1', 'rs1', 2, ?)",
-      ).run(JSON.stringify({ role: "user" }))
-      db.prepare(
-        "INSERT INTO part (id, message_id, session_id, time_created, data) VALUES ('rp1', 'rm1', 'rs1', 3, ?)",
-      ).run(JSON.stringify({ type: "text", text: "review the export" }))
-      db.close()
-      return okBehaviour()
-    })
-    const result = await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
-    expect(result.kind).toBe("ok")
-    const run = (await persistedSignals()).run as {
-      transcript?: ReadonlyArray<{ role: string; text?: string }>
-    }
-    expect(run.transcript).toEqual([{ role: "user", text: "review the export" }])
-  })
-
-  test("P19: a harness with no credential is refused before the runner is touched", async () => {
-    let calls = 0
-    const { runner } = fakeRunner(() => {
-      calls += 1
-      return okBehaviour()
-    })
-    const result = await runAiReview(
-      // Configured for opencode, asked for claude, and only opencode has a key.
-      depsWith(runner, { credentialEnv: { OPENCODE_API_KEY: "oc-key" } }),
-      userId,
-      sessionId,
-      { reviewer: "lenses", harness: "claude" },
-    )
-    expect(result).toMatchObject({ kind: "error", code: "harnessUnauthenticated" })
-    expect(calls).toBe(0)
-    expect(await db.select().from(sessionReviews)).toHaveLength(0)
-  })
-
-  test("P21: the pipeline reports milestones through onMilestone, in order", async () => {
-    const seen: string[] = []
-    const { runner } = fakeRunner(() => okBehaviour())
-    const result = await runAiReview(
-      depsWith(runner, { onMilestone: (name) => seen.push(name) }),
-      userId,
-      sessionId,
-      { reviewer: "lenses" },
-    )
-    expect(result).toMatchObject({ kind: "ok" })
-    // The hook is what the registry installs so a watching human sees where a run is; the
-    // names and their order are the contract the CLI's progress line reads.
-    expect(seen).toContain("workspace_ready")
-    expect(seen).toContain("harness_spawning")
-    expect(seen.indexOf("workspace_ready")).toBeLessThan(seen.indexOf("harness_spawning"))
-    expect(seen.at(-1)).toBe("persisted")
-  })
-
-  test("P2: re-analysis supersedes — one ai-v1 row, same reviewId", async () => {
-    const { runner } = fakeRunner(() => okBehaviour())
-    const first = await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
-    const second = await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
-    expect(first.kind).toBe("ok")
-    expect(second.kind).toBe("ok")
-    if (first.kind !== "ok" || second.kind !== "ok") return
-    expect(second.reviewId).toBe(first.reviewId)
-
-    const reviewRows = await db
-      .select()
-      .from(sessionReviews)
-      .where(eq(sessionReviews.sessionId, sessionId))
-    expect(reviewRows).toHaveLength(1)
-  })
-
-  test("P3: unknown session -> sessionNotFound", async () => {
-    const { runner, runs } = fakeRunner(() => okBehaviour())
-    const result = await runAiReview(depsWith(runner), userId, "does-not-exist", {
-      reviewer: "lenses",
-    })
-    expect(result).toEqual({ kind: "error", code: "sessionNotFound" })
-    expect(runs).toHaveLength(0)
-  })
-
-  test("P4: a viewer who cannot edit the project -> notEditable", async () => {
-    const [viewer] = await db
-      .insert(users)
-      .values({ githubId: 2, githubLogin: "viewer" })
-      .returning({ id: users.id })
-    await db.insert(userProjectGrant).values({
-      userId: viewer?.id as string,
-      projectId,
-      scope: "viewer",
-    })
-    const { runner, runs } = fakeRunner(() => okBehaviour())
-    const result = await runAiReview(depsWith(runner), viewer?.id as string, sessionId, {
-      reviewer: "lenses",
-    })
-    expect(result).toEqual({ kind: "error", code: "notEditable" })
-    expect(runs).toHaveLength(0)
-  })
-
-  test("P5: runner rejection -> harnessFailed with the runner's message", async () => {
-    const { runner } = fakeRunner(() => {
-      throw new Error("opencode exited 1")
-    })
-    const result = await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
-    expect(result.kind).toBe("error")
-    if (result.kind !== "error") return
-    expect(result.code).toBe("harnessFailed")
-    expect(result.detail).toMatchObject({ message: "opencode exited 1" })
-    // Failure still cleans the workspace.
-    expect(createdDirs).toHaveLength(1)
-    expect(existsSync(createdDirs[0] as string)).toBe(false)
-  })
-
-  test("P6: deliverable present but with no recoverable XML -> unparseable with the parser's error and source excerpt", async () => {
-    const file = "I could not read session.json, sorry."
-    const { runner } = fakeRunner(() => ({ stdout: "review.xml ready", file }))
-    const result = await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
-    expect(result.kind).toBe("error")
-    if (result.kind !== "error") return
-    expect(result.code).toBe("unparseable")
-    expect(result.detail).toMatchObject({ stdoutStart: file.slice(0, 400) })
-    expect((result.detail as { error: unknown }).error).toBeTruthy()
-  })
-
-  test("P8: grounded shape but invented message ids -> ungrounded with problems", async () => {
-    const payload = validPayload(sessionExport.index)
-    // Widen to a mutable shape for the mutation below.
-    const timeline = payload.lenses[0] as unknown as {
-      entries: Array<{ messageIds: string[] }>
-    }
-    const entry = timeline.entries[0]
-    if (entry === undefined) throw new Error("fixture shape changed")
-    entry.messageIds = ["msg-9999"]
-    const { runner } = fakeRunner(() => ({ stdout: "ready", file: xmlOf(payload) }))
-    const result = await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
-    expect(result.kind).toBe("error")
-    if (result.kind !== "error") return
-    expect(result.code).toBe("ungrounded")
-    const detail = result.detail as { problems: Array<{ path: string; problem: string }> }
-    expect(detail.problems.length).toBeGreaterThan(0)
-    expect(detail.problems.length).toBeLessThanOrEqual(10)
-    expect(detail.problems[0]?.path).toContain("messageIds")
-  })
-
-  test.each([
-    { id: "P9", label: "a missing review.xml", deliverable: { removeFile: true } },
-    { id: "P9b", label: "an emptied review.xml", deliverable: { file: "" } },
-  ])(
-    "$id: $label falls back to the fenced XML in stdout (legacy v1 delivery)",
-    async ({ deliverable }) => {
-      const { runner } = fakeRunner(() => ({
-        stdout: stdoutWith(validPayload(sessionExport.index)),
-        ...deliverable,
-      }))
-      const result = await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
-      expect(result.kind).toBe("ok")
-
-      const signals = await persistedSignals()
-      expect(signals).toMatchObject({ model: "fake-model", harness: "opencode" })
-      const run = signals.run as { xmlBytes: number; milestones: Array<{ name: string }> }
-      expect(run.milestones.map((milestone) => milestone.name)).not.toContain("deliverable_read")
-      expect(run.xmlBytes).toBeGreaterThan(0)
-    },
-  )
-
-  test("P10: no file deliverable and no XML in stdout -> deliverableMissing naming the last milestone", async () => {
-    const { runner } = fakeRunner(() => ({
-      stdout: "review.xml ready: 7 timeline entries",
-      removeFile: true,
-    }))
-    const result = await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
-    expect(result.kind).toBe("error")
-    if (result.kind !== "error") return
-    expect(result.code).toBe("deliverableMissing")
-    expect(result.detail).toMatchObject({ lastMilestone: "harness_complete" })
-    const rows = await db
-      .select()
-      .from(sessionReviews)
-      .where(eq(sessionReviews.sessionId, sessionId))
-    expect(rows).toHaveLength(0)
-  })
-
-  test("P11: claimed counts that disagree with what parsed persist as partial — no hard fail", async () => {
-    const payload = validPayload(sessionExport.index)
-    const xml = xmlOf(payload, { timeline: 5, human: 2, agent: 1, breadcrumbs: 1 })
-    const { runner } = fakeRunner(() => ({ stdout: "ready", file: xml }))
-    const result = await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
-    expect(result.kind).toBe("ok")
-
-    const signals = await persistedSignals()
-    expect(signals.partial).toEqual({
-      claimed: { timeline: 5, human: 2, agent: 1, breadcrumbs: 1 },
-      parsed: fixtureCounts(),
-    })
-  })
-
-  test("P12: server-computed numbers and ts-derived timeline durations persist in signals", async () => {
-    // Token totals fold from the tokenUsage table, like services/review.ts does.
-    const [messageRow] = await db
-      .select({ id: messages.id })
-      .from(messages)
-      .where(eq(messages.sessionId, sessionId))
-      .orderBy(messages.lineNumber)
-      .limit(1)
-    await db.insert(tokenUsage).values({
-      messageId: messageRow?.id as string,
-      inputTokens: 100,
-      outputTokens: 50,
-      cachedTokens: 10,
-      thinkingTokens: 5,
-    })
-
-    const { runner } = fakeRunner(() => okBehaviour())
-    const result = await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
-    expect(result.kind).toBe("ok")
-
-    const signals = await persistedSignals()
-    // durationMs is the session row's own span (earliest to latest message ts = 120s);
-    // recordCount/toolCallCount count the export the reviewer actually saw (toolCall and
-    // its result collapse into one record); tokens fold from the tokenUsage table.
-    expect(signals.numbers).toEqual({
-      durationMs: 120_000,
-      recordCount: 3,
-      toolCallCount: 1,
-      inputTokens: 100,
-      outputTokens: 50,
-      cachedTokens: 10,
-      thinkingTokens: 5,
-    })
-    // Timeline durations derive from export record ts at fromSeq/toSeq — never model-claimed.
-    const lenses = signals.lenses as ReadonlyArray<{
-      lens: string
-      entries?: ReadonlyArray<{ fromSeq: number; startMs?: number; durationMs?: number }>
-    }>
-    const timeline = lenses.find((lens) => lens.lens === "timeline")
-    const [first, second] = timeline?.entries ?? []
-    expect(first).toMatchObject({ fromSeq: 0, startMs: T0, durationMs: 0 })
-    expect(second).toMatchObject({
-      fromSeq: 1,
-      startMs: T0_PLUS_30S,
-      durationMs: T0_PLUS_120S - T0_PLUS_30S,
-    })
-    // Payload-level span: first to last record ts.
-    expect(signals.totalDurationMs).toBe(T0_PLUS_120S - T0)
-  })
-
-  test("P13: the run log persists — milestones, healing accounting, selfCounts, xmlBytes, capped agentLog", async () => {
-    const file = xmlOf(validPayload(sessionExport.index))
-    const { runner } = fakeRunner(() => ({
-      stdout: "review.xml ready",
-      file,
-      firstByteMs: 4_200,
-      agentLog: "x".repeat(60_000),
-    }))
-    const result = await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
-    expect(result.kind).toBe("ok")
-
-    const signals = await persistedSignals()
-    const run = signals.run as {
-      startedAt: string
-      finishedAt: string
-      milestones: ReadonlyArray<{ name: string; at: string; elapsedMs: number }>
-      recovered: ReadonlyArray<string>
-      selfCounts: ReviewCounts
-      xmlBytes: number
-      agentLog: string
-    }
-    expect(new Date(run.startedAt).toISOString()).toBe(run.startedAt)
-    expect(new Date(run.finishedAt).toISOString()).toBe(run.finishedAt)
-    // Canonical fixture XML heals nothing, and the counts it self-reports parsed as-is.
-    expect(run.recovered).toEqual([])
-    expect(run.selfCounts).toEqual(fixtureCounts())
-    expect(run.xmlBytes).toBe(Buffer.byteLength(file))
-    // A runaway agent log cannot balloon the row.
-    expect(run.agentLog.length).toBeLessThanOrEqual(24 * 1024)
-    // The alias bridge: one real message id per export record (the tool call+result merge
-    // into one), so evidence links can scroll.
-    const runWithIds = run as typeof run & { recordIds?: ReadonlyArray<string | null> }
-    expect(runWithIds.recordIds).toHaveLength(3)
-    expect(runWithIds.recordIds?.every((id) => typeof id === "string" && id !== "")).toBe(true)
-
-    const names = run.milestones.map((milestone) => milestone.name)
-    // Existing milestone names keep working (scripts/ai-review-watch.sh greps them); the two
-    // new ones are additive.
-    expect(names).toEqual([
-      "workspace_ready",
-      "export_written",
-      "template_staged",
-      "contract_staged",
-      "harness_spawning",
-      "harness_first_byte",
-      "harness_complete",
-      "deliverable_read",
-      "xml_parsed",
-      "grounded",
-    ])
-    for (const milestone of run.milestones) {
-      expect(new Date(milestone.at).toISOString()).toBe(milestone.at)
-      expect(milestone.elapsedMs).toBeGreaterThanOrEqual(0)
-    }
-  })
-
-  test("P18: tracks are derived from the seq range, so a track the model invents never lands", async () => {
-    const base = validPayload(sessionExport.index)
-    const timeline = base.lenses[0] as {
-      lens: "timeline"
-      entries: ReadonlyArray<FixtureTimelineEntry>
-    }
-    const invented = {
-      ...base,
-      lenses: [
-        {
-          ...timeline,
-          entries: timeline.entries.map((entry) => ({
-            ...entry,
-            tracks: ["agent:ghost agent:other"],
-          })),
-        },
-        ...base.lenses.slice(1),
-      ],
-    } as FixturePayload
-    const { runner } = fakeRunner(() => ({ stdout: "review.xml ready", file: xmlOf(invented) }))
-
-    const result = await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "lenses" })
-
-    expect(result).toMatchObject({ kind: "ok" })
-    const signals = await persistedSignals()
-    const lenses = signals.lenses as ReadonlyArray<{
-      lens: string
-      entries?: ReadonlyArray<{ tracks: ReadonlyArray<string> }>
-    }>
-    const entries = lenses.find((lens) => lens.lens === "timeline")?.entries ?? []
-    expect(entries.map((entry) => entry.tracks)).toEqual([["main"], ["main"]])
-  })
 
   describe("the problems reviewer", () => {
     const problemsMd = (quote: string) => `# Review
@@ -961,8 +218,17 @@ The agent claimed the build was fixed after the tests failed.
       merged = "# How to review\n\nmerged by agent",
       readerLeads = "Nothing found.",
       leadAnswers = "",
+      /** Runs as the reviewer starts, with its workspace: writes what a real harness leaves. */
+      onReview: (workspaceDir: string) => void = () => {},
     ) => {
-      const seen: Array<{ files: string[]; contract?: string; user?: string; leads?: string }> = []
+      const seen: Array<{
+        files: string[]
+        contract?: string
+        user?: string
+        leads?: string
+        prompt?: string
+        session?: unknown
+      }> = []
       const runner: HarnessRunner = {
         run: async ({ workspaceDir, oneShot, prompt }) => {
           const has = (name: string) => existsSync(join(workspaceDir, name))
@@ -979,7 +245,10 @@ The agent claimed the build was fixed after the tests failed.
             files: ["session.json", "leads.md", "CONTRACT.md"].filter((name) => has(name)),
             contract: readFileSync(join(workspaceDir, "CONTRACT.md"), "utf8"),
             leads: readFileSync(join(workspaceDir, "leads.md"), "utf8"),
+            prompt,
+            session: JSON.parse(readFileSync(join(workspaceDir, "session.json"), "utf8")),
           })
+          onReview(workspaceDir)
           writeFileSync(join(workspaceDir, "review.md"), reviewMd)
           writeFileSync(join(workspaceDir, "leads-answered.md"), leadAnswers)
           return { stdout: "review.md ready", firstByteMs: 1 }
@@ -993,9 +262,7 @@ The agent claimed the build was fixed after the tests failed.
 
     test("PR1: the review reads the full session and saves the review row and each problem", async () => {
       const { runner, seen } = problemsRunner(problemsMd("the build is fixed"))
-      const result = await runAiReview(depsWith(runner), userId, sessionId, {
-        reviewer: "problems",
-      })
+      const result = await runAiReview(depsWith(runner), userId, sessionId, {})
 
       expect(result).toMatchObject({ kind: "ok" })
       expect(seen[0]?.files).toEqual(["session.json", "leads.md", "CONTRACT.md"])
@@ -1023,9 +290,7 @@ The agent claimed the build was fixed after the tests failed.
 
     test("PR2: a problem quoting what is not in the session is dropped, and the drop is recorded", async () => {
       const { runner } = problemsRunner(problemsMd("tests are all green"))
-      const result = await runAiReview(depsWith(runner), userId, sessionId, {
-        reviewer: "problems",
-      })
+      const result = await runAiReview(depsWith(runner), userId, sessionId, {})
 
       expect(result).toMatchObject({ kind: "ok" })
       expect(await savedProblems()).toEqual([])
@@ -1039,7 +304,6 @@ The agent claimed the build was fixed after the tests failed.
     test("PR3: a custom prompt is merged first, and the reviewer's contract is the merge plus the fixed output", async () => {
       const { runner, seen } = problemsRunner(problemsMd("the build is fixed"))
       const result = await runAiReview(depsWith(runner), userId, sessionId, {
-        reviewer: "problems",
         prompt: "After plan approval every human message is a problem.",
       })
 
@@ -1053,7 +317,6 @@ The agent claimed the build was fixed after the tests failed.
     test("PR4: a merge that writes nothing stops the run before any review", async () => {
       const { runner, seen } = problemsRunner(problemsMd("the build is fixed"), "")
       const result = await runAiReview(depsWith(runner), userId, sessionId, {
-        reviewer: "problems",
         prompt: "anything",
       })
 
@@ -1064,9 +327,7 @@ The agent claimed the build was fixed after the tests failed.
 
     test("PR5: a review.md that is not a review saves nothing", async () => {
       const { runner } = problemsRunner("not a review")
-      const result = await runAiReview(depsWith(runner), userId, sessionId, {
-        reviewer: "problems",
-      })
+      const result = await runAiReview(depsWith(runner), userId, sessionId, {})
 
       expect(result).toMatchObject({ kind: "error", code: "unparseable" })
       expect(await db.select().from(sessionReviews)).toEqual([])
@@ -1076,7 +337,6 @@ The agent claimed the build was fixed after the tests failed.
       const merged = "# How to review\n\n## Extra fields\n\n- topic: what the person asked about\n"
       const { runner } = problemsRunner(problemsMd("the build is fixed"), merged)
       const result = await runAiReview(depsWith(runner), userId, sessionId, {
-        reviewer: "problems",
         prompt: "Add a topic field.",
       })
 
@@ -1098,9 +358,7 @@ The agent claimed the build was fixed after the tests failed.
       )
       try {
         const { runner } = problemsRunner(problemsMd("the build is fixed"))
-        await expect(
-          runAiReview(depsWith(runner), userId, sessionId, { reviewer: "problems" }),
-        ).rejects.toThrow()
+        await expect(runAiReview(depsWith(runner), userId, sessionId, {})).rejects.toThrow()
       } finally {
         await db.execute(sql`drop trigger if exists fail_problem_trigger on "reviewProblems"`)
       }
@@ -1112,9 +370,7 @@ The agent claimed the build was fixed after the tests failed.
         depsWith(problemsRunner(problemsMd("the build is fixed")).runner),
         userId,
         sessionId,
-        {
-          reviewer: "problems",
-        },
+        {},
       )
       const second = await runAiReview(
         depsWith(
@@ -1124,7 +380,7 @@ The agent claimed the build was fixed after the tests failed.
         ),
         userId,
         sessionId,
-        { reviewer: "problems" },
+        {},
       )
       expect(second).toMatchObject({
         kind: "ok",
@@ -1137,18 +393,14 @@ The agent claimed the build was fixed after the tests failed.
 
     test("PR9: no review.md is deliverableMissing, and one past the size cap saves nothing", async () => {
       const missing: HarnessRunner = { run: async () => ({ stdout: "", firstByteMs: null }) }
-      expect(
-        await runAiReview(depsWith(missing), userId, sessionId, { reviewer: "problems" }),
-      ).toMatchObject({
+      expect(await runAiReview(depsWith(missing), userId, sessionId, {})).toMatchObject({
         kind: "error",
         code: "deliverableMissing",
       })
 
       const huge = problemsMd("the build is fixed") + "x".repeat(MAX_REVIEW_MD_BYTES)
       const { runner } = problemsRunner(huge)
-      expect(
-        await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "problems" }),
-      ).toMatchObject({
+      expect(await runAiReview(depsWith(runner), userId, sessionId, {})).toMatchObject({
         kind: "error",
         code: "unparseable",
       })
@@ -1162,7 +414,7 @@ The agent claimed the build was fixed after the tests failed.
         undefined,
         "- L1: dropped (no kind) — the opening request\n",
       )
-      await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "problems" })
+      await runAiReview(depsWith(runner), userId, sessionId, {})
       const signals = (await persistedSignals()) as {
         unaccountedLeads: string[]
         leadCount: number
@@ -1178,7 +430,7 @@ The agent claimed the build was fixed after the tests failed.
         undefined,
         '- msg-2 — "the build is fixed" — said after the only test run failed',
       )
-      await runAiReview(depsWith(runner), userId, sessionId, { reviewer: "problems" })
+      await runAiReview(depsWith(runner), userId, sessionId, {})
       const signals = (await persistedSignals()) as {
         readers: { pieces: number; leads: number; failedPieces: string[] }
         unaccountedLeads: string[]
@@ -1197,11 +449,165 @@ The agent claimed the build was fixed after the tests failed.
           throw new Error("claude exited with code 1")
         },
       }
-      const result = await runAiReview(depsWith(runner), userId, sessionId, {
-        reviewer: "problems",
-      })
+      const result = await runAiReview(depsWith(runner), userId, sessionId, {})
       expect(result).toMatchObject({ kind: "error", code: "harnessFailed" })
       expect(await db.select().from(sessionReviews)).toEqual([])
+    })
+
+    test("PR14: the reviewer sees only the session's alias, and the workspace is removed after", async () => {
+      const { runner, seen } = problemsRunner(problemsMd("the build is fixed"))
+      const result = await runAiReview(depsWith(runner), userId, sessionId, {})
+
+      expect(result).toMatchObject({ kind: "ok" })
+      expect(seen[0]?.prompt).not.toContain(sessionId)
+      expect(seen[0]?.session).toMatchObject({ meta: { sessionId: "session-under-review" } })
+      expect(createdDirs).toHaveLength(1)
+      expect(existsSync(createdDirs[0] as string)).toBe(false)
+    })
+
+    test("PR15: the claude reviewer's transcript is captured from the workspace and saved on the run", async () => {
+      const { runner } = problemsRunner(
+        problemsMd("the build is fixed"),
+        undefined,
+        undefined,
+        "",
+        (workspaceDir) => {
+          const projectDir = join(workspaceDir, "claude-config", "projects", "work")
+          mkdirSync(projectDir, { recursive: true })
+          writeFileSync(
+            join(projectDir, "t.jsonl"),
+            `${[
+              JSON.stringify({
+                type: "user",
+                message: { role: "user", content: [{ type: "text", text: "review it" }] },
+              }),
+              JSON.stringify({
+                type: "assistant",
+                message: {
+                  role: "assistant",
+                  content: [
+                    { type: "tool_use", name: "Read", input: { file_path: "/work/session.json" } },
+                    { type: "text", text: "Done." },
+                  ],
+                },
+              }),
+            ].join("\n")}\n`,
+          )
+        },
+      )
+      const result = await runAiReview(
+        depsWith(runner, { env: { ...env, aiReviewHarness: "claude", aiReviewModel: "sonnet" } }),
+        userId,
+        sessionId,
+        {},
+      )
+      expect(result).toMatchObject({ kind: "ok" })
+      const signals = await persistedSignals()
+      expect(signals).toMatchObject({ model: "sonnet", harness: "claude" })
+      expect((signals.run as { transcript?: unknown }).transcript).toEqual([
+        { role: "user", text: "review it" },
+        {
+          role: "assistant",
+          text: "Done.",
+          tools: [{ name: "Read", input: "/work/session.json" }],
+        },
+      ])
+    })
+
+    test("PR16: the opencode reviewer's transcript comes from the redirected XDG database", async () => {
+      const { runner } = problemsRunner(
+        problemsMd("the build is fixed"),
+        undefined,
+        undefined,
+        "",
+        (workspaceDir) => {
+          const dataDir = join(workspaceDir, "xdg-data", "opencode")
+          mkdirSync(dataDir, { recursive: true })
+          const store = new Database(join(dataDir, "opencode.db"))
+          store.exec(
+            "CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, time_created INTEGER, time_updated INTEGER, agent TEXT, model TEXT, title TEXT)",
+          )
+          store.exec(
+            "CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT)",
+          )
+          store.exec(
+            "CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, data TEXT)",
+          )
+          store
+            .prepare(
+              "INSERT INTO session (id, parent_id, time_created, time_updated) VALUES ('rs1', NULL, 1, 5)",
+            )
+            .run()
+          store
+            .prepare(
+              "INSERT INTO message (id, session_id, time_created, data) VALUES ('rm1', 'rs1', 2, ?)",
+            )
+            .run(JSON.stringify({ role: "user" }))
+          store
+            .prepare(
+              "INSERT INTO part (id, message_id, session_id, time_created, data) VALUES ('rp1', 'rm1', 'rs1', 3, ?)",
+            )
+            .run(JSON.stringify({ type: "text", text: "review the export" }))
+          store.close()
+        },
+      )
+      const result = await runAiReview(depsWith(runner), userId, sessionId, {})
+      expect(result).toMatchObject({ kind: "ok" })
+      const run = (await persistedSignals()).run as { transcript?: unknown }
+      expect(run.transcript).toEqual([{ role: "user", text: "review the export" }])
+    })
+
+    test("PR17: a harness with no credential is refused before any agent runs", async () => {
+      const { runner, seen } = problemsRunner(problemsMd("the build is fixed"))
+      const result = await runAiReview(
+        // Configured for opencode, asked for claude, and only opencode has a key.
+        depsWith(runner, { credentialEnv: { OPENCODE_API_KEY: "oc-key" } }),
+        userId,
+        sessionId,
+        { harness: "claude" },
+      )
+      expect(result).toMatchObject({ kind: "error", code: "harnessUnauthenticated" })
+      expect(seen).toHaveLength(0)
+      expect(await db.select().from(sessionReviews)).toHaveLength(0)
+    })
+
+    test("PR18: the pipeline reports milestones through onMilestone, in order", async () => {
+      const names: string[] = []
+      const { runner } = problemsRunner(problemsMd("the build is fixed"))
+      const result = await runAiReview(
+        depsWith(runner, { onMilestone: (name) => names.push(name) }),
+        userId,
+        sessionId,
+        {},
+      )
+      expect(result).toMatchObject({ kind: "ok" })
+      // The hook is what the registry installs so a watching human sees where a run is; the
+      // names and their order are the contract the CLI's progress line reads.
+      expect(names.indexOf("readers_done")).toBeLessThan(names.indexOf("harness_spawning"))
+      expect(names.indexOf("workspace_ready")).toBeLessThan(names.indexOf("harness_spawning"))
+      expect(names.at(-1)).toBe("persisted")
+    })
+
+    test("PR19: an unknown session, or a viewer who cannot edit, is refused before any agent runs", async () => {
+      const { runner, seen } = problemsRunner(problemsMd("the build is fixed"))
+      expect(await runAiReview(depsWith(runner), userId, "does-not-exist", {})).toEqual({
+        kind: "error",
+        code: "sessionNotFound",
+      })
+      const [viewer] = await db
+        .insert(users)
+        .values({ githubId: 2, githubLogin: "viewer" })
+        .returning({ id: users.id })
+      await db.insert(userProjectGrant).values({
+        userId: viewer?.id as string,
+        projectId,
+        scope: "viewer",
+      })
+      expect(await runAiReview(depsWith(runner), viewer?.id as string, sessionId, {})).toEqual({
+        kind: "error",
+        code: "notEditable",
+      })
+      expect(seen).toHaveLength(0)
     })
   })
 })

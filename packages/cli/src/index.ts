@@ -105,14 +105,10 @@ program
   )
   .option("--harness <name>", "reviewer CLI: opencode or claude (default: opencode)")
   .option("--model <name>", "model override (default: the harness's own)")
-  .option(
-    "--timeout <ms>",
-    "harness wall clock in milliseconds (default: 1800000; 600000 with --lenses)",
-  )
+  .option("--timeout <ms>", "harness wall clock in milliseconds (default: 1800000)")
   .option("--out <dir>", "where results land (default: ./review-out/SESSION_ID)")
   .option("--keep", "keep the scratch workspace")
   .option("--dry-run", "stage the workspace and stop, without calling a model")
-  .option("--lenses", "run the lens review (review.xml) instead of the problems review")
   .option(
     "--prompt <file>",
     "your own review prompt, in any form. Merged into the default once and saved: later runs without --prompt use it too, and merge again if the file changes",

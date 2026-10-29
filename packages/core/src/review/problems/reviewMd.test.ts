@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest"
-import type { SessionExportRecord } from "../lenses/export.js"
+import type { SessionExportRecord } from "../export.js"
 import { checkEvidence, LIMITS, parseReviewMd } from "./reviewMd.js"
 
 const problem = (title: string, fields: Record<string, string>): string =>

@@ -20,10 +20,8 @@ export const reviewSessionExport = (input: {
     /** Sessions have no true endedAt column; lastActiveAt is the honest approximation. */
     readonly lastActiveAt?: string
   }
-  /** The stored `messages` rows; their jsonb is the captured shape. */
+  /** The stored `messages` rows; their jsonb is the captured shape. Every one is read whole. */
   readonly messages: ReadonlyArray<unknown>
-  /** Every message whole (the problems review), or excerpts (the lens review). */
-  readonly full: boolean
 }): SessionExport =>
   buildSessionExport({
     sessionId: REVIEW_SESSION_ALIAS,
@@ -32,5 +30,5 @@ export const reviewSessionExport = (input: {
     ...(input.session.startedAt == null ? {} : { startedAt: input.session.startedAt }),
     ...(input.session.lastActiveAt === undefined ? {} : { endedAt: input.session.lastActiveAt }),
     messages: input.messages as ReadonlyArray<NormalizedMessage>,
-    full: input.full,
+    full: true,
   })

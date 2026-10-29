@@ -1,4 +1,4 @@
-import type { SessionExportRecord } from "../lenses/export.js"
+import type { SessionExportRecord } from "../export.js"
 import { shortenForReader } from "../problems/finder.js"
 import { type Evidence, idsLabel } from "../problems/reviewMd.js"
 

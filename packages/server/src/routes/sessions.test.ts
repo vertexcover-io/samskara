@@ -651,7 +651,7 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     ])
   })
 
-  test("S28: hasAiReview and the aiReview filter follow the ai-v1 row, not any review row", async () => {
+  test("S28: hasAiReview and the aiReview filter follow the AI review row, not any review row", async () => {
     const owner = await seedUser(db, 1601, "ai-owner")
     const projectId = await projectsRepo.upsert(db, {
       identity: { name: "AI", slug: "ai" },
@@ -677,7 +677,7 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
         signals: {},
       })
     }
-    await review("reviewed", "ai-v1")
+    await review("reviewed", "ai-problems-v2")
     // A heuristic review is not an AI review: the badge must not light up for it.
     await review("heuristic-only", "heuristic-v1")
 
@@ -693,39 +693,6 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
       "heuristic-only",
       "plain",
     ])
-  })
-
-  test("S44: a problems review (ai-problems-v2) counts as AI analysis too", async () => {
-    const owner = await seedUser(db, 1603, "ai-problems-owner")
-    const projectId = await projectsRepo.upsert(db, {
-      identity: { name: "AI problems", slug: "ai-problems" },
-      ownerId: owner,
-    })
-    for (const id of ["problems-reviewed", "unreviewed"]) {
-      await seedSession(db, {
-        id,
-        userId: owner,
-        projectId,
-        title: id,
-        updatedAt: new Date("2026-02-05T12:00:00Z"),
-      })
-    }
-    await db.insert(sessionReviews).values({
-      sessionId: "problems-reviewed",
-      projectId,
-      analyzer: "ai-problems-v2",
-      outcome: "productive",
-      friction: "none",
-      summary: "problems review",
-      signals: {},
-    })
-
-    const badge = new Map(
-      (await listAs(db, owner)).map((session) => [session.id, session.hasAiReview]),
-    )
-    expect(badge.get("problems-reviewed")).toBe(true)
-    expect(badge.get("unreviewed")).toBe(false)
-    expect(idsOf(await listAs(db, owner, "?aiReview=done"))).toEqual(["problems-reviewed"])
   })
 
   test("SC13: a summary carries its message count, status and start, and nothing it no longer shows", async () => {
