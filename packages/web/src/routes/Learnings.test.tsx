@@ -1,8 +1,8 @@
-import { render, screen, waitFor, within } from "@testing-library/react"
+import { act, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, beforeEach, expect, test, vi } from "vitest"
 import { TestRouter } from "../tests/test-router.js"
-import { Learnings } from "./Learnings.js"
+import { Learnings, RUN_POLL_MS } from "./Learnings.js"
 
 const LEARNING = {
   id: "l-1",
@@ -84,6 +84,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.restoreAllMocks()
 })
 
@@ -161,4 +162,97 @@ test("LR5: a failed load surfaces the error, not a silent blank", async () => {
   renderPage()
 
   expect(await screen.findByText("Retrieval failed")).toBeInTheDocument()
+})
+
+const RUNNING = { ...RUN, id: "r-2", status: "running", finishedAt: null }
+
+/**
+ * A server with one run that is going until `polls` status checks have answered: the list
+ * reports it running until then, and the learning appears once it is done.
+ */
+const stubRun = (polls: number) => {
+  const posts: unknown[] = []
+  let checks = 0
+  const done = () => checks >= polls
+  vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+    const url = input instanceof Request ? input.url : String(input)
+    const method = input instanceof Request ? input.method : (init?.method ?? "GET")
+    const reply = (status: number, body: unknown) =>
+      Promise.resolve(new Response(JSON.stringify(body), { status }))
+    if (url.includes("/api/learnings/runs/r-2")) {
+      checks += 1
+      return reply(200, { run: done() ? { ...RUNNING, status: "done" } : RUNNING })
+    }
+    if (url.includes("/api/learnings/runs") && method === "POST") {
+      const body = input instanceof Request ? input.clone().text() : Promise.resolve(init?.body)
+      return Promise.resolve(body).then((text) => {
+        posts.push(JSON.parse(String(text)))
+        return new Response(JSON.stringify({ runId: "r-2" }), { status: 202 })
+      })
+    }
+    if (url.includes("/api/learnings"))
+      return reply(200, {
+        learnings: done() ? [LEARNING] : [],
+        latestRun: posts.length === 0 ? null : done() ? { ...RUNNING, status: "done" } : RUNNING,
+      })
+    if (url.includes("/api/projects")) return reply(200, projectsBody)
+    return reply(401, { error: "unauthorized" })
+  })
+  return posts
+}
+
+test("LR6: Run now starts a run for the chosen project, waits for it, and shows its learnings", async () => {
+  const posts = stubRun(2)
+  renderPage()
+  const user = userEvent.setup()
+  await screen.findByText("No learnings here yet")
+  // Only the poll's interval is faked, so clicks and fetches still run on real time.
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
+
+  await user.click(screen.getByRole("button", { name: "Run now" }))
+
+  expect(posts).toEqual([{ project: "p-1" }])
+  expect(await screen.findByText(/Running…/)).toBeInTheDocument()
+  expect(screen.getByRole("button", { name: "Run now" })).toBeDisabled()
+
+  // First check still running, second done: the list reloads with the new learning.
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(RUN_POLL_MS)
+  })
+  expect(screen.queryByText(LEARNING.title)).not.toBeInTheDocument()
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(RUN_POLL_MS)
+  })
+  vi.useRealTimers()
+  expect(await screen.findByText(LEARNING.title)).toBeInTheDocument()
+  expect(screen.getByRole("button", { name: "Run now" })).toBeEnabled()
+})
+
+test("LR7: a run already going when the page opens shows as running", async () => {
+  stubFetch([
+    { match: "/api/learnings/runs/r-2", status: 200, body: { run: RUNNING } },
+    { match: "/api/learnings", status: 200, body: { learnings: [], latestRun: RUNNING } },
+    { match: "/api/projects", status: 200, body: projectsBody },
+  ])
+
+  renderPage()
+
+  expect(await screen.findByText(/Running…/)).toBeInTheDocument()
+  expect(screen.getByRole("button", { name: "Run now" })).toBeDisabled()
+})
+
+test("LR8: a refused run says why in plain words", async () => {
+  stubFetch([
+    { match: "/api/learnings/runs", status: 400, body: { error: "noHarnessPath" } },
+    { match: "/api/learnings", status: 200, body: { learnings: [], latestRun: null } },
+    { match: "/api/projects", status: 200, body: projectsBody },
+  ])
+  renderPage()
+  const user = userEvent.setup()
+  await screen.findByText("No learnings here yet")
+
+  await user.click(screen.getByRole("button", { name: "Run now" }))
+
+  expect(await screen.findByText(/LEARNINGS_HARNESS_PATH/)).toBeInTheDocument()
+  expect(screen.getByRole("button", { name: "Run now" })).toBeEnabled()
 })

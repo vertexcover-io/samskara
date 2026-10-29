@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { Link, useSearchParams } from "react-router-dom"
 import { type ApiError, client, request } from "../api/client.js"
 import type { LearningProblem, LearningRun, LearningSummary, ProjectSummary } from "../api/types.js"
@@ -36,6 +36,23 @@ const FIX_TYPE_LABEL: Readonly<Record<string, string>> = {
   project_guidelines: "Project guidelines",
   knowledge_base: "Knowledge base",
   human: "The person",
+}
+
+/** A run that is going: started here, or found going when the page loaded. */
+type RunState =
+  | { readonly phase: "idle" }
+  | { readonly phase: "running"; readonly runId: string; readonly startedAt: string }
+  | { readonly phase: "failed"; readonly message: string }
+
+/** How often a going run is checked. A run is two agents per batch, so minutes, not seconds. */
+export const RUN_POLL_MS = 5_000
+
+/** Plain words for why the server would not start a run. */
+const RUN_REFUSED: Readonly<Record<string, string>> = {
+  notEditable: "You need edit rights on this project to start a run.",
+  noHarnessPath:
+    "The server has no harness folder to check learnings against. Set LEARNINGS_HARNESS_PATH on the server.",
+  projectNotFound: "This project could not be found.",
 }
 
 const plural = (count: number, word: string): string => `${count} ${word}${count === 1 ? "" : "s"}`
@@ -137,7 +154,7 @@ const HowThisWorks = () => (
       writes what to change. A cause that comes back joins the learning it already has.
     </p>
     <p className="mt-1.5">
-      To run one now:{" "}
+      To run one now, press Run now, or from a terminal:{" "}
       <code className="font-mono text-[0.78rem] text-custody">
         samskara learn --project PROJECT_ID
       </code>
@@ -150,6 +167,9 @@ export const Learnings = () => {
   const [searchParams, setSearchParams] = useSearchParams()
   const [projects, setProjects] = useState<ProjectsState>({ phase: "loading" })
   const [state, setState] = useState<State>({ phase: "loading" })
+  const [run, setRun] = useState<RunState>({ phase: "idle" })
+  // Bumped when a run ends, so the list loads again with what it wrote.
+  const [reloadCount, setReloadCount] = useState(0)
 
   useEffect(() => {
     let active = true
@@ -171,22 +191,85 @@ export const Learnings = () => {
     searchParams.get("project") ??
     (projects.phase === "ready" ? (projects.projects[0]?.id ?? null) : null)
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reloadCount is never read, only bumped — a change is the reload.
   useEffect(() => {
     if (project === null) return
     let active = true
-    setState({ phase: "loading" })
     request(() => client.api.learnings.$get({ query: { project } })).then((result) => {
       if (!active) return
-      setState(
-        result.ok
-          ? { phase: "ready", learnings: result.data.learnings, latestRun: result.data.latestRun }
-          : { phase: "failed", error: result.error },
+      if (!result.ok) {
+        setState({ phase: "failed", error: result.error })
+        return
+      }
+      setState({
+        phase: "ready",
+        learnings: result.data.learnings,
+        latestRun: result.data.latestRun,
+      })
+      // A run still going when the page loads (another tab, the weekly schedule) is shown and
+      // waited on, so Run now cannot start a second one.
+      const latest = result.data.latestRun
+      setRun(
+        latest?.status === "running"
+          ? { phase: "running", runId: latest.id, startedAt: latest.startedAt }
+          : { phase: "idle" },
       )
     })
     return () => {
       active = false
     }
+  }, [project, reloadCount])
+
+  // A project change starts from a blank list and no run of the old project's.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: project is never read — a change is the reset.
+  useEffect(() => {
+    setState({ phase: "loading" })
+    setRun({ phase: "idle" })
   }, [project])
+
+  const startRun = useCallback(() => {
+    if (project === null) return
+    request(() => client.api.learnings.runs.$post({ json: { project } })).then((result) => {
+      if (result.ok) {
+        setRun({ phase: "running", runId: result.data.runId, startedAt: new Date().toISOString() })
+        return
+      }
+      // Someone else's run is going: reload, and the list's latest run is the one to wait on.
+      if (result.error.code === "learningRunAlreadyRunning") {
+        setReloadCount((count) => count + 1)
+        return
+      }
+      setRun({
+        phase: "failed",
+        message: RUN_REFUSED[result.error.code ?? ""] ?? result.error.message,
+      })
+    })
+  }, [project])
+
+  const runningId = run.phase === "running" ? run.runId : null
+  useEffect(() => {
+    if (runningId === null) return
+    let active = true
+    const timer = setInterval(() => {
+      request(() => client.api.learnings.runs[":id"].$get({ param: { id: runningId } })).then(
+        (result) => {
+          if (!active || !result.ok) return
+          const { status, error } = result.data.run
+          if (status === "running") return
+          setRun(
+            status === "failed"
+              ? { phase: "failed", message: `The run failed: ${error ?? "no reason given"}` }
+              : { phase: "idle" },
+          )
+          setReloadCount((count) => count + 1)
+        },
+      )
+    }, RUN_POLL_MS)
+    return () => {
+      active = false
+      clearInterval(timer)
+    }
+  }, [runningId])
 
   const failed = (error: ApiError) =>
     error.kind === "unauthorized" ? (
@@ -230,9 +313,30 @@ export const Learnings = () => {
             ))}
           </select>
         </label>
-        {state.phase === "ready" ? (
-          <p className="font-mono text-[0.72rem] text-ink-soft">{runLine(state.latestRun)}</p>
-        ) : null}
+        <div className="flex flex-col items-end gap-1.5">
+          <div className="flex flex-wrap items-center gap-3">
+            {run.phase === "running" ? (
+              <p className="font-mono text-[0.72rem] text-ink-soft">
+                Running… (started {new Date(run.startedAt).toLocaleString()})
+              </p>
+            ) : state.phase === "ready" ? (
+              <p className="font-mono text-[0.72rem] text-ink-soft">{runLine(state.latestRun)}</p>
+            ) : null}
+            <button
+              type="button"
+              onClick={startRun}
+              disabled={run.phase === "running"}
+              className="h-9 rounded-xs border border-rule px-3 text-[0.78rem] font-semibold transition-colors hover:border-ink disabled:cursor-default disabled:opacity-60 disabled:hover:border-rule"
+            >
+              Run now
+            </button>
+          </div>
+          {run.phase === "failed" ? (
+            <p role="alert" className="text-[0.82rem] text-err">
+              {run.message}
+            </p>
+          ) : null}
+        </div>
       </div>
 
       {state.phase === "loading" ? (
