@@ -52,6 +52,7 @@ type LearningList = Ok<Client["api"]["learnings"]["$get"]>
 export type LearningSummary = LearningList["learnings"][number]
 export type LearningRun = NonNullable<LearningList["latestRun"]>
 export type LearningProblem = Ok<Client["api"]["learnings"][":id"]["$get"]>["problems"][number]
+export type LearningDetailPayload = Ok<Client["api"]["learnings"][":id"]["$get"]>
 
 export type SessionReviewSummary = Ok<
   Client["api"]["sessions"][":id"]["review"]["$get"]
