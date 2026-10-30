@@ -1,4 +1,5 @@
 import {
+  LEARNING_IMPACTS,
   LEARNING_PRIORITIES,
   type LearningInput,
   type ProblemInput,
@@ -188,6 +189,7 @@ export const reviewSessions = async (
   Array<{
     readonly reviewId: string
     readonly sessionId: string
+    readonly projectId: string
     readonly title: string | null
     readonly source: string
     readonly recordIds: ReadonlyArray<string | null> | null
@@ -198,6 +200,7 @@ export const reviewSessions = async (
     .select({
       reviewId: sessionReviews.id,
       sessionId: sessionReviews.sessionId,
+      projectId: sessions.projectId,
       title: sessions.title,
       source: sessions.source,
       recordIds: sql<Array<string | null> | null>`${sessionReviews.signals}->'run'->'recordIds'`,
@@ -312,7 +315,10 @@ export type ListedLearning = LearningRow & {
 /** High first: a priority's place in `LEARNING_PRIORITIES`. */
 const PRIORITY_ORDER = sql`array_position(${sql.raw(`array[${LEARNING_PRIORITIES.map((p) => `'${p}'`).join(", ")}]`)}::text[], ${learnings.priority})`
 
-/** The project's learnings, high priority first, then by how many sessions they came up in. */
+/** Worst impact first; a learning with none (written before impact existed) sorts last. */
+const IMPACT_ORDER = sql`array_position(${sql.raw(`array[${LEARNING_IMPACTS.map((p) => `'${p}'`).join(", ")}]`)}::text[], ${learnings.impact}) nulls last`
+
+/** The project's learnings: high priority first, then worst impact, then most sessions. */
 export const listLearnings = async (db: Querier, projectId: string): Promise<ListedLearning[]> => {
   const problemCount = sql<number>`count(${reviewProblems.id})::int`
   const sessionCount = sql<number>`count(distinct ${reviewProblems.sessionId})::int`
@@ -322,7 +328,13 @@ export const listLearnings = async (db: Querier, projectId: string): Promise<Lis
     .leftJoin(reviewProblems, eq(reviewProblems.learningId, learnings.id))
     .where(eq(learnings.projectId, projectId))
     .groupBy(learnings.id)
-    .orderBy(PRIORITY_ORDER, desc(sessionCount), desc(problemCount), asc(learnings.createdAt))
+    .orderBy(
+      PRIORITY_ORDER,
+      IMPACT_ORDER,
+      desc(sessionCount),
+      desc(problemCount),
+      asc(learnings.createdAt),
+    )
   return rows.map((row) => ({
     ...row.learning,
     problemCount: row.problemCount,
@@ -333,6 +345,31 @@ export const listLearnings = async (db: Querier, projectId: string): Promise<Lis
 export const getLearning = async (db: Querier, id: string): Promise<LearningRow | null> => {
   const [row] = await db.select().from(learnings).where(eq(learnings.id, id)).limit(1)
   return row ?? null
+}
+
+/**
+ * Skips the learning for `by`, or with null unskips it. Returns the row, or null when it is gone.
+ * Skipping one already skipped keeps the first skip's person and time.
+ */
+export const setSkipped = async (
+  db: Querier,
+  id: string,
+  by: string | null,
+): Promise<LearningRow | null> => {
+  if (by === null) {
+    const [row] = await db
+      .update(learnings)
+      .set({ skippedAt: null, skippedBy: null })
+      .where(eq(learnings.id, id))
+      .returning()
+    return row ?? null
+  }
+  const [row] = await db
+    .update(learnings)
+    .set({ skippedAt: new Date(), skippedBy: by })
+    .where(and(eq(learnings.id, id), isNull(learnings.skippedAt)))
+    .returning()
+  return row ?? getLearning(db, id)
 }
 
 /** The problems behind a learning, with their session and evidence, so a reader can check it. */

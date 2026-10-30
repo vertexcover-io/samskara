@@ -162,7 +162,7 @@ export const fakeAgents = (
           .map((id) =>
             options.verdict === "drop"
               ? `## ${id}\n- **Verdict:** drop\n- **Why:** One session, medium and slow, a one-off typo.\n`
-              : `## ${id}\n- **Verdict:** learning\n- **Title:** Helpers report early\n- **Problem:** They stop before jest exits.\n- **Priority:** ${highLeft-- > 0 ? "high" : "low"} — many sessions\n- **Fix type:** skill\n- **Fix:** Add a wait rule to SKILL.md.\n`,
+              : `## ${id}\n- **Verdict:** learning\n- **Title:** Helpers report early\n- **Problem:** They stop before jest exits.\n- **Priority:** ${highLeft-- > 0 ? "high" : "low"} — many sessions\n- **Impact:** time_only — lost a few minutes\n- **Fix type:** skill\n- **Fix:** Add a wait rule to SKILL.md.\n- **How it helps:** Saves a few minutes a run.\n`,
           )
           .join("\n"),
       )

@@ -22,6 +22,9 @@ const written = {
   priorityReason: "3 sessions",
   fixType: "skill",
   fix: "In skills/implement/SKILL.md, add a wait rule.",
+  impact: "time_only",
+  impactReason: "lost a few minutes",
+  howItHelps: "Saves a few minutes a run.",
 } as const
 
 describe.skipIf(!dockerAvailable())("learnings repository", () => {
@@ -194,6 +197,188 @@ describe.skipIf(!dockerAvailable())("learnings repository", () => {
     expect(list.map((row) => [row.title, row.problemCount, row.sessionCount])).toEqual([
       ["Helpers report while their run is still going", 2, 2],
       ["Low one", 1, 1],
+    ])
+  })
+
+  test("SC9: a saved learning keeps its impact and how it helps on create and on update", async () => {
+    await seedSession([problem("A")])
+    const first = await learningsRepo.startRun(db, projectId)
+    const [a] = await learningsRepo.unmarkedProblems(db, projectId, 10)
+    await learningsRepo.saveBatch(db, {
+      runId: first?.id as string,
+      projectId,
+      groups: [{ cause: "x", learningId: null, problemIds: [a?.id as string], answer: written }],
+    })
+    await learningsRepo.finishRun(db, first?.id as string, { status: "done" })
+    const [created] = await db.select().from(learnings)
+    expect(created).toMatchObject({
+      impact: "time_only",
+      impactReason: "lost a few minutes",
+      howItHelps: "Saves a few minutes a run.",
+    })
+
+    await seedSession([problem("B")])
+    const second = await learningsRepo.startRun(db, projectId)
+    const [b] = await learningsRepo.unmarkedProblems(db, projectId, 10)
+    await learningsRepo.saveBatch(db, {
+      runId: second?.id as string,
+      projectId,
+      groups: [
+        {
+          cause: "x",
+          learningId: created?.id as string,
+          problemIds: [b?.id as string],
+          answer: {
+            ...written,
+            impact: "wrong_result",
+            impactReason: "one run shipped untested code",
+            howItHelps: "Stops untested code from shipping.",
+          },
+        },
+      ],
+    })
+    const [updated] = await db.select().from(learnings)
+    expect(updated).toMatchObject({
+      impact: "wrong_result",
+      impactReason: "one run shipped untested code",
+      howItHelps: "Stops untested code from shipping.",
+    })
+  })
+
+  test("SC10: at the same priority, wrong_result in 1 session lists above time_only in 2, and none comes last", async () => {
+    await seedSession([problem("A"), problem("B"), problem("C")])
+    await seedSession([problem("D")])
+    const run = await learningsRepo.startRun(db, projectId)
+    const [a, b, c, d] = await learningsRepo.unmarkedProblems(db, projectId, 10)
+    await learningsRepo.saveBatch(db, {
+      runId: run?.id as string,
+      projectId,
+      groups: [
+        {
+          cause: "x",
+          learningId: null,
+          problemIds: [a?.id as string, d?.id as string],
+          answer: { ...written, title: "Time" },
+        },
+        {
+          cause: "y",
+          learningId: null,
+          problemIds: [b?.id as string],
+          answer: { ...written, title: "None" },
+        },
+        {
+          cause: "z",
+          learningId: null,
+          problemIds: [c?.id as string],
+          answer: { ...written, title: "Wrong", impact: "wrong_result" },
+        },
+      ],
+    })
+    await db
+      .update(learnings)
+      .set({ impact: null, impactReason: null, howItHelps: null })
+      .where(eq(learnings.title, "None"))
+    const list = await learningsRepo.listLearnings(db, projectId)
+    expect(list.map((row) => row.title)).toEqual(["Wrong", "Time", "None"])
+  })
+
+  test("SC11: the database refuses an impact outside the list", async () => {
+    const run = await learningsRepo.startRun(db, projectId)
+    await expect(
+      db.insert(learnings).values({
+        projectId,
+        updatedByRunId: run?.id as string,
+        title: "t",
+        cause: "c",
+        problem: "p",
+        priority: "low",
+        priorityReason: "r",
+        fixType: "skill",
+        fix: "f",
+        impact: "bad",
+      }),
+    ).rejects.toThrow(/learnings_impact_check/)
+  })
+
+  /** One saved learning from one fresh problem; returns its row. */
+  const savedLearning = async () => {
+    await seedSession([problem("A")])
+    const run = await learningsRepo.startRun(db, projectId)
+    const [a] = await learningsRepo.unmarkedProblems(db, projectId, 10)
+    await learningsRepo.saveBatch(db, {
+      runId: run?.id as string,
+      projectId,
+      groups: [{ cause: "x", learningId: null, problemIds: [a?.id as string], answer: written }],
+    })
+    await learningsRepo.finishRun(db, run?.id as string, { status: "done" })
+    const [row] = await db.select().from(learnings)
+    if (row === undefined) throw new Error("no learning saved")
+    return row
+  }
+
+  test("SC26: skipping stamps the time and the person, unskipping clears both, and nothing else moves", async () => {
+    const before = await savedLearning()
+    const skipped = await learningsRepo.setSkipped(db, before.id, userId)
+    expect(skipped?.skippedAt).toBeInstanceOf(Date)
+    expect(skipped?.skippedBy).toBe(userId)
+    expect(skipped).toMatchObject({
+      title: before.title,
+      fix: before.fix,
+      updatedAt: before.updatedAt,
+    })
+    const unskipped = await learningsRepo.setSkipped(db, before.id, null)
+    expect(unskipped).toMatchObject({
+      skippedAt: null,
+      skippedBy: null,
+      updatedAt: before.updatedAt,
+    })
+  })
+
+  test("a second skip of an already skipped learning keeps who skipped it first, and when", async () => {
+    const before = await savedLearning()
+    const [other] = await db
+      .insert(users)
+      .values({ githubId: 7002, githubLogin: "second-skipper" })
+      .returning()
+    const first = await learningsRepo.setSkipped(db, before.id, userId)
+    const second = await learningsRepo.setSkipped(db, before.id, other?.id as string)
+    expect(second).toMatchObject({ id: before.id, skippedBy: userId, skippedAt: first?.skippedAt })
+  })
+
+  test("SC27: a later run joining a skipped learning rewrites its text but keeps it skipped", async () => {
+    const before = await savedLearning()
+    const skipped = await learningsRepo.setSkipped(db, before.id, userId)
+    await seedSession([problem("B")])
+    const run = await learningsRepo.startRun(db, projectId)
+    const [b] = await learningsRepo.unmarkedProblems(db, projectId, 10)
+    await learningsRepo.saveBatch(db, {
+      runId: run?.id as string,
+      projectId,
+      groups: [
+        {
+          cause: "x",
+          learningId: before.id,
+          problemIds: [b?.id as string],
+          answer: { ...written, title: "Rewritten by the second run" },
+        },
+      ],
+    })
+    const rows = await db.select().from(learnings)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({
+      title: "Rewritten by the second run",
+      skippedAt: skipped?.skippedAt,
+      skippedBy: userId,
+    })
+    const [full] = await learningsRepo.learningsWithProblems(db, [before.id])
+    expect(full?.problems.map((row) => row.title).sort()).toEqual(["A", "B"])
+  })
+
+  test("SC28: the grouper is still shown a skipped learning, so its cause joins it", async () => {
+    const before = await savedLearning()
+    await learningsRepo.setSkipped(db, before.id, userId)
+    expect((await learningsRepo.learningsForGrouping(db, projectId)).map((row) => row.id)).toEqual([
+      before.id,
     ])
   })
 

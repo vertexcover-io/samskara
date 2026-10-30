@@ -246,6 +246,20 @@
       "when": 1793384276570,
       "tag": "0034_drop_ai_v1_reviews",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1793384277570,
+      "tag": "0035_violet_blonde_phantom",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1793384278570,
+      "tag": "0036_odd_karnak",
+      "breakpoints": true
     }
   ]
 }

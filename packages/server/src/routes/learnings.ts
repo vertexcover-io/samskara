@@ -1,12 +1,12 @@
-import type { HarnessRunner } from "@samskara/core"
-import { Hono } from "hono"
+import { type Evidence, type HarnessRunner, type LearningImpact, messageIdAt } from "@samskara/core"
+import { type Context, Hono } from "hono"
 import { z } from "zod"
 import type { Db } from "../db/client.js"
 import type { Env } from "../lib/env.js"
 import { type AuthVariables, requireAuth } from "../lib/require-auth.js"
 import { validate } from "../lib/validate.js"
 import * as learningsRepo from "../repositories/learnings.repo.js"
-import { authorityFor, canRead } from "../repositories/projects.repo.js"
+import { authorityFor, canRead, type Scope } from "../repositories/projects.repo.js"
 import { startLearningRun } from "../services/learnings/run.js"
 
 type Deps = {
@@ -35,17 +35,32 @@ const serializeLearning = (row: learningsRepo.LearningRow) => ({
   priorityReason: row.priorityReason,
   fixType: row.fixType,
   fix: row.fix,
+  impact: row.impact as LearningImpact | null,
+  impactReason: row.impactReason,
+  howItHelps: row.howItHelps,
+  skippedAt: row.skippedAt?.toISOString() ?? null,
   updatedByRunId: row.updatedByRunId,
   createdAt: row.createdAt.toISOString(),
   updatedAt: row.updatedAt.toISOString(),
 })
 
-/** A problem behind a learning: what it was, where it came from, and its evidence. */
+/** Where a problem's review came from: its session's title, and the order it numbered msg-N by. */
+type ReviewSource = {
+  readonly title: string | null
+  readonly recordIds: ReadonlyArray<string | null> | null
+}
+
+/**
+ * A problem behind a learning: what it was, where it came from, and its evidence, each item
+ * with the real id of the message it starts at, or null when that cannot be found.
+ */
 const serializeProblem = (
   problem: Awaited<ReturnType<typeof learningsRepo.problemsOfLearning>>[number],
+  source: ReviewSource | undefined,
 ) => ({
   id: problem.id,
   sessionId: problem.sessionId,
+  sessionTitle: source?.title ?? null,
   reviewId: problem.reviewId,
   projectId: problem.projectId,
   title: problem.title,
@@ -55,7 +70,10 @@ const serializeProblem = (
   fixType: problem.fixType,
   description: problem.description,
   learning: problem.learning,
-  evidence: problem.evidence,
+  evidence: (problem.evidence as ReadonlyArray<Evidence>).map((item) => ({
+    ...item,
+    messageId: messageIdAt(source?.recordIds ?? null, item.from),
+  })),
 })
 
 /**
@@ -65,9 +83,22 @@ const serializeProblem = (
  * start a run.
  */
 export const learningsRoutes = ({ db, env, runner }: Deps) => {
-  /** Whether the caller may read the project; a project they cannot see reads as 404. */
-  const readable = async (userId: string, projectId: string): Promise<boolean> =>
-    uuid.safeParse(projectId).success && (await canRead(db, userId, projectId))
+  /** What the caller may do in the project, or null when they cannot see it (a 404). */
+  const scopeIn = async (userId: string, projectId: string): Promise<Scope | null> =>
+    uuid.safeParse(projectId).success ? authorityFor(db, userId, projectId) : null
+
+  /** The skip and unskip handlers' shared body: who may, then the change. */
+  const skip = async (c: Context<{ Variables: AuthVariables }>, skipped: boolean) => {
+    const id = c.req.param("id") ?? ""
+    const userId = c.get("user").id
+    const row = uuid.safeParse(id).success ? await learningsRepo.getLearning(db, id) : null
+    const scope = row === null ? null : await authorityFor(db, userId, row.projectId)
+    if (row === null || scope === null) return c.json({ error: "learningNotFound" }, 404)
+    if (scope === "viewer") return c.json({ error: "notEditable" }, 403)
+    const updated = await learningsRepo.setSkipped(db, row.id, skipped ? userId : null)
+    if (updated === null) return c.json({ error: "learningNotFound" }, 404)
+    return c.json({ learning: serializeLearning(updated) }, 200)
+  }
 
   return (
     new Hono<{ Variables: AuthVariables }>()
@@ -113,8 +144,8 @@ export const learningsRoutes = ({ db, env, runner }: Deps) => {
       /** The project's learnings, high priority first, with how many problems and sessions each has. */
       .get("/", requireAuth({ db, env }, ["web", "cli"]), async (c) => {
         const projectId = c.req.query("project") ?? ""
-        if (!(await readable(c.get("user").id, projectId)))
-          return c.json({ error: "projectNotFound" }, 404)
+        const scope = await scopeIn(c.get("user").id, projectId)
+        if (scope === null) return c.json({ error: "projectNotFound" }, 404)
         const [rows, latest] = await Promise.all([
           learningsRepo.listLearnings(db, projectId),
           learningsRepo.latestRun(db, projectId),
@@ -127,6 +158,7 @@ export const learningsRoutes = ({ db, env, runner }: Deps) => {
               sessionCount: row.sessionCount,
             })),
             latestRun: latest === null ? null : serializeRun(latest),
+            canEdit: scope !== "viewer",
           },
           200,
         )
@@ -135,13 +167,31 @@ export const learningsRoutes = ({ db, env, runner }: Deps) => {
       .get("/:id", requireAuth({ db, env }, ["web", "cli"]), async (c) => {
         const id = c.req.param("id")
         const row = uuid.safeParse(id).success ? await learningsRepo.getLearning(db, id) : null
-        if (row === null || !(await canRead(db, c.get("user").id, row.projectId)))
-          return c.json({ error: "learningNotFound" }, 404)
+        const scope = row === null ? null : await authorityFor(db, c.get("user").id, row.projectId)
+        if (row === null || scope === null) return c.json({ error: "learningNotFound" }, 404)
         const problems = await learningsRepo.problemsOfLearning(db, row.id)
+        const reviews = await learningsRepo.reviewSessions(db, [
+          ...new Set(problems.map((problem) => problem.reviewId)),
+        ])
+        // A session since moved to another project is that project's to show, title and all.
+        const sources = new Map(
+          reviews
+            .filter((review) => review.projectId === row.projectId)
+            .map((review) => [review.reviewId, review]),
+        )
         return c.json(
-          { learning: serializeLearning(row), problems: problems.map(serializeProblem) },
+          {
+            learning: serializeLearning(row),
+            problems: problems.map((problem) =>
+              serializeProblem(problem, sources.get(problem.reviewId)),
+            ),
+            canEdit: scope !== "viewer",
+          },
           200,
         )
       })
+      /** Skip (POST) or unskip (DELETE) a fix; an editor of its project may. */
+      .post("/:id/skip", requireAuth({ db, env }, ["web", "cli"]), (c) => skip(c, true))
+      .delete("/:id/skip", requireAuth({ db, env }, ["web", "cli"]), (c) => skip(c, false))
   )
 }

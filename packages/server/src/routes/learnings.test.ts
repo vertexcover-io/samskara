@@ -1,8 +1,17 @@
 import { rmSync } from "node:fs"
+import { asc, eq } from "drizzle-orm"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import { buildApp } from "../app.js"
 import type { Db } from "../db/client.js"
-import { learningRuns, learnings, reviewProblems, userOrgs, users } from "../db/schema.js"
+import {
+  learningRuns,
+  learnings,
+  messages,
+  reviewProblems,
+  sessions,
+  userOrgs,
+  users,
+} from "../db/schema.js"
 import { dockerAvailable, startTestDb } from "../db/testDb.js"
 import type { Env } from "../lib/env.js"
 import { signToken } from "../lib/jwt.js"
@@ -154,6 +163,245 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
     }
     expect(detail.learning.cause).toBe("No wait rule.")
     expect(detail.problems.map((p) => p.title)).toEqual(["A", "B"])
+  })
+
+  test("SC12: the list and the detail return impact and how it helps, null on an older learning", async () => {
+    await seedProblems(["A"])
+    const started = await request("/api/learnings/runs", {
+      method: "POST",
+      body: { project: projectId },
+      serverHarness: true,
+    })
+    const { runId } = (await started.json()) as { runId: string }
+    expect((await waitForRun(runId)).status).toBe("done")
+    const [older] = await db
+      .insert(learnings)
+      .values({
+        projectId,
+        updatedByRunId: runId,
+        title: "Older one",
+        cause: "c",
+        problem: "p",
+        priority: "low",
+        priorityReason: "r",
+        fixType: "skill",
+        fix: "f",
+      })
+      .returning()
+
+    const list = (await (await request(`/api/learnings?project=${projectId}`)).json()) as {
+      learnings: Array<Record<string, unknown>>
+    }
+    expect(list.learnings).toEqual([
+      expect.objectContaining({
+        title: "Helpers report early",
+        impact: "time_only",
+        impactReason: "lost a few minutes",
+        howItHelps: "Saves a few minutes a run.",
+      }),
+      expect.objectContaining({
+        title: "Older one",
+        impact: null,
+        impactReason: null,
+        howItHelps: null,
+      }),
+    ])
+    const detail = (await (await request(`/api/learnings/${list.learnings[0]?.id}`)).json()) as {
+      learning: Record<string, unknown>
+    }
+    expect(detail.learning).toMatchObject({
+      impact: "time_only",
+      impactReason: "lost a few minutes",
+      howItHelps: "Saves a few minutes a run.",
+    })
+    const old = (await (await request(`/api/learnings/${older?.id}`)).json()) as {
+      learning: Record<string, unknown>
+    }
+    expect(old.learning).toMatchObject({ impact: null, impactReason: null, howItHelps: null })
+  })
+
+  test("SC18: the one learning carries each problem's session title and each quote's real message id", async () => {
+    await seedSession(db, {
+      sessionId: `route-proof-a-${counter}`,
+      projectId,
+      userId,
+      problems: [problemFixture("A", { severity: "high" })],
+      texts: ["first message", "waiting on jest"],
+    })
+    await db
+      .update(sessions)
+      .set({ title: "Add the search page" })
+      .where(eq(sessions.id, `route-proof-a-${counter}`))
+    await seedSession(db, {
+      sessionId: `route-proof-b-${counter}`,
+      projectId,
+      userId,
+      problems: [problemFixture("B", { severity: "high" })],
+    })
+    const started = await request("/api/learnings/runs", {
+      method: "POST",
+      body: { project: projectId },
+      serverHarness: true,
+    })
+    const { runId } = (await started.json()) as { runId: string }
+    expect((await waitForRun(runId)).status).toBe("done")
+    const [learning] = await learningsRepo.listLearnings(db, projectId)
+    const [, second] = await db
+      .select({ id: messages.id })
+      .from(messages)
+      .where(eq(messages.sessionId, `route-proof-a-${counter}`))
+      .orderBy(asc(messages.lineNumber))
+
+    const res = await request(`/api/learnings/${learning?.id}`)
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      problems: Array<{ title: string; sessionTitle: string | null; evidence: unknown[] }>
+    }
+    const byTitle = Object.fromEntries(body.problems.map((p) => [p.title, p]))
+    expect(byTitle.A?.sessionTitle).toBe("Add the search page")
+    expect(byTitle.A?.evidence).toEqual([
+      {
+        from: "msg-1",
+        to: "msg-1",
+        quote: "waiting on jest",
+        why: "returned early",
+        messageId: second?.id,
+      },
+    ])
+    expect(byTitle.B?.evidence).toEqual([
+      {
+        from: "msg-1",
+        to: "msg-1",
+        quote: "waiting on jest",
+        why: "returned early",
+        messageId: null,
+      },
+    ])
+  })
+
+  test("a session moved to another project after the run shows neither its title nor its message ids", async () => {
+    const sessionId = `route-moved-${counter}`
+    await seedSession(db, {
+      sessionId,
+      projectId,
+      userId,
+      problems: [problemFixture("A", { severity: "high" })],
+      texts: ["first message", "waiting on jest"],
+    })
+    await db
+      .update(sessions)
+      .set({ title: "Private roadmap work" })
+      .where(eq(sessions.id, sessionId))
+    const started = await request("/api/learnings/runs", {
+      method: "POST",
+      body: { project: projectId },
+      serverHarness: true,
+    })
+    const { runId } = (await started.json()) as { runId: string }
+    expect((await waitForRun(runId)).status).toBe("done")
+    const [learning] = await learningsRepo.listLearnings(db, projectId)
+    const elsewhere = await seedProject(db, await seedOrg(db, `private-${counter}`), "private")
+    await db.update(sessions).set({ projectId: elsewhere }).where(eq(sessions.id, sessionId))
+
+    const res = await request(`/api/learnings/${learning?.id}`)
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      problems: Array<{ sessionTitle: string | null; evidence: Array<{ messageId: unknown }> }>
+    }
+    expect(body.problems.map((p) => p.sessionTitle)).toEqual([null])
+    expect(body.problems.flatMap((p) => p.evidence.map((item) => item.messageId))).toEqual([null])
+  })
+
+  test("SC19: someone who cannot see the project gets 404 for one of its learnings", async () => {
+    await seedProblems(["A"])
+    const started = await request("/api/learnings/runs", {
+      method: "POST",
+      body: { project: projectId },
+      serverHarness: true,
+    })
+    const { runId } = (await started.json()) as { runId: string }
+    expect((await waitForRun(runId)).status).toBe("done")
+    const [learning] = await learningsRepo.listLearnings(db, projectId)
+    const res = await request(`/api/learnings/${learning?.id}`, { as: strangerId })
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: "learningNotFound" })
+  })
+
+  /** One learning in the project, from a finished run on the server's harness. */
+  const oneLearning = async (): Promise<string> => {
+    await seedProblems(["A"])
+    const started = await request("/api/learnings/runs", {
+      method: "POST",
+      body: { project: projectId },
+      serverHarness: true,
+    })
+    const { runId } = (await started.json()) as { runId: string }
+    expect((await waitForRun(runId)).status).toBe("done")
+    const [learning] = await learningsRepo.listLearnings(db, projectId)
+    return learning?.id as string
+  }
+
+  const newViewer = async (): Promise<string> => {
+    const [viewer] = await db
+      .insert(users)
+      .values({ githubId: 8300 + counter, githubLogin: `skip-viewer-${counter}` })
+      .returning()
+    await projectsRepo.grant(db, viewer?.id as string, projectId, "viewer")
+    return viewer?.id as string
+  }
+
+  test("SC29: an editor skips and unskips a fix, and the list shows it skipped with canEdit", async () => {
+    const id = await oneLearning()
+    const skipped = await request(`/api/learnings/${id}/skip`, { method: "POST" })
+    expect(skipped.status).toBe(200)
+    const body = (await skipped.json()) as { learning: { skippedAt: string | null } }
+    expect(body.learning.skippedAt).toEqual(expect.any(String))
+
+    const list = (await (await request(`/api/learnings?project=${projectId}`)).json()) as {
+      learnings: Array<{ id: string; skippedAt: string | null }>
+      canEdit: boolean
+    }
+    expect(list.canEdit).toBe(true)
+    expect(list.learnings).toEqual([
+      expect.objectContaining({ id, skippedAt: body.learning.skippedAt }),
+    ])
+    const detail = (await (await request(`/api/learnings/${id}`)).json()) as { canEdit: boolean }
+    expect(detail.canEdit).toBe(true)
+
+    const unskipped = await request(`/api/learnings/${id}/skip`, { method: "DELETE" })
+    expect(unskipped.status).toBe(200)
+    expect(
+      ((await unskipped.json()) as { learning: { skippedAt: null } }).learning.skippedAt,
+    ).toBeNull()
+  })
+
+  test("SC30: a viewer cannot skip or unskip, and the reads say canEdit false", async () => {
+    const id = await oneLearning()
+    const viewer = await newViewer()
+    for (const method of ["POST", "DELETE"]) {
+      const res = await request(`/api/learnings/${id}/skip`, { method, as: viewer })
+      expect(res.status).toBe(403)
+      expect(await res.json()).toEqual({ error: "notEditable" })
+    }
+    const [row] = await db.select().from(learnings)
+    expect(row?.skippedAt).toBeNull()
+    const list = (await (
+      await request(`/api/learnings?project=${projectId}`, { as: viewer })
+    ).json()) as { canEdit: boolean }
+    expect(list.canEdit).toBe(false)
+    const detail = (await (await request(`/api/learnings/${id}`, { as: viewer })).json()) as {
+      canEdit: boolean
+    }
+    expect(detail.canEdit).toBe(false)
+  })
+
+  test("SC31: someone who cannot see the project cannot skip its fix", async () => {
+    const id = await oneLearning()
+    const res = await request(`/api/learnings/${id}/skip`, { method: "POST", as: strangerId })
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: "learningNotFound" })
+    const [row] = await db.select().from(learnings)
+    expect(row?.skippedAt).toBeNull()
   })
 
   test("LRT2: without a path in the request or the server's settings, a run is refused", async () => {
