@@ -1,5 +1,6 @@
 import { expect, test } from "vitest"
 import {
+  COMPOUND_LEARNING_EVENT_ID_MAX,
   COMPOUND_LEARNINGS_BATCH_MAX,
   compoundLearningEventSchema,
   pushCompoundLearningsRequestSchema,
@@ -105,6 +106,13 @@ test('an optional field the skill wrote as "" reads as null, so nothing past the
     learningFile: null,
     replaces: null,
   })
+})
+
+test("an event id longer than the table can index is rejected", () => {
+  const withId = (eventId: string) =>
+    compoundLearningEventSchema.safeParse({ ...event, eventId }).success
+  expect(withId("e".repeat(COMPOUND_LEARNING_EVENT_ID_MAX))).toBe(true)
+  expect(withId("e".repeat(COMPOUND_LEARNING_EVENT_ID_MAX + 1))).toBe(false)
 })
 
 test("a missing required key or a non-ISO timestamp is rejected", () => {

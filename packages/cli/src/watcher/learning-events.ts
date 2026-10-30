@@ -1,5 +1,5 @@
 import { open, readdir, realpath, stat } from "node:fs/promises"
-import { join } from "node:path"
+import { join, sep } from "node:path"
 import {
   COMPOUND_LEARNINGS_BATCH_MAX,
   type CompoundLearningEvent,
@@ -66,14 +66,20 @@ const parseLearningEventLine = (bytes: Uint8Array): ParsedLearningEventLine => {
       (issue) => `${issue.path.length === 0 ? "(event)" : issue.path.join(".")}: ${issue.message}`,
     )
     .join("; ")
-  return { kind: "unknown", reason }
+  // An id no CLI will ever accept is broken, not new: holding the file there would block it for good.
+  const badId = parsed.error.issues.some(({ path }) => path[0] === "eventId")
+  return { kind: badId ? "broken" : "unknown", reason }
 }
 
 // ---------------------------------------------------------------------------------------------
 // Sources
 
-/** One folder of events, and the cutoff of the project it belongs to. */
-export type EventSource = { readonly dir: string; readonly syncFrom?: string }
+/** One folder of events, the checkout it must stay inside, and its project's cutoff. */
+export type EventSource = {
+  readonly dir: string
+  readonly root: string
+  readonly syncFrom?: string
+}
 
 /** git prints real paths, so a registered path reached through a symlink is resolved to match. */
 const canonical = (path: string): Promise<string> => realpath(path).catch(() => path)
@@ -128,6 +134,7 @@ export const listEventSources = async (
           .flatMap((folder) =>
             LEARNING_EVENT_DIRS.map((dir) => ({
               dir: join(folder, dir),
+              root: folder,
               ...(entry.syncFrom === undefined ? {} : { syncFrom: entry.syncFrom }),
             })),
           ),
@@ -150,8 +157,18 @@ export const isBeforeCutoff = (event: CompoundLearningEvent, syncFrom?: string):
 // ---------------------------------------------------------------------------------------------
 // Files and state
 
-const listLearningEventFiles = async (dir: string): Promise<ReadonlyArray<string> | null> => {
+/**
+ * The folder's `.jsonl` files, or null when it is missing or resolves outside `root`: a linked
+ * events folder must not upload a checkout that was never enabled. A linked file inside it is not a
+ * plain file, so it is skipped too.
+ */
+const listLearningEventFiles = async (
+  dir: string,
+  root: string,
+): Promise<ReadonlyArray<string> | null> => {
   try {
+    const [real, realRoot] = await Promise.all([realpath(dir), realpath(root)])
+    if (!real.startsWith(realRoot + sep)) return null
     const entries = await readdir(dir, { withFileTypes: true })
     return entries
       .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
@@ -198,7 +215,7 @@ type LearningEventsConfig = {
 }
 
 export type LearningEventsDeps = {
-  readonly listFiles: (dir: string) => Promise<ReadonlyArray<string> | null>
+  readonly listFiles: (dir: string, root: string) => Promise<ReadonlyArray<string> | null>
   readonly size: (path: string) => Promise<number>
   readonly readRange: (path: string, start: number, end: number) => Promise<Uint8Array>
   readonly listSources: () => Promise<ReadonlyArray<EventSource>>
@@ -309,8 +326,8 @@ export const runLearningEventsStep = async (
   if (!(await deps.hasToken())) return
   const sources = await deps.listSources()
   const listed = await Promise.all(
-    sources.map(async ({ dir, syncFrom }) =>
-      ((await deps.listFiles(dir)) ?? []).map((file) => ({ file, syncFrom })),
+    sources.map(async ({ dir, root, syncFrom }) =>
+      ((await deps.listFiles(dir, root)) ?? []).map((file) => ({ file, syncFrom })),
     ),
   )
   const found = listed.flat()

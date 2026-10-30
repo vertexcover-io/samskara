@@ -7,12 +7,13 @@ import {
   realpath,
   rm,
   stat,
+  symlink,
   writeFile,
 } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
-import type { CompoundLearningEvent } from "@samskara/core"
+import { COMPOUND_LEARNING_EVENT_ID_MAX, type CompoundLearningEvent } from "@samskara/core"
 import { afterEach, beforeEach, expect, test } from "vitest"
 import type { ProjectEntry } from "../config/projects.js"
 import {
@@ -87,7 +88,7 @@ const harness = (
   const base = nodeLearningEventsDeps({
     listSources: async () => {
       sourceCalls.count += 1
-      return over.sources?.() ?? [{ dir }]
+      return over.sources?.() ?? [{ dir, root }]
     },
     hasToken: async () => true,
     send: async (events): Promise<SinkResult> => {
@@ -153,7 +154,10 @@ test("every source's files are read, each against its own project's cutoff", asy
   await writeFile(join(dir, "s.jsonl"), line(event("harness-early", early)))
   await writeFile(join(other, "s.jsonl"), line(event("yok-early", early)))
   const h = harness({
-    sources: () => [{ dir, syncFrom: "2026-10-01T00:00:00.000Z" }, { dir: other }],
+    sources: () => [
+      { dir, root, syncFrom: "2026-10-01T00:00:00.000Z" },
+      { dir: other, root },
+    ],
   })
 
   await run(h.deps)
@@ -168,7 +172,7 @@ test("events before the project's sync-from cutoff are passed over, later ones a
       line(event("on-cutoff", { timestamp: "2026-10-01T10:00:00Z" })) +
       line(event("late", { timestamp: "2026-10-02T00:00:00+05:30" })),
   )
-  const h = harness({ sources: () => [{ dir, syncFrom: "2026-10-01T10:00:00.000Z" }] })
+  const h = harness({ sources: () => [{ dir, root, syncFrom: "2026-10-01T10:00:00.000Z" }] })
 
   await run(h.deps)
   await run(h.deps)
@@ -370,6 +374,34 @@ test("without a stored login nothing is read or sent", async () => {
   expect(h.sourceCalls.count).toBe(0)
 })
 
+test("an event folder that links out of its checkout is not read", async () => {
+  const repo = join(root, "repo")
+  const elsewhere = join(root, "elsewhere")
+  await mkdir(join(repo, ".yok"), { recursive: true })
+  await mkdir(elsewhere)
+  await writeFile(join(elsewhere, "s.jsonl"), line(event("from-elsewhere")))
+  const linked = join(repo, ".yok", "learning-events")
+  await symlink(elsewhere, linked)
+  const h = harness({ sources: () => [{ dir: linked, root: repo }] })
+
+  await run(h.deps)
+
+  expect(h.sent).toEqual([])
+})
+
+test("an event id too long to store is skipped for good, and the lines after it are sent", async () => {
+  await writeFile(
+    join(dir, "s.jsonl"),
+    line(event("x".repeat(COMPOUND_LEARNING_EVENT_ID_MAX + 1))) + line(event("after")),
+  )
+  const h = harness()
+
+  await run(h.deps)
+  await run(h.deps)
+
+  expect(h.sent).toEqual([["after"]])
+})
+
 test("a repo's worktrees are asked of git once per refresh window, not every cycle", async () => {
   let now = 0
   const asked: string[] = []
@@ -409,10 +441,10 @@ test("sources are the event folders of enabled projects' checkouts, each listed 
 
   const cutoff = "2026-10-01T00:00:00.000Z"
   expect(sources).toEqual([
-    { dir: "/work/on/.harness/learning-events", syncFrom: cutoff },
-    { dir: "/work/on/.yok/learning-events", syncFrom: cutoff },
-    { dir: "/work/on.feat-x/.harness/learning-events", syncFrom: cutoff },
-    { dir: "/work/on.feat-x/.yok/learning-events", syncFrom: cutoff },
+    { dir: "/work/on/.harness/learning-events", root: "/work/on", syncFrom: cutoff },
+    { dir: "/work/on/.yok/learning-events", root: "/work/on", syncFrom: cutoff },
+    { dir: "/work/on.feat-x/.harness/learning-events", root: "/work/on.feat-x", syncFrom: cutoff },
+    { dir: "/work/on.feat-x/.yok/learning-events", root: "/work/on.feat-x", syncFrom: cutoff },
   ])
 })
 

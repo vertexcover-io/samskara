@@ -10,6 +10,13 @@ const unset = <T extends z.ZodType>(schema: T) =>
 const optionalText = unset(z.string())
 const transcriptLineRef = unset(z.uuid())
 
+/**
+ * The skill's ids are short random strings. The cap keeps a broken one from reaching the
+ * (userId, eventId) unique index, which refuses an entry too large for it -- the insert would fail
+ * every retry and hold up every later event in the same file.
+ */
+export const COMPOUND_LEARNING_EVENT_ID_MAX = 200
+
 export const learnTriggerSchema = z.enum(["manual", "auto"])
 export const learnOutcomeSchema = z.enum(["new", "occurrence", "lint", "rejected"])
 export const learnStatusSchema = z.enum(["accepted", "edited", "rejected", "existing"])
@@ -35,7 +42,7 @@ const camelKeys = (value: unknown): unknown =>
 export const compoundLearningEventSchema = z.preprocess(
   camelKeys,
   z.object({
-    eventId: z.string().min(1),
+    eventId: z.string().min(1).max(COMPOUND_LEARNING_EVENT_ID_MAX),
     sessionId: z.string().min(1),
     timestamp: z.iso.datetime({ offset: true }),
     cwd: optionalText,
