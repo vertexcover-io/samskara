@@ -47,6 +47,7 @@ const serializeLearning = (row: learningsRepo.LearningRow) => ({
   impact: row.impact as LearningImpact | null,
   impactReason: row.impactReason,
   howItHelps: row.howItHelps,
+  fixSummary: row.fixSummary,
   skippedAt: row.skippedAt?.toISOString() ?? null,
   updatedByRunId: row.updatedByRunId,
   createdAt: row.createdAt.toISOString(),

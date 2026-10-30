@@ -106,7 +106,9 @@ Take these steps in order.
    the reader more than a missed one.
 2. **Write the learning.** If \`harness/\` already has a rule, doc, hook or code for this
    cause, it did not stop these problems: the fix says what to change about it, not "add a
-   rule" again.
+   rule" again. Say an earlier fix "was never added" or "did not work" only when you found it
+   in \`harness/\` or its absence there is news: a learning marked as written earlier in this
+   run is minutes old, so leave its history out.
 
 ## Priority
 
@@ -170,6 +172,7 @@ One section per group, headed by its id:
 - **Fix type:** skill
 - **Fix:** In skills/implement/SKILL.md, under "Running tests", add: wait for the test command
   to exit and read its result before reporting; never report a run as pending.
+- **In plain words:** Make helper agents wait for their tests to finish before they report.
 - **How it helps:** Saves about 10 minutes a run of chasing helpers, and stops untested work
   from shipping.
 
@@ -183,11 +186,26 @@ One section per group, headed by its id:
 - Title: at most ${WRITTEN_LIMITS.title} characters. It must make sense with every project
   name removed.
 - Problem: what goes wrong and why it matters, at most ${WRITTEN_LIMITS.problem} characters.
+  Tell one story, not many: pick the clearest time it happened and do not add a second one.
+  Tell it in this order:
+  1. What the agent was doing.
+  2. What it did wrong.
+  3. What happened because of it.
+  4. What it should have done instead.
+  Then one line on how often: "This happened in 11 sessions." A list of half-told cases is what
+  makes a learning unreadable. For example: "The agent brought in the latest shared code, and
+  34 tests started failing. It told the user they had nothing to do with its change, without
+  checking. The user had to ask again before the real cause was found. It should have run the
+  same tests on the code without its change: if they pass there, its change broke them. This
+  happened in 11 sessions."
 - Priority: the word, a dash, then one sentence why, at most ${WRITTEN_LIMITS.priorityReason}
   characters.
 - Impact: one of ${LEARNING_IMPACTS.join(", ")}, a dash, then one sentence, at most
   ${WRITTEN_LIMITS.impactReason} characters.
 - Fix: at most ${WRITTEN_LIMITS.fix} characters.
+- In plain words: the fix in one sentence a person who never opened the code would follow,
+  with no file paths or code, at most ${WRITTEN_LIMITS.fixSummary} characters. It is shown
+  first; the Fix field's exact text sits under it.
 - How it helps: one sentence on what changes once the fix is in, at most
   ${WRITTEN_LIMITS.howItHelps} characters. Say it in time saved or harm stopped.
 - Why (for a drop): one sentence, at most ${WRITTEN_LIMITS.priorityReason} characters: which

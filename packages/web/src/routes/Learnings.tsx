@@ -109,7 +109,7 @@ const LearningCard = ({
       )}
       <p className="mt-2 text-[0.82rem]">
         <span className="font-semibold">Fix ({FIX_TYPE_LABEL[row.fixType] ?? row.fixType}):</span>{" "}
-        {row.fix}
+        {row.fixSummary ?? row.fix}
       </p>
       {row.howItHelps === null ? null : (
         <p className="mt-1.5 text-[0.82rem]">

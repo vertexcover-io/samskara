@@ -19,6 +19,7 @@ const LEARNING = {
   impact: "wrong_result",
   impactReason: "two sessions shipped code whose tests had not finished",
   howItHelps: "Stops untested work from shipping.",
+  fixSummary: "Make helpers wait for their tests to finish before reporting.",
   skippedAt: null,
   updatedByRunId: "r-1",
   createdAt: "2026-10-20T10:00:00.000Z",
@@ -102,6 +103,8 @@ test("SC20: the page shows the fix, and the proof by session with a link to each
   expect(within(fix).getByText(LEARNING.howItHelps)).toBeInTheDocument()
   expect(within(fix).getByText(/The fix \(Skill\)/)).toBeInTheDocument()
   expect(within(fix).getByText(LEARNING.fix)).toBeInTheDocument()
+  expect(within(fix).getByText(LEARNING.fixSummary)).toBeInTheDocument()
+  expect(within(fix).getByText("Exact change")).toBeInTheDocument()
   expect(within(fix).getByText("Why high")).toBeInTheDocument()
   expect(within(fix).getByText(/3 problems in 2 sessions/)).toBeInTheDocument()
 
@@ -127,7 +130,7 @@ test("SC20: the page shows the fix, and the proof by session with a link to each
 
 test("SC21: an older learning's page shows no Impact or How it helps block, and the rest", async () => {
   stubFetch(200, {
-    learning: { ...LEARNING, impact: null, impactReason: null, howItHelps: null },
+    learning: { ...LEARNING, impact: null, impactReason: null, howItHelps: null, fixSummary: null },
     problems: PROBLEMS,
   })
 

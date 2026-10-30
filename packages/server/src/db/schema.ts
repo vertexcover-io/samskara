@@ -574,6 +574,8 @@ export const learnings = pgTable(
     impact: text("impact"),
     impactReason: text("impactReason"),
     howItHelps: text("howItHelps"),
+    /** The fix in one plain sentence, shown before its exact text. Null on an older learning. */
+    fixSummary: text("fixSummary"),
     /**
      * Set when a project editor skips the fix: it leaves the Fixes list but stays a known
      * learning, so a later run joins its cause here (keeping it skipped) rather than making a
