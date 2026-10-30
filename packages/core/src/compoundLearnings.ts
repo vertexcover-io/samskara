@@ -1,10 +1,17 @@
 import { z } from "zod"
 
-const transcriptLineRef = z.union([z.literal(""), z.uuid()]).optional()
+/**
+ * The skill writes "" for a field that does not apply. It is null from here on, so nothing past
+ * the file -- the upload, the table, the page -- ever sees an empty string.
+ */
+const unset = <T extends z.ZodType>(schema: T) =>
+  z.preprocess((value) => (value === "" ? null : value), schema.nullable().optional())
+
+const optionalText = unset(z.string())
+const transcriptLineRef = unset(z.uuid())
 
 export const learnTriggerSchema = z.enum(["manual", "auto"])
 export const learnOutcomeSchema = z.enum(["new", "occurrence", "lint", "rejected"])
-/** "" is what the skill writes when a status does not apply; it is stored as null. */
 export const learnStatusSchema = z.enum(["accepted", "edited", "rejected", "existing"])
 
 // `why_triggered` → `whyTriggered`. Top-level keys only: no field holds an object.
@@ -31,29 +38,29 @@ export const compoundLearningEventSchema = z.preprocess(
     eventId: z.string().min(1),
     sessionId: z.string().min(1),
     timestamp: z.iso.datetime({ offset: true }),
-    cwd: z.string().optional(),
+    cwd: optionalText,
     /** The plugin and version that wrote the event, e.g. `harness@1.33.1` or `yok@0.0.1`. */
-    skillVersion: z.string().optional(),
+    skillVersion: optionalText,
     trigger: learnTriggerSchema,
     whyTriggered: z.string(),
     /**
      * The Claude Code transcript line uuids of the first and last message of the exchange the
-     * learning came from, or "" when the skill could not tell. They match `messages.lineUuid` in
+     * learning came from, or null when the skill could not tell. They match `messages.lineUuid` in
      * the session named by `sessionId`.
      */
     evidenceFromMessage: transcriptLineRef,
     evidenceToMessage: transcriptLineRef,
     optionsShown: z.array(z.string()).optional(),
     proposedLearning: z.string(),
-    optionUserPicked: z.string().optional(),
+    optionUserPicked: optionalText,
     outcome: learnOutcomeSchema,
-    status: z.union([learnStatusSchema, z.literal("")]).optional(),
+    status: unset(learnStatusSchema),
     /** Filled only when status is "edited"; not enforced here. */
-    finalLearning: z.string().optional(),
-    rejectionReason: z.string().optional(),
-    learningFile: z.string().optional(),
+    finalLearning: optionalText,
+    rejectionReason: optionalText,
+    learningFile: optionalText,
     /** Path of an older learning file this one superseded and deleted. */
-    replaces: z.string().optional(),
+    replaces: optionalText,
   }),
 )
 

@@ -78,7 +78,7 @@ export const createArtifactSink = (deps: HttpSinkDeps) => ({
     post(deps, "/api/artifacts", payload),
 })
 
-/** Its own endpoint too, and run off the loop, so a learning-events failure never touches ingest. */
+/** Its own endpoint, so a learning-events failure never touches transcript ingest. */
 export const createLearningEventsSink = (deps: HttpSinkDeps) => ({
   send: (events: ReadonlyArray<CompoundLearningEvent>): Promise<SinkResult> =>
     post(deps, "/api/compound-learnings", { events }),

@@ -73,7 +73,7 @@ running, so capture continues after a reboot without manual intervention.
 
 The background process also uploads the learning events that the `/learn` skill (harness or yok)
 writes to `.harness/learning-events/` or `.yok/learning-events/` in an enabled folder or one of its
-git worktrees. They are listed on the Learn events page.
+git worktrees. They are listed on the Compound learning evaluation page.
 
 ## Getting started
 

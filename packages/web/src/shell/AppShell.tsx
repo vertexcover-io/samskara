@@ -42,7 +42,7 @@ export const AppShell = ({ children }: { children: ReactNode }) => {
                 <NavItem to="/projects">Projects</NavItem>
                 <NavItem to="/sessions">Sessions</NavItem>
                 <NavItem to="/learnings">Lessons</NavItem>
-                <NavItem to="/learn-events">Compound learnings</NavItem>
+                <NavItem to="/learn-events">Compound learning evaluation</NavItem>
                 <NavItem to="/orgs">Orgs</NavItem>
                 <NavItem to="/sync-status">Sync</NavItem>
               </nav>

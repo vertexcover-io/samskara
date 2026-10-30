@@ -69,14 +69,42 @@ test("unknown trigger, outcome or status values are rejected", () => {
   expect(compoundLearningEventSchema.safeParse({ ...event, status: "sure" }).success).toBe(false)
 })
 
-test("evidence message ids are each empty or a transcript line uuid", () => {
+test("evidence message ids are each null or a transcript line uuid", () => {
   const uuid = "0b7e6c1a-4a1e-4c55-9c1e-2f3d5a6b7c8d"
   const ok = (extra: Record<string, unknown>) =>
     compoundLearningEventSchema.safeParse({ ...event, ...extra }).success
-  expect(ok({ evidenceFromMessage: "", evidenceToMessage: "" })).toBe(true)
+  expect(ok({ evidenceFromMessage: null, evidenceToMessage: null })).toBe(true)
   expect(ok({ evidenceFromMessage: uuid, evidenceToMessage: uuid })).toBe(true)
   expect(ok({ evidenceFromMessage: "msg-12" })).toBe(false)
   expect(ok({ evidenceToMessage: "not-a-uuid" })).toBe(false)
+})
+
+test('an optional field the skill wrote as "" reads as null, so nothing past the file sees ""', () => {
+  const parsed = compoundLearningEventSchema.parse({
+    ...event,
+    cwd: "",
+    skillVersion: "",
+    evidenceFromMessage: "",
+    evidenceToMessage: "",
+    optionUserPicked: "",
+    status: "",
+    finalLearning: "",
+    rejectionReason: "",
+    learningFile: "",
+    replaces: "",
+  })
+  expect(parsed).toMatchObject({
+    cwd: null,
+    skillVersion: null,
+    evidenceFromMessage: null,
+    evidenceToMessage: null,
+    optionUserPicked: null,
+    status: null,
+    finalLearning: null,
+    rejectionReason: null,
+    learningFile: null,
+    replaces: null,
+  })
 })
 
 test("a missing required key or a non-ISO timestamp is rejected", () => {

@@ -89,16 +89,34 @@ export const worktreeFolders = async (path: string): Promise<ReadonlyArray<strin
 }
 
 /**
- * The event folders of every enabled project's checkouts. A checkout registered on its own and
- * disabled is left out even when it is a worktree of an enabled one.
+ * `foldersOf`, asked of git at most once per `ttlMs` for each repo. Worktrees come and go rarely,
+ * so a new one is picked up within the window rather than costing a git process every cycle.
+ */
+export const cachedFolders = (
+  foldersOf: (path: string) => Promise<ReadonlyArray<string>>,
+  { ttlMs, now }: { readonly ttlMs: number; readonly now: () => number },
+): ((path: string) => Promise<ReadonlyArray<string>>) => {
+  const cache = new Map<string, { readonly at: number; readonly folders: ReadonlyArray<string> }>()
+  return async (path) => {
+    const hit = cache.get(path)
+    if (hit !== undefined && now() - hit.at < ttlMs) return hit.folders
+    const folders = await foldersOf(path)
+    cache.set(path, { at: now(), folders })
+    return folders
+  }
+}
+
+/**
+ * The event folders of every enabled project's checkouts. A folder registered as a project of its
+ * own follows its own switch; a worktree that is not follows the repo it belongs to.
  */
 export const listEventSources = async (
   projects: ReadonlyArray<RegisteredProject>,
   foldersOf: (path: string) => Promise<ReadonlyArray<string>>,
 ): Promise<ReadonlyArray<EventSource>> => {
-  const disabled = new Set(
+  const registered = new Map(
     await Promise.all(
-      projects.filter(({ entry }) => !entry.enabled).map(({ entry }) => canonical(entry.path)),
+      projects.map(async ({ entry }) => [await canonical(entry.path), entry.enabled] as const),
     ),
   )
   const perProject = await Promise.all(
@@ -106,7 +124,7 @@ export const listEventSources = async (
       .filter(({ entry }) => entry.enabled)
       .map(async ({ entry }) =>
         (await foldersOf(entry.path))
-          .filter((folder) => !disabled.has(folder))
+          .filter((folder) => registered.get(folder) !== false)
           .flatMap((folder) =>
             LEARNING_EVENT_DIRS.map((dir) => ({
               dir: join(folder, dir),
@@ -340,26 +358,3 @@ export const nodeLearningEventsDeps = (
   readRange: readFileRange,
   now: () => Date.now(),
 })
-
-/**
- * Runs the step off the watch loop, the way the artifact workers run: the loop calls `tick()` every
- * cycle and never waits on it, so a slow or failing upload cannot delay or break transcript
- * ingest. A tick while the previous run is still going does nothing.
- */
-export const startLearningEventsTicker = (
-  step: () => Promise<void>,
-  log: pino.Logger,
-): (() => void) => {
-  let running = false
-  return () => {
-    if (running) return
-    running = true
-    void step()
-      .catch((err: unknown) => {
-        log.error({ err }, "Learning events step failed")
-      })
-      .finally(() => {
-        running = false
-      })
-  }
-}

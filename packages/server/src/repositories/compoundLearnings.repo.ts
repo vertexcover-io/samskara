@@ -24,9 +24,8 @@ import type { Querier } from "../db/client.js"
 import { compoundLearnings, messages, projects, sessions, users } from "../db/schema.js"
 import { visibleToUser } from "./projects.repo.js"
 
-// The skill writes "" for a field that does not apply; the table stores null.
-const orNull = <T extends string>(value: T | "" | undefined): T | null =>
-  value === undefined || value === "" ? null : value
+// Core already turned the skill's "" into null; a field the line left out is null too.
+const orNull = <T>(value: T | null | undefined): T | null => value ?? null
 
 const toRow = (userId: string, event: CompoundLearningEvent) => ({
   userId,

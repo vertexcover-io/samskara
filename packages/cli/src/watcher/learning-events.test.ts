@@ -17,13 +17,13 @@ import { afterEach, beforeEach, expect, test } from "vitest"
 import type { ProjectEntry } from "../config/projects.js"
 import {
   backoffMs,
+  cachedFolders,
   type EventSource,
   isBeforeCutoff,
   type LearningEventsDeps,
   listEventSources,
   nodeLearningEventsDeps,
   runLearningEventsStep,
-  startLearningEventsTicker,
   worktreeFolders,
 } from "./learning-events.js"
 import type { SinkResult } from "./sink.js"
@@ -370,29 +370,30 @@ test("without a stored login nothing is read or sent", async () => {
   expect(h.sourceCalls.count).toBe(0)
 })
 
-test("the ticker isolates a failing step and never runs two at once", async () => {
-  const spy = spyLogger()
-  let calls = 0
-  let release: () => void = () => {}
-  const tick = startLearningEventsTicker(() => {
-    calls += 1
-    if (calls === 1) return Promise.reject(new Error("boom"))
-    return new Promise<void>((resolve) => {
-      release = resolve
-    })
-  }, spy.log)
+test("a repo's worktrees are asked of git once per refresh window, not every cycle", async () => {
+  let now = 0
+  const asked: string[] = []
+  const foldersOf = cachedFolders(
+    async (path) => {
+      asked.push(path)
+      return [path]
+    },
+    { ttlMs: 300_000, now: () => now },
+  )
 
-  tick()
-  await new Promise((resolve) => setTimeout(resolve, 0))
-  expect(spy.error.map((c) => c.message)).toEqual(["Learning events step failed"])
+  await foldersOf("/work/a")
+  await foldersOf("/work/a")
+  await foldersOf("/work/b")
+  expect(asked).toEqual(["/work/a", "/work/b"])
 
-  tick()
-  tick()
-  expect(calls).toBe(2)
-  release()
-  await new Promise((resolve) => setTimeout(resolve, 0))
-  tick()
-  expect(calls).toBe(3)
+  now = 299_999
+  await foldersOf("/work/a")
+  expect(asked).toEqual(["/work/a", "/work/b"])
+
+  // A worktree added since is picked up once the window has passed.
+  now = 300_000
+  await foldersOf("/work/a")
+  expect(asked).toEqual(["/work/a", "/work/b", "/work/a"])
 })
 
 test("sources are the event folders of enabled projects' checkouts, each listed once", async () => {

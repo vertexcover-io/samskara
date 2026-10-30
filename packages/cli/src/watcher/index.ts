@@ -33,15 +33,17 @@ import { cliVersion } from "../version.js"
 import { runArtifactWorkers } from "./artifact-worker.js"
 import { runCycle, type WatcherConfig, type WatcherDeps } from "./driver.js"
 import {
+  cachedFolders,
   listEventSources,
   nodeLearningEventsDeps,
   runLearningEventsStep,
-  startLearningEventsTicker,
   worktreeFolders,
 } from "./learning-events.js"
 import { resolveProject } from "./resolveProject.js"
 import { createArtifactSink, createHttpSink, createLearningEventsSink } from "./sink.js"
 
+/** How long a repo's worktree list is trusted before git is asked again. */
+const WORKTREE_REFRESH_MS = 5 * 60_000
 const SHUTDOWN_GRACE_MS = 5_000
 
 /**
@@ -197,23 +199,24 @@ export const watch = async (options: WatchOptions): Promise<void> => {
   })
 
   // Same consent rule as transcripts: enabled project, and not before its sync-from cutoff. The
-  // projects file is read per tick, so enabling or disabling a folder applies on the next one.
+  // projects file is read every cycle, so enabling or disabling a folder applies on the next one;
+  // a repo's worktree list is refreshed every few minutes rather than asked of git every cycle.
   const learningEventsSink = createLearningEventsSink({
     apiBase: resolved.apiUrl,
     readToken,
     fetch: globalThis.fetch,
   })
+  const foldersOf = cachedFolders(worktreeFolders, {
+    ttlMs: WORKTREE_REFRESH_MS,
+    now: () => Date.now(),
+  })
   const learningEventsDeps = nodeLearningEventsDeps({
-    listSources: async () => listEventSources(await listProjects(), worktreeFolders),
+    listSources: async () => listEventSources(await listProjects(), foldersOf),
     hasToken: async () => (await readToken()) !== null,
     send: learningEventsSink.send,
     apiBase: persistedApiUrl(),
     log,
   })
-  const tickLearningEvents = startLearningEventsTicker(
-    () => runLearningEventsStep({ statePath: learningEventsStatePath() }, learningEventsDeps),
-    log,
-  )
 
   // Stop claiming new entries, give in-flight uploads their grace, then exit. Unfinished
   // entries persist in the queue file and resume on the next start.
@@ -228,10 +231,15 @@ export const watch = async (options: WatchOptions): Promise<void> => {
 
   for (;;) {
     if (stopping) return
-    tickLearningEvents()
     await runCycle(config, deps).catch((err: unknown) => {
       log.error({ err }, "Watch cycle failed")
     })
+    // After the transcripts, so an event's session is usually on the server before the event is.
+    await runLearningEventsStep({ statePath: learningEventsStatePath() }, learningEventsDeps).catch(
+      (err: unknown) => {
+        log.error({ err }, "Learning events step failed")
+      },
+    )
     await sleep(resolved.cycleMs)
   }
 }
