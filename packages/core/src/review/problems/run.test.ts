@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, test } from "vitest"
-import type { SessionExport, SessionExportRecord } from "../lenses/export.js"
+import type { SessionExport, SessionExportRecord } from "../export.js"
 import type { HarnessRunner } from "../runner.js"
 import { REVIEW_OUTPUT_CONTRACT, reviewMdSkeleton } from "./contract.js"
 import {

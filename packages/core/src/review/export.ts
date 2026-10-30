@@ -1,5 +1,4 @@
-import type { NormalizedMessage } from "../../ingest/types.js"
-import { type AiReviewPayload, MAX_TRACKS_PER_ENTRY } from "./schema.js"
+import type { NormalizedMessage } from "../ingest/types.js"
 
 /**
  * Excerpt caps, in Unicode code units — plain slicing, so truncation is deterministic. Kept
@@ -271,38 +270,3 @@ export const buildSessionExport = (input: {
     },
   }
 }
-
-const tracksIn = (
-  records: ReadonlyArray<SessionExportRecord>,
-  fromSeq: number,
-  toSeq: number,
-): string[] =>
-  [...new Set(records.slice(fromSeq, toSeq + 1).map((record) => record.track))].slice(
-    0,
-    MAX_TRACKS_PER_ENTRY,
-  )
-
-/**
- * Tracks are derived, never claimed. A timeline entry names a seq range, and seq is the
- * record's own position — so the tracks it spans are already in the export and the reviewer
- * never has to spell one back. Same authority rule as `model` and `harness`: whatever the
- * payload arrived with is replaced, which is why a reviewer cannot fail grounding on a track
- * it mistyped, and why the XML contract no longer has a `tracks` attribute to mistype.
- */
-export const withDerivedTracks = (
-  payload: AiReviewPayload,
-  records: ReadonlyArray<SessionExportRecord>,
-): AiReviewPayload => ({
-  ...payload,
-  lenses: payload.lenses.map((lens) =>
-    lens.lens !== "timeline"
-      ? lens
-      : {
-          ...lens,
-          entries: lens.entries.map((entry) => ({
-            ...entry,
-            tracks: tracksIn(records, entry.fromSeq, entry.toSeq),
-          })),
-        },
-  ),
-})

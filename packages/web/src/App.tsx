@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom"
 import { AuthProvider, useAuth } from "./auth/AuthProvider.js"
 import { RequireAuth } from "./auth/RequireAuth.js"
 import { LearnEventDetail, LearnEvents } from "./routes/LearnEvents.js"
+import { LearningDetail } from "./routes/LearningDetail.js"
 import { Learnings } from "./routes/Learnings.js"
 import { Login } from "./routes/Login.js"
 import { OrgDetail } from "./routes/OrgDetail.js"
@@ -109,6 +110,14 @@ export const AppRoutes = () => (
       element={
         <Protected>
           <LearnEventDetail />
+        </Protected>
+      }
+    />
+    <Route
+      path="/learnings/:learningId"
+      element={
+        <Protected>
+          <LearningDetail />
         </Protected>
       }
     />

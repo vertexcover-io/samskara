@@ -1,33 +1,17 @@
-import { mkdtemp as defaultMkdtemp, open, rm, writeFile } from "node:fs/promises"
+import { mkdtemp as defaultMkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
-  type AiReviewPayload,
   BASE_REVIEW_INSTRUCTIONS,
-  buildReviewPrompt,
-  buildSessionExport,
   capAgentLog,
-  type EvidenceRef,
-  fingerprintOf,
-  type GroundingProblem,
   HARNESS_STATE_DIR,
   type HarnessRunner,
-  type LearningCandidate,
-  type LearningCategory,
   mergeReviewPrompt,
   missingCredentialMessage,
-  type NormalizedMessage,
-  type PreparedProblems,
   type ProblemReview,
-  parseReviewXml,
   prepareProblems,
   problemReviewFiles,
   readProblemWorkspace,
-  reviewContractMd,
-  reviewXmlTemplate,
-  sessionIndexFrom,
-  validateGrounding,
-  withDerivedTracks,
 } from "@samskara/core"
 import type pino from "pino"
 import type { Db } from "../../db/client.js"
@@ -36,23 +20,14 @@ import { canWrite } from "../../repositories/projects.repo.js"
 import { replaceReviewProblems } from "../../repositories/reviewProblems.repo.js"
 import * as reviewsRepo from "../../repositories/reviews.repo.js"
 import { getDetail } from "../../repositories/sessions.repo.js"
-import { persistCandidates } from "../review.js"
+import { reviewSessionExport } from "./sessionExport.js"
 import { transcriptFromClaudeConfigDir, transcriptFromOpencodeDataDir } from "./transcript.js"
-
-/**
- * `problems` is the full-session review that writes review.md and saves each problem to
- * `reviewProblems`; `lenses` is the excerpt review that writes review.xml into `learnings`.
- */
-export const REVIEWERS = ["problems", "lenses"] as const
-export type Reviewer = (typeof REVIEWERS)[number]
 
 /** Per-run reviewer choice: absent fields fall back to the env-driven defaults. */
 export type AiReviewOptions = {
   readonly harness?: ReviewHarness
   readonly model?: string
-  /** Which review to run; `problems` when absent. */
-  readonly reviewer?: Reviewer
-  /** The user's own prompt, any shape, merged into the problems review's base. */
+  /** The user's own prompt, any shape, merged into the review's base instructions. */
   readonly prompt?: string
 }
 
@@ -81,66 +56,24 @@ export type AiReviewErrorCode =
   | "harnessFailed"
   | "deliverableMissing"
   | "unparseable"
-  | "invalidSchema"
-  | "ungrounded"
   | "promptMergeFailed"
 
 export type AiReviewResult =
-  | {
-      readonly kind: "ok"
-      readonly reviewId: string
-      /** What was saved: `payload` from the lens review, `review` from the problems review. */
-      readonly payload?: AiReviewPayload
-      readonly review?: ProblemReview
-    }
+  | { readonly kind: "ok"; readonly reviewId: string; readonly review: ProblemReview }
   | { readonly kind: "error"; readonly code: AiReviewErrorCode; readonly detail?: unknown }
 
 export type AiReviewRun = typeof runAiReview
 
-/**
- * The analyzer id this pipeline writes. The 409 guards in the routes compare against it, so
- * it is one exported constant rather than a literal repeated at each comparison.
- */
-export const AI_ANALYZER = "ai-v1"
-
-/** The analyzer id the problems review writes, beside — never over — the lens review's. */
+/** The analyzer id this pipeline writes; a re-run is checked against it. */
 export const PROBLEMS_ANALYZER = "ai-problems-v2"
 
-/** The analyzer a reviewer writes, which is also what a re-run is checked against. */
-export const analyzerFor = (reviewer: Reviewer): string =>
-  reviewer === "problems" ? PROBLEMS_ANALYZER : AI_ANALYZER
-
-/** Stdout excerpt length carried on an `unparseable` result — enough to debug, not to leak. */
+/** Stdout excerpt length carried on a failed result — enough to debug, not to leak. */
 const STDOUT_EXCERPT_CHARS = 400
 
-/** The agent chose this file's size, so the read is capped like every other one. */
-const MAX_DELIVERABLE_BYTES = 8 * 1024 * 1024
-
-/** Reads at most `MAX_DELIVERABLE_BYTES`, or null when the file is absent or unreadable. */
-const readDeliverable = async (
-  path: string,
-  maxBytes: number = MAX_DELIVERABLE_BYTES,
-): Promise<Buffer | null> => {
-  try {
-    const handle = await open(path, "r")
-    try {
-      const buffer = Buffer.alloc(maxBytes)
-      const { bytesRead } = await handle.read(buffer, 0, maxBytes, 0)
-      return buffer.subarray(0, bytesRead)
-    } finally {
-      await handle.close()
-    }
-  } catch {
-    return null
-  }
-}
-
-/** A review root anywhere in stdout — the legacy v1 delivery this pipeline still accepts. */
-const STDOUT_REVIEW_RE = /<review(?=[\s/>])/
-
 /**
- * One AI review, end to end. Model output is untrusted at every step: numbers come from the
- * export and the session row, never the model's claims. Re-analysis supersedes in place.
+ * One AI review, end to end: readers find leads in every piece of the session, then the
+ * reviewer checks each lead and writes review.md, and code checks it before anything is saved.
+ * Model output is untrusted at every step. Re-analysis supersedes in place.
  */
 export const runAiReview = async (
   deps: AiReviewDeps,
@@ -151,7 +84,6 @@ export const runAiReview = async (
   const { db, runner, env, log } = deps
   const harness = options.harness ?? env.aiReviewHarness
   const model = options.model ?? env.aiReviewModel
-  const reviewer = options.reviewer ?? "problems"
   const mkdtemp = deps.mkdtemp ?? defaultMkdtemp
   const now = deps.now ?? (() => new Date())
   // Three consumers: the server log, the persisted run record, and the CLI's progress line.
@@ -172,7 +104,7 @@ export const runAiReview = async (
   const detail = await getDetail(db, userId, sessionId)
   if (detail === null) return { kind: "error", code: "sessionNotFound" }
 
-  // Editor-gated, because the run writes learnings.
+  // Editor-gated, because the run writes the session's review.
   const editable = await canWrite(db, userId, detail.session.projectId)
   if (!editable) return { kind: "error", code: "notEditable" }
 
@@ -183,27 +115,12 @@ export const runAiReview = async (
     return { kind: "error", code: "harnessUnauthenticated", detail: { message: credentialProblem } }
   }
 
-  // The same cast services/review.ts makes: stored jsonb is the captured shape.
-  const messages = detail.messages as unknown as ReadonlyArray<NormalizedMessage>
-  // Withheld from the reviewer: it is the one key that would let an agent look this session
-  // up in its own database and cite ids the export never gave it.
-  const REVIEW_SESSION_ALIAS = "session-under-review"
-  const sessionExport = buildSessionExport({
-    sessionId: REVIEW_SESSION_ALIAS,
-    title: detail.session.title ?? detail.session.id,
-    source: detail.session.source,
-    ...(detail.session.startedAt === null ? {} : { startedAt: detail.session.startedAt }),
-    // sessions have no true endedAt column; lastActiveAt is the honest approximation.
-    endedAt: detail.session.lastActiveAt,
-    messages,
-    // The problems review reads every message whole; the lens review keeps its excerpts.
-    full: reviewer === "problems",
-  })
+  const sessionExport = reviewSessionExport({ session: detail.session, messages: detail.messages })
 
-  // The problems review's instructions: ours, or the user's prompt merged into ours first.
+  // The review's instructions: ours, or the user's prompt merged into ours first.
   let instructions = BASE_REVIEW_INSTRUCTIONS
   let promptChanges: string | undefined
-  if (reviewer === "problems" && options.prompt !== undefined) {
+  if (options.prompt !== undefined) {
     milestone("prompt_merging")
     try {
       const merged = await mergeReviewPrompt(options.prompt, runner, { harness, model })
@@ -218,62 +135,40 @@ export const runAiReview = async (
   }
   // Before the review: readers read every piece of the session and find leads. The reviewer
   // below checks each lead against the session and writes up the real ones.
-  let problems: {
-    readonly prepared: PreparedProblems
-    readonly staged: ReturnType<typeof problemReviewFiles>
-  } | null = null
-  if (reviewer === "problems") {
-    milestone("readers_started")
-    try {
-      const prepared = await prepareProblems({
-        exported: sessionExport,
-        instructions,
-        runner,
-        run: { harness, model },
-      })
-      milestone("readers_done", {
-        pieces: prepared.found.pieceCount,
-        leads: prepared.found.leads.length,
-        failed: prepared.found.failedPieces.length,
-      })
-      problems = {
-        prepared,
-        staged: problemReviewFiles(sessionExport, instructions, prepared.leadsMd),
-      }
-    } catch (error) {
-      // A reader that fails only leaves its piece unread; anything else failing here
-      // fails the run like any other harness failure.
-      const message = error instanceof Error ? error.message : String(error)
-      log.warn({ sessionId, message }, "ai review problem stages failed")
-      milestone("harness_failed")
-      return { kind: "error", code: "harnessFailed", detail: { message } }
-    }
+  milestone("readers_started")
+  let prepared: Awaited<ReturnType<typeof prepareProblems>>
+  try {
+    prepared = await prepareProblems({
+      exported: sessionExport,
+      instructions,
+      runner,
+      run: { harness, model },
+    })
+  } catch (error) {
+    // A reader that fails only leaves its piece unread; anything else failing here fails
+    // the run like any other harness failure.
+    const message = error instanceof Error ? error.message : String(error)
+    log.warn({ sessionId, message }, "ai review problem stages failed")
+    milestone("harness_failed")
+    return { kind: "error", code: "harnessFailed", detail: { message } }
   }
+  milestone("readers_done", {
+    pieces: prepared.found.pieceCount,
+    leads: prepared.found.leads.length,
+    failed: prepared.found.failedPieces.length,
+  })
+  const staged = problemReviewFiles(sessionExport, instructions, prepared.leadsMd)
+
   let workspaceDir: string | undefined
   try {
     // Both runners read this same directory: the soft one directly, the microVM at /work.
     workspaceDir = await mkdtemp(join(tmpdir(), "samskara-ai-review-"))
     milestone("workspace_ready")
-    if (problems !== null) {
-      for (const [name, text] of Object.entries(problems.staged.files))
-        await writeFile(join(workspaceDir, name), text)
-      milestone("workspace_staged")
-    } else {
-      await writeFile(
-        join(workspaceDir, "session.json"),
-        `${JSON.stringify(sessionExport, null, 2)}\n`,
-      )
-      milestone("export_written")
-      // A file, not a reply: the agent fills the skeleton in incrementally.
-      await writeFile(join(workspaceDir, "review.xml"), reviewXmlTemplate())
-      milestone("template_staged")
-      // In the workspace rather than the prompt, so the agent re-reads rules instead of
-      // spending its starting context on the whole spec.
-      await writeFile(join(workspaceDir, "CONTRACT.md"), reviewContractMd())
-      milestone("contract_staged")
-    }
+    for (const [name, text] of Object.entries(staged.files))
+      await writeFile(join(workspaceDir, name), text)
+    milestone("workspace_staged")
 
-    const prompt = problems?.staged.prompt ?? buildReviewPrompt({ sessionMeta: sessionExport.meta })
+    const prompt = staged.prompt
 
     milestone("harness_spawning")
     let stdout: string
@@ -325,277 +220,82 @@ export const runAiReview = async (
       join(workspaceDir, HARNESS_STATE_DIR[harness]),
     )
 
-    if (problems !== null) {
-      const { staged } = problems
-      const read = await readProblemWorkspace({
-        workspaceDir,
-        records: sessionExport.records,
-        instructions,
-        prepared: problems.prepared,
-      })
-      if (read.markdown === null) {
-        milestone("deliverable_missing")
-        log.warn({ sessionId, workspaceDir }, "ai review deliverable missing: no review.md")
-        return {
-          kind: "error",
-          code: "deliverableMissing",
-          detail: { stdoutStart: stdout.slice(0, STDOUT_EXCERPT_CHARS) },
-        }
-      }
-      const { markdown, leadAnswers, result } = read
-      milestone("deliverable_read", { bytes: Buffer.byteLength(markdown) })
-      if (!result.ok) {
-        log.warn({ sessionId, errors: result.errors }, "ai review unparseable: review.md")
-        milestone("review_unparseable")
-        return {
-          kind: "error",
-          code: "unparseable",
-          detail: { errors: result.errors, start: markdown.slice(0, STDOUT_EXCERPT_CHARS) },
-        }
-      }
-      if (result.dropped.length > 0)
-        log.info({ sessionId, dropped: result.dropped }, "ai review dropped problems")
-      milestone("grounded")
-
-      const finishedAt = now()
-      const signals = {
-        model,
-        harness,
-        reviewMd: markdown,
-        dropped: [...result.dropped],
-        unaccountedLeads: [...result.unaccountedLeads],
-        leadCount: problems.prepared.leadIds.length,
-        // Kept apart from the problems: what was looked at, and what the reviewer decided.
-        leads: staged.files["leads.md"],
-        leadAnswers,
-        readers: read.readers,
-        contract: staged.files["CONTRACT.md"],
-        prompt: options.prompt === undefined ? "base" : "custom",
-        ...(promptChanges === undefined ? {} : { promptChanges }),
-        run: {
-          startedAt: startedAt.toISOString(),
-          finishedAt: finishedAt.toISOString(),
-          milestones: [...milestones],
-          agentLog: capAgentLog(runnerAgentLog ?? stdout),
-          ...(reviewerTranscript === null ? {} : { transcript: reviewerTranscript }),
-          recordIds: sessionExport.records.map((record) => record.sourceId ?? null),
-        },
-      }
-      // One transaction: a review row whose problems failed to save would read as a
-      // review that found nothing.
-      const reviewRow = await db.transaction(async (tx) => {
-        const row = await reviewsRepo.upsertReview(tx, {
-          sessionId,
-          projectId: detail.session.projectId,
-          analyzer: PROBLEMS_ANALYZER,
-          outcome: result.review.outcome,
-          friction: result.review.friction,
-          summary: result.review.summary,
-          signals: signals as unknown as object,
-        })
-        await replaceReviewProblems(tx, {
-          reviewId: row.id,
-          sessionId,
-          projectId: detail.session.projectId,
-          problems: result.review.problems,
-        })
-        return row
-      })
-      milestone("persisted")
-      return { kind: "ok", reviewId: reviewRow.id, review: result.review }
-    }
-
-    // The deliverable is the file the agent filled in. The workspace is a local dir that
-    // survives until cleanup, so it is read back directly; byte count is logged on the
-    // milestone. A missing or emptied file falls back to the legacy v1 contract (the fenced
-    // XML block in stdout, still supported by the parser); neither source holding a review
-    // root at all is `deliverableMissing`, named with the last milestone so the next person
-    // knows where the run got stuck.
-    const deliverablePath = join(workspaceDir, "review.xml")
-    const file = await readDeliverable(deliverablePath)
-    let source: string
-    let xmlBytes: number
-    if (file !== null && file.byteLength > 0) {
-      source = file.toString("utf8")
-      xmlBytes = file.byteLength
-      milestone("deliverable_read", { bytes: xmlBytes })
-    } else if (STDOUT_REVIEW_RE.test(stdout)) {
-      source = stdout
-      xmlBytes = Buffer.byteLength(stdout)
-      log.info({ sessionId }, "ai review deliverable fell back to legacy stdout XML")
-    } else {
-      const lastMilestone = milestones.at(-1)?.name ?? null
+    const read = await readProblemWorkspace({
+      workspaceDir,
+      records: sessionExport.records,
+      instructions,
+      prepared,
+    })
+    if (read.markdown === null) {
       milestone("deliverable_missing")
-      log.warn(
-        { sessionId, lastMilestone, workspaceDir },
-        "ai review deliverable missing: no review.xml and no XML in stdout",
-      )
+      log.warn({ sessionId, workspaceDir }, "ai review deliverable missing: no review.md")
       return {
         kind: "error",
         code: "deliverableMissing",
-        detail: { lastMilestone, stdoutStart: stdout.slice(0, STDOUT_EXCERPT_CHARS) },
+        detail: { stdoutStart: stdout.slice(0, STDOUT_EXCERPT_CHARS) },
       }
     }
-
-    // The model-facing contract is XML: locally repairable, salvageable per entry. The
-    // parser heals (balancing, escaping, truncation, dropping malformed entries), runs the
-    // zod contract, and reports every repair it made in `recovered`.
-    const parsed = parseReviewXml(source)
-    if (!parsed.ok) {
-      log.warn(
-        {
-          sessionId,
-          error: parsed.error,
-          recovered: parsed.recovered,
-          stdoutStart: source.slice(0, 200),
-        },
-        "ai review unparseable: harness XML could not be recovered",
-      )
-      milestone("xml_unparseable")
+    const { markdown, leadAnswers, result } = read
+    milestone("deliverable_read", { bytes: Buffer.byteLength(markdown) })
+    if (!result.ok) {
+      log.warn({ sessionId, errors: result.errors }, "ai review unparseable: review.md")
+      milestone("review_unparseable")
       return {
         kind: "error",
         code: "unparseable",
-        detail: {
-          error: parsed.error,
-          recovered: parsed.recovered,
-          stdoutStart: source.slice(0, STDOUT_EXCERPT_CHARS),
-        },
+        detail: { errors: result.errors, start: markdown.slice(0, STDOUT_EXCERPT_CHARS) },
       }
     }
-    if (parsed.recovered.length > 0) {
-      log.info({ sessionId, recovered: parsed.recovered }, "ai review XML healed")
-    }
-    milestone("xml_parsed")
-    // The model cannot know these reliably; the runner is the authority. The cast is safe:
-    // parseReviewXml already ran the full zod contract on this exact object. Tracks join the
-    // same list: the export already knows which track every seq belongs to.
-    const payload = withDerivedTracks(
-      {
-        ...parsed.value,
-        model,
-        harness,
-      } as AiReviewPayload,
-      sessionExport.records,
-    )
-
-    const grounding = validateGrounding(payload, sessionIndexFrom(sessionExport.index))
-    if (!grounding.ok) {
-      log.warn(
-        { sessionId, problems: grounding.problems.slice(0, 10) },
-        "ai review ungrounded: claims reference records the session does not have",
-      )
-      milestone("ungrounded")
-      return {
-        kind: "error",
-        code: "ungrounded",
-        detail: { problems: grounding.problems.slice(0, 10) as GroundingProblem[] },
-      }
-    }
+    if (result.dropped.length > 0)
+      log.info({ sessionId, dropped: result.dropped }, "ai review dropped problems")
     milestone("grounded")
 
-    // Numbers the model never gets to claim: session span and token totals from the detail
-    // row, record/tool-call counts from the export the reviewer actually saw. The span SQL
-    // yields ::bigint, which the driver hands back as a string — coerce, like the repo's
-    // `countedTokens` does for token sums.
-    const numbers = {
-      durationMs: detail.session.durationMs === null ? null : Number(detail.session.durationMs),
-      recordCount: sessionExport.records.length,
-      toolCallCount: sessionExport.records.filter((record) => record.msgType === "toolCall").length,
-      inputTokens: detail.tokenUsage.inputTokens,
-      outputTokens: detail.tokenUsage.outputTokens,
-      cachedTokens: detail.tokenUsage.cachedTokens,
-      thinkingTokens: detail.tokenUsage.thinkingTokens,
-    }
-    // Timeline durations derive from export record ts (epoch ms) at each entry's from/to
-    // seq — attached server-side to the persisted copy only; the parsed payload stays
-    // contract-pure.
-    const tsAt = (seq: number): number | undefined => sessionExport.records[seq]?.ts
-    const tsRecords = sessionExport.records.filter((record) => record.ts !== undefined)
-    const firstTs = tsRecords[0]?.ts
-    const lastTs = tsRecords.at(-1)?.ts
-    const totalDurationMs =
-      firstTs !== undefined && lastTs !== undefined && lastTs >= firstTs
-        ? lastTs - firstTs
-        : undefined
-    const persistedLenses = payload.lenses.map((lens) =>
-      lens.lens === "timeline"
-        ? {
-            ...lens,
-            entries: lens.entries.map((entry) => {
-              const startMs = tsAt(entry.fromSeq)
-              const endMs = tsAt(entry.toSeq)
-              return {
-                ...entry,
-                ...(startMs === undefined ? {} : { startMs }),
-                ...(startMs !== undefined && endMs !== undefined
-                  ? { durationMs: endMs - startMs }
-                  : {}),
-              }
-            }),
-          }
-        : lens,
-    )
-
-    // The run record: how the review came to be, for later inspection. The milestone ledger
-    // ends at `grounded` — everything after this line is the persistence itself.
     const finishedAt = now()
-    const run = {
-      startedAt: startedAt.toISOString(),
-      finishedAt: finishedAt.toISOString(),
-      milestones: [...milestones],
-      recovered: [...parsed.recovered],
-      ...(parsed.selfCounts === undefined ? {} : { selfCounts: parsed.selfCounts }),
-      xmlBytes,
-      agentLog: capAgentLog(runnerAgentLog ?? stdout),
-      ...(reviewerTranscript === null ? {} : { transcript: reviewerTranscript }),
-      // seq → the captured message's real id. Evidence citations use export aliases (msg-N);
-      // the conversation tab resolves real ids, so the web needs this bridge to build links
-      // that actually scroll.
-      recordIds: sessionExport.records.map((record) => record.sourceId ?? null),
+    const signals = {
+      model,
+      harness,
+      reviewMd: markdown,
+      dropped: [...result.dropped],
+      unaccountedLeads: [...result.unaccountedLeads],
+      leadCount: prepared.leadIds.length,
+      // Kept apart from the problems: what was looked at, and what the reviewer decided.
+      leads: staged.files["leads.md"],
+      leadAnswers,
+      readers: read.readers,
+      contract: staged.files["CONTRACT.md"],
+      prompt: options.prompt === undefined ? "base" : "custom",
+      ...(promptChanges === undefined ? {} : { promptChanges }),
+      run: {
+        startedAt: startedAt.toISOString(),
+        finishedAt: finishedAt.toISOString(),
+        milestones: [...milestones],
+        agentLog: capAgentLog(runnerAgentLog ?? stdout),
+        ...(reviewerTranscript === null ? {} : { transcript: reviewerTranscript }),
+        recordIds: sessionExport.records.map((record) => record.sourceId ?? null),
+      },
     }
-
-    // Persist: review first (its id keys the learnings), then every human/agent learning as
-    // a candidate — human-check-only curation, same rule as the static path. Harness
-    // learnings stay in signals for display: they name what the tooling broke, not advice
-    // to re-attribute to a person or the agent.
-    //
-    // One transaction, because a committed review with no learnings is worse than no review:
-    // the job settles as failed while the ai-v1 row is already there, and the retry it
-    // prompts is refused with analysisAlreadyExists.
+    // One transaction: a review row whose problems failed to save would read as a
+    // review that found nothing.
     const reviewRow = await db.transaction(async (tx) => {
       const row = await reviewsRepo.upsertReview(tx, {
         sessionId,
         projectId: detail.session.projectId,
-        analyzer: AI_ANALYZER,
-        outcome: payload.outcome,
-        friction: payload.friction,
-        summary: payload.summary,
-        signals: {
-          model: payload.model,
-          harness: payload.harness,
-          lenses: persistedLenses,
-          ...(payload.partial === undefined ? {} : { partial: payload.partial }),
-          numbers,
-          ...(totalDurationMs === undefined ? {} : { totalDurationMs }),
-          run,
-        } as unknown as object,
+        analyzer: PROBLEMS_ANALYZER,
+        outcome: result.review.outcome,
+        friction: result.review.friction,
+        summary: result.review.summary,
+        signals: signals as unknown as object,
       })
-      await persistCandidates(
-        tx,
-        detail.session.projectId,
+      await replaceReviewProblems(tx, {
+        reviewId: row.id,
         sessionId,
-        row.id,
-        learningCandidates(payload),
-      )
+        projectId: detail.session.projectId,
+        problems: result.review.problems,
+      })
       return row
     })
-
-    log.info(
-      { sessionId, reviewId: reviewRow.id, elapsedMs: now().getTime() - startedAt.getTime() },
-      "ai review persisted",
-    )
     milestone("persisted")
-    return { kind: "ok", reviewId: reviewRow.id, payload }
+    return { kind: "ok", reviewId: reviewRow.id, review: result.review }
   } finally {
     if (workspaceDir !== undefined) {
       // A rejection from `finally` replaces the value the try block was about to return, so
@@ -609,21 +309,3 @@ export const runAiReview = async (
     }
   }
 }
-
-/** Harness learnings stay out: they name what the tooling broke, not advice for anyone. */
-const learningCandidates = (payload: AiReviewPayload): ReadonlyArray<LearningCandidate> =>
-  payload.lenses.flatMap((lens) => {
-    if (lens.lens !== "humanLearnings" && lens.lens !== "agentLearnings") return []
-    const audience = lens.lens === "humanLearnings" ? "human" : "agent"
-    return lens.learnings.map((learning) => ({
-      audience,
-      // Same hash core's extractor fingerprints with (audience:category:subject); the AI
-      // lens categories are wider than the extractor's closed enum, but the hash only
-      // concatenates strings, so the cast narrows a type, not a behavior.
-      category: learning.category as LearningCategory,
-      title: learning.title,
-      detail: learning.detail,
-      evidence: learning.evidence as unknown as ReadonlyArray<EvidenceRef>,
-      fingerprint: fingerprintOf(audience, learning.category as LearningCategory, learning.title),
-    }))
-  })

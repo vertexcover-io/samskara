@@ -4,18 +4,20 @@ import {
   type ReviewFriction,
   type ReviewOutcome,
 } from "../events.js"
-import type { SessionExportRecord } from "../lenses/export.js"
+import type { SessionExportRecord } from "../export.js"
 
 export const PROBLEM_CLASSES = ["missed", "blocked", "slow", "caught"] as const
 export const PROBLEM_SEVERITIES = ["high", "medium", "low"] as const
 /** Where the fix goes. `human` means the person, not the system, should change. */
 export const FIX_TYPES = ["skill", "code", "project_guidelines", "knowledge_base", "human"] as const
+export type ProblemClass = (typeof PROBLEM_CLASSES)[number]
+export type ProblemSeverity = (typeof PROBLEM_SEVERITIES)[number]
+export type FixType = (typeof FIX_TYPES)[number]
 
 /**
- * The fence around the reviewer's output, the same idea as the lens schema's caps. A problem
- * with a field over its limit is dropped; problems past the count are dropped; a summary over
- * its limit is cut short, since losing it would lose the whole review. Characters, except
- * the counts.
+ * The fence around the reviewer's output. A problem with a field over its limit is dropped;
+ * problems past the count are dropped; a summary over its limit is cut short, since losing it
+ * would lose the whole review. Characters, except the counts.
  */
 export const LIMITS = {
   title: 120,
@@ -48,10 +50,10 @@ export const idsLabel = (item: Pick<Evidence, "from" | "to">): string =>
 
 export type Problem = {
   readonly title: string
-  readonly class: (typeof PROBLEM_CLASSES)[number]
-  readonly severity: (typeof PROBLEM_SEVERITIES)[number]
+  readonly class: ProblemClass
+  readonly severity: ProblemSeverity
   readonly severityReason: string
-  readonly fixType: (typeof FIX_TYPES)[number]
+  readonly fixType: FixType
   /** What was expected, and what happened instead. */
   readonly description: string
   readonly evidence: ReadonlyArray<Evidence>
@@ -306,8 +308,8 @@ const parseProblem = (
 /**
  * Reads the review.md a reviewer wrote. Markdown for people to read, but every field has a
  * fixed name, a fixed set of words and a length limit, so code can read and fence it. A
- * broken problem is dropped with its reasons and the rest is kept — the same rule the lens
- * parser follows for a broken entry. Only a review with no usable header fails whole.
+ * broken problem is dropped with its reasons and the rest is kept. Only a review with no
+ * usable header fails whole.
  */
 export const parseReviewMd = (markdown: string): ParseResult => {
   const lines = markdown.replace(/\r\n/g, "\n").split("\n")

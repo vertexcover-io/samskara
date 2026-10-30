@@ -131,7 +131,7 @@ describe.skipIf(!dockerAvailable())("review problems repository", () => {
     const other = await reviewsRepo.upsertReview(db, {
       sessionId: "problems-5",
       projectId,
-      analyzer: "ai-v1",
+      analyzer: "heuristic-v1",
       outcome: "shipped",
       friction: "none",
       summary: "s",

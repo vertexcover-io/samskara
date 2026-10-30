@@ -1,4 +1,4 @@
-import type { SessionExport, SessionExportRecord } from "../lenses/export.js"
+import type { SessionExport, SessionExportRecord } from "../export.js"
 import type { HarnessRunInput, HarnessRunner } from "../runner.js"
 import { sessionJsonText } from "./contract.js"
 import { MAIN_TRACK, QUESTION_TOOLS } from "./leads.js"

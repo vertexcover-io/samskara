@@ -210,13 +210,12 @@ const renderDetail = (
   entry = "/sessions/s-1",
   extras: {
     readonly review?: Reply
-    readonly learnings?: Reply
     readonly analyze?: Reply
     /** A reply sequence for GET /analyze/:jobId (job status), consumed in order. */
     readonly analyzeJob?: Reply | ReadonlyArray<Reply>
     /** A reply sequence for GET /aireview, consumed in order; an empty queue stays 404. */
     readonly aireview?: Reply | ReadonlyArray<Reply>
-    /** What GET /review answers once an aireview reply landed 200: analyze writes the ai-v1 row. */
+    /** What GET /review answers once an aireview reply landed 200: analyze writes the AI review row. */
     readonly reviewAfterAi?: Reply
     readonly reviewerOptions?: Reply
     /** Rendered inside the router beside the page, so a test can navigate without remounting it. */
@@ -224,7 +223,6 @@ const renderDetail = (
   } = {},
 ) => {
   const review = extras.review ?? { status: 200, body: { reviews: [] } }
-  const learnings = extras.learnings ?? { status: 200, body: { learnings: [] } }
   const analyze = extras.analyze ?? { status: 202, body: { jobId: "job-1" } }
   const analyzeJobQueue: ReadonlyArray<Reply> =
     extras.analyzeJob === undefined
@@ -304,9 +302,6 @@ const renderDetail = (
       const after = aiLanded || existsConflict ? extras.reviewAfterAi : undefined
       return respond(after ?? review)
     }
-    if (url.includes("/learnings")) {
-      return respond(learnings)
-    }
     if (url.includes("/api/sessions/")) {
       return respond({ status: 200, body: payload })
     }
@@ -331,7 +326,7 @@ type FetchImpl = (input: RequestInfo | URL, init?: RequestInit) => Promise<Respo
 const isPatch = (init: RequestInit | undefined): boolean => init?.method === "PATCH"
 
 /**
- * The detail view always loads the review tab's two lists, so a test that only cares about
+ * The detail view always loads the review tab's review list, so a test that only cares about
  * the header still has to answer them. Handled here rather than in every caller: these tests
  * assert on renaming, and an empty review list is the uninteresting case for all of them.
  */
@@ -342,7 +337,6 @@ const renderDetailWithFetch = (impl: FetchImpl, entry = "/sessions/s-1") => {
     if (url.includes("/review") && !isPatch(init)) {
       return Promise.resolve(jsonResponse(200, { reviews: [] }))
     }
-    if (url.includes("/learnings")) return Promise.resolve(jsonResponse(200, { learnings: [] }))
     return impl(input, init)
   }
   vi.spyOn(globalThis, "fetch").mockImplementation(withReviewLists)
@@ -984,6 +978,15 @@ test("S68: a session with no branches marks its linked record too - the mark is 
   expect(screen.getByText(/Only prompt/).closest("article")).not.toHaveAttribute("aria-current")
 })
 
+test("a link to a tool call while tool calls are hidden turns them on, so the linked call is there to land on", async () => {
+  renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1?tab=conversation&m=tool-msg")
+
+  await tabsLoaded()
+
+  await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("tools=1"))
+  expect(screen.getByRole("checkbox", { name: /show tool calls inline/i })).toBeChecked()
+})
+
 test("S69: opening a branch records it in the query, so the branch a reader is looking at is itself shareable", async () => {
   const user = userEvent.setup()
   renderDetail(BRANCH_PAYLOAD)
@@ -1143,26 +1146,10 @@ const REVIEW = {
   createdAt: "2026-08-25T10:00:00.000Z",
 }
 
-const LESSON = {
-  id: "l-1",
-  projectId: "22222222-2222-4222-8222-222222222222",
-  audience: "agent",
-  category: "tool-retry",
-  title: "Bash failed 3 times in a row",
-  detail: "After the second failure of the same call shape, change the approach.",
-  evidence: [{ seq: 4, what: "failure 1 of Bash" }],
-  fingerprint: "fp-1",
-  status: "candidate",
-  occurrenceCount: 3,
-  firstSeenAt: "2026-08-25T10:00:00.000Z",
-  lastSeenAt: "2026-08-25T12:00:00.000Z",
-}
-
-test("the Review tab renders no verdict card for a static-only review, and still lists this session's lessons", async () => {
+test("the Review tab renders no verdict card for a static-only review", async () => {
   const user = userEvent.setup()
   renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1", {
     review: { status: 200, body: { reviews: [REVIEW] } },
-    learnings: { status: 200, body: { learnings: [LESSON] } },
   })
 
   await tabsLoaded()
@@ -1175,14 +1162,9 @@ test("the Review tab renders no verdict card for a static-only review, and still
   expect(
     within(panel).queryByText("The agent spent most of the session stuck."),
   ).not.toBeInTheDocument()
-
-  expect(within(panel).getByText("Bash failed 3 times in a row")).toBeInTheDocument()
-  expect(within(panel).getByText(/For agents · tool-retry/)).toBeInTheDocument()
-  expect(within(panel).getByText(/seen 3 times/)).toBeInTheDocument()
-  expect(within(panel).getByText("Candidate")).toBeInTheDocument()
 })
 
-test("the Review tab stays quiet when no review exists — no verdict, no lessons section", async () => {
+test("the Review tab stays quiet when no review exists — no verdict", async () => {
   const user = userEvent.setup()
   renderDetail()
 
@@ -1193,63 +1175,10 @@ test("the Review tab stays quiet when no review exists — no verdict, no lesson
     await within(panelOf()).findByText("This session has not been reviewed yet."),
   ).toBeInTheDocument()
   const panel = panelOf()
-  expect(within(panel).queryByText(/No lessons from this session/)).not.toBeInTheDocument()
   // The static analyzer stays server-triggered; the one button here is the AI review's.
   expect(within(panel).getAllByRole("button")).toHaveLength(1)
   expect(within(panel).getByRole("button", { name: /analyze with ai/i })).toBeInTheDocument()
 })
-
-const AI_REVIEW_ROW = {
-  id: "rev-ai-1",
-  analyzer: "ai-v1",
-  outcome: "productive",
-  friction: "none",
-  summary: "Clean run: one prompt, one migration.",
-  signals: {
-    model: "fake-model",
-    harness: "test-harness",
-    lenses: [
-      {
-        lens: "timeline",
-        entries: [
-          {
-            id: "all",
-            kind: "phase",
-            title: "The whole session",
-            summary: "Prompt, plan, migration.",
-            fromSeq: 0,
-            toSeq: 3,
-            messageIds: ["m-3", "m-7"],
-            tracks: ["main"],
-          },
-          {
-            id: "turn",
-            kind: "turning-point",
-            title: "The upsert decision",
-            summary: "Retry loop abandoned for a unique constraint.",
-            fromSeq: 2,
-            toSeq: 2,
-            messageIds: ["m-2"],
-            tracks: ["main"],
-          },
-        ],
-      },
-      {
-        lens: "humanLearnings",
-        learnings: [
-          {
-            title: "Name the constraint in the prompt",
-            detail: "Stating the target table up front saves a discovery pass.",
-            category: "communication",
-            evidence: [{ seq: 1, messageId: "m-2", what: "prompt names no table" }],
-          },
-        ],
-      },
-      { lens: "agentLearnings", learnings: [] },
-    ],
-  },
-  createdAt: "2026-08-25T11:00:00.000Z",
-}
 
 /** What GET /:id/aireview reports while a job for this session is still running. */
 const RUNNING_JOB = {
@@ -1259,331 +1188,7 @@ const RUNNING_JOB = {
   lastEvent: { name: "harness_first_byte", at: "2026-08-26T09:00:04.000Z" },
 }
 
-/**
- * A current-shape ai-v1 row: audience'd learnings with severity/nextTime/cost, per-entry
- * durations, the server-computed numbers block, partial accounting, and the run block.
- */
-const ENRICHED_AI_REVIEW = {
-  id: "rev-ai-2",
-  analyzer: "ai-v1",
-  outcome: "shipped",
-  friction: "moderate",
-  summary:
-    "The review artifact landed and every citation checks out, but a third of the session went to recovering an input file the pipeline failed to deliver.",
-  signals: {
-    model: "glm-5.3",
-    harness: "opencode",
-    numbers: {
-      durationMs: 278_000,
-      recordCount: 130,
-      toolCallCount: 27,
-      inputTokens: 24_900,
-      outputTokens: 5_100,
-      cachedTokens: 280_800,
-      thinkingTokens: 1_200,
-    },
-    totalDurationMs: 278_000,
-    lenses: [
-      {
-        lens: "timeline",
-        entries: [
-          {
-            id: "kickoff",
-            kind: "phase",
-            title: "Kickoff",
-            summary: "Prompt hands over the review task.",
-            fromSeq: 0,
-            toSeq: 2,
-            messageIds: ["m-0"],
-            tracks: ["main"],
-            startMs: 0,
-            durationMs: 10_000,
-          },
-          {
-            id: "recovery",
-            kind: "event",
-            title: "Recovering the missing export",
-            summary: "Two reads fail; the agent rebuilds the export from the database.",
-            fromSeq: 3,
-            toSeq: 28,
-            messageIds: ["msg-3"],
-            tracks: ["main"],
-            startMs: 10_000,
-            durationMs: 95_000,
-          },
-          {
-            id: "pivot",
-            kind: "turning-point",
-            title: "Pivot: mine opencode.db instead",
-            summary: "Agent decides, without asking, to rebuild the export.",
-            fromSeq: 29,
-            toSeq: 76,
-            messageIds: ["m-29"],
-            tracks: ["main"],
-            startMs: 105_000,
-            durationMs: 71_000,
-          },
-          {
-            id: "analysis",
-            kind: "phase",
-            title: "Inner session analyzed",
-            summary: "Rebuilt export read end-to-end.",
-            fromSeq: 77,
-            toSeq: 114,
-            messageIds: ["m-77"],
-            tracks: ["main"],
-            startMs: 176_000,
-            durationMs: 5_000,
-          },
-          {
-            id: "build",
-            kind: "turning-point",
-            title: "Review built and self-validated",
-            summary: "Citations pulled programmatically.",
-            fromSeq: 115,
-            toSeq: 129,
-            messageIds: ["m-115"],
-            tracks: ["main"],
-            startMs: 181_000,
-            durationMs: 3_000,
-          },
-        ],
-      },
-      {
-        lens: "humanLearnings",
-        learnings: [
-          {
-            title: "Nothing to change for the human",
-            detail: "The prompt was complete and specific.",
-            category: "communication",
-            audience: "human",
-            severity: "low",
-            nextTime: "",
-            evidence: [],
-          },
-        ],
-      },
-      {
-        lens: "agentLearnings",
-        learnings: [
-          {
-            title: "Escalate before swapping the source of truth",
-            detail: "The agent silently substituted its own reconstruction.",
-            category: "approach",
-            audience: "agent",
-            severity: "medium",
-            nextTime: "When an input contract breaks, name it in the reply and proceed marked.",
-            cost: "a trust cost",
-            evidence: [{ seq: 47, messageId: "m-47", what: "the pivot decision" }],
-          },
-          {
-            title: "Probe a schema once, then query",
-            detail: "About 20 bash calls walked the schema before the first real query.",
-            category: "efficiency",
-            audience: "agent",
-            severity: "low",
-            nextTime: "Read the schema in one query, then run the queries you need.",
-            cost: "most of the 71s reconstruction block",
-            evidence: [{ seq: 34, messageId: "m-34", what: "first schema probe" }],
-          },
-        ],
-      },
-      {
-        lens: "breadcrumbs",
-        learnings: [
-          {
-            title: "The exporter delivered an empty promise",
-            detail: "session.json never landed in the workspace.",
-            category: "pipeline",
-            audience: "agent",
-            severity: "high",
-            nextTime: "Assert the export exists before spawning the reviewer.",
-            cost: "95s of 278s — 34% of the session",
-            evidence: [{ seq: 4, messageId: "m-4", what: "first failed read" }],
-          },
-        ],
-      },
-    ],
-    partial: {
-      claimed: { timeline: 20, human: 5, agent: 6, harness: 2 },
-      parsed: { timeline: 5, human: 1, agent: 2, harness: 1 },
-    },
-    run: {
-      startedAt: "2026-08-26T16:00:00.000Z",
-      finishedAt: "2026-08-26T16:04:38.000Z",
-      milestones: [
-        { milestone: "workspace_ready", elapsedMs: 2_000 },
-        { milestone: "harness_first_byte", elapsedMs: 4_000 },
-        { milestone: "persisted", elapsedMs: 278_000 },
-      ],
-      recovered: [
-        "dropped:timeline",
-        "escaped bare &",
-        'dropped <learning title="Clarify file location upfront"> (no evidence ref)',
-        'dropped <learning title="Ask for clarification when file location is ambiguous"> (no next time)',
-      ],
-      selfCounts: { timeline: 20, human: 5, agent: 6, harness: 2 },
-      xmlBytes: 6_144,
-      agentLog: "$ cat session.json\ncat: session.json: No such file or directory",
-      recordIds: [null, null, null, "m-3"],
-      transcript: [
-        { role: "user", text: "review the exported session beside you" },
-        {
-          role: "assistant",
-          text: "Reading the export first.",
-          tools: [{ name: "Read", input: "/work/session.json" }],
-        },
-      ],
-    },
-  },
-  createdAt: "2026-08-26T16:04:40.000Z",
-}
-
-/** A timeline longer than the row cap, with distinct durations so the top-7 cut is checkable. */
-const cappedTimelineReview = (durations: ReadonlyArray<number | undefined>) => ({
-  id: "rev-ai-cap",
-  analyzer: "ai-v1",
-  outcome: "productive",
-  friction: "none",
-  summary: "Many phases.",
-  signals: {
-    model: "fake-model",
-    harness: "test-harness",
-    lenses: [
-      {
-        lens: "timeline",
-        entries: durations.map((durationMs, index) => ({
-          id: `cap-${index}`,
-          kind: "phase",
-          title: `Phase ${index + 1}`,
-          summary: `Summary ${index + 1}.`,
-          fromSeq: index * 10,
-          toSeq: index * 10 + 9,
-          messageIds: [`mcap-${index}`],
-          tracks: ["main"],
-          ...(durationMs === undefined ? {} : { durationMs }),
-        })),
-      },
-      { lens: "humanLearnings", learnings: [] },
-      { lens: "agentLearnings", learnings: [] },
-      { lens: "breadcrumbs", learnings: [] },
-    ],
-  },
-  createdAt: "2026-08-26T17:00:00.000Z",
-})
-
-test("AI review: clicking Analyze starts a job, polls until it lands, and is replaced by the AI block", async () => {
-  const user = userEvent.setup()
-  renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1", {
-    review: { status: 200, body: { reviews: [REVIEW] } },
-    analyze: { status: 202, body: { jobId: "job-9" } },
-    // The job status is the landed signal: first poll tick reads running, second succeeded.
-    analyzeJob: [
-      {
-        status: 200,
-        body: {
-          job: {
-            status: "running",
-            jobId: "job-9",
-            startedAt: "2026-08-30T10:00:00Z",
-            lastEvent: null,
-          },
-        },
-      },
-      { status: 200, body: { job: { status: "succeeded", jobId: "job-9", reviewId: "r-9" } } },
-    ],
-    aireview: [{ status: 404, body: { error: "noAiReview" } }],
-    reviewAfterAi: { status: 200, body: { reviews: [AI_REVIEW_ROW, REVIEW] } },
-  })
-
-  await tabsLoaded()
-  await user.click(screen.getByRole("tab", { name: /Review/ }))
-  const analyze = await within(panelOf()).findByRole("button", { name: /analyze with ai/i })
-
-  // Fake timers drive the 3s poll; fireEvent keeps the click itself timer-free. The modal
-  // runs under real timers (its options fetch must resolve) before the poll takes over.
-  fireEvent.click(analyze)
-  fireEvent.click(await screen.findByRole("button", { name: "Run analysis" }))
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] })
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(0)
-  })
-  expect(analyze).toBeDisabled()
-  expect(within(panelOf()).getByText(/Analyzing… \(started/)).toBeInTheDocument()
-
-  // First poll still answers 404, so the run goes on waiting.
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(3000)
-  })
-  expect(within(panelOf()).getByText(/Analyzing…/)).toBeInTheDocument()
-
-  // Second poll answers 200: the reviews list is re-fetched and the AI block renders.
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(3000)
-    await vi.advanceTimersByTimeAsync(0)
-  })
-  const panel = panelOf()
-  expect(within(panel).getByText("AI review")).toBeInTheDocument()
-  expect(within(panel).queryByRole("button", { name: /analyze with ai/i })).not.toBeInTheDocument()
-  expect(within(panel).getByText(/fake-model · test-harness/)).toBeInTheDocument()
-  expect(within(panel).getByText(/Clean run: one prompt, one migration\./)).toBeInTheDocument()
-
-  const entry = within(panel).getByRole("link", { name: /the whole session/i })
-  expect(entry).toHaveAttribute("href", expect.stringContaining("tab=conversation"))
-  expect(entry).toHaveAttribute("href", expect.stringContaining("m=m-3"))
-})
-
-// Old persisted rows carry none of the enrichment: no numbers, no durations, no audience
-// field on learnings. The card must still render, grouped by lens name alone.
-test("AI review: an old-shape ai-v1 row renders its verdict sentence, audience groups, and grounded evidence links", async () => {
-  const user = userEvent.setup()
-  renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1", {
-    review: { status: 200, body: { reviews: [AI_REVIEW_ROW, REVIEW] } },
-    learnings: { status: 200, body: { learnings: [LESSON] } },
-  })
-
-  await tabsLoaded()
-  await user.click(screen.getByRole("tab", { name: /Review/ }))
-
-  const panel = panelOf()
-  expect(within(panel).queryByRole("button", { name: /analyze with ai/i })).not.toBeInTheDocument()
-  expect(within(panel).getByText("AI review")).toBeInTheDocument()
-  // The verdict is a plain sentence anchored by a color dot — the outcome word never renders.
-  expect(within(panel).queryByText("productive")).not.toBeInTheDocument()
-  expect(within(panel).getByText("Useful work, nothing delivered to show.")).toBeInTheDocument()
-  expect(within(panel).getByText(/fake-model · test-harness/)).toBeInTheDocument()
-
-  // The timeline entry carries its span and grounds in the transcript; the whole row is the link.
-  expect(within(panel).getByText(/seq 0–3/)).toBeInTheDocument()
-  const entry = within(panel).getByRole("link", { name: /the whole session/i })
-  expect(entry).toHaveAttribute("href", expect.stringContaining("tab=conversation"))
-  expect(entry).toHaveAttribute("href", expect.stringContaining("m=m-3"))
-
-  // Learnings group under audience headers; an empty group is skipped, not announced.
-  expect(
-    within(panel).getByRole("heading", { name: "What you could do differently" }),
-  ).toBeInTheDocument()
-  expect(within(panel).queryByRole("heading", { name: "The agent" })).not.toBeInTheDocument()
-  await user.click(
-    within(panel).getByRole("button", { name: /name the constraint in the prompt/i }),
-  )
-  const evidence = within(panel).getByRole("link", { name: /seq 1 · prompt names no table/ })
-  expect(evidence).toHaveAttribute("href", expect.stringContaining("tab=conversation"))
-  expect(evidence).toHaveAttribute("href", expect.stringContaining("m=m-2"))
-
-  // Nothing the payload lacks may render a shell: no numbers, strip, banner, or run panel.
-  expect(within(panel).queryByText(/cache reads/)).not.toBeInTheDocument()
-  expect(
-    within(panel).queryByRole("heading", { name: /where the time went/i }),
-  ).not.toBeInTheDocument()
-  expect(within(panel).queryByText(/reported writing/)).not.toBeInTheDocument()
-  expect(within(panel).queryByRole("button", { name: /review agent run/i })).not.toBeInTheDocument()
-
-  // The static analyzer no longer renders a card at all.
-  expect(within(panel).queryByText("Static review · heuristic-v1")).not.toBeInTheDocument()
-})
-
-/** A problems review (ai-problems-v2) as the review list carries it: no lenses, run.recordIds. */
+/** An AI review as the review list carries it, with run.recordIds. */
 const PROBLEMS_REVIEW_ROW = {
   id: "rev-p",
   analyzer: "ai-problems-v2",
@@ -1622,6 +1227,85 @@ const problemsReply = (problems: ReadonlyArray<unknown>): Reply => ({
       problems,
     },
   },
+})
+
+/** A review whose run captured the reviewer's own session, for the Reviewer session modal. */
+const REVIEW_WITH_TRANSCRIPT = {
+  ...PROBLEMS_REVIEW_ROW,
+  outcome: "shipped",
+  friction: "moderate",
+  signals: {
+    ...PROBLEMS_REVIEW_ROW.signals,
+    run: {
+      recordIds: ["m-1", "m-2", "tool-msg"],
+      agentLog: "$ cat session.json\ncat: session.json: No such file or directory",
+      transcript: [
+        { role: "user", text: "review the exported session beside you" },
+        {
+          role: "assistant",
+          text: "Reading the export first.",
+          tools: [{ name: "Read", input: "/work/session.json" }],
+        },
+      ],
+    },
+  },
+}
+
+test("AI review: clicking Analyze starts a job, polls until it lands, and is replaced by the AI block", async () => {
+  const user = userEvent.setup()
+  renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1", {
+    review: { status: 200, body: { reviews: [REVIEW] } },
+    analyze: { status: 202, body: { jobId: "job-9" } },
+    // The job status is the landed signal: first poll tick reads running, second succeeded.
+    analyzeJob: [
+      {
+        status: 200,
+        body: {
+          job: {
+            status: "running",
+            jobId: "job-9",
+            startedAt: "2026-08-30T10:00:00Z",
+            lastEvent: null,
+          },
+        },
+      },
+      { status: 200, body: { job: { status: "succeeded", jobId: "job-9", reviewId: "r-9" } } },
+    ],
+    aireview: [{ status: 404, body: { error: "noAiReview" } }],
+    reviewAfterAi: { status: 200, body: { reviews: [PROBLEMS_REVIEW_ROW, REVIEW] } },
+  })
+
+  await tabsLoaded()
+  await user.click(screen.getByRole("tab", { name: /Review/ }))
+  const analyze = await within(panelOf()).findByRole("button", { name: /analyze with ai/i })
+
+  // Fake timers drive the 3s poll; fireEvent keeps the click itself timer-free. The modal
+  // runs under real timers (its options fetch must resolve) before the poll takes over.
+  fireEvent.click(analyze)
+  fireEvent.click(await screen.findByRole("button", { name: "Run analysis" }))
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] })
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0)
+  })
+  expect(analyze).toBeDisabled()
+  expect(within(panelOf()).getByText(/Analyzing… \(started/)).toBeInTheDocument()
+
+  // First poll still answers 404, so the run goes on waiting.
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(3000)
+  })
+  expect(within(panelOf()).getByText(/Analyzing…/)).toBeInTheDocument()
+
+  // Second poll answers 200: the reviews list is re-fetched and the AI block renders.
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(3000)
+    await vi.advanceTimersByTimeAsync(0)
+  })
+  const panel = panelOf()
+  expect(within(panel).getByText("AI review")).toBeInTheDocument()
+  expect(within(panel).queryByRole("button", { name: /analyze with ai/i })).not.toBeInTheDocument()
+  expect(within(panel).getByText(/fake-model · test-harness/)).toBeInTheDocument()
+  expect(within(panel).getByText(/wrote the upsert twice/)).toBeInTheDocument()
 })
 
 test("AI review: a problems review renders its verdict, summary and problems with linked quotes", async () => {
@@ -1735,7 +1419,7 @@ test("AI review: a reload joins the running job — Analyzing shows without a cl
         body: { job: { status: "succeeded", jobId: "job-live-1", reviewId: "r-live" } },
       },
     ],
-    reviewAfterAi: { status: 200, body: { reviews: [AI_REVIEW_ROW, REVIEW] } },
+    reviewAfterAi: { status: 200, body: { reviews: [PROBLEMS_REVIEW_ROW, REVIEW] } },
   })
   await act(async () => {
     await vi.advanceTimersByTimeAsync(0)
@@ -1765,7 +1449,7 @@ test("AI review: 409 analysisAlreadyExists treats the verdict as arrived — the
   renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1", {
     analyze: { status: 409, body: { error: "analysisAlreadyExists" } },
     aireview: [{ status: 404, body: { error: "noAiReview" } }],
-    reviewAfterAi: { status: 200, body: { reviews: [AI_REVIEW_ROW, REVIEW] } },
+    reviewAfterAi: { status: 200, body: { reviews: [PROBLEMS_REVIEW_ROW, REVIEW] } },
   })
 
   await tabsLoaded()
@@ -1919,13 +1603,15 @@ test("AI review: 409 analysisAlreadyRunning joins the existing run and polls it 
       { status: 404, body: { error: "noAiReview" } },
       // The click's conflict said someone else is running; the poll adopts that job's id.
       { status: 200, body: { review: null, job: RUNNING_JOB } },
-      { status: 200, body: { review: AI_REVIEW_ROW } },
+      { status: 200, body: { review: PROBLEMS_REVIEW_ROW } },
     ],
     analyzeJob: {
       status: 200,
-      body: { job: { status: "succeeded", jobId: RUNNING_JOB.jobId, reviewId: AI_REVIEW_ROW.id } },
+      body: {
+        job: { status: "succeeded", jobId: RUNNING_JOB.jobId, reviewId: PROBLEMS_REVIEW_ROW.id },
+      },
     },
-    reviewAfterAi: { status: 200, body: { reviews: [AI_REVIEW_ROW, REVIEW] } },
+    reviewAfterAi: { status: 200, body: { reviews: [PROBLEMS_REVIEW_ROW, REVIEW] } },
   })
 
   await tabsLoaded()
@@ -1977,7 +1663,7 @@ test.each([
 test("AI-9c: the verdict is built from the review's own friction, and the reviewer session modal renders the transcript like a conversation - roles, text, inline tools", async () => {
   const user = userEvent.setup()
   renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1", {
-    review: { status: 200, body: { reviews: [ENRICHED_AI_REVIEW] } },
+    review: { status: 200, body: { reviews: [REVIEW_WITH_TRANSCRIPT] } },
   })
 
   await tabsLoaded()
@@ -2001,7 +1687,7 @@ test("AI-9c: the verdict is built from the review's own friction, and the review
 test("AI review: a failed redo surfaces its reason on the card instead of dying silently", async () => {
   const user = userEvent.setup()
   renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1", {
-    review: { status: 200, body: { reviews: [ENRICHED_AI_REVIEW] } },
+    review: { status: 200, body: { reviews: [REVIEW_WITH_TRANSCRIPT] } },
     analyze: { status: 500, body: { error: "internal" } },
   })
 
@@ -2015,168 +1701,12 @@ test("AI review: a failed redo surfaces its reason on the card instead of dying 
   expect(within(panel).getByRole("button", { name: "Redo review" })).toBeEnabled()
 })
 
-test("AI-9c: the numbers line renders mono chips from signals.numbers", async () => {
-  const user = userEvent.setup()
-  renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1", {
-    review: { status: 200, body: { reviews: [ENRICHED_AI_REVIEW] } },
-  })
-
-  await tabsLoaded()
-  await user.click(screen.getByRole("tab", { name: /Review/ }))
-
-  const panel = panelOf()
-  expect(within(panel).getByText("4m 38s")).toBeInTheDocument()
-  expect(within(panel).getByText("130 records")).toBeInTheDocument()
-  expect(within(panel).getByText("27 tool calls")).toBeInTheDocument()
-  expect(within(panel).getByText("24.9k in / 5.1k out tokens")).toBeInTheDocument()
-  expect(within(panel).getByText("280.8k cache reads")).toBeInTheDocument()
-})
-
-test("AI-9c: where the time went — a proportional strip with titled segments and the largest-share sentence", async () => {
-  const user = userEvent.setup()
-  renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1", {
-    review: { status: 200, body: { reviews: [ENRICHED_AI_REVIEW] } },
-  })
-
-  await tabsLoaded()
-  await user.click(screen.getByRole("tab", { name: /Review/ }))
-
-  const panel = panelOf()
-  expect(within(panel).getByRole("heading", { name: /where the time went/i })).toBeInTheDocument()
-  expect(within(panel).getByTitle("Recovering the missing export · 95s")).toBeInTheDocument()
-  expect(within(panel).getByTitle("Kickoff · 10s")).toBeInTheDocument()
-  // Turning points carry the accent color; ordinary phases stay neutral.
-  expect(within(panel).getByTitle("Pivot: mine opencode.db instead · 71s").className).toContain(
-    "bg-stamp",
-  )
-  expect(within(panel).getByTitle("Recovering the missing export · 95s").className).not.toContain(
-    "bg-stamp",
-  )
-  expect(
-    within(panel).getByText(/95s of 278s — 34% — went to Recovering the missing export/),
-  ).toBeInTheDocument()
-})
-
-test("AI-9c: timeline rows show duration + seq range, and the whole row navigates to the conversation", async () => {
-  const user = userEvent.setup()
-  renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1", {
-    review: { status: 200, body: { reviews: [ENRICHED_AI_REVIEW] } },
-  })
-
-  await tabsLoaded()
-  await user.click(screen.getByRole("tab", { name: /Review/ }))
-
-  const panel = panelOf()
-  const meta = within(panel).getByText(/95s · 34% of the session/)
-  expect(meta.textContent).toContain("seq 3–28")
-  const row = within(panel).getByRole("link", { name: /recovering the missing export/i })
-  expect(row).toHaveAttribute("href", expect.stringContaining("tab=conversation"))
-  expect(row).toHaveAttribute("href", expect.stringContaining("m=m-3"))
-})
-
-test("AI-9c: the whole timeline renders, however long it is", async () => {
-  const user = userEvent.setup()
-  renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1", {
-    review: {
-      status: 200,
-      body: {
-        reviews: [
-          cappedTimelineReview([
-            100_000, 10_000, 90_000, 20_000, 80_000, 30_000, 70_000, 40_000, 60_000, 50_000,
-          ]),
-        ],
-      },
-    },
-  })
-
-  await tabsLoaded()
-  await user.click(screen.getByRole("tab", { name: /Review/ }))
-
-  const list = screen.getByRole("list", { name: /review timeline/i })
-  expect(within(list).getAllByRole("listitem")).toHaveLength(10)
-  // Narrative order, not duration order.
-  expect(within(list).getByText("Phase 1")).toBeInTheDocument()
-  expect(within(list).getByText("Phase 2")).toBeInTheDocument()
-  expect(within(list).getByText("Phase 10")).toBeInTheDocument()
-  expect(within(panelOf()).queryByRole("button", { name: /show all/i })).not.toBeInTheDocument()
-})
-
-test("AI-9c: learnings accordions under the three audience headers, with severity, cost, next time, and evidence", async () => {
-  const user = userEvent.setup()
-  renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1", {
-    review: { status: 200, body: { reviews: [ENRICHED_AI_REVIEW] } },
-  })
-
-  await tabsLoaded()
-  await user.click(screen.getByRole("tab", { name: /Review/ }))
-
-  const panel = panelOf()
-  expect(
-    within(panel).getByRole("heading", { name: "What you could do differently" }),
-  ).toBeInTheDocument()
-  expect(
-    within(panel).getByRole("heading", { name: "What the agent could do better" }),
-  ).toBeInTheDocument()
-
-  // The always-visible level carries the severity chip and the cost; the rest stays folded.
-  const harnessRow = within(panel).getByRole("button", {
-    name: /exporter delivered an empty promise/i,
-  })
-  expect(within(harnessRow).getByText("high")).toBeInTheDocument()
-  expect(within(harnessRow).getByText("95s of 278s — 34% of the session")).toBeInTheDocument()
-  expect(within(harnessRow).queryByText(/Assert the export exists/)).not.toBeInTheDocument()
-  expect(harnessRow).toHaveAttribute("aria-expanded", "false")
-
-  // Expanding reveals the detail, the imperative next-time line, and evidence deep links.
-  await user.click(harnessRow)
-  expect(harnessRow).toHaveAttribute("aria-expanded", "true")
-  const opened = harnessRow.closest("li") as HTMLElement
-  expect(
-    within(opened).getByText(/session\.json never landed in the workspace\./),
-  ).toBeInTheDocument()
-  expect(
-    within(opened).getByText(/Assert the export exists before spawning the reviewer\./),
-  ).toBeInTheDocument()
-  expect(within(opened).getByText("Next time:")).toBeInTheDocument()
-  const evidence = within(opened).getByRole("link", { name: /seq 4 · first failed read/ })
-  expect(evidence).toHaveAttribute("href", expect.stringContaining("tab=conversation"))
-  expect(evidence).toHaveAttribute("href", expect.stringContaining("m=m-4"))
-
-  // A "Nothing to change" entry renders as a quiet closed row: no chip, no toggle.
-  const youGroup = within(panel).getByRole("heading", { name: "What you could do differently" })
-    .parentElement as HTMLElement
-  const nothing = within(youGroup)
-    .getByText(/Nothing to change for the human/)
-    .closest("li") as HTMLElement
-  expect(within(nothing).queryByRole("button")).not.toBeInTheDocument()
-  expect(within(nothing).queryByText(/^(low|medium|high)$/)).not.toBeInTheDocument()
-})
-
-test("AI-9c: when entries fall out of the reviewer's report, the banner names them with reasons", async () => {
-  const user = userEvent.setup()
-  renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1", {
-    review: { status: 200, body: { reviews: [ENRICHED_AI_REVIEW] } },
-  })
-
-  await tabsLoaded()
-  await user.click(screen.getByRole("tab", { name: /Review/ }))
-
-  expect(
-    screen.getByText(/reviewer reported writing 33 entries; 9 survived validation/),
-  ).toBeInTheDocument()
-  expect(
-    screen.getByText(
-      /its own notes that fell out: “Clarify file location upfront” \([^)]*\), “Ask for clarification when file location is ambiguous” \([^)]*\)/,
-    ),
-  ).toBeInTheDocument()
-})
-
 test("AI review: a reload while a redo is running shows Redo running on the existing card, not a fresh button", async () => {
   renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1?tab=review", {
-    review: { status: 200, body: { reviews: [AI_REVIEW_ROW, REVIEW] } },
+    review: { status: 200, body: { reviews: [PROBLEMS_REVIEW_ROW, REVIEW] } },
     aireview: [
       // The mount probe: the old review is on the page AND a redo job is in flight.
-      { status: 200, body: { review: AI_REVIEW_ROW, job: RUNNING_JOB } },
+      { status: 200, body: { review: PROBLEMS_REVIEW_ROW, job: RUNNING_JOB } },
     ],
   })
   await waitFor(() => expect(screen.getByText(/Redo running… \(started/)).toBeInTheDocument())

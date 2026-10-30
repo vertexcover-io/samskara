@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto"
-import type { SessionExport } from "../lenses/export.js"
+import type { SessionExport } from "../export.js"
+import { WRITING_RULES } from "../writingRules.js"
 import { LIMITS } from "./reviewMd.js"
 
 /**
@@ -180,14 +181,7 @@ Code reads this file back. A problem with a missing field, a word outside its li
 over its limit, or a quote that is not at its ids is thrown away. So cite only ids that exist,
 and delete a claim you cannot cite.
 
-## How to write
-
-- Write the way you would say it out loud to the person next to you.
-- Say what happened plainly, with the real names, numbers and error messages.
-- Use everyday words: use, fix, broke. Not utilize, leverage, remediate.
-- No grading words like robust, crucial or honest. Say why it matters instead.
-- Do not squeeze: write "the test suite failed twice", not "tests ×2 ✗".
-- The reader remembers nothing: a file name or id always comes with what it is.
+${WRITING_RULES}
 
 Your final reply is one short line, for example "review.md ready: 6 problems".
 `

@@ -232,6 +232,41 @@
       "when": 1793384274570,
       "tag": "0032_milky_micromax",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1793384275570,
+      "tag": "0033_low_thundra",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1793384276570,
+      "tag": "0034_drop_ai_v1_reviews",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1793384277570,
+      "tag": "0035_violet_blonde_phantom",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1793384278570,
+      "tag": "0036_odd_karnak",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1793384279570,
+      "tag": "0037_lucky_baron_strucker",
+      "breakpoints": true
     }
   ]
 }

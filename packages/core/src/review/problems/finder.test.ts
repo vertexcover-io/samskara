@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest"
-import type { SessionExport, SessionExportRecord } from "../lenses/export.js"
+import type { SessionExport, SessionExportRecord } from "../export.js"
 import type { HarnessRunner } from "../runner.js"
 import { findAgentLeads, parseFoundLeads, shortenForReader, splitIntoPieces } from "./finder.js"
 

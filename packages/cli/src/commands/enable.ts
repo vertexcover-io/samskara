@@ -10,7 +10,7 @@ import { watchLogDir } from "../config/paths.js"
 import { getProject, upsertProject } from "../config/projects.js"
 import { refuseOnServerChange } from "../config/server-scope.js"
 import { apiBase as defaultApiBase } from "../config.js"
-import { errorMessage, reportError, resolveIo, type Writer } from "../io.js"
+import { reportError, resolveIo, serverUnreachable, type Writer } from "../io.js"
 import { resolveProject } from "../watcher/resolveProject.js"
 
 type RegisterDeps = {
@@ -51,9 +51,7 @@ const registerProject = async (
       }),
     })
   } catch (error) {
-    throw new Error(
-      `Could not reach the server at ${deps.apiBase} (${errorMessage(error)}). Start it or check SAMSKARA_API_URL, then try again.`,
-    )
+    throw serverUnreachable(deps.apiBase, error)
   }
   if (res.status === 401)
     throw new Error("The server rejected the stored login. Run `samskara login` again.")
