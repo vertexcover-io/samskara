@@ -25,6 +25,8 @@ const listSchema = z.object({
         fix: z.string(),
         problemCount: z.number(),
         sessionCount: z.number(),
+        // Optional so this CLI still reads a server from before Skip.
+        skippedAt: z.string().nullable().optional(),
       })
       .loose(),
   ),
@@ -126,9 +128,9 @@ export const learnCommand = async (options: LearnOptions): Promise<number> => {
       await sleep(POLL_MS)
     }
 
-    const { learnings } = listSchema.parse(
-      await call(`/api/learnings?project=${encodeURIComponent(options.project)}`),
-    )
+    const learnings = listSchema
+      .parse(await call(`/api/learnings?project=${encodeURIComponent(options.project)}`))
+      .learnings.filter((learning) => (learning.skippedAt ?? null) === null)
     if (learnings.length === 0) {
       stdout.write("No learnings yet.\n")
       return 0
