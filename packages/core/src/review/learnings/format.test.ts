@@ -1,3 +1,7 @@
+import { execFileSync } from "node:child_process"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { describe, expect, test } from "vitest"
 import {
   groupsForWriter,
@@ -6,6 +10,7 @@ import {
   parseGroupsMd,
   parseWrittenMd,
   problemsMd,
+  writtenCheckScript,
 } from "./format.js"
 import type { LearningInput, ProblemInput } from "./types.js"
 
@@ -133,6 +138,9 @@ describe("what agent 2 reads and writes", () => {
     priorityReason: "Two sessions.",
     fixType: "skill",
     fix: "Add a wait rule to skills/implement/SKILL.md.",
+    impact: null,
+    impactReason: null,
+    howItHelps: null,
   }
 
   test("LW1: each group shows its cause, the learning it joins, the counts, and every problem", () => {
@@ -165,8 +173,10 @@ describe("what agent 2 reads and writes", () => {
 - **Title:** Helpers stop before background runs finish
 - **Problem:** Coder agents report while jest still runs, so the orchestrator chases them.
 - **Priority:** high — 3 sessions, and one shipped a wrong result
+- **Impact:** wrong_result — one session shipped code whose tests were still running
 - **Fix type:** skill
 - **Fix:** In skills/implement/SKILL.md, add: wait for the run to exit before reporting.
+- **How it helps:** Stops untested work from shipping.
 
 ## G2
 - **Verdict:** drop
@@ -200,6 +210,9 @@ describe("what agent 2 reads and writes", () => {
       priorityReason: "3 sessions, and one shipped a wrong result",
       fixType: "skill",
       fix: "In skills/implement/SKILL.md, add: wait for the run to exit before reporting.",
+      impact: "wrong_result",
+      impactReason: "one session shipped code whose tests were still running",
+      howItHelps: "Stops untested work from shipping.",
     })
     expect(parsed.answers.G2).toEqual({
       verdict: "drop",
@@ -220,6 +233,92 @@ describe("what agent 2 reads and writes", () => {
     expect(errors).toMatch(/G1: Fix type must be one of/)
   })
 
+  test("SC3: a learning without Impact or How it helps fails the check, naming the field", () => {
+    const g2Learning = written
+      .replace(
+        "- **Verdict:** drop\n- **Why:** One session, medium and slow, a one-off typo.\n",
+        "",
+      )
+      .concat(
+        "- **Verdict:** learning\n- **Title:** t\n- **Problem:** p\n- **Priority:** low — rare\n- **Impact:** time_only — slow\n- **Fix type:** skill\n- **Fix:** f\n",
+      )
+    const parsed = parseWrittenMd(
+      g2Learning.replace(/- \*\*Impact:\*\* wrong_result.*\n/, ""),
+      ["G1", "G2"],
+      FIX_TYPES,
+      ANY,
+    )
+    const errors = parsed.errors.join("\n")
+    expect(errors).toMatch(/G1: missing Impact/)
+    expect(errors).toMatch(/G2: missing How it helps/)
+    expect(parsed.answers.G1).toBeUndefined()
+    expect(parsed.answers.G2).toBeUndefined()
+  })
+
+  test.each([
+    ["catastrophic — x", /G1: Impact must be wrong_result, person_stepped_in or time_only/],
+    ["time_only", /G1: Impact needs one sentence after the word/],
+    [`time_only — ${"a".repeat(301)}`, /G1: the impact sentence is over 300 characters/],
+  ])(
+    "SC4: Impact %#: a bad word, a missing sentence or a 301-character one is an error",
+    (impact, error) => {
+      const parsed = parseWrittenMd(
+        written.replace(/(- \*\*Impact:\*\* ).*\n/, `$1${impact}\n`),
+        ["G1", "G2"],
+        FIX_TYPES,
+        ANY,
+      )
+      expect(parsed.errors.join("\n")).toMatch(error)
+      expect(parsed.answers.G1).toBeUndefined()
+    },
+  )
+
+  test("SC6: the generated check.mjs refuses a learnings.md missing How it helps, naming it", () => {
+    const dir = mkdtempSync(join(tmpdir(), "written-check-"))
+    try {
+      writeFileSync(join(dir, "check.mjs"), writtenCheckScript(["G1", "G2"], FIX_TYPES, ANY))
+      writeFileSync(join(dir, "learnings.md"), written.replace(/- \*\*How it helps:\*\*.*\n/, ""))
+      let output = ""
+      let status = 0
+      try {
+        execFileSync("node", ["check.mjs"], { cwd: dir, encoding: "utf8" })
+      } catch (error) {
+        const failed = error as { status: number; stdout: string }
+        status = failed.status
+        output = failed.stdout
+      }
+      expect(status).toBe(1)
+      expect(output).toContain("G1: missing How it helps")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("SC7: groups.md shows an updated learning's impact and how it helps only when it has them", () => {
+    const md = groupsForWriter(
+      [
+        {
+          id: "G1",
+          cause: "x",
+          existing: {
+            ...existing,
+            impact: "wrong_result",
+            impactReason: "shipped untested code",
+            howItHelps: "Stops untested work from shipping.",
+          },
+          problems: [problem("a")],
+        },
+        { id: "G2", cause: "y", existing, problems: [problem("b")] },
+      ],
+      ROOM,
+    )
+    const [g1, g2] = md.split("## G2")
+    expect(g1).toContain("  - Impact: wrong_result — shipped untested code")
+    expect(g1).toContain("  - How it helps: Stops untested work from shipping.")
+    expect(g2).not.toContain("Impact:")
+    expect(g2).not.toContain("How it helps:")
+  })
+
   test("LW5: a group that updates an existing learning cannot be dropped", () => {
     const parsed = parseWrittenMd(
       "## G1\n- **Verdict:** drop\n- **Why:** one-off\n",
@@ -232,7 +331,7 @@ describe("what agent 2 reads and writes", () => {
 
   test("LW6: new learnings over the high limit fail; updated ones do not count", () => {
     const high = (id: string) =>
-      `## ${id}\n- **Verdict:** learning\n- **Title:** t\n- **Problem:** p\n- **Priority:** high — why\n- **Fix type:** skill\n- **Fix:** f\n`
+      `## ${id}\n- **Verdict:** learning\n- **Title:** t\n- **Problem:** p\n- **Priority:** high — why\n- **Impact:** time_only — slow\n- **Fix type:** skill\n- **Fix:** f\n- **How it helps:** h\n`
     const md = ["G1", "G2", "G3"].map(high).join("\n")
     const over = parseWrittenMd(md, ["G1", "G2", "G3"], FIX_TYPES, {
       joined: [],
