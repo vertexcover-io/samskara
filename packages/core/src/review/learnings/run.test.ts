@@ -133,6 +133,7 @@ describe("writeLearnings (agent 2)", () => {
     impact: null,
     impactReason: null,
     howItHelps: null,
+    fixSummary: null,
   }
   const written = `## G1
 - **Verdict:** learning
@@ -143,6 +144,7 @@ describe("writeLearnings (agent 2)", () => {
 - **Fix type:** skill
 - **Fix:** In skills/implement/SKILL.md, add a wait rule.
 - **How it helps:** Saves a few minutes a run.
+- **In plain words:** Make the agent wait before it reports.
 
 ## G2
 - **Verdict:** drop
@@ -173,7 +175,7 @@ describe("writeLearnings (agent 2)", () => {
   test("LR5: too many new high learnings go back to the agent once, and a second miss fails", async () => {
     const prompts: string[] = []
     const high = (id: string) =>
-      `## ${id}\n- **Verdict:** learning\n- **Title:** t\n- **Problem:** p\n- **Priority:** high — why\n- **Impact:** time_only — lost a few minutes\n- **Fix type:** skill\n- **Fix:** f\n- **How it helps:** Saves a few minutes a run.\n`
+      `## ${id}\n- **Verdict:** learning\n- **Title:** t\n- **Problem:** p\n- **Priority:** high — why\n- **Impact:** time_only — lost a few minutes\n- **Fix type:** skill\n- **Fix:** f\n- **How it helps:** Saves a few minutes a run.\n- **In plain words:** Make the agent wait before it reports.\n`
     const result = await writeLearnings({
       groups: [
         { cause: "a", existing: null, problems: [problem("a")] },
@@ -204,7 +206,7 @@ describe("writeLearnings (agent 2)", () => {
         run: async ({ workspaceDir }) => {
           writeFileSync(
             join(workspaceDir, "learnings.md"),
-            "## G1\n- **Verdict:** learning\n- **Title:** t\n- **Problem:** p\n- **Priority:** high — why\n- **Impact:** time_only — lost a few minutes\n- **Fix type:** skill\n- **Fix:** f\n- **How it helps:** Saves a few minutes a run.\n",
+            "## G1\n- **Verdict:** learning\n- **Title:** t\n- **Problem:** p\n- **Priority:** high — why\n- **Impact:** time_only — lost a few minutes\n- **Fix type:** skill\n- **Fix:** f\n- **How it helps:** Saves a few minutes a run.\n- **In plain words:** Make the agent wait before it reports.\n",
           )
           try {
             execFileSync("node", ["check.mjs"], { cwd: workspaceDir, encoding: "utf8" })

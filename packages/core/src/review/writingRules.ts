@@ -18,4 +18,18 @@ Write for someone who never saw the session or the code.
   lockfile (the file that pins package versions)".
 - No grading words like robust, crucial or honest. Say why it matters instead.
 - Do not squeeze: write "the test suite failed twice", not "tests ×2 ✗".
-- The reader remembers nothing: a file name or id always comes with what it is.`
+- The reader remembers nothing: a file name or id always comes with what it is.
+- Say what happened, not a label for it. Use failed only when the thing itself broke: a test
+  that never got going "was never run", not "failed".
+- If a word would not be known to someone outside this project, say it in everyday words, or
+  explain it the first time you use it. This covers the session's own words (a step's name, a
+  flag, a file, "main", "flake", "baseline") as much as technical ones.
+
+A bad line and its plain version:
+
+- Bad: "the first real run of the requirement failed"
+- Plain: "The new approval step was never tried for real: the one real try got stuck during
+  setup, so nobody knows if it works."
+- Bad: "a review stage ended with a Medium finding open"
+- Plain: "The code review step ended, and testing started, while a bug the reviewers found was
+  still not fixed."`

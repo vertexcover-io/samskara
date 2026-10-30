@@ -39,6 +39,8 @@ export type LearningInput = {
   readonly impactReason: string | null
   /** What changes once the fix is in. Null on a learning written before it was asked for. */
   readonly howItHelps: string | null
+  /** The fix in one plain sentence, before its exact text. Null on an older learning. */
+  readonly fixSummary: string | null
 }
 
 /** One group from agent 1: problems with the same cause, and the learning they join, if any. */
@@ -53,11 +55,12 @@ export type ProblemGroup = {
 export type WrittenLearning =
   | ({ readonly verdict: "learning" } & Omit<
       LearningInput,
-      "id" | "cause" | "impact" | "impactReason" | "howItHelps"
+      "id" | "cause" | "impact" | "impactReason" | "howItHelps" | "fixSummary"
     > & {
         readonly impact: LearningImpact
         readonly impactReason: string
         readonly howItHelps: string
+        readonly fixSummary: string
       })
   | {
       /** Not worth a learning: a one-off, or its excerpts did not clearly show it matters. */

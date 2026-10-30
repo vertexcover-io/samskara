@@ -260,6 +260,13 @@
       "when": 1793384278570,
       "tag": "0036_odd_karnak",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1793384279570,
+      "tag": "0037_lucky_baron_strucker",
+      "breakpoints": true
     }
   ]
 }

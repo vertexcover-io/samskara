@@ -209,7 +209,7 @@ const runBatch = async (
 
   const grouped = await groupProblems({ problems, learnings: known, runner, run: choice, trace })
   if (!grouped.ok) throw new Error(`grouping failed: ${grouped.errors.join("; ")}`)
-  const groups = await writerGroups(db, grouped.groups, problems)
+  const groups = await writerGroups(db, grouped.groups, problems, input.runId)
 
   // A one-off is dropped here, whatever agent 2 would say; only the rest reach it.
   const answers: Array<WrittenLearning | undefined> = groups.map((group) => {
@@ -285,6 +285,7 @@ const writerGroups = async (
   db: Db,
   grouped: ReadonlyArray<ProblemGroup>,
   problems: ReadonlyArray<ProblemInput>,
+  runId: string,
 ) => {
   const joined = new Map(
     (
@@ -301,6 +302,7 @@ const writerGroups = async (
     return {
       cause: found?.cause ?? group.cause,
       existing: found === undefined ? null : (existing as LearningInput),
+      existingFromThisRun: found?.updatedByRunId === runId,
       problems: [...linked, ...group.problemIds.map((id) => byId.get(id) as ProblemInput)],
       learningId: group.learningId,
       newProblemIds: group.problemIds,

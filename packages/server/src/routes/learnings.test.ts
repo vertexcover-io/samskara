@@ -198,12 +198,14 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
         impact: "time_only",
         impactReason: "lost a few minutes",
         howItHelps: "Saves a few minutes a run.",
+        fixSummary: "Make the agent wait before it reports.",
       }),
       expect.objectContaining({
         title: "Older one",
         impact: null,
         impactReason: null,
         howItHelps: null,
+        fixSummary: null,
       }),
     ])
     const detail = (await (await request(`/api/learnings/${list.learnings[0]?.id}`)).json()) as {

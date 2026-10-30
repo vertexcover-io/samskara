@@ -66,3 +66,23 @@ describe("the writer contract", () => {
     expect(priority).toMatch(/person_stepped_in above time_only/)
   })
 })
+
+test("the writing rules ask for any project word to be said plainly or explained, and show bad lines next to plain ones", () => {
+  expect(WRITING_RULES).toContain("would not be known to someone outside this project")
+  expect(WRITING_RULES).not.toContain("resume: restart a run that stopped")
+  expect(WRITING_RULES).toContain("the first real run of the requirement failed")
+  expect(WRITING_RULES).toContain("Use failed only when the thing itself broke")
+})
+
+test("the writer tells one story in a fixed order, says how often, and writes the fix in plain words", () => {
+  expect(WRITER_CONTRACT).toContain("Tell one story, not many")
+  for (const step of [
+    "1. What the agent was doing.",
+    "2. What it did wrong.",
+    "3. What happened because of it.",
+    "4. What it should have done instead.",
+  ])
+    expect(WRITER_CONTRACT).toContain(step)
+  expect(WRITER_CONTRACT).toContain("This happened in 11 sessions.")
+  expect(WRITER_CONTRACT).toContain("- **In plain words:**")
+})

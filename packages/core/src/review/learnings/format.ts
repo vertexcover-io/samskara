@@ -18,6 +18,7 @@ export const WRITTEN_LIMITS = {
   fix: 1200,
   impactReason: 300,
   howItHelps: 300,
+  fixSummary: 200,
 } as const
 
 /**
@@ -167,10 +168,11 @@ const parseWrittenMd = (text, groupIds, fixTypes, priorities, impacts, limits, r
     else if (impactReason.length > limits.impactReason)
       errors.push(id + ": the impact sentence is over " + limits.impactReason + " characters")
     const howItHelps = required("How it helps", limits.howItHelps)
+    const fixSummary = required("In plain words", limits.fixSummary)
     if (errors.length === before)
       answers[id] = {
         verdict: "learning", title, problem, priority, priorityReason, fixType, fix,
-        impact, impactReason, howItHelps,
+        impact, impactReason, howItHelps, fixSummary,
       }
   }
   const missing = groupIds.filter((id) => answers[id] === undefined && !errors.some((e) => e.startsWith(id + ":")))
@@ -366,6 +368,11 @@ export type WriterGroup = {
   readonly cause: string
   /** The learning it joins, when it joins one. */
   readonly existing: LearningInput | null
+  /**
+   * The learning it joins was written by an earlier batch of this same run, minutes ago, so its
+   * fix cannot be in the harness yet: its absence there is not a fix that was skipped.
+   */
+  readonly existingFromThisRun?: boolean
   /** Every problem behind it: the new ones and, for an existing learning, the ones already linked. */
   readonly problems: ReadonlyArray<ProblemInput>
 }
@@ -400,7 +407,9 @@ export const groupsForWriter = (
         group.existing === null
           ? "- **Existing learning:** none, this is new"
           : [
-              "- **Existing learning:** update this one",
+              group.existingFromThisRun === true
+                ? "- **Existing learning:** update this one. It was written earlier in this run, minutes ago, so nobody has had a chance to add its fix: do not say its fix was never added or did not work."
+                : "- **Existing learning:** update this one",
               `  - Title: ${group.existing.title}`,
               `  - Problem: ${group.existing.problem}`,
               `  - Priority: ${group.existing.priority} — ${group.existing.priorityReason}`,
@@ -412,6 +421,9 @@ export const groupsForWriter = (
                 : [`  - How it helps: ${group.existing.howItHelps}`]),
               `  - Fix type: ${group.existing.fixType}`,
               `  - Fix: ${group.existing.fix}`,
+              ...(group.existing.fixSummary === null
+                ? []
+                : [`  - In plain words: ${group.existing.fixSummary}`]),
             ].join("\n"),
         `- **Numbers:** ${group.problems.length} problems in ${sessions} sessions, happened ${timesHappened(group.problems)} times; severity: ${count(
           group.problems.map((problem) => problem.severity),

@@ -25,6 +25,7 @@ const written = {
   impact: "time_only",
   impactReason: "lost a few minutes",
   howItHelps: "Saves a few minutes a run.",
+  fixSummary: "Make the agent wait before it reports.",
 } as const
 
 describe.skipIf(!dockerAvailable())("learnings repository", () => {

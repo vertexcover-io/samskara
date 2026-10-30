@@ -94,7 +94,17 @@ const Fix = ({
       )}
       <div>
         <p className={label}>The fix ({FIX_TYPE_LABEL[learning.fixType] ?? learning.fixType})</p>
-        <p className="mt-1">{learning.fix}</p>
+        {learning.fixSummary === null ? (
+          <p className="mt-1">{learning.fix}</p>
+        ) : (
+          <>
+            <p className="mt-1 font-semibold">{learning.fixSummary}</p>
+            <p className="mt-2 font-mono text-[0.66rem] uppercase tracking-[0.08em] text-ink-soft">
+              Exact change
+            </p>
+            <p className="mt-0.5 text-[0.82rem] text-ink-soft">{learning.fix}</p>
+          </>
+        )}
       </div>
       <div>
         <p className={label}>Why {learning.priority}</p>

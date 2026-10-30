@@ -141,6 +141,7 @@ describe("what agent 2 reads and writes", () => {
     impact: null,
     impactReason: null,
     howItHelps: null,
+    fixSummary: null,
   }
 
   test("LW1: each group shows its cause, the learning it joins, the counts, and every problem", () => {
@@ -176,12 +177,45 @@ describe("what agent 2 reads and writes", () => {
 - **Impact:** wrong_result — one session shipped code whose tests were still running
 - **Fix type:** skill
 - **Fix:** In skills/implement/SKILL.md, add: wait for the run to exit before reporting.
+- **In plain words:** Make helpers wait for their tests to finish before they report.
 - **How it helps:** Stops untested work from shipping.
 
 ## G2
 - **Verdict:** drop
 - **Why:** One session, medium and slow, a one-off typo.
 `
+
+  test("a learning written earlier in this same run says so, and that nobody has added its fix yet", () => {
+    const md = groupsForWriter(
+      [{ id: "G1", cause: "x", existing, existingFromThisRun: true, problems: [problem("a")] }],
+      ROOM,
+    )
+    expect(md).toContain("written earlier in this run")
+    expect(md).toContain("nobody has had a chance to add its fix")
+  })
+
+  test("a learning from an earlier run carries no such note", () => {
+    const md = groupsForWriter(
+      [{ id: "G1", cause: "x", existing, existingFromThisRun: false, problems: [problem("a")] }],
+      ROOM,
+    )
+    expect(md).not.toContain("written earlier in this run")
+  })
+
+  test("a learning needs its fix in plain words, read back as fixSummary", () => {
+    const parsed = parseWrittenMd(written, ["G1", "G2"], FIX_TYPES, ANY)
+    expect(parsed.errors).toEqual([])
+    expect(parsed.answers.G1).toMatchObject({
+      fixSummary: "Make helpers wait for their tests to finish before they report.",
+    })
+    const without = parseWrittenMd(
+      written.replace(/- \*\*In plain words:\*\*.*\n/, ""),
+      ["G1", "G2"],
+      FIX_TYPES,
+      ANY,
+    )
+    expect(without.errors).toContain("G1: missing In plain words")
+  })
 
   test("LW2: the times it happened count every evidence line, so a mistake repeated in one session shows", () => {
     const repeated = problem("a", {
@@ -213,6 +247,7 @@ describe("what agent 2 reads and writes", () => {
       impact: "wrong_result",
       impactReason: "one session shipped code whose tests were still running",
       howItHelps: "Stops untested work from shipping.",
+      fixSummary: "Make helpers wait for their tests to finish before they report.",
     })
     expect(parsed.answers.G2).toEqual({
       verdict: "drop",
@@ -331,7 +366,7 @@ describe("what agent 2 reads and writes", () => {
 
   test("LW6: new learnings over the high limit fail; updated ones do not count", () => {
     const high = (id: string) =>
-      `## ${id}\n- **Verdict:** learning\n- **Title:** t\n- **Problem:** p\n- **Priority:** high — why\n- **Impact:** time_only — slow\n- **Fix type:** skill\n- **Fix:** f\n- **How it helps:** h\n`
+      `## ${id}\n- **Verdict:** learning\n- **Title:** t\n- **Problem:** p\n- **Priority:** high — why\n- **Impact:** time_only — slow\n- **Fix type:** skill\n- **Fix:** f\n- **How it helps:** h\n- **In plain words:** Make the agent wait before it reports.\n`
     const md = ["G1", "G2", "G3"].map(high).join("\n")
     const over = parseWrittenMd(md, ["G1", "G2", "G3"], FIX_TYPES, {
       joined: [],

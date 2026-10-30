@@ -16,6 +16,7 @@ const LEARNING = {
   impact: null,
   impactReason: null,
   howItHelps: null,
+  fixSummary: null,
   skippedAt: null,
   updatedByRunId: "r-1",
   createdAt: "2026-10-20T10:00:00.000Z",
@@ -482,6 +483,26 @@ test("SC35: a refused skip says why in words, and the fix stays", async () => {
     await screen.findByText("You need edit rights on this project to skip a fix."),
   ).toBeInTheDocument()
   expect(screen.getByText(LEARNING.title)).toBeInTheDocument()
+})
+
+test("the card shows the fix in plain words, not the exact text, when it has one", async () => {
+  const plain = { ...LEARNING, fixSummary: "Make helpers wait for their tests to finish." }
+  stubFetch([
+    {
+      match: "/api/learnings",
+      status: 200,
+      body: { learnings: [plain], latestRun: RUN, canEdit: true },
+    },
+    { match: "/api/projects", status: 200, body: projectsBody },
+  ])
+
+  renderPage()
+
+  const card = (await screen.findByText(LEARNING.title)).closest("article") as HTMLElement
+  expect(
+    within(card).getByText(/Make helpers wait for their tests to finish\./),
+  ).toBeInTheDocument()
+  expect(within(card).queryByText(LEARNING.fix)).toBeNull()
 })
 
 test("the page has no How this page works box", async () => {

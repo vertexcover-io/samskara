@@ -161,7 +161,9 @@ export const learningsForGrouping = async (
 export const learningsWithProblems = async (
   db: Querier,
   ids: ReadonlyArray<string>,
-): Promise<Array<LearningInput & { readonly problems: ProblemInput[] }>> => {
+): Promise<
+  Array<LearningInput & { readonly updatedByRunId: string; readonly problems: ProblemInput[] }>
+> => {
   if (ids.length === 0) return []
   const rows = await db
     .select()
@@ -174,6 +176,7 @@ export const learningsWithProblems = async (
     .orderBy(asc(reviewProblems.createdAt))
   return rows.map((row) => ({
     ...(row as LearningInput),
+    updatedByRunId: row.updatedByRunId,
     problems: linked.filter((problem) => problem.learningId === row.id).map(asProblem),
   }))
 }
