@@ -127,4 +127,40 @@ describe("samskara learn", () => {
     expect(stderr.text()).toContain("Stopped waiting for learning run r1")
     expect(calls.filter((call) => call.path === "/api/learnings/runs/r1")).toHaveLength(3)
   })
+
+  test("LC5: a fix an editor skipped is left out, and the open fixes are numbered without it", async () => {
+    const learning = (title: string, skippedAt: string | null) => ({
+      title,
+      priority: "high",
+      priorityReason: "it keeps happening",
+      problem: "Work ships untested.",
+      fixType: "skill",
+      fix: "Add a test step.",
+      problemCount: 2,
+      sessionCount: 2,
+      skippedAt,
+    })
+    const { fetch } = server({
+      "/api/learnings/runs": [{ status: 202, body: { runId: "r1" } }],
+      "/api/learnings/runs/r1": [
+        { status: 200, body: { run: { id: "r1", status: "done", error: null } } },
+      ],
+      "/api/learnings?project=p1": [
+        {
+          status: 200,
+          body: {
+            learnings: [
+              learning("Skipped by an editor", "2026-10-01T10:00:00.000Z"),
+              learning("Still open", null),
+            ],
+          },
+        },
+      ],
+    })
+    const stdout = writer()
+    const code = await learnCommand({ ...base, project: "p1", fetch, stdout, stderr: writer() })
+    expect(code).toBe(0)
+    expect(stdout.text()).not.toContain("Skipped by an editor")
+    expect(stdout.text()).toContain("1. [high] Still open")
+  })
 })
