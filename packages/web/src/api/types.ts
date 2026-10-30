@@ -194,6 +194,40 @@ export type AiReview = {
   readonly signals: AiReviewSignals | null
 }
 
+/** One quote a problem cites: the message span, the words, and why they prove it. */
+export type ReviewProblemEvidence = {
+  readonly from: string
+  readonly to: string
+  readonly quote: string
+  readonly why: string
+}
+
+/** One problem the problems review (ai-problems-v2) saved, as GET /:id/v2/aireview returns it. */
+export type ReviewProblem = {
+  readonly id: string
+  readonly title: string
+  readonly class: string
+  readonly severity: string
+  readonly severityReason: string
+  readonly fixType: string
+  readonly description: string
+  readonly evidence: ReadonlyArray<ReviewProblemEvidence>
+  readonly learning: string
+}
+
+/** The problems review with the problems it saved. */
+export type ProblemsReview = AiReview & {
+  readonly analyzedAt: string
+  readonly problems: ReadonlyArray<ReviewProblem>
+}
+
+/** The part of a problems review's signals the card reads. */
+export type ProblemsReviewSignals = {
+  readonly model: string
+  readonly harness: string
+  readonly run?: { readonly recordIds?: ReadonlyArray<string | null> }
+}
+
 /** A non-terminal analysis job as GET /:id/aireview reports it alongside the review. */
 export type AiReviewJobStatus = {
   readonly jobId: string
