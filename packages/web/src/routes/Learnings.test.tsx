@@ -100,7 +100,6 @@ test("LR1: shows the first project's learnings with priority, counts, fix and th
   expect(within(card).getByText(/wait for the test command to exit/)).toBeInTheDocument()
   expect(within(card).getByText(/Fix \(Skill\)/)).toBeInTheDocument()
   expect(screen.getByText(/Last run .* succeeded/)).toBeInTheDocument()
-  expect(screen.getByText(/samskara learn --project/)).toBeInTheDocument()
   expect(urls.some((url) => url.includes("/api/learnings?project=p-1"))).toBe(true)
 })
 
@@ -483,4 +482,20 @@ test("SC35: a refused skip says why in words, and the fix stays", async () => {
     await screen.findByText("You need edit rights on this project to skip a fix."),
   ).toBeInTheDocument()
   expect(screen.getByText(LEARNING.title)).toBeInTheDocument()
+})
+
+test("the page has no How this page works box", async () => {
+  stubFetch([
+    {
+      match: "/api/learnings",
+      status: 200,
+      body: { learnings: [LEARNING], latestRun: RUN, canEdit: true },
+    },
+    { match: "/api/projects", status: 200, body: projectsBody },
+  ])
+
+  renderPage()
+
+  await screen.findByText(LEARNING.title)
+  expect(screen.queryByText(/How this page works/i)).toBeNull()
 })

@@ -85,3 +85,84 @@ export const problemExcerpt = (
       ].join("\n")
     })
     .join("\n\n")
+
+/** Messages shown on each side of a quote on the fix page: enough to read what led to it. */
+const MESSAGES_AROUND = 2
+
+/** One message as a reader sees it beside a quote. */
+export type EvidenceMessage = {
+  readonly id: string
+  /** The role, or the tool's name and status. */
+  readonly who: string
+  /** Where it was said: `main`, or the helper agent it came from. */
+  readonly track: string
+  readonly text: string
+  readonly input?: string
+  readonly output?: string
+  /** Whether the quote cites it, as opposed to the context around it. */
+  readonly cited: boolean
+}
+
+/**
+ * A tool call's input as a reader would write it: the JSON a call was made with, its text
+ * fields as plain lines. One field is shown as its value alone (`{"command":"ls"}` reads `ls`).
+ */
+const readableInput = (input: string): string => {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(input)
+  } catch {
+    return input
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return input
+  const entries = Object.entries(parsed)
+  const shown = (value: unknown): string =>
+    typeof value === "string" ? value : JSON.stringify(value, null, 2)
+  if (entries.length === 1) return shown(entries[0]?.[1])
+  return entries.map(([key, value]) => `${key}: ${shown(value)}`).join("\n")
+}
+
+const hasContent = (record: SessionExportRecord): boolean =>
+  (record.text ?? "") !== "" || record.input !== undefined || record.output !== undefined
+
+/**
+ * The messages a quote cites and `MESSAGES_AROUND` on each side, cut like a reader's. The ones
+ * around it come from the same agent as the quote: helpers run side by side, so the records next
+ * to it in the session are often another helper's. Empty records (usage, markers) are left out.
+ */
+export const evidenceMessages = (
+  records: ReadonlyArray<SessionExportRecord>,
+  item: Evidence,
+): EvidenceMessage[] => {
+  const first = numberOf(item.from)
+  const last = numberOf(item.to)
+  const track = records[first]?.track
+  const around = (record: SessionExportRecord) => record.track === track && hasContent(record)
+  const before = records.slice(0, first).filter(around).slice(-MESSAGES_AROUND)
+  const after = records
+    .slice(last + 1)
+    .filter(around)
+    .slice(0, MESSAGES_AROUND)
+  const cited = records.slice(first, last + 1)
+  const shownCited = cited.some(hasContent) ? cited.filter(hasContent) : cited
+  return [...before, ...shownCited, ...after].map((record) => {
+    const seq = numberOf(record.id)
+    const isCited = seq >= first && seq <= last
+    const readable =
+      record.input === undefined ? record : { ...record, input: readableInput(record.input) }
+    // The quoted message is the proof, so it is shown whole; the ones around it are context.
+    const cut = isCited ? readable : shortenForReader(readable)
+    return {
+      id: cut.id,
+      who:
+        cut.toolName === undefined
+          ? (cut.role ?? cut.msgType)
+          : `${cut.toolName}${cut.status === undefined ? "" : `, ${cut.status}`}`,
+      track: cut.track,
+      text: cut.text ?? "",
+      ...(cut.input === undefined ? {} : { input: cut.input }),
+      ...(cut.output === undefined ? {} : { output: cut.output }),
+      cited: isCited,
+    }
+  })
+}

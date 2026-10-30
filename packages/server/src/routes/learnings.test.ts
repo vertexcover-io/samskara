@@ -312,6 +312,70 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
     expect(body.problems.flatMap((p) => p.evidence.map((item) => item.messageId))).toEqual([null])
   })
 
+  /** One learning whose problem quotes "waiting on jest", the second of the session's messages. */
+  const learningWithQuote = async (sessionId: string) => {
+    await seedSession(db, {
+      sessionId,
+      projectId,
+      userId,
+      problems: [problemFixture("A", { severity: "high" })],
+      texts: ["first message", "waiting on jest", "third message", "fourth", "fifth"],
+    })
+    const started = await request("/api/learnings/runs", {
+      method: "POST",
+      body: { project: projectId },
+      serverHarness: true,
+    })
+    const { runId } = (await started.json()) as { runId: string }
+    expect((await waitForRun(runId)).status).toBe("done")
+    const [learning] = await learningsRepo.listLearnings(db, projectId)
+    const detail = (await (await request(`/api/learnings/${learning?.id}`)).json()) as {
+      problems: Array<{ id: string }>
+    }
+    return { learningId: learning?.id as string, problemId: detail.problems[0]?.id as string }
+  }
+
+  test("a quote's messages are the quoted one and two on each side, the quoted one marked", async () => {
+    const { learningId, problemId } = await learningWithQuote(`route-msgs-${counter}`)
+
+    const res = await request(`/api/learnings/${learningId}/messages?problem=${problemId}&quote=0`)
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      messages: Array<{ id: string; who: string; text: string; cited: boolean }>
+    }
+    expect(body.messages.map((m) => [m.text, m.cited])).toEqual([
+      ["first message", false],
+      ["waiting on jest", true],
+      ["third message", false],
+      ["fourth", false],
+    ])
+    expect(body.messages[1]?.who).toBe("assistant")
+  })
+
+  test("a quote that is not there, or a problem of another fix, is 404", async () => {
+    const { learningId, problemId } = await learningWithQuote(`route-msgs-none-${counter}`)
+
+    const noQuote = await request(
+      `/api/learnings/${learningId}/messages?problem=${problemId}&quote=5`,
+    )
+    expect(noQuote.status).toBe(404)
+    const otherFix = await request(
+      `/api/learnings/${learningId}/messages?problem=${crypto.randomUUID()}&quote=0`,
+    )
+    expect(otherFix.status).toBe(404)
+  })
+
+  test("someone who cannot see the project, or a session moved to another project, gets no messages", async () => {
+    const sessionId = `route-msgs-moved-${counter}`
+    const { learningId, problemId } = await learningWithQuote(sessionId)
+    const path = `/api/learnings/${learningId}/messages?problem=${problemId}&quote=0`
+
+    expect((await request(path, { as: strangerId })).status).toBe(404)
+    const elsewhere = await seedProject(db, await seedOrg(db, `msgs-${counter}`), "private")
+    await db.update(sessions).set({ projectId: elsewhere }).where(eq(sessions.id, sessionId))
+    expect((await request(path)).status).toBe(404)
+  })
+
   test("SC19: someone who cannot see the project gets 404 for one of its learnings", async () => {
     await seedProblems(["A"])
     const started = await request("/api/learnings/runs", {

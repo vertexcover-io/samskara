@@ -978,6 +978,15 @@ test("S68: a session with no branches marks its linked record too - the mark is 
   expect(screen.getByText(/Only prompt/).closest("article")).not.toHaveAttribute("aria-current")
 })
 
+test("a link to a tool call while tool calls are hidden turns them on, so the linked call is there to land on", async () => {
+  renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1?tab=conversation&m=tool-msg")
+
+  await tabsLoaded()
+
+  await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("tools=1"))
+  expect(screen.getByRole("checkbox", { name: /show tool calls inline/i })).toBeChecked()
+})
+
 test("S69: opening a branch records it in the query, so the branch a reader is looking at is itself shareable", async () => {
   const user = userEvent.setup()
   renderDetail(BRANCH_PAYLOAD)

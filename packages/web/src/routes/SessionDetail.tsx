@@ -518,6 +518,20 @@ const Conversation = ({ detail, inlineTools }: { detail: Detail; inlineTools: bo
   const target = params.get(MESSAGE_PARAM)
   const site = target === null ? null : (sites.get(target) ?? null)
 
+  // A review quote often cites a tool call, which only has a place on screen with tools inline.
+  // Turning them on is what lets such a link land; replaced, so it adds no Back step.
+  const hiddenTool =
+    target !== null &&
+    site === null &&
+    !inlineTools &&
+    locate(conversationView(detail, true)).has(target)
+  useEffect(() => {
+    if (!hiddenTool) return
+    const merged = new URLSearchParams(params)
+    merged.set("tools", "1")
+    setParams(merged, { replace: true })
+  }, [hiddenTool, params, setParams])
+
   const linkFor = useCallback(
     (record: TimelineRecord): string | undefined => {
       const [source] = record.sources
