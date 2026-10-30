@@ -113,7 +113,7 @@ test("SC20: the page shows the fix, and the proof by session with a link to each
   expect(within(second as HTMLElement).getByRole("heading")).toHaveTextContent(
     "Fix the login bug 1 problem",
   )
-  const links = within(first as HTMLElement).getAllByRole("link", { name: "Open message" })
+  const links = within(first as HTMLElement).getAllByRole("link", { name: "Open in session" })
   expect(links.map((link) => link.getAttribute("href"))).toEqual([
     "/sessions/s-9?tab=conversation&m=m-uuid-1",
     "/sessions/s-9?tab=conversation&m=m-uuid-3",
@@ -121,7 +121,7 @@ test("SC20: the page shows the fix, and the proof by session with a link to each
   expect(within(second as HTMLElement).getByText("“still running”")).toBeInTheDocument()
   expect(within(second as HTMLElement).queryByRole("link")).toBeNull()
   expect(
-    within(second as HTMLElement).getByText("The message this quote came from could not be found."),
+    within(second as HTMLElement).getByRole("button", { name: "Show messages" }),
   ).toBeInTheDocument()
 })
 
@@ -190,4 +190,49 @@ test("SC36: an editor skips on the fix page, and the page says how long ago, the
   expect(await within(fix).findByRole("button", { name: "Unskip" })).toBeInTheDocument()
   expect(within(fix).getByText(/^Skipped/)).toHaveTextContent("Skipped 2 hours ago")
   expect(within(fix).getByText("2 hours ago")).toHaveAttribute("title", absoluteTime(skippedAt))
+})
+
+test("Show messages opens the quoted message with the ones around it, on the page itself", async () => {
+  const user = userEvent.setup()
+  const fetched: string[] = []
+  vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+    const url = String(input instanceof Request ? input.url : input)
+    fetched.push(url)
+    const body = url.includes("/messages")
+      ? {
+          messages: [
+            { id: "msg-2", who: "user", track: "main", text: "run the tests", cited: false },
+            { id: "msg-3", who: "assistant", track: "main", text: "waiting on jest", cited: true },
+            {
+              id: "msg-4",
+              who: "Bash, failure",
+              track: "main",
+              text: "",
+              input: "bun test",
+              output: "1 failed",
+              cited: false,
+            },
+          ],
+        }
+      : { learning: LEARNING, problems: PROBLEMS, canEdit: false }
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }))
+  })
+  renderPage()
+
+  const [first] = await screen.findAllByRole("button", { name: "Show messages" })
+  await user.click(first as HTMLElement)
+
+  const shown = await screen.findByRole("list", { name: "Messages around the quote" })
+  expect(within(shown).getByText("run the tests")).toBeInTheDocument()
+  expect(within(shown).getByText("bun test")).toBeInTheDocument()
+  expect(within(shown).getByText("waiting on jest", { selector: "mark" })).toBeInTheDocument()
+  expect(within(shown).getByText("waiting on jest").closest("li")).toHaveAttribute(
+    "aria-current",
+    "true",
+  )
+  expect(fetched.some((url) => url.includes("/api/learnings/l-1/messages?problem=1&quote=0"))).toBe(
+    true,
+  )
+  await user.click(screen.getByRole("button", { name: "Hide messages" }))
+  expect(screen.queryByRole("list", { name: "Messages around the quote" })).not.toBeInTheDocument()
 })

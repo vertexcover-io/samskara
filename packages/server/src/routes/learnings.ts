@@ -1,4 +1,11 @@
-import { type Evidence, type HarnessRunner, type LearningImpact, messageIdAt } from "@samskara/core"
+import {
+  type Evidence,
+  evidenceMessages,
+  type HarnessRunner,
+  type LearningImpact,
+  messageIdAt,
+  recordsInReviewOrder,
+} from "@samskara/core"
 import { type Context, Hono } from "hono"
 import { z } from "zod"
 import type { Db } from "../db/client.js"
@@ -7,6 +14,8 @@ import { type AuthVariables, requireAuth } from "../lib/require-auth.js"
 import { validate } from "../lib/validate.js"
 import * as learningsRepo from "../repositories/learnings.repo.js"
 import { authorityFor, canRead, type Scope } from "../repositories/projects.repo.js"
+import { sessionMessages } from "../repositories/sessions.repo.js"
+import { reviewSessionExport } from "../services/ai-review/sessionExport.js"
 import { startLearningRun } from "../services/learnings/run.js"
 
 type Deps = {
@@ -190,6 +199,45 @@ export const learningsRoutes = ({ db, env, runner }: Deps) => {
           200,
         )
       })
+      /**
+       * The messages behind one quote: the ones it cites and a couple on each side, so a reader
+       * can check the quote on the fix page itself. Read on demand, because a session can hold
+       * thousands of messages and a fix cites many sessions.
+       */
+      .get(
+        "/:id/messages",
+        requireAuth({ db, env }, ["web", "cli"]),
+        validate("query", z.object({ problem: uuid, quote: z.coerce.number().int().min(0) })),
+        async (c) => {
+          const id = c.req.param("id")
+          const { problem: problemId, quote } = c.req.valid("query")
+          const notFound = () => c.json({ error: "messagesNotFound" }, 404)
+          const row = uuid.safeParse(id).success ? await learningsRepo.getLearning(db, id) : null
+          if (row === null || !(await canRead(db, c.get("user").id, row.projectId)))
+            return notFound()
+          const problem = (await learningsRepo.problemsOfLearning(db, row.id)).find(
+            (p) => p.id === problemId,
+          )
+          const item = (problem?.evidence as ReadonlyArray<Evidence> | undefined)?.[quote]
+          if (problem === undefined || item === undefined) return notFound()
+          const [review] = await learningsRepo.reviewSessions(db, [problem.reviewId])
+          // A session since moved to another project is that project's to show.
+          if (
+            review === undefined ||
+            review.recordIds === null ||
+            review.projectId !== row.projectId
+          )
+            return notFound()
+          const records = recordsInReviewOrder(
+            reviewSessionExport({
+              session: { id: review.sessionId, title: review.title, source: review.source },
+              messages: await sessionMessages(db, review.sessionId),
+            }).records,
+            review.recordIds,
+          )
+          return c.json({ messages: evidenceMessages(records, item) }, 200)
+        },
+      )
       /** Skip (POST) or unskip (DELETE) a fix; an editor of its project may. */
       .post("/:id/skip", requireAuth({ db, env }, ["web", "cli"]), (c) => skip(c, true))
       .delete("/:id/skip", requireAuth({ db, env }, ["web", "cli"]), (c) => skip(c, false))

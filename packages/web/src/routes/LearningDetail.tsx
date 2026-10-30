@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Link, useParams, useSearchParams } from "react-router-dom"
 import { type ApiError, client, request } from "../api/client.js"
 import type { LearningDetailPayload, LearningProblem } from "../api/types.js"
@@ -113,7 +113,163 @@ const Fix = ({
   )
 }
 
-const Proof = ({ problems }: { readonly problems: ReadonlyArray<LearningProblem> }) => (
+type QuoteMessage = {
+  readonly id: string
+  readonly who: string
+  readonly track: string
+  readonly text: string
+  readonly input?: string
+  readonly output?: string
+  readonly cited: boolean
+}
+
+type MessagesState =
+  | { readonly phase: "loading" }
+  | { readonly phase: "ready"; readonly messages: ReadonlyArray<QuoteMessage> }
+  | { readonly phase: "failed" }
+
+/** Text with the quoted words marked, so they stand out in a long message. */
+const Marked = ({ text, quote }: { readonly text: string; readonly quote: string | null }) => {
+  const at = quote === null || quote === "" ? -1 : text.toLowerCase().indexOf(quote.toLowerCase())
+  if (at < 0 || quote === null) return <>{text}</>
+  return (
+    <>
+      {text.slice(0, at)}
+      <mark className="bg-stamp/20 text-ink">{text.slice(at, at + quote.length)}</mark>
+      {text.slice(at + quote.length)}
+    </>
+  )
+}
+
+/** The quoted message and the ones around it, read when opened: a session can be huge. */
+const QuoteMessages = ({
+  learningId,
+  problemId,
+  quote,
+  words,
+}: {
+  readonly learningId: string
+  readonly problemId: string
+  readonly quote: number
+  /** The quote's words, marked in the message it cites. */
+  readonly words: string
+}) => {
+  const [state, setState] = useState<MessagesState>({ phase: "loading" })
+  useEffect(() => {
+    let active = true
+    request(() =>
+      client.api.learnings[":id"].messages.$get({
+        param: { id: learningId },
+        query: { problem: problemId, quote: String(quote) },
+      }),
+    ).then((result) => {
+      if (!active) return
+      setState(result.ok ? { phase: "ready", messages: result.data.messages } : { phase: "failed" })
+    })
+    return () => {
+      active = false
+    }
+  }, [learningId, problemId, quote])
+
+  // A quoted message can be long; bring its marked words into view once it shows.
+  const list = useRef<HTMLOListElement>(null)
+  useEffect(() => {
+    if (state.phase !== "ready") return
+    list.current?.querySelector("mark")?.scrollIntoView?.({ behavior: "smooth", block: "center" })
+  }, [state.phase])
+
+  if (state.phase === "loading")
+    return <p className="mt-2 text-[0.72rem] text-ink-soft">Loading messages…</p>
+  if (state.phase === "failed")
+    return <p className="mt-2 text-[0.72rem] text-err">The messages could not be loaded.</p>
+  return (
+    <ol ref={list} aria-label="Messages around the quote" className="mt-2 flex flex-col gap-1.5">
+      {state.messages.map((message) => (
+        <li
+          key={message.id}
+          aria-current={message.cited ? "true" : undefined}
+          className={`border px-2.5 py-1.5 ${message.cited ? "border-stamp bg-panel" : "border-rule bg-panel-2"}`}
+        >
+          <p className="font-mono text-[0.66rem] uppercase tracking-[0.08em] text-ink-soft">
+            {message.who}
+            {message.track === "main" ? "" : ` · helper ${message.track}`}
+            {message.cited ? " · quoted" : ""}
+          </p>
+          {message.text === "" ? null : (
+            <p className="mt-1 whitespace-pre-wrap text-[0.8rem]">
+              <Marked text={message.text} quote={message.cited ? words : null} />
+            </p>
+          )}
+          {message.input === undefined ? null : (
+            <pre className="mt-1 overflow-x-auto whitespace-pre-wrap font-mono text-[0.72rem]">
+              <Marked text={message.input} quote={message.cited ? words : null} />
+            </pre>
+          )}
+          {message.output === undefined ? null : (
+            <pre className="mt-1 overflow-x-auto whitespace-pre-wrap font-mono text-[0.72rem] text-ink-soft">
+              <Marked text={message.output} quote={message.cited ? words : null} />
+            </pre>
+          )}
+        </li>
+      ))}
+    </ol>
+  )
+}
+
+const Quote = ({
+  learningId,
+  sessionId,
+  problemId,
+  index,
+  item,
+}: {
+  readonly learningId: string
+  readonly sessionId: string
+  readonly problemId: string
+  readonly index: number
+  readonly item: LearningProblem["evidence"][number]
+}) => {
+  const [open, setOpen] = useState(false)
+  return (
+    <li className="border-l border-rule pl-3 text-[0.82rem]">
+      <blockquote className="font-mono text-[0.78rem]">“{item.quote}”</blockquote>
+      <p className="mt-1 text-ink-soft">{item.why}</p>
+      <p className="mt-1 flex flex-wrap gap-3 text-[0.78rem]">
+        <button
+          type="button"
+          onClick={() => setOpen((value) => !value)}
+          className="font-semibold text-custody underline"
+        >
+          {open ? "Hide messages" : "Show messages"}
+        </button>
+        {item.messageId === null ? null : (
+          <Link
+            to={`/sessions/${sessionId}?tab=conversation&m=${encodeURIComponent(item.messageId)}`}
+            className="text-ink-soft underline"
+          >
+            Open in session
+          </Link>
+        )}
+      </p>
+      {open ? (
+        <QuoteMessages
+          learningId={learningId}
+          problemId={problemId}
+          quote={index}
+          words={item.quote}
+        />
+      ) : null}
+    </li>
+  )
+}
+
+const Proof = ({
+  learningId,
+  problems,
+}: {
+  readonly learningId: string
+  readonly problems: ReadonlyArray<LearningProblem>
+}) => (
   <section aria-label="The proof" className="flex min-w-0 flex-col gap-4 break-words">
     {bySession(problems).map((session) => (
       <article key={session.sessionId} className="border border-rule bg-panel p-4">
@@ -128,26 +284,15 @@ const Proof = ({ problems }: { readonly problems: ReadonlyArray<LearningProblem>
             <li key={problem.id}>
               <p className="font-semibold leading-snug">{problem.title}</p>
               <ul className="mt-1.5 flex flex-col gap-2">
-                {problem.evidence.map((item) => (
-                  <li
+                {problem.evidence.map((item, index) => (
+                  <Quote
                     key={`${item.from}-${item.to}-${item.quote}`}
-                    className="border-l border-rule pl-3 text-[0.82rem]"
-                  >
-                    <blockquote className="font-mono text-[0.78rem]">“{item.quote}”</blockquote>
-                    <p className="mt-1 text-ink-soft">{item.why}</p>
-                    {item.messageId === null ? (
-                      <p className="mt-1 text-[0.72rem] text-ink-soft opacity-70">
-                        The message this quote came from could not be found.
-                      </p>
-                    ) : (
-                      <Link
-                        to={`/sessions/${session.sessionId}?tab=conversation&m=${encodeURIComponent(item.messageId)}`}
-                        className="mt-1 inline-block text-[0.78rem] text-custody underline"
-                      >
-                        Open message
-                      </Link>
-                    )}
-                  </li>
+                    learningId={learningId}
+                    sessionId={session.sessionId}
+                    problemId={problem.id}
+                    index={index}
+                    item={item}
+                  />
                 ))}
               </ul>
             </li>
@@ -213,7 +358,7 @@ export const LearningDetail = () => {
       {back}
       <div className="grid items-start gap-6 min-[900px]:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
         <Fix payload={state.payload} onChange={onSkipChange} />
-        <Proof problems={state.payload.problems} />
+        <Proof learningId={state.payload.learning.id} problems={state.payload.problems} />
       </div>
     </div>
   )

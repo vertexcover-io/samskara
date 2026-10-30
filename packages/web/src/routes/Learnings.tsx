@@ -134,28 +134,6 @@ const LearningCard = ({
 const controlClass =
   "h-9 rounded-xs border border-rule bg-panel px-2.5 font-mono text-[0.78rem] text-ink transition-colors focus:border-ink focus:outline-none"
 
-const HowThisWorks = () => (
-  <section className="border border-rule bg-panel-2 p-4 text-[0.82rem] leading-relaxed text-ink-soft">
-    <p>
-      <span className="font-mono text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-stamp">
-        How this page works
-      </span>
-    </p>
-    <p className="mt-1.5">
-      Session reviews find problems. Once a week, a learning run reads the project's problems that
-      no run has read yet, groups them by cause, checks each group against the agent harness, and
-      writes what to change. A cause that comes back joins the learning it already has.
-    </p>
-    <p className="mt-1.5">
-      To run one now, press Run now, or from a terminal:{" "}
-      <code className="font-mono text-[0.78rem] text-custody">
-        samskara learn --project PROJECT_ID
-      </code>
-      .
-    </p>
-  </section>
-)
-
 export const Learnings = () => {
   const [searchParams, setSearchParams] = useSearchParams()
   const [projects, setProjects] = useState<ProjectsState>({ phase: "loading" })
@@ -328,7 +306,6 @@ export const Learnings = () => {
   return (
     <div>
       <h1 className="mb-3 text-[1.375rem] font-semibold leading-tight">Fixes</h1>
-      <HowThisWorks />
       <div className="mb-4 mt-4 flex flex-wrap items-end justify-between gap-2">
         <div className="flex flex-wrap items-end gap-3">
           <label className="flex flex-col gap-1">
