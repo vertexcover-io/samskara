@@ -128,6 +128,19 @@ describe.skipIf(!dockerAvailable())("runLearnings", () => {
     ).toEqual([])
   })
 
+  test("SC13: a full run saves the impact and how it helps the writer wrote", async () => {
+    await seedSession(["A"])
+    await seedSession(["B"])
+    const result = await run(fakeAgents().runner)
+    expect(result.status).toBe("done")
+    const [saved] = await learningsRepo.listLearnings(db, projectId)
+    expect(saved).toMatchObject({
+      impact: "time_only",
+      impactReason: "lost a few minutes",
+      howItHelps: "Saves a few minutes a run.",
+    })
+  })
+
   test("LS2: the run's log is gzipped JSONL, one line per step, with the decisions as fields", async () => {
     await seedSession(["A"])
     await seedSession(["B"])

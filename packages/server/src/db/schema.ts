@@ -1,5 +1,6 @@
 import {
   FIX_TYPES,
+  LEARNING_IMPACTS,
   LEARNING_PRIORITIES,
   type LearnOutcome,
   type LearnStatus,
@@ -76,6 +77,7 @@ const problemClassValues = PROBLEM_CLASSES.map((v) => `'${v}'`).join(", ")
 const problemSeverityValues = PROBLEM_SEVERITIES.map((v) => `'${v}'`).join(", ")
 const fixTypeValues = FIX_TYPES.map((v) => `'${v}'`).join(", ")
 const learningPriorityValues = LEARNING_PRIORITIES.map((v) => `'${v}'`).join(", ")
+const learningImpactValues = LEARNING_IMPACTS.map((v) => `'${v}'`).join(", ")
 
 const createdAt = timestamp("createdAt", { withTimezone: true }).notNull().defaultNow()
 const updatedAt = timestamp("updatedAt", { withTimezone: true }).notNull().defaultNow()
@@ -568,12 +570,24 @@ export const learnings = pgTable(
     priorityReason: text("priorityReason").notNull(),
     fixType: text("fixType").notNull(),
     fix: text("fix").notNull(),
+    /** Null on a learning written before the writer was asked for it. */
+    impact: text("impact"),
+    impactReason: text("impactReason"),
+    howItHelps: text("howItHelps"),
+    /**
+     * Set when a project editor skips the fix: it leaves the Fixes list but stays a known
+     * learning, so a later run joins its cause here (keeping it skipped) rather than making a
+     * new one. Null while it is not skipped.
+     */
+    skippedAt: timestamp("skippedAt", { withTimezone: true }),
+    skippedBy: uuid("skippedBy").references(() => users.id, { onDelete: "set null" }),
     createdAt,
     updatedAt,
   },
   (t) => [
     check("learnings_priority_check", sql`${t.priority} in (${sql.raw(learningPriorityValues)})`),
     check("learnings_fixType_check", sql`${t.fixType} in (${sql.raw(fixTypeValues)})`),
+    check("learnings_impact_check", sql`${t.impact} in (${sql.raw(learningImpactValues)})`),
     index("learnings_projectId_idx").on(t.projectId),
   ],
 )
