@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest"
 import type { SessionExportRecord } from "../export.js"
-import { problemExcerpt, recordsInReviewOrder } from "./excerpt.js"
+import { messageIdAt, problemExcerpt, recordsInReviewOrder } from "./excerpt.js"
 
 const rec = (
   seq: number,
@@ -60,4 +60,19 @@ describe("evidence excerpts", () => {
     expect(text).toContain("WARNING: deprecated flag")
     expect(text).not.toContain("ok line\nok line")
   })
+})
+
+describe("messageIdAt", () => {
+  test.each([
+    [["a", null, "c"], "msg-0", "a"],
+    [["a", null, "c"], "msg-1", null],
+    [["a", null, "c"], "msg-5", null],
+    [["a", null, "c"], "msg-x", null],
+    [null, "msg-0", null],
+  ])(
+    "SC16: recordIds %j at %s is %s — a gone message, an id outside the list or no saved order is null",
+    (recordIds, alias, expected) => {
+      expect(messageIdAt(recordIds, alias)).toBe(expected)
+    },
+  )
 })

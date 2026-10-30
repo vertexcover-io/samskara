@@ -1,4 +1,6 @@
+import { WRITING_RULES } from "../writingRules.js"
 import { CAUSE_MAX, ONE_OFF_BELOW, WRITTEN_LIMITS } from "./format.js"
+import { LEARNING_IMPACTS } from "./types.js"
 
 /** Agent 1's instructions: put the new problems into groups by cause. */
 export const GROUPER_CONTRACT = `# Group problems by cause
@@ -113,7 +115,8 @@ Set it from the problems and their evidence:
 - how often: how many problems, in how many sessions, and how many times it happened in all —
   the same mistake made again and again in one session counts, since the agent did not learn
   even within that session;
-- who it stopped: a person had to step in, or a wrong result shipped or nearly did;
+- its impact, below: at the same frequency, wrong_result ranks above person_stepped_in, and
+  person_stepped_in above time_only;
 - the cost each time, against how simple the fix is: a one-line rule that stops a costly
   problem ranks above a large change for the same pain.
 
@@ -124,6 +127,16 @@ Set it from the problems and their evidence:
 
 How often is not the only measure. A problem that happens whenever someone works on one part
 of the system, and costs a lot each time, ranks above a frequent one that costs seconds.
+
+## Impact
+
+What happens when the problem happens, the worst its evidence shows. One of:
+
+- wrong_result: without this fix the output can be wrong, or untested work ships.
+- person_stepped_in: a person had to notice it and correct the agent.
+- time_only: the agent got there, but wasted time or tokens.
+
+Then a dash and one sentence that says what happened, with the numbers.
 
 New learnings in this batch may be at most as many high and medium as the top of
 \`groups.md\` says; low has no limit, and learnings you update do not count. Rank the new ones
@@ -153,9 +166,12 @@ One section per group, headed by its id:
 - **Problem:** Coder and verify agents end their turn saying they are "waiting" on jest, so
   the orchestrator has to chase them, sometimes many times in one session.
 - **Priority:** high — 9 problems in 6 sessions, and two shipped work nobody had tested
+- **Impact:** wrong_result — two sessions shipped code whose tests had not finished running
 - **Fix type:** skill
 - **Fix:** In skills/implement/SKILL.md, under "Running tests", add: wait for the test command
   to exit and read its result before reporting; never report a run as pending.
+- **How it helps:** Saves about 10 minutes a run of chasing helpers, and stops untested work
+  from shipping.
 
 ## G2
 
@@ -169,16 +185,15 @@ One section per group, headed by its id:
 - Problem: what goes wrong and why it matters, at most ${WRITTEN_LIMITS.problem} characters.
 - Priority: the word, a dash, then one sentence why, at most ${WRITTEN_LIMITS.priorityReason}
   characters.
+- Impact: one of ${LEARNING_IMPACTS.join(", ")}, a dash, then one sentence, at most
+  ${WRITTEN_LIMITS.impactReason} characters.
 - Fix: at most ${WRITTEN_LIMITS.fix} characters.
+- How it helps: one sentence on what changes once the fix is in, at most
+  ${WRITTEN_LIMITS.howItHelps} characters. Say it in time saved or harm stopped.
 - Why (for a drop): one sentence, at most ${WRITTEN_LIMITS.priorityReason} characters: which
   step dropped it, and what in the numbers or the evidence says so.
 
-## How to write
-
-- Write the way you would say it out loud to the person next to you.
-- Say what happens plainly, with real names and numbers.
-- Use everyday words: use, fix, broke. Not utilize, leverage, remediate.
-- No grading words like robust, crucial or honest. Say why it matters instead.
+${WRITING_RULES}
 
 Your final reply is one short line, for example "learnings.md ready: 8 learnings, 3 dropped".
 `

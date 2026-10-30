@@ -30,6 +30,19 @@ export const recordsInReviewOrder = (
 
 const numberOf = (id: string): number => Number(id.replace(/^msg-/, ""))
 
+/**
+ * The real message id behind a review's `msg-N`, or null when it cannot be found: the review
+ * kept no record order (`recordIds` null), N is outside it, or that message is gone.
+ */
+export const messageIdAt = (
+  recordIds: ReadonlyArray<string | null> | null,
+  alias: string,
+): string | null => {
+  const match = /^msg-(\d+)$/.exec(alias)
+  if (match === null || recordIds === null) return null
+  return recordIds[Number(match[1])] ?? null
+}
+
 /** One record as a line block: who or which tool, then what it said, cut like a reader's. */
 const recordBlock = (record: SessionExportRecord): string => {
   const cut = shortenForReader(record)

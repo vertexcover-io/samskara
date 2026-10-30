@@ -1,5 +1,6 @@
 import { PROBLEM_CLASSES, PROBLEM_SEVERITIES } from "../problems/reviewMd.js"
 import {
+  LEARNING_IMPACTS,
   LEARNING_PRIORITIES,
   type LearningInput,
   type ProblemInput,
@@ -9,8 +10,15 @@ import {
 /** Longest cause agent 1 may write; a cause is a sentence or two, not a report. */
 export const CAUSE_MAX = 400
 
-/** The limits on what agent 2 writes, the same idea as review.md's. */
-export const WRITTEN_LIMITS = { title: 120, problem: 600, priorityReason: 300, fix: 1200 } as const
+/** The limits on what agent 2 writes, the same idea as review.md's. Impact and how it helps are one sentence each. */
+export const WRITTEN_LIMITS = {
+  title: 120,
+  problem: 600,
+  priorityReason: 300,
+  fix: 1200,
+  impactReason: 300,
+  howItHelps: 300,
+} as const
 
 /**
  * The readers of both agents' files, as plain JavaScript source. The check scripts the agents
@@ -87,7 +95,7 @@ const parseGroupsMd = (text, problemIds, learningIds, causeMax) => {
  * count toward the limits. rules.maxHigh / rules.maxMedium: how many new learnings this batch
  * may make at those priorities.
  */
-const parseWrittenMd = (text, groupIds, fixTypes, priorities, limits, rules) => {
+const parseWrittenMd = (text, groupIds, fixTypes, priorities, impacts, limits, rules) => {
   const errors = []
   const answers = {}
   for (const section of sections(text)) {
@@ -145,8 +153,25 @@ const parseWrittenMd = (text, groupIds, fixTypes, priorities, limits, rules) => 
     const fixType = required("Fix type")
     if (fixType !== "" && !fixTypes.includes(fixType))
       errors.push(id + ": Fix type must be one of " + fixTypes.join(", "))
+    const impactRaw = required("Impact")
+    const [impactWord, ...impactRest] = impactRaw.split(/\s+[—–-]\s+/)
+    const impact = (impactWord ?? "").trim().toLowerCase()
+    const impactReason = impactRest.join(" — ").trim()
+    if (impactRaw !== "" && !impacts.includes(impact))
+      errors.push(
+        id + ": Impact must be " + impacts.slice(0, -1).join(", ") + " or " + impacts.at(-1) +
+          ", then — and one sentence",
+      )
+    else if (impactRaw !== "" && impactReason === "")
+      errors.push(id + ": Impact needs one sentence after the word")
+    else if (impactReason.length > limits.impactReason)
+      errors.push(id + ": the impact sentence is over " + limits.impactReason + " characters")
+    const howItHelps = required("How it helps", limits.howItHelps)
     if (errors.length === before)
-      answers[id] = { verdict: "learning", title, problem, priority, priorityReason, fixType, fix }
+      answers[id] = {
+        verdict: "learning", title, problem, priority, priorityReason, fixType, fix,
+        impact, impactReason, howItHelps,
+      }
   }
   const missing = groupIds.filter((id) => answers[id] === undefined && !errors.some((e) => e.startsWith(id + ":")))
   if (missing.length > 0) errors.push("Not answered: " + missing.join(", "))
@@ -186,6 +211,7 @@ type Parsers = {
     groupIds: ReadonlyArray<string>,
     fixTypes: ReadonlyArray<string>,
     priorities: ReadonlyArray<string>,
+    impacts: ReadonlyArray<string>,
     limits: typeof WRITTEN_LIMITS,
     rules: WrittenRules,
   ) => { answers: Record<string, WrittenLearning>; errors: string[] }
@@ -207,7 +233,16 @@ export const parseWrittenMd = (
   groupIds: ReadonlyArray<string>,
   fixTypes: ReadonlyArray<string>,
   rules: WrittenRules,
-) => PARSERS.parseWrittenMd(text, groupIds, fixTypes, LEARNING_PRIORITIES, WRITTEN_LIMITS, rules)
+) =>
+  PARSERS.parseWrittenMd(
+    text,
+    groupIds,
+    fixTypes,
+    LEARNING_PRIORITIES,
+    LEARNING_IMPACTS,
+    WRITTEN_LIMITS,
+    rules,
+  )
 
 /** Agent 1's check: run with node in its workspace, it prints what is wrong with groups.md. */
 export const groupsCheckScript = (
@@ -240,6 +275,7 @@ const { errors } = parseWrittenMd(
   ${JSON.stringify(groupIds)},
   ${JSON.stringify(fixTypes)},
   ${JSON.stringify(LEARNING_PRIORITIES)},
+  ${JSON.stringify(LEARNING_IMPACTS)},
   ${JSON.stringify(WRITTEN_LIMITS)},
   ${JSON.stringify(rules)},
 )
@@ -368,6 +404,12 @@ export const groupsForWriter = (
               `  - Title: ${group.existing.title}`,
               `  - Problem: ${group.existing.problem}`,
               `  - Priority: ${group.existing.priority} — ${group.existing.priorityReason}`,
+              ...(group.existing.impact === null
+                ? []
+                : [`  - Impact: ${group.existing.impact} — ${group.existing.impactReason ?? ""}`]),
+              ...(group.existing.howItHelps === null
+                ? []
+                : [`  - How it helps: ${group.existing.howItHelps}`]),
               `  - Fix type: ${group.existing.fixType}`,
               `  - Fix: ${group.existing.fix}`,
             ].join("\n"),
