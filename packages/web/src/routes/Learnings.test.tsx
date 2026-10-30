@@ -13,6 +13,10 @@ const LEARNING = {
   priorityReason: "it keeps happening, and two sessions shipped untested work",
   fixType: "skill",
   fix: "In skills/implement/SKILL.md, wait for the test command to exit before reporting.",
+  impact: null,
+  impactReason: null,
+  howItHelps: null,
+  skippedAt: null,
   updatedByRunId: "r-1",
   createdAt: "2026-10-20T10:00:00.000Z",
   updatedAt: "2026-10-20T10:00:00.000Z",
@@ -29,21 +33,6 @@ const RUN = {
   finishedAt: "2026-10-20T10:08:00.000Z",
 }
 
-const PROBLEM = {
-  id: "pr-1",
-  sessionId: "s-9",
-  reviewId: "rv-1",
-  projectId: "p-1",
-  title: "Coder reported while jest was still running",
-  class: "agent",
-  severity: "high",
-  severityReason: "the orchestrator had to chase it",
-  fixType: "skill",
-  description: "The coder ended its turn with jest still running.",
-  learning: "Wait for the test run to exit.",
-  evidence: [],
-}
-
 const project = (id: string, name: string) => ({
   id,
   name,
@@ -56,13 +45,18 @@ const project = (id: string, name: string) => ({
 
 const projectsBody = { projects: [project("p-1", "Samskara"), project("p-2", "Yok")] }
 
-/** Answers by URL substring, first match wins, and records every URL asked for. */
-const stubFetch = (routes: ReadonlyArray<{ match: string; status: number; body: unknown }>) => {
+/** Answers by URL substring (and method, when a route names one), first match wins, and records every "METHOD url" asked for. */
+const stubFetch = (
+  routes: ReadonlyArray<{ match: string; status: number; body: unknown; method?: string }>,
+) => {
   const urls: string[] = []
-  vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+  vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
     const url = input instanceof Request ? input.url : String(input)
-    urls.push(url)
-    const route = routes.find((r) => url.includes(r.match))
+    const method = input instanceof Request ? input.method : (init?.method ?? "GET")
+    urls.push(`${method} ${url}`)
+    const route = routes.find(
+      (r) => url.includes(r.match) && (r.method === undefined || r.method === method),
+    )
     return Promise.resolve(
       route === undefined
         ? new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 })
@@ -90,7 +84,11 @@ afterEach(() => {
 
 test("LR1: shows the first project's learnings with priority, counts, fix and the last run", async () => {
   const urls = stubFetch([
-    { match: "/api/learnings", status: 200, body: { learnings: [LEARNING], latestRun: RUN } },
+    {
+      match: "/api/learnings",
+      status: 200,
+      body: { learnings: [LEARNING], latestRun: RUN, canEdit: true },
+    },
     { match: "/api/projects", status: 200, body: projectsBody },
   ])
 
@@ -106,28 +104,79 @@ test("LR1: shows the first project's learnings with priority, counts, fix and th
   expect(urls.some((url) => url.includes("/api/learnings?project=p-1"))).toBe(true)
 })
 
-test("LR2: Show problems lists the problems behind a learning, each linking to its session", async () => {
+test("SC23: a card's link opens its fix page carrying the list's filters, and Show problems is gone", async () => {
   stubFetch([
-    { match: "/api/learnings/l-1", status: 200, body: { learning: LEARNING, problems: [PROBLEM] } },
-    { match: "/api/learnings", status: 200, body: { learnings: [LEARNING], latestRun: RUN } },
+    {
+      match: "/api/learnings",
+      status: 200,
+      body: { learnings: [LEARNING], latestRun: RUN, canEdit: true },
+    },
+    { match: "/api/projects", status: 200, body: projectsBody },
+  ])
+
+  renderPage("/learnings?project=p-1&show=10")
+
+  const card = (await screen.findByText(LEARNING.title)).closest("article") as HTMLElement
+  expect(within(card).getByRole("link", { name: LEARNING.title })).toHaveAttribute(
+    "href",
+    "/learnings/l-1?project=p-1&show=10",
+  )
+  expect(within(card).queryByRole("button", { name: "Show problems" })).toBeNull()
+})
+
+test("SC14: the card shows the impact in words with its sentence, and how the fix helps", async () => {
+  const withImpact = {
+    ...LEARNING,
+    impact: "person_stepped_in",
+    impactReason: "the person had to chase the coder three times",
+    howItHelps: "Saves about 10 minutes a run of chasing helpers.",
+  }
+  stubFetch([
+    {
+      match: "/api/learnings",
+      status: 200,
+      body: { learnings: [withImpact], latestRun: RUN, canEdit: true },
+    },
     { match: "/api/projects", status: 200, body: projectsBody },
   ])
 
   renderPage()
-  const user = userEvent.setup()
-  const card = (await screen.findByText(LEARNING.title)).closest("article") as HTMLElement
-  await user.click(within(card).getByRole("button", { name: "Show problems" }))
 
-  expect(await within(card).findByText(PROBLEM.title)).toBeInTheDocument()
-  expect(within(card).getByRole("link", { name: "the session" })).toHaveAttribute(
-    "href",
-    "/sessions/s-9?tab=review",
-  )
+  const card = (await screen.findByText(LEARNING.title)).closest("article") as HTMLElement
+  expect(within(card).getByText(/Person had to step in/)).toBeInTheDocument()
+  expect(
+    within(card).getByText(/the person had to chase the coder three times/),
+  ).toBeInTheDocument()
+  expect(within(card).getByText(/How it helps:/)).toBeInTheDocument()
+  expect(within(card).getByText(/Saves about 10 minutes a run/)).toBeInTheDocument()
+})
+
+test("SC15: an older learning's card shows no impact or how-it-helps line, and the rest still shows", async () => {
+  stubFetch([
+    {
+      match: "/api/learnings",
+      status: 200,
+      body: { learnings: [LEARNING], latestRun: RUN, canEdit: true },
+    },
+    { match: "/api/projects", status: 200, body: projectsBody },
+  ])
+
+  renderPage()
+
+  const card = (await screen.findByText(LEARNING.title)).closest("article") as HTMLElement
+  expect(within(card).queryByText(/Impact:/)).toBeNull()
+  expect(within(card).queryByText(/How it helps:/)).toBeNull()
+  expect(within(card).getByText(LEARNING.problem)).toBeInTheDocument()
+  expect(within(card).getByText(/wait for the test command to exit/)).toBeInTheDocument()
 })
 
 test("LR3: choosing another project loads that project's learnings", async () => {
   const urls = stubFetch([
-    { match: "/api/learnings", status: 200, body: { learnings: [LEARNING], latestRun: RUN } },
+    {
+      match: "/api/learnings",
+      status: 200,
+      body: { learnings: [LEARNING], latestRun: RUN, canEdit: true },
+    },
     { match: "/api/projects", status: 200, body: projectsBody },
   ])
 
@@ -143,7 +192,11 @@ test("LR3: choosing another project loads that project's learnings", async () =>
 
 test("LR4: a project with no learnings says when they appear", async () => {
   stubFetch([
-    { match: "/api/learnings", status: 200, body: { learnings: [], latestRun: null } },
+    {
+      match: "/api/learnings",
+      status: 200,
+      body: { learnings: [], latestRun: null, canEdit: true },
+    },
     { match: "/api/projects", status: 200, body: projectsBody },
   ])
 
@@ -194,6 +247,7 @@ const stubRun = (polls: number) => {
       return reply(200, {
         learnings: done() ? [LEARNING] : [],
         latestRun: posts.length === 0 ? null : done() ? { ...RUNNING, status: "done" } : RUNNING,
+        canEdit: true,
       })
     if (url.includes("/api/projects")) return reply(200, projectsBody)
     return reply(401, { error: "unauthorized" })
@@ -231,7 +285,11 @@ test("LR6: Run now starts a run for the chosen project, waits for it, and shows 
 test("LR7: a run already going when the page opens shows as running", async () => {
   stubFetch([
     { match: "/api/learnings/runs/r-2", status: 200, body: { run: RUNNING } },
-    { match: "/api/learnings", status: 200, body: { learnings: [], latestRun: RUNNING } },
+    {
+      match: "/api/learnings",
+      status: 200,
+      body: { learnings: [], latestRun: RUNNING, canEdit: true },
+    },
     { match: "/api/projects", status: 200, body: projectsBody },
   ])
 
@@ -244,7 +302,11 @@ test("LR7: a run already going when the page opens shows as running", async () =
 test("LR8: a refused run says why in plain words", async () => {
   stubFetch([
     { match: "/api/learnings/runs", status: 400, body: { error: "noHarnessPath" } },
-    { match: "/api/learnings", status: 200, body: { learnings: [], latestRun: null } },
+    {
+      match: "/api/learnings",
+      status: 200,
+      body: { learnings: [], latestRun: null, canEdit: true },
+    },
     { match: "/api/projects", status: 200, body: projectsBody },
   ])
   renderPage()
@@ -266,7 +328,11 @@ const MANY = Array.from({ length: 12 }, (_, index) => ({
 
 test("LR9: shows the top 5 by default, and says how many there are", async () => {
   stubFetch([
-    { match: "/api/learnings", status: 200, body: { learnings: MANY, latestRun: RUN } },
+    {
+      match: "/api/learnings",
+      status: 200,
+      body: { learnings: MANY, latestRun: RUN, canEdit: true },
+    },
     { match: "/api/projects", status: 200, body: projectsBody },
   ])
 
@@ -280,7 +346,11 @@ test("LR9: shows the top 5 by default, and says how many there are", async () =>
 
 test("LR10: the Show filter picks how many, and the choice is kept in the URL", async () => {
   stubFetch([
-    { match: "/api/learnings", status: 200, body: { learnings: MANY, latestRun: RUN } },
+    {
+      match: "/api/learnings",
+      status: 200,
+      body: { learnings: MANY, latestRun: RUN, canEdit: true },
+    },
     { match: "/api/projects", status: 200, body: projectsBody },
   ])
   renderPage("/learnings?show=10")
@@ -296,4 +366,121 @@ test("LR10: the Show filter picks how many, and the choice is kept in the URL", 
   // Changing project keeps the chosen count.
   await user.selectOptions(screen.getByRole("combobox", { name: "Project" }), "p-2")
   expect(await screen.findByText("Learning number 12")).toBeInTheDocument()
+})
+
+const SECOND = { ...LEARNING, id: "l-2", title: "Agents edit the lockfile by hand" }
+const skippedAt = "2026-10-29T09:00:00.000Z"
+
+test("SC32: Skip on a card takes the fix out of the list at once, without opening its page", async () => {
+  const urls = stubFetch([
+    {
+      match: "/api/learnings/l-1/skip",
+      method: "POST",
+      status: 200,
+      body: { learning: { ...LEARNING, skippedAt } },
+    },
+    {
+      match: "/api/learnings",
+      status: 200,
+      body: { learnings: [LEARNING, SECOND], latestRun: RUN, canEdit: true },
+    },
+    { match: "/api/projects", status: 200, body: projectsBody },
+  ])
+  renderPage()
+  const user = userEvent.setup()
+
+  const card = (await screen.findByText(LEARNING.title)).closest("article") as HTMLElement
+  await user.click(within(card).getByRole("button", { name: "Skip" }))
+
+  await waitFor(() => expect(screen.queryByText(LEARNING.title)).toBeNull())
+  expect(screen.getByText(SECOND.title)).toBeInTheDocument()
+  expect(screen.getByText("Showing 1 of 1")).toBeInTheDocument()
+  expect(
+    urls.some((url) => url.startsWith("POST") && url.includes("/api/learnings/l-1/skip")),
+  ).toBe(true)
+  expect(screen.getByTestId("location")).toHaveTextContent(/^\/learnings$/)
+})
+
+test("SC33: Show Skipped lists only skipped fixes with Unskip, and Unskip takes one out", async () => {
+  stubFetch([
+    {
+      match: "/api/learnings/l-1/skip",
+      method: "DELETE",
+      status: 200,
+      body: { learning: { ...LEARNING, skippedAt: null } },
+    },
+    {
+      match: "/api/learnings",
+      status: 200,
+      body: { learnings: [{ ...LEARNING, skippedAt }, SECOND], latestRun: RUN, canEdit: true },
+    },
+    { match: "/api/projects", status: 200, body: projectsBody },
+  ])
+  renderPage("/learnings?show=skipped")
+  const user = userEvent.setup()
+
+  const card = (await screen.findByText(LEARNING.title)).closest("article") as HTMLElement
+  expect(screen.queryByText(SECOND.title)).toBeNull()
+  await user.click(within(card).getByRole("button", { name: "Unskip" }))
+
+  expect(await screen.findByText("No skipped fixes")).toBeInTheDocument()
+  expect(screen.queryByText(LEARNING.title)).toBeNull()
+})
+
+test("a project whose every fix is skipped says so and points to Show Skipped, not 'No learnings here yet'", async () => {
+  stubFetch([
+    {
+      match: "/api/learnings",
+      status: 200,
+      body: { learnings: [{ ...LEARNING, skippedAt }], latestRun: RUN, canEdit: true },
+    },
+    { match: "/api/projects", status: 200, body: projectsBody },
+  ])
+  renderPage()
+
+  expect(await screen.findByText("Every fix here is skipped")).toBeInTheDocument()
+  expect(screen.getByText(/Show "Skipped"/)).toBeInTheDocument()
+  expect(screen.queryByText("No learnings here yet")).toBeNull()
+})
+
+test("SC34: a viewer sees no Skip or Unskip button on the list", async () => {
+  stubFetch([
+    {
+      match: "/api/learnings",
+      status: 200,
+      body: { learnings: [LEARNING], latestRun: RUN, canEdit: false },
+    },
+    { match: "/api/projects", status: 200, body: projectsBody },
+  ])
+  renderPage()
+
+  await screen.findByText(LEARNING.title)
+  expect(screen.queryByRole("button", { name: /^(Skip|Unskip)$/ })).toBeNull()
+})
+
+test("SC35: a refused skip says why in words, and the fix stays", async () => {
+  stubFetch([
+    {
+      match: "/api/learnings/l-1/skip",
+      method: "POST",
+      status: 403,
+      body: { error: "notEditable" },
+    },
+    {
+      match: "/api/learnings",
+      status: 200,
+      body: { learnings: [LEARNING], latestRun: RUN, canEdit: true },
+    },
+    { match: "/api/projects", status: 200, body: projectsBody },
+  ])
+  renderPage()
+  const user = userEvent.setup()
+
+  const card = (await screen.findByText(LEARNING.title)).closest("article") as HTMLElement
+  await user.click(within(card).getByRole("button", { name: "Skip" }))
+
+  expect(
+    await screen.findByText("You need edit rights on this project to skip a fix."),
+  ).toBeInTheDocument()
+  expect(screen.getByText(LEARNING.title)).toBeInTheDocument()
 })

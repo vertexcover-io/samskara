@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from "react"
 import { Link, useSearchParams } from "react-router-dom"
 import { type ApiError, client, request } from "../api/client.js"
-import type { LearningProblem, LearningRun, LearningSummary, ProjectSummary } from "../api/types.js"
+import type { LearningRun, LearningSummary, ProjectSummary } from "../api/types.js"
 import { SessionExpired } from "../auth/SessionExpired.js"
+import { FIX_TYPE_LABEL, IMPACT_LABEL, PRIORITY_TONE, plural } from "../learnings/labels.js"
+import { SkipButton } from "../learnings/SkipButton.js"
 import { LoadingShell } from "../shell/LoadingShell.js"
 
 type State =
@@ -11,6 +13,7 @@ type State =
       readonly phase: "ready"
       readonly learnings: ReadonlyArray<LearningSummary>
       readonly latestRun: LearningRun | null
+      readonly canEdit: boolean
     }
   | { readonly phase: "failed"; readonly error: ApiError }
 
@@ -18,25 +21,6 @@ type ProjectsState =
   | { readonly phase: "loading" }
   | { readonly phase: "ready"; readonly projects: ReadonlyArray<ProjectSummary> }
   | { readonly phase: "failed"; readonly error: ApiError }
-
-type ProblemsState =
-  | { readonly phase: "loading" }
-  | { readonly phase: "ready"; readonly problems: ReadonlyArray<LearningProblem> }
-  | { readonly phase: "failed"; readonly error: ApiError }
-
-const PRIORITY_TONE: Readonly<Record<string, string>> = {
-  high: "border-err/40 text-err",
-  medium: "border-stamp/40 text-stamp",
-  low: "border-rule text-ink-soft",
-}
-
-const FIX_TYPE_LABEL: Readonly<Record<string, string>> = {
-  skill: "Skill",
-  code: "Code",
-  project_guidelines: "Project guidelines",
-  knowledge_base: "Knowledge base",
-  human: "The person",
-}
 
 /** A run that is going: started here, or found going when the page loaded. */
 type RunState =
@@ -64,68 +48,49 @@ const SHOW_CHOICES = [
   { value: "10", label: "Top 10" },
   { value: "20", label: "Top 20" },
   { value: "all", label: "All" },
+  { value: "skipped", label: "Skipped" },
 ] as const
 const DEFAULT_SHOW = "5"
 
-const showLimit = (value: string | null): { readonly value: string; readonly limit: number } => {
+/** The Show choice: how many to show, and whether it lists the skipped fixes instead. */
+const showLimit = (
+  value: string | null,
+): { readonly value: string; readonly limit: number; readonly skipped: boolean } => {
   const choice = SHOW_CHOICES.find((c) => c.value === value)?.value ?? DEFAULT_SHOW
-  return { value: choice, limit: choice === "all" ? Number.POSITIVE_INFINITY : Number(choice) }
+  const every = choice === "all" || choice === "skipped"
+  return {
+    value: choice,
+    limit: every ? Number.POSITIVE_INFINITY : Number(choice),
+    skipped: choice === "skipped",
+  }
 }
-
-const plural = (count: number, word: string): string => `${count} ${word}${count === 1 ? "" : "s"}`
 
 const runLine = (run: LearningRun | null): string =>
   run === null
     ? "No learning run yet"
     : `Last run ${new Date(run.startedAt).toLocaleString()} · ${run.status}`
 
-const Problems = ({ learningId }: { readonly learningId: string }) => {
-  const [state, setState] = useState<ProblemsState>({ phase: "loading" })
-
-  useEffect(() => {
-    let active = true
-    request(() => client.api.learnings[":id"].$get({ param: { id: learningId } })).then(
-      (result) => {
-        if (!active) return
-        setState(
-          result.ok
-            ? { phase: "ready", problems: result.data.problems }
-            : { phase: "failed", error: result.error },
-        )
-      },
-    )
-    return () => {
-      active = false
-    }
-  }, [learningId])
-
-  if (state.phase === "loading") return <p className="mt-3 text-ink-soft">Loading problems…</p>
-  if (state.phase === "failed")
-    return <p className="mt-3 text-err">The problems could not be retrieved.</p>
+/** A fix: the title links to its page, stretched over the card so the whole card opens it. */
+const LearningCard = ({
+  row,
+  search,
+  canEdit,
+  onSkipChange,
+}: {
+  readonly row: LearningSummary
+  readonly search: string
+  readonly canEdit: boolean
+  readonly onSkipChange: (id: string, skippedAt: string | null) => void
+}) => {
   return (
-    <ul className="mt-3 flex flex-col gap-2">
-      {state.problems.map((problem) => (
-        <li key={problem.id} className="border border-rule bg-panel-2 p-3">
-          <p className="font-semibold leading-snug">{problem.title}</p>
-          <p className="mt-1 text-[0.82rem] text-ink-soft">{problem.description}</p>
-          <p className="mt-1.5 font-mono text-[0.72rem] text-ink-soft">
-            {problem.severity} ·{" "}
-            <Link to={`/sessions/${problem.sessionId}?tab=review`} className="underline">
-              the session
-            </Link>
-          </p>
-        </li>
-      ))}
-    </ul>
-  )
-}
-
-const LearningCard = ({ row }: { readonly row: LearningSummary }) => {
-  const [open, setOpen] = useState(false)
-  return (
-    <article className="border border-rule bg-panel p-4">
+    <article className="relative border border-rule bg-panel p-4 break-words transition-colors hover:border-ink">
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-        <p className="text-[0.9375rem] font-semibold leading-snug">{row.title}</p>
+        <Link
+          to={`/learnings/${row.id}${search}`}
+          className="text-[0.9375rem] font-semibold leading-snug after:absolute after:inset-0"
+        >
+          {row.title}
+        </Link>
         <p className="font-mono text-[0.72rem] text-ink-soft">
           <span
             className={`mr-2 rounded-xs border px-1.5 py-0.5 font-semibold ${PRIORITY_TONE[row.priority] ?? PRIORITY_TONE.low}`}
@@ -136,21 +101,32 @@ const LearningCard = ({ row }: { readonly row: LearningSummary }) => {
         </p>
       </div>
       <p className="mt-1.5 text-ink-soft">{row.problem}</p>
+      {row.impact === null ? null : (
+        <p className="mt-2 text-[0.82rem]">
+          <span className="font-semibold">Impact: {IMPACT_LABEL[row.impact] ?? row.impact}.</span>{" "}
+          {row.impactReason}
+        </p>
+      )}
       <p className="mt-2 text-[0.82rem]">
         <span className="font-semibold">Fix ({FIX_TYPE_LABEL[row.fixType] ?? row.fixType}):</span>{" "}
         {row.fix}
       </p>
+      {row.howItHelps === null ? null : (
+        <p className="mt-1.5 text-[0.82rem]">
+          <span className="font-semibold">How it helps:</span> {row.howItHelps}
+        </p>
+      )}
       <p className="mt-1.5 text-[0.82rem] text-ink-soft">
         Why {row.priority}: {row.priorityReason}
       </p>
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        className="mt-3 h-8 rounded-xs border border-rule px-3 text-[0.78rem] font-semibold transition-colors hover:border-ink"
-      >
-        {open ? "Hide problems" : "Show problems"}
-      </button>
-      {open ? <Problems learningId={row.id} /> : null}
+      {canEdit ? (
+        <div className="mt-3">
+          <SkipButton
+            learning={row}
+            onChange={(updated) => onSkipChange(row.id, updated.skippedAt)}
+          />
+        </div>
+      ) : null}
     </article>
   )
 }
@@ -204,6 +180,18 @@ export const Learnings = () => {
   }, [])
 
   const show = showLimit(searchParams.get("show"))
+  // A skip or unskip changes one row in place; the filter below moves it between the lists.
+  const onSkipChange = (id: string, skippedAt: string | null) =>
+    setState((current) =>
+      current.phase === "ready"
+        ? {
+            ...current,
+            learnings: current.learnings.map((row) =>
+              row.id === id ? { ...row, skippedAt } : row,
+            ),
+          }
+        : current,
+    )
   // Changes one search param and keeps the others, so the project and the count travel together.
   const setParam = (name: string, value: string) => {
     const next = new URLSearchParams(searchParams)
@@ -230,6 +218,7 @@ export const Learnings = () => {
         phase: "ready",
         learnings: result.data.learnings,
         latestRun: result.data.latestRun,
+        canEdit: result.data.canEdit,
       })
       // A run still going when the page loads (another tab, the weekly schedule) is shown and
       // waited on, so Run now cannot start a second one.
@@ -309,6 +298,25 @@ export const Learnings = () => {
     )
   if (projects.phase === "failed") return failed(projects.error)
   if (state.phase === "failed") return failed(state.error)
+  // Skipped fixes appear only under Show "Skipped", and only they do.
+  const listed =
+    state.phase === "ready"
+      ? state.learnings.filter((row) => (row.skippedAt !== null) === show.skipped)
+      : []
+  const empty = show.skipped
+    ? {
+        title: "No skipped fixes",
+        detail: "A fix you skip moves here, and stays here when later runs find it again.",
+      }
+    : state.phase === "ready" && state.learnings.length > 0
+      ? {
+          title: "Every fix here is skipped",
+          detail: 'Choose Show "Skipped" to see them, or to unskip one.',
+        }
+      : {
+          title: "No learnings here yet",
+          detail: "Learnings appear after a learning run reads this project's reviewed sessions.",
+        }
   if (projects.phase === "loading") return <LoadingShell label="Retrieving learnings" />
   if (project === null)
     return (
@@ -384,22 +392,26 @@ export const Learnings = () => {
 
       {state.phase === "loading" ? (
         <LoadingShell label="Retrieving learnings" />
-      ) : state.learnings.length === 0 ? (
+      ) : listed.length === 0 ? (
         <section className="border border-dashed border-rule bg-panel p-8 text-center">
           <p className="text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-stamp">
-            No learnings here yet
+            {empty.title}
           </p>
-          <p className="mx-auto mt-2 max-w-md text-ink-soft">
-            Learnings appear after a learning run reads this project's reviewed sessions.
-          </p>
+          <p className="mx-auto mt-2 max-w-md text-ink-soft">{empty.detail}</p>
         </section>
       ) : (
         <div className="flex flex-col gap-3">
           <p className="font-mono text-[0.72rem] text-ink-soft">
-            Showing {Math.min(show.limit, state.learnings.length)} of {state.learnings.length}
+            Showing {Math.min(show.limit, listed.length)} of {listed.length}
           </p>
-          {state.learnings.slice(0, show.limit).map((row) => (
-            <LearningCard key={row.id} row={row} />
+          {listed.slice(0, show.limit).map((row) => (
+            <LearningCard
+              key={row.id}
+              row={row}
+              search={searchParams.size === 0 ? "" : `?${searchParams}`}
+              canEdit={state.canEdit}
+              onSkipChange={onSkipChange}
+            />
           ))}
         </div>
       )}
