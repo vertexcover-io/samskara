@@ -2,6 +2,7 @@ import type { ReactNode } from "react"
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom"
 import { AuthProvider, useAuth } from "./auth/AuthProvider.js"
 import { RequireAuth } from "./auth/RequireAuth.js"
+import { LearnEventDetail, LearnEvents } from "./routes/LearnEvents.js"
 import { Learnings } from "./routes/Learnings.js"
 import { Login } from "./routes/Login.js"
 import { OrgDetail } from "./routes/OrgDetail.js"
@@ -92,6 +93,22 @@ export const AppRoutes = () => (
       element={
         <Protected>
           <Learnings />
+        </Protected>
+      }
+    />
+    <Route
+      path="/learn-events"
+      element={
+        <Protected>
+          <LearnEvents />
+        </Protected>
+      }
+    />
+    <Route
+      path="/learn-events/:id"
+      element={
+        <Protected>
+          <LearnEventDetail />
         </Protected>
       }
     />

@@ -71,6 +71,10 @@ no hooks, so Samskara installs a small OpenCode plugin that does the same on sta
 new session. Samskara uses that notification to restart the background process if it is not
 running, so capture continues after a reboot without manual intervention.
 
+The background process also uploads the learning events that the `/learn` skill (harness or yok)
+writes to `.harness/learning-events/` or `.yok/learning-events/` in an enabled folder or one of its
+git worktrees. They are listed on the Compound learning evaluation page.
+
 ## Getting started
 
 Adoption has two parts. One person sets up a server for the team, following

@@ -14,17 +14,36 @@ import {
 } from "@samskara/core"
 import type pino from "pino"
 import { readToken } from "../config/credentials.js"
-import { artifactQueuePath, artifactStatePath, statePath } from "../config/paths.js"
-import { getProject, isProjectEnabled, syncFromFor } from "../config/projects.js"
-import { ALL_SCOPED_PATHS, mismatchFact, scopeMismatch } from "../config/server-scope.js"
+import {
+  artifactQueuePath,
+  artifactStatePath,
+  learningEventsStatePath,
+  statePath,
+} from "../config/paths.js"
+import { getProject, isProjectEnabled, listProjects, syncFromFor } from "../config/projects.js"
+import {
+  ALL_SCOPED_PATHS,
+  mismatchFact,
+  persistedApiUrl,
+  scopeMismatch,
+} from "../config/server-scope.js"
 import { parseConfig } from "../config.js"
 import { sleep } from "../io.js"
 import { cliVersion } from "../version.js"
 import { runArtifactWorkers } from "./artifact-worker.js"
 import { runCycle, type WatcherConfig, type WatcherDeps } from "./driver.js"
+import {
+  cachedFolders,
+  listEventSources,
+  nodeLearningEventsDeps,
+  runLearningEventsStep,
+  worktreeFolders,
+} from "./learning-events.js"
 import { resolveProject } from "./resolveProject.js"
-import { createArtifactSink, createHttpSink } from "./sink.js"
+import { createArtifactSink, createHttpSink, createLearningEventsSink } from "./sink.js"
 
+/** How long a repo's worktree list is trusted before git is asked again. */
+const WORKTREE_REFRESH_MS = 5 * 60_000
 const SHUTDOWN_GRACE_MS = 5_000
 
 /**
@@ -179,6 +198,26 @@ export const watch = async (options: WatchOptions): Promise<void> => {
     log.error({ err }, "Artifact workers stopped")
   })
 
+  // Same consent rule as transcripts: enabled project, and not before its sync-from cutoff. The
+  // projects file is read every cycle, so enabling or disabling a folder applies on the next one;
+  // a repo's worktree list is refreshed every few minutes rather than asked of git every cycle.
+  const learningEventsSink = createLearningEventsSink({
+    apiBase: resolved.apiUrl,
+    readToken,
+    fetch: globalThis.fetch,
+  })
+  const foldersOf = cachedFolders(worktreeFolders, {
+    ttlMs: WORKTREE_REFRESH_MS,
+    now: () => Date.now(),
+  })
+  const learningEventsDeps = nodeLearningEventsDeps({
+    listSources: async () => listEventSources(await listProjects(), foldersOf),
+    hasToken: async () => (await readToken()) !== null,
+    send: learningEventsSink.send,
+    apiBase: persistedApiUrl(),
+    log,
+  })
+
   // Stop claiming new entries, give in-flight uploads their grace, then exit. Unfinished
   // entries persist in the queue file and resume on the next start.
   const shutdown = (signal: NodeJS.Signals) => {
@@ -195,6 +234,12 @@ export const watch = async (options: WatchOptions): Promise<void> => {
     await runCycle(config, deps).catch((err: unknown) => {
       log.error({ err }, "Watch cycle failed")
     })
+    // After the transcripts, so an event's session is usually on the server before the event is.
+    await runLearningEventsStep({ statePath: learningEventsStatePath() }, learningEventsDeps).catch(
+      (err: unknown) => {
+        log.error({ err }, "Learning events step failed")
+      },
+    )
     await sleep(resolved.cycleMs)
   }
 }
