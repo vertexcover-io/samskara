@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest"
-import type { SessionExport } from "../lenses/export.js"
+import type { SessionExport } from "../export.js"
 import {
   assembleReviewContract,
   BASE_REVIEW_INSTRUCTIONS,

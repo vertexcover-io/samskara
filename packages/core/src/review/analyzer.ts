@@ -1,4 +1,4 @@
-import type { ReviewEvent, ReviewFriction, ReviewOutcome } from "./events.js"
+import type { ReviewEvent, ReviewOutcome } from "./events.js"
 import type {
   ErrorLoop,
   ReviewInput,
@@ -146,48 +146,32 @@ const countEvents = (acc: Accumulator, event: ReviewEvent): void => {
   }
 }
 
-const frictionOf = (signals: ReviewSignals): ReviewFriction => {
-  if (
-    signals.errorLoops.length > 0 ||
-    signals.toolFailureRate > 0.25 ||
-    signals.userPromptsAfterFailures >= 2
-  ) {
-    return "high"
-  }
-  if (signals.toolFailureRate > 0.1 || signals.abortedTurns > 0) return "moderate"
-  return "none"
-}
+/** The agent mostly fought the session: an error loop, a high failure rate, or a person re-asking after failures. */
+const struggled = (signals: ReviewSignals): boolean =>
+  signals.errorLoops.length > 0 ||
+  signals.toolFailureRate > 0.25 ||
+  signals.userPromptsAfterFailures >= 2
 
 /**
- * Outcome answers one question only — did the work land? — because friction carries the pain
- * separately. Precedence: an aborted final turn with nothing committed means the human pulled
- * the plug; then landing evidence (commit or PR) ships regardless of how painful the road
- * was — "shipped with high friction" stays visible because both fields are reported side by
- * side; then high friction without landing is struggled; everything else is productive.
+ * Outcome answers one question only — did the work land? Precedence: an aborted final turn
+ * with nothing committed means the human pulled the plug; then landing evidence (commit or PR)
+ * ships regardless of how painful the road was; then a session that mostly fought itself
+ * without landing is struggled; everything else is productive.
  */
-const outcomeOf = (
-  events: ReadonlyArray<ReviewEvent>,
-  signals: ReviewSignals,
-  friction: ReviewFriction,
-): ReviewOutcome => {
+const outcomeOf = (events: ReadonlyArray<ReviewEvent>, signals: ReviewSignals): ReviewOutcome => {
   const lastTurn = [...events].reverse().find((event) => event.kind === "turn")
   if (lastTurn !== undefined && lastTurn.status === "aborted" && signals.commits === 0) {
     return "aborted"
   }
   if (signals.commits > 0 || signals.pullRequests > 0) return "shipped"
-  if (friction === "high") return "struggled"
+  if (struggled(signals)) return "struggled"
   return "productive"
 }
 
-const summarize = (
-  signals: ReviewSignals,
-  outcome: ReviewOutcome,
-  friction: ReviewFriction,
-): string =>
+const summarize = (signals: ReviewSignals, outcome: ReviewOutcome): string =>
   `${outcome}: ${signals.turns} turn${signals.turns === 1 ? "" : "s"}, ` +
   `${signals.toolCalls} tool call${signals.toolCalls === 1 ? "" : "s"}, ` +
   `${signals.toolFailures} failure${signals.toolFailures === 1 ? "" : "s"}, ` +
-  `${friction === "none" ? "no friction" : `${friction} friction`}, ` +
   `${signals.commits} commit${signals.commits === 1 ? "" : "s"}`
 
 /**
@@ -225,16 +209,14 @@ export const heuristicSessionAnalyzer: SessionAnalyzer = {
       thinkingTokens: acc.thinkingTokens,
     }
 
-    const friction = frictionOf(signals)
-    const outcome = outcomeOf(events, signals, friction)
+    const outcome = outcomeOf(events, signals)
 
     return {
       sessionId,
       analyzer: HEURISTIC_ANALYZER_NAME,
       analyzedAt: (now ?? (() => new Date()))().toISOString(),
       outcome,
-      friction,
-      summary: summarize(signals, outcome, friction),
+      summary: summarize(signals, outcome),
       signals,
       agentLearnings: [],
       humanFeedback: [],

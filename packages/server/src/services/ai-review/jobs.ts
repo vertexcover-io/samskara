@@ -4,7 +4,6 @@ import {
   type AiReviewErrorCode,
   type AiReviewOptions,
   type AiReviewRun,
-  type Reviewer,
   runAiReview,
 } from "./pipeline.js"
 
@@ -21,8 +20,6 @@ export type AiReviewJob =
       readonly jobId: string
       readonly sessionId: string
       readonly userId: string
-      /** Which review is running, so each endpoint shows only its own. */
-      readonly reviewer: Reviewer
       readonly startedAt: string
       /** Latest milestone the pipeline has reported, if any. */
       readonly lastEvent: AiReviewMilestone | null
@@ -54,10 +51,9 @@ export type AiReviewJobRegistry = {
    * The session's non-terminal job, if one exists — the lookup behind both the analyze
    * conflict guard and the aireview response's `job` field, so a reload can rejoin a run
    * and a second click cannot duplicate it. Settled jobs never match: they neither block
-   * a re-run nor belong in a response about the present. With `reviewer`, only a job of
-   * that review: an endpoint shows its own review's run, not the other's.
+   * a re-run nor belong in a response about the present.
    */
-  activeJobForSession: (sessionId: string, reviewer?: Reviewer) => RunningAiReviewJob | undefined
+  activeJobForSession: (sessionId: string) => RunningAiReviewJob | undefined
   /**
    * Pipeline hook: stamps the latest milestone on the running job so the CLI can render it.
    * No-op once the job has settled; safe to call after success/failure (the registry just
@@ -98,12 +94,9 @@ export const createAiReviewJobRegistry = (
     }
   }
 
-  const activeFor = (sessionId: string, reviewer?: Reviewer): RunningAiReviewJob | undefined =>
+  const activeFor = (sessionId: string): RunningAiReviewJob | undefined =>
     [...jobs.values()].find(
-      (job): job is RunningAiReviewJob =>
-        job.status === "running" &&
-        job.sessionId === sessionId &&
-        (reviewer === undefined || job.reviewer === reviewer),
+      (job): job is RunningAiReviewJob => job.status === "running" && job.sessionId === sessionId,
     )
 
   /** Records the latest milestone on a running job; a no-op once the job has settled. */
@@ -129,8 +122,6 @@ export const createAiReviewJobRegistry = (
         jobId,
         sessionId,
         userId,
-        // The pipeline's own default when none is asked for.
-        reviewer: options?.reviewer ?? "problems",
         startedAt: now().toISOString(),
         lastEvent: null,
       })

@@ -1,7 +1,13 @@
 import { z } from "zod"
 import { readToken as defaultReadToken } from "../config/credentials.js"
 import { apiBase as defaultApiBase } from "../config.js"
-import { sleep as defaultSleep, errorMessage, reportError, resolveIo, type Writer } from "../io.js"
+import {
+  sleep as defaultSleep,
+  reportError,
+  resolveIo,
+  serverUnreachable,
+  type Writer,
+} from "../io.js"
 
 const tagsResponseSchema = z.object({ tags: z.array(z.string()) })
 const sessionTagsResponseSchema = z.object({
@@ -34,11 +40,6 @@ type Deps = {
 
 const SYNC_WINDOW_MS = 30_000
 const SYNC_STEP_MS = 3_000
-
-const unreachable = (apiBase: string, error: unknown): Error =>
-  new Error(
-    `Could not reach the server at ${apiBase} (${errorMessage(error)}). Start it or check SAMSKARA_API_URL, then try again.`,
-  )
 
 const resolveSessionId = (options: TagsOptions): string => {
   const explicit = options.sessionId?.trim()
@@ -76,7 +77,7 @@ const send = async (
         headers: { ...init.headers, authorization: `Bearer ${deps.token}` },
       })
     } catch (error) {
-      throw unreachable(deps.apiBase, error)
+      throw serverUnreachable(deps.apiBase, error)
     }
     if (res.status !== 404 || deps.now() >= deadline)
       return { status: res.status, body: await res.json().catch(() => null) }

@@ -1,12 +1,10 @@
 import type { NormalizedMessage } from "../ingest/types.js"
 
 export const REVIEW_OUTCOMES = ["shipped", "productive", "struggled", "aborted"] as const
-export const REVIEW_FRICTIONS = ["none", "moderate", "high"] as const
 export const LEARNING_AUDIENCES = ["agent", "human"] as const
 export const LEARNING_STATUSES = ["candidate", "accepted", "superseded"] as const
 
 export type ReviewOutcome = (typeof REVIEW_OUTCOMES)[number]
-export type ReviewFriction = (typeof REVIEW_FRICTIONS)[number]
 export type LearningAudience = (typeof LEARNING_AUDIENCES)[number]
 export type LearningStatus = (typeof LEARNING_STATUSES)[number]
 

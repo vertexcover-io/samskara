@@ -1,0 +1,1 @@
+ALTER TABLE "learnings" ADD COLUMN "fixSummary" text;

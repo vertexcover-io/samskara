@@ -1,14 +1,11 @@
 import { describe, expect, test } from "vitest"
-import type { NormalizedMessage } from "../../ingest/types.js"
+import type { NormalizedMessage } from "../ingest/types.js"
 import {
   ASSISTANT_TEXT_EXCERPT_CHARS,
   buildSessionExport,
   REASONING_TEXT_EXCERPT_CHARS,
-  type SessionExportRecord,
   USER_TEXT_EXCERPT_CHARS,
-  withDerivedTracks,
 } from "./export.js"
-import { type AiReviewPayload, MAX_TRACKS_PER_ENTRY } from "./schema.js"
 
 const message = (overrides: Partial<Record<string, unknown>> = {}) =>
   ({
@@ -329,87 +326,6 @@ describe("buildSessionExport", () => {
     // The whole export, serialized compact, stays well inside the size budget a harness
     // agent can review without paging. (Old shape on this fixture: 1500 records, ~212KB.)
     expect(JSON.stringify(exported).length).toBeLessThan(120_000)
-  })
-})
-
-describe("withDerivedTracks", () => {
-  const records = [
-    { seq: 0, track: "main" },
-    { seq: 1, track: "agent:sub" },
-    { seq: 2, track: "agent:sub" },
-    { seq: 3, track: "main" },
-  ] as unknown as SessionExportRecord[]
-
-  const entry = (overrides: Record<string, unknown> = {}) => ({
-    id: "exploration",
-    kind: "phase",
-    title: "Exploring the codebase",
-    summary: "The agent read the repo before touching anything.",
-    fromSeq: 0,
-    toSeq: 3,
-    messageIds: ["msg-0"],
-    tracks: ["main"],
-    ...overrides,
-  })
-
-  const payloadWith = (entries: Array<Record<string, unknown>>): AiReviewPayload =>
-    ({
-      analyzer: "ai-v1",
-      model: "glm-5.3",
-      harness: "opencode",
-      outcome: "shipped",
-      friction: "moderate",
-      summary: "A session that shipped.",
-      lenses: [
-        { lens: "timeline", entries },
-        { lens: "humanLearnings", learnings: [{ title: "untouched" }] },
-      ],
-    }) as unknown as AiReviewPayload
-
-  const tracksOf = (payload: AiReviewPayload): ReadonlyArray<ReadonlyArray<string>> => {
-    const timeline = payload.lenses.find((lens) => lens.lens === "timeline")
-    if (timeline === undefined || !("entries" in timeline)) throw new Error("no timeline")
-    return timeline.entries.map((e) => e.tracks)
-  }
-
-  test.each([
-    {
-      id: "DT1",
-      label: "derives every track the seq range covers, deduped in seq order",
-      claimed: entry(),
-      tracks: ["main", "agent:sub"],
-    },
-    {
-      id: "DT2",
-      label: "overwrites whatever the model claimed, however it was spelled",
-      claimed: entry({ fromSeq: 1, toSeq: 2, tracks: ["agent:sub agent:other"] }),
-      tracks: ["agent:sub"],
-    },
-    {
-      id: "DT3",
-      label: "a seq range outside the export derives nothing rather than throwing",
-      claimed: entry({ fromSeq: 99, toSeq: 120 }),
-      tracks: [],
-    },
-  ])("$id: $label", ({ claimed, tracks }) => {
-    expect(tracksOf(withDerivedTracks(payloadWith([claimed]), records))).toEqual([tracks])
-  })
-
-  test("DT4: caps at MAX_TRACKS_PER_ENTRY so the derived payload stays schema-valid", () => {
-    const many = Array.from({ length: 30 }, (_, i) => ({ seq: i, track: `agent:${i}` }))
-    const derived = withDerivedTracks(
-      payloadWith([entry({ fromSeq: 0, toSeq: 29 })]),
-      many as unknown as SessionExportRecord[],
-    )
-    expect(tracksOf(derived)[0]).toHaveLength(MAX_TRACKS_PER_ENTRY)
-  })
-
-  test("DT5: leaves the learning lenses untouched", () => {
-    const derived = withDerivedTracks(payloadWith([entry()]), records)
-    expect(derived.lenses[1]).toEqual({
-      lens: "humanLearnings",
-      learnings: [{ title: "untouched" }],
-    })
   })
 })
 

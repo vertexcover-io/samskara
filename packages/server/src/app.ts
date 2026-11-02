@@ -16,9 +16,10 @@ import { artifactRoutes } from "./routes/artifacts.js"
 import { authRoutes } from "./routes/auth.js"
 import { compoundLearningsRoutes } from "./routes/compound-learnings.js"
 import { ingestRoutes } from "./routes/ingest.js"
+import { learningsRoutes } from "./routes/learnings.js"
 import { orgsRoutes } from "./routes/orgs.js"
 import { projectsRoutes } from "./routes/projects.js"
-import { learningsRoutes, reviewerOptionsRoutes, reviewRoutes } from "./routes/reviews.js"
+import { reviewerOptionsRoutes, reviewRoutes } from "./routes/reviews.js"
 import { sessionsRoutes } from "./routes/sessions.js"
 import { syncStatusRoutes } from "./routes/sync-status.js"
 import { type AiReviewJobRegistry, createAiReviewJobRegistry } from "./services/ai-review/jobs.js"
@@ -56,7 +57,7 @@ type Variables = { log: pino.Logger }
  *   lets the reviewer read the session under review directly, so prefer `claude
  *   setup-token` + `CLAUDE_CODE_OAUTH_TOKEN` and keep the sandbox.
  */
-const defaultAiReviewRunner = (env: Env, log: pino.Logger): HarnessRunner => {
+export const defaultAiReviewRunner = (env: Env, log: pino.Logger): HarnessRunner => {
   const claude = createClaudeRunner({
     model: env.aiReviewModel,
     timeoutMs: env.aiReviewTimeoutMs,
@@ -132,7 +133,7 @@ export const buildApp = (db: Db, env: Env, deps: Deps = {}) => {
       reviewerOptionsRoutes({ db, env, commandExists, credentialEnv: deps.credentialEnv }),
     )
     .route("/api/sync-status", syncStatusRoutes({ db, env }))
-    .route("/api/learnings", learningsRoutes({ db, env }))
+    .route("/api/learnings", learningsRoutes({ db, env, runner: aiReviewRunner }))
     .route("/api/compound-learnings", compoundLearningsRoutes({ db, env }))
 
   if (env.webDist) {

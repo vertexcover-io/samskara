@@ -1,4 +1,4 @@
-import type { SessionExportRecord } from "../lenses/export.js"
+import type { SessionExportRecord } from "../export.js"
 import { type Evidence, idsLabel } from "./reviewMd.js"
 
 const GAP_MS = 5 * 60_000
