@@ -423,6 +423,74 @@ describe("review batch registry", () => {
     expect(projectOf(registry, "project-b")?.state).toBe("done")
   })
 
+  test("a session whose review lookup throws fails with a reason, and the rest of the batch goes on", async () => {
+    const jobs = createAiReviewJobRegistry({ run: async (_d, _u, id) => ok(id) })
+    const registry = build(jobs, {
+      hasReview: async (_user, sessionId) => {
+        if (sessionId === "s1") throw new Error("database went away")
+        return false
+      },
+    })
+
+    const result = registry.start(
+      input([
+        ["s1", "project-a"],
+        ["s2", "project-a"],
+      ]),
+    )
+    if ("error" in result) throw new Error("refused")
+    await result.finished
+
+    expect(sessionOf(registry, "s1")?.state).toBe("failed")
+    expect(sessionOf(registry, "s1")?.reason).toBeTruthy()
+    expect(sessionOf(registry, "s2")?.state).toBe("reviewed")
+    expect(projectOf(registry, "project-a")?.state).toBe("done")
+  })
+
+  test("a session someone is analyzing by hand is waited for, then skipped once that review lands", async () => {
+    const control = controlledRun()
+    const jobs = createAiReviewJobRegistry({ run: control.run })
+    const saved = new Set<string>()
+    jobs.startAiReviewJob(aiReview, "someone-else", "s1", {})
+    const registry = build(jobs, { hasReview: async (_user, sessionId) => saved.has(sessionId) })
+
+    const result = registry.start(input([["s1", "project-a"]]))
+    if ("error" in result) throw new Error("refused")
+    await settleLoop()
+    expect(sessionOf(registry, "s1")?.state).toBe("waiting")
+
+    saved.add("s1")
+    control.settle("s1", ok("s1"))
+    await result.finished
+
+    expect(control.calls).toEqual(["s1"])
+    expect(sessionOf(registry, "s1")?.state).toBe("skipped")
+  })
+
+  test.each([
+    {
+      name: "the fix run ends failed",
+      startLearningRun: async () => started(Promise.resolve("failed")),
+    },
+    {
+      name: "the fix run throws on start",
+      startLearningRun: async (): Promise<StartedLearningRun> => {
+        throw new Error("harness clone failed")
+      },
+    },
+  ])("step 2 marks the project failed with a reason when $name", async ({ startLearningRun }) => {
+    const jobs = createAiReviewJobRegistry({ run: async (_d, _u, id) => ok(id) })
+    const registry = build(jobs, { startLearningRun })
+
+    const result = registry.start(input([["a1", "project-a"]]))
+    if ("error" in result) throw new Error("refused")
+    await result.finished
+
+    expect(projectOf(registry, "project-a")?.state).toBe("failed")
+    expect(projectOf(registry, "project-a")?.reason).toBeTruthy()
+    expect(registry.current("user-1")?.status).toBe("done")
+  })
+
   test("SC10: a review job the registry already dropped is judged by its saved row", async () => {
     const saved = new Set<string>()
     const jobs = createAiReviewJobRegistry({
