@@ -353,7 +353,7 @@ export const Sessions = () => {
           <>
             <ResultSummary payload={payload} filterOptions={filterOptions} filters={filters} />
             <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[0.8125rem]">
-              <label className="inline-flex items-center gap-2">
+              <label className="inline-flex min-h-11 cursor-pointer items-center gap-2">
                 <input
                   type="checkbox"
                   checked={pageSelected}
@@ -382,16 +382,19 @@ export const Sessions = () => {
             <ul className="grid grid-cols-1 gap-1.5">
               {payload.sessions.map((session) => (
                 // The checkbox stays outside SessionRow: the whole row is a link, so a checkbox
-                // inside it would both toggle and open the session.
-                <li key={session.id} className="flex items-start gap-2">
-                  <input
-                    type="checkbox"
-                    aria-label={`Select ${session.title ?? "untitled session"}`}
-                    checked={selected.has(session.id)}
-                    disabled={room === 0 && !selected.has(session.id)}
-                    onChange={() => setSelected((current) => toggled(current, session.id))}
-                    className="mt-3 size-4 shrink-0"
-                  />
+                // inside it would both toggle and open the session. Its label is a 44px tap area,
+                // since a near miss on the bare 16px box opens the session and loses the picks.
+                <li key={session.id} className="flex items-start">
+                  <label className="flex size-11 shrink-0 cursor-pointer justify-center pt-3">
+                    <input
+                      type="checkbox"
+                      aria-label={`Select ${session.title ?? "untitled session"}`}
+                      checked={selected.has(session.id)}
+                      disabled={room === 0 && !selected.has(session.id)}
+                      onChange={() => setSelected((current) => toggled(current, session.id))}
+                      className="size-4"
+                    />
+                  </label>
                   <div className="min-w-0 flex-1">
                     <SessionRow session={session} to={`/sessions/${session.id}`} />
                   </div>

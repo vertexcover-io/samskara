@@ -137,6 +137,21 @@ test("SC21: row checkboxes and Select this page pick sessions and update the bar
   expect(screen.getByTestId("location").textContent).toBe("/sessions")
 })
 
+test("a tap on the padded area around a row's checkbox ticks it and does not open the session", async () => {
+  stubFetch({})
+  renderAt("/sessions")
+  await screen.findByRole("link", { name: /first session/i })
+  const tapArea = rowBox("First session").closest("label")
+  expect(tapArea).not.toBeNull()
+  expect(tapArea?.closest("a")).toBeNull()
+
+  if (tapArea !== null) await userEvent.click(tapArea)
+
+  expect(rowBox("First session")).toBeChecked()
+  expect(summary()).toBe("1 selected · about 6 min")
+  expect(screen.getByTestId("location").textContent).toBe("/sessions")
+})
+
 test("SC22: Select all N matching picks the first 50 matching sessions across pages", async () => {
   const fifty = Array.from({ length: 50 }, (_, index) => row(`m-${index}`, `Matching ${index}`))
   const calls = stubFetch({
