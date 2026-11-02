@@ -22,6 +22,12 @@ export const resolveIo = (options: IoOptions = {}): Io => ({
 export const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error)
 
+/** The server could not be reached at all: what happened, and what to try. */
+export const serverUnreachable = (apiBase: string, error: unknown): Error =>
+  new Error(
+    `Could not reach the server at ${apiBase} (${errorMessage(error)}). Start it or check SAMSKARA_API_URL, then try again.`,
+  )
+
 /** Writes the failure and answers the exit code, so a catch reads `return reportError(...)`. */
 export const reportError = (stderr: Writer, error: unknown, prefix?: string): number => {
   stderr.write(`${prefix === undefined ? "" : `${prefix}: `}${errorMessage(error)}\n`)

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest"
-import type { SessionExportRecord } from "../lenses/export.js"
+import type { SessionExportRecord } from "../export.js"
 import { checkEvidence, LIMITS, parseReviewMd } from "./reviewMd.js"
 
 const problem = (title: string, fields: Record<string, string>): string =>
@@ -22,7 +22,6 @@ const problem = (title: string, fields: Record<string, string>): string =>
 const review = (...problems: string[]): string => `# Review
 
 - **Outcome:** shipped
-- **Friction:** moderate
 
 ## Summary
 
@@ -72,7 +71,7 @@ describe("parseReviewMd", () => {
       ),
     )
     if (!parsed.ok) throw new Error(parsed.errors.join("\n"))
-    expect(parsed.value).toMatchObject({ outcome: "shipped", friction: "moderate" })
+    expect(parsed.value).toMatchObject({ outcome: "shipped" })
     expect(parsed.value.summary).toBe("The agent fixed the build after two wrong starts.")
     expect(parsed.dropped).toEqual([])
     expect(parsed.value.problems).toEqual([
@@ -406,4 +405,17 @@ describe("parseReviewMd, forgiving where the meaning is clear", () => {
       why: "the phone view overflowed",
     })
   })
+})
+
+test("a review.md that still has a Friction line reads the same, with no friction kept", () => {
+  const parsed = parseReviewMd(
+    review(problem("Said tests passed without running them", {})).replace(
+      "- **Outcome:** shipped\n",
+      "- **Outcome:** shipped\n- **Friction:** high\n",
+    ),
+  )
+  if (!parsed.ok) throw new Error(parsed.errors.join("\n"))
+  expect(parsed.value.outcome).toBe("shipped")
+  expect(parsed.value).not.toHaveProperty("friction")
+  expect(parsed.value.problems).toHaveLength(1)
 })

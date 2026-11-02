@@ -273,7 +273,7 @@ export type SessionListFilter = {
   readonly tags?: ReadonlyArray<string>
   readonly prNumber?: number
   readonly commit?: string
-  /** "done" keeps only sessions with a landed AI review (ai-v1 or ai-problems-v2); "missing" the rest. */
+  /** "done" keeps only sessions with a landed AI review; "missing" the rest. */
   readonly aiReview?: "done" | "missing"
   readonly searchQuery?: ParsedSessionQuery
   readonly since?: Date
@@ -304,10 +304,10 @@ const durationMs = sql<
   number | null
 >`(extract(epoch from ${sessions.lastMessageAt} - ${sessions.startedAt}) * 1000)::bigint`
 
-/** The badge's definition of "AI analysis ran": a landed row from either AI reviewer. */
+/** The badge's definition of "AI analysis ran": a landed AI review row. */
 const aiReviewExists = (sessionId: SQL): SQL => sql`exists (
   select 1 from "sessionReviews" sr
-  where sr."sessionId" = ${sessionId} and sr."analyzer" in ('ai-v1', 'ai-problems-v2')
+  where sr."sessionId" = ${sessionId} and sr."analyzer" = 'ai-problems-v2'
 )`
 
 const dominantRepoId = sql`(
@@ -898,6 +898,32 @@ const countedTokens = (row: TokenUsageTotals | undefined): TokenUsageTotals =>
         thinkingTokens: Number(row.thinkingTokens),
       }
 
+/**
+ * A session's messages in transcript order, as the detail view and the reviewer read them. No
+ * visibility check: callers that act for a user check the session first (`getDetail`); the
+ * learning run reads sessions of problems it was already scoped to.
+ */
+export const sessionMessages = (db: Querier, sessionId: string) =>
+  db
+    .select({
+      id: messages.id,
+      msgType: messages.msgType,
+      subType: messages.subType,
+      role: messages.role,
+      lineNumber: messages.lineNumber,
+      subIndex: messages.subIndex,
+      trackId: messages.trackId,
+      timestamp: sql<string | null>`${messages.timestamp}`,
+      agentId: messages.agentId,
+      isSubagent: messages.isSubagent,
+      model: messages.model,
+      content: messages.content,
+      details: messages.details,
+    })
+    .from(messages)
+    .where(eq(messages.sessionId, sessionId))
+    .orderBy(asc(messages.lineNumber), asc(messages.subIndex))
+
 export const getDetail = async (
   db: Querier,
   userId: string,
@@ -908,25 +934,7 @@ export const getDetail = async (
 
   const [messageRows, toolCallRows, subagentRows, tokenRows, commitRows, prRows] =
     await Promise.all([
-      db
-        .select({
-          id: messages.id,
-          msgType: messages.msgType,
-          subType: messages.subType,
-          role: messages.role,
-          lineNumber: messages.lineNumber,
-          subIndex: messages.subIndex,
-          trackId: messages.trackId,
-          timestamp: sql<string | null>`${messages.timestamp}`,
-          agentId: messages.agentId,
-          isSubagent: messages.isSubagent,
-          model: messages.model,
-          content: messages.content,
-          details: messages.details,
-        })
-        .from(messages)
-        .where(eq(messages.sessionId, sessionId))
-        .orderBy(asc(messages.lineNumber), asc(messages.subIndex)),
+      sessionMessages(db, sessionId),
       db
         .select({
           toolId: toolCall.toolId,

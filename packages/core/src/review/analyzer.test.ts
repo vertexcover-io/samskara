@@ -118,8 +118,8 @@ describe("HeuristicSessionAnalyzer signals", () => {
   })
 })
 
-describe("HeuristicSessionAnalyzer outcome and friction", () => {
-  test("R11: error loops make friction high and outcome struggled", () => {
+describe("HeuristicSessionAnalyzer outcome", () => {
+  test("R11: error loops make the outcome struggled", () => {
     const review = analyze(
       prompt(),
       call("Bash", "a"),
@@ -130,8 +130,8 @@ describe("HeuristicSessionAnalyzer outcome and friction", () => {
       result("c", "failure", "Bash"),
       { kind: "turn", status: "completed" },
     )
-    expect(review.friction).toBe("high")
     expect(review.outcome).toBe("struggled")
+    expect(review).not.toHaveProperty("friction")
   })
 
   test("R12: the last turn aborted makes the outcome aborted", () => {
@@ -146,7 +146,7 @@ describe("HeuristicSessionAnalyzer outcome and friction", () => {
     expect(review.outcome).toBe("aborted")
   })
 
-  test("R13: quiet exploratory session is productive with no friction", () => {
+  test("R13: quiet exploratory session is productive", () => {
     const review = analyze(
       prompt(),
       call("Grep", "a"),
@@ -155,10 +155,9 @@ describe("HeuristicSessionAnalyzer outcome and friction", () => {
       { kind: "turn", status: "completed" },
     )
     expect(review.outcome).toBe("productive")
-    expect(review.friction).toBe("none")
   })
 
-  test("R14: moderate friction when failure rate is between 10% and 25% with no loop", () => {
+  test("R14: a failure rate between 10% and 25% with no loop is not struggled", () => {
     const bodies: ReviewEventBody[] = [prompt()]
     for (let i = 0; i < 10; i += 1) {
       bodies.push(call("Bash", `t${i}`))
@@ -166,10 +165,10 @@ describe("HeuristicSessionAnalyzer outcome and friction", () => {
     }
     const review = analyze(...bodies)
     expect(review.signals.toolFailureRate).toBeCloseTo(0.2)
-    expect(review.friction).toBe("moderate")
+    expect(review.outcome).toBe("productive")
   })
 
-  test("R15: a shipped session that also fought an error loop is shipped with high friction", () => {
+  test("R15: a shipped session that also fought an error loop is shipped", () => {
     const review = analyze(
       prompt(),
       call("Bash", "a"),
@@ -184,10 +183,9 @@ describe("HeuristicSessionAnalyzer outcome and friction", () => {
       { kind: "turn", status: "completed" },
     )
     expect(review.outcome).toBe("shipped")
-    expect(review.friction).toBe("high")
   })
 
-  test("R16: summary names the outcome, the volume and the friction in one sentence", () => {
+  test("R16: summary names the outcome and the volume in one sentence", () => {
     const review = analyze(
       prompt(),
       call("Bash", "a"),
@@ -195,6 +193,6 @@ describe("HeuristicSessionAnalyzer outcome and friction", () => {
       { kind: "commit", sha: "abc" },
       { kind: "turn", status: "completed" },
     )
-    expect(review.summary).toBe("shipped: 1 turn, 1 tool call, 0 failures, no friction, 1 commit")
+    expect(review.summary).toBe("shipped: 1 turn, 1 tool call, 0 failures, 1 commit")
   })
 })

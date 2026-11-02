@@ -1,4 +1,4 @@
-import type { ReviewEvent, ReviewFriction, ReviewOutcome } from "./events.js"
+import type { ReviewEvent, ReviewOutcome } from "./events.js"
 
 /** One run of the same tool failing back-to-back — the strongest structural pain signal. */
 export type ErrorLoop = {
@@ -70,7 +70,6 @@ export type SessionReview = {
   readonly analyzer: string
   readonly analyzedAt: string
   readonly outcome: ReviewOutcome
-  readonly friction: ReviewFriction
   readonly summary: string
   readonly signals: ReviewSignals
   readonly agentLearnings: ReadonlyArray<LearningCandidate>

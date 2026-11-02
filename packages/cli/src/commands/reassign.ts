@@ -5,11 +5,11 @@ import { readToken as defaultReadToken } from "../config/credentials.js"
 import { getProject, type ProjectEntry, upsertProject } from "../config/projects.js"
 import { apiBase as defaultApiBase } from "../config.js"
 import {
-  errorMessage,
   interactivePrompt,
   type Prompt,
   reportError,
   resolveIo,
+  serverUnreachable,
   type Writer,
 } from "../io.js"
 import { resolveProject } from "../watcher/resolveProject.js"
@@ -48,11 +48,6 @@ type Deps = {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-const unreachable = (apiBase: string, error: unknown): Error =>
-  new Error(
-    `Could not reach the server at ${apiBase} (${errorMessage(error)}). Start it or check SAMSKARA_API_URL, then try again.`,
-  )
-
 const listProjects = async (deps: Deps): Promise<ReadonlyArray<ProjectSummary>> => {
   let res: Response
   try {
@@ -60,7 +55,7 @@ const listProjects = async (deps: Deps): Promise<ReadonlyArray<ProjectSummary>> 
       headers: { authorization: `Bearer ${deps.token}` },
     })
   } catch (error) {
-    throw unreachable(deps.apiBase, error)
+    throw serverUnreachable(deps.apiBase, error)
   }
   if (res.status === 401)
     throw new Error("The server rejected the stored login. Run `samskara login` again.")
@@ -84,7 +79,7 @@ const postReassign = async (
       body: JSON.stringify(body),
     })
   } catch (error) {
-    throw unreachable(deps.apiBase, error)
+    throw serverUnreachable(deps.apiBase, error)
   }
   if (res.status === 401)
     throw new Error("The server rejected the stored login. Run `samskara login` again.")

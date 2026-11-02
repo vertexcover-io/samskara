@@ -27,7 +27,7 @@ test("AR1: a running job comes back alongside a null review, so a reload can rej
   const result = await fetchProblemsReview("s-1")
 
   expect(result).toEqual({ ok: true, data: { review: null, job } })
-  expect(urls[0]).toContain("/api/sessions/s-1/v2/aireview")
+  expect(urls[0]).toContain("/api/sessions/s-1/aireview")
 })
 
 test("AR2: a landed review without a running job maps to a null job, keeping the old shape honest", async () => {
