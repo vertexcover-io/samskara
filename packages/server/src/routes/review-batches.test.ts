@@ -3,12 +3,12 @@ import pino from "pino"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import { buildApp } from "../app.js"
 import type { Db } from "../db/client.js"
-import { projects, sessions, userProjectGrant, users } from "../db/schema.js"
+import { projects, sessionReviews, sessions, userProjectGrant, users } from "../db/schema.js"
 import { dockerAvailable, startTestDb } from "../db/testDb.js"
 import type { Env } from "../lib/env.js"
 import { signToken } from "../lib/jwt.js"
 import { type AiReviewJobRegistry, createAiReviewJobRegistry } from "../services/ai-review/jobs.js"
-import type { AiReviewResult } from "../services/ai-review/pipeline.js"
+import { type AiReviewResult, PROBLEMS_ANALYZER } from "../services/ai-review/pipeline.js"
 import {
   createReviewBatchRegistry,
   type ReviewBatchRegistry,
@@ -71,6 +71,7 @@ describe.skipIf(!dockerAvailable())("review batch routes", () => {
   let reviewBatches: ReviewBatchRegistry
 
   beforeEach(async () => {
+    await db.delete(sessionReviews)
     await db.delete(sessions)
     await db.delete(projects)
     await db.delete(users)
@@ -219,5 +220,53 @@ describe.skipIf(!dockerAvailable())("review batch routes", () => {
     const res = await start([])
     expect(res.status).toBe(400)
     expect(await res.json()).toEqual({ error: "invalidReviewBatch" })
+  })
+
+  test("the app's own wiring skips only a session with a problems review, not one with another analyzer's", async () => {
+    await db.insert(sessionReviews).values([
+      {
+        sessionId: "a-1",
+        projectId: projectA,
+        analyzer: "some-other-analyzer",
+        outcome: "shipped",
+        summary: "Other.",
+        signals: {},
+      },
+      {
+        sessionId: "a-2",
+        projectId: projectA,
+        analyzer: PROBLEMS_ANALYZER,
+        outcome: "shipped",
+        summary: "Clean.",
+        signals: {},
+      },
+    ])
+    const token = await signToken(env, { sub: userId, aud: "web" })
+    const app = buildApp(db, env, {
+      aiReviewRunner: {} as HarnessRunner,
+      aiReviewJobs: jobs,
+      credentialEnv: CREDENTIAL_ENV,
+      rootLog: silentLog,
+    })
+    const headers = { cookie: `session=${token}`, "content-type": "application/json" }
+
+    const res = await app.request("/api/review-batches", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ sessionIds: ["a-1", "a-2"] }),
+    })
+    expect(res.status).toBe(202)
+    const states = async (): Promise<Record<string, string>> => {
+      const body = (await (
+        await app.request("/api/review-batches/current", { headers })
+      ).json()) as BatchBody
+      return Object.fromEntries(
+        (body.batch?.sessions ?? []).map((session) => [session.sessionId, session.state]),
+      )
+    }
+    for (let i = 0; i < 200 && (await states())["a-2"] !== "skipped"; i += 1) await tick()
+
+    expect(await states()).toEqual({ "a-1": "reviewing", "a-2": "skipped" })
+    expect(reviewCalls).toEqual(["a-1"])
   })
 })
