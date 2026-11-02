@@ -163,7 +163,7 @@ again afterwards.
 | `search [query]` | Search sessions from the terminal and print links to the results. | `samskara search "rate limit" --here --open` |
 | `tags add\|rm\|ls` | Add, remove or list the tags on a session. | `samskara tags add bug hotfix --session-id abc123` |
 | `artifacts upload` | Attach files or directories to a session. | `samskara artifacts upload abc123 ./dist --base-dir .` |
-| `review-session` | Run an AI review of a local session. Runs on the developer's machine, not the server. `--source codex` reviews a Codex thread. | `samskara review-session abc123 --harness claude` |
+| `review-session` | Run an AI review of a local session and write the problems it finds to `review.md`. Runs on the developer's machine, not the server. `--prompt FILE` adds your own instructions, `--lenses` runs the older lens review, and `--source codex` reviews a Codex thread. | `samskara review-session abc123 --harness claude` |
 | `replay SESSION_ID` | Delete a session locally and on the server, then capture it again. | `samskara replay abc123` |
 | `logs` | Show the background process log. | `samskara logs -f` |
 | `restart` | Restart the background process. | `samskara restart` |

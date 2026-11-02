@@ -148,6 +148,23 @@ describe("createAiReviewJobRegistry", () => {
     expect(registry.activeJobForSession("sess-1")).toBeUndefined()
   })
 
+  test("J6b: asked for one reviewer, activeJobForSession skips a running job of the other", () => {
+    const runs = deferredRuns()
+    const registry = createAiReviewJobRegistry({ run: runs.run as AiReviewRun })
+    registry.startAiReviewJob({} as never, "user-1", "sess-1", { reviewer: "lenses" })
+    expect(registry.activeJobForSession("sess-1", "problems")).toBeUndefined()
+    expect(registry.activeJobForSession("sess-1", "lenses")).toMatchObject({ reviewer: "lenses" })
+    // Without a reviewer it is any job: the guard against two runs on one session.
+    expect(registry.activeJobForSession("sess-1")).toMatchObject({ reviewer: "lenses" })
+
+    // No reviewer asked for means the problems review, as in the pipeline.
+    registry.startAiReviewJob({} as never, "user-1", "sess-2")
+    expect(registry.activeJobForSession("sess-2", "problems")).toMatchObject({
+      reviewer: "problems",
+    })
+    expect(registry.activeJobForSession("sess-2", "lenses")).toBeUndefined()
+  })
+
   test("J7: a second start for a session already running is rejected, not a second harness", async () => {
     const runs = deferredRuns()
     const registry = createAiReviewJobRegistry({ run: runs.run as AiReviewRun })

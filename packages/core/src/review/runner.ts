@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process"
 import { randomBytes } from "node:crypto"
-import { readFile } from "node:fs/promises"
+import { readFile, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import type pino from "pino"
@@ -37,6 +37,12 @@ export type HarnessRunInput = {
   readonly harness?: ReviewHarness
   /** Per-run model override; each runner falls back to its constructed default. */
   readonly model?: string
+  /**
+   * One reply to one prompt, with no tools where the harness allows it: stdout is the reply.
+   * The prompt goes on stdin (msb: a file in the workspace), so it may be far larger than one
+   * command-line argument can be.
+   */
+  readonly oneShot?: boolean
 }
 
 /** Collected stdout is capped so a runaway harness cannot balloon the process. */
@@ -118,6 +124,8 @@ const spawnCollect = (opts: {
   readonly log: pino.Logger
   /** Names the run in error messages; defaults to the generic "harness run". */
   readonly label?: string
+  /** Written to the child's stdin, which is otherwise closed empty. */
+  readonly stdin?: string
 }): Promise<SpawnCollectResult> =>
   new Promise((resolve, reject) => {
     const spawnStartedAt = Date.now()
@@ -131,10 +139,14 @@ const spawnCollect = (opts: {
     const child = spawn(opts.command, opts.args, {
       ...(opts.cwd === undefined ? {} : { cwd: opts.cwd }),
       env: opts.env,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
       detached: true,
     })
     liveChildren.add(child)
+    // Closed at once when there is nothing to send, which reads as /dev/null would. A child
+    // that exits without reading all of it breaks the pipe; its exit code says why.
+    child.stdin.on("error", () => {})
+    child.stdin.end(opts.stdin)
 
     let stdout = ""
     let stdoutBytes = 0
@@ -233,10 +245,11 @@ export const createOpencodeRunner = (opts: {
   /** Overridable command path; tests point this at a fake script instead of real opencode. */
   command?: string
 }): HarnessRunner => ({
-  run: ({ prompt, workspaceDir, model }) =>
+  run: ({ prompt, workspaceDir, model, oneShot }) =>
     spawnCollect({
       command: opts.command ?? "opencode",
-      args: ["run", "--model", model ?? opts.model, prompt],
+      args: ["run", "--model", model ?? opts.model, ...(oneShot ? [] : [prompt])],
+      ...(oneShot ? { stdin: prompt } : {}),
       cwd: workspaceDir,
       env: sandboxEnv(workspaceDir),
       timeoutMs: opts.timeoutMs,
@@ -283,18 +296,33 @@ export const createClaudeRunner = (opts: {
    */
   sandboxHome?: boolean
 }): HarnessRunner => ({
-  run: ({ prompt, workspaceDir, model }) =>
+  run: ({ prompt, workspaceDir, model, oneShot }) =>
     spawnCollect({
       command: opts.command ?? "claude",
-      args: [
-        "-p",
-        prompt,
-        "--model",
-        model ?? opts.model,
-        "--output-format",
-        "text",
-        "--dangerously-skip-permissions",
-      ],
+      // A one-shot run has no tools at all, so it needs no permission bypass either. Without
+      // --strict-mcp-config the user's MCP servers still load, and their tool definitions
+      // (measured at ~110K tokens) ride along on every call.
+      args: oneShot
+        ? [
+            "-p",
+            "--model",
+            model ?? opts.model,
+            "--output-format",
+            "text",
+            "--tools",
+            "",
+            "--strict-mcp-config",
+          ]
+        : [
+            "-p",
+            prompt,
+            "--model",
+            model ?? opts.model,
+            "--output-format",
+            "text",
+            "--dangerously-skip-permissions",
+          ],
+      ...(oneShot ? { stdin: prompt } : {}),
       cwd: workspaceDir,
       env: opts.sandboxHome === false ? process.env : claudeSandboxEnv(workspaceDir),
       timeoutMs: opts.timeoutMs,
@@ -317,6 +345,7 @@ const MSB_TIMEOUT_MARGIN_MS = 5_000
 const MSB_DEFAULT_IMAGE = "node:22-slim"
 const MSB_DEFAULT_MEMORY_MB = 2_048
 const MSB_SANDBOX_PREFIX = "samskara-ai-review-"
+const MSB_PROMPT_FILE = "prompt.txt"
 
 export type MsbRunnerOpts = {
   readonly model: string
@@ -341,6 +370,8 @@ export type BuildMsbArgsInput = {
   readonly sandboxName: string
   readonly workspaceDir: string
   readonly prompt: string
+  /** A one-shot run: the guest reads the prompt from `MSB_PROMPT_FILE` in /work instead. */
+  readonly promptInFile?: boolean
   /**
    * The guest's opencode credential. `msb` does not inherit the host environment, so the key
    * has to be handed over explicitly or the VM boots, installs opencode and fails auth.
@@ -418,7 +449,9 @@ export const buildMsbArgs = (input: BuildMsbArgsInput): string[] => {
     "--",
     "sh",
     "-lc",
-    `${bootstrap}exec opencode run --model ${shellQuote(input.model)} ${shellQuote(input.prompt)} </dev/null`,
+    input.promptInFile !== true
+      ? `${bootstrap}exec opencode run --model ${shellQuote(input.model)} ${shellQuote(input.prompt)} </dev/null`
+      : `${bootstrap}exec opencode run --model ${shellQuote(input.model)} </work/${MSB_PROMPT_FILE}`,
   )
   return args
 }
@@ -435,8 +468,10 @@ export const msbExecLogPath = (sandboxName: string): string =>
 
 /** `msb run` with the workspace mounted, under the same caps and errors as the soft runners. */
 export const createMsbWrappedRunner = (opts: MsbRunnerOpts): HarnessRunner => ({
-  run: ({ prompt, workspaceDir, model }) => {
+  run: async ({ prompt, workspaceDir, model, oneShot }) => {
     const sandboxName = `${MSB_SANDBOX_PREFIX}${randomBytes(6).toString("hex")}`
+    // msb does not pass the host's stdin into the guest, so a one-shot prompt goes as a file.
+    if (oneShot) await writeFile(join(workspaceDir, MSB_PROMPT_FILE), prompt)
     const args = buildMsbArgs({
       model: model ?? opts.model,
       timeoutMs: opts.timeoutMs,
@@ -446,6 +481,7 @@ export const createMsbWrappedRunner = (opts: MsbRunnerOpts): HarnessRunner => ({
       sandboxName,
       workspaceDir,
       prompt,
+      ...(oneShot ? { promptInFile: true } : {}),
       apiKey: process.env[CREDENTIAL_ENV.opencode[0] as string],
     })
     return spawnCollect({

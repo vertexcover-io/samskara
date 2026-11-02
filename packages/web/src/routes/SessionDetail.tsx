@@ -4,8 +4,8 @@ import { useFocusTrap } from "../account/useFocusTrap.js"
 import { fetchSessionArtifacts } from "../api/artifacts.js"
 import { type ApiError, client, request } from "../api/client.js"
 import {
-  fetchAiReview,
   fetchAiReviewJob,
+  fetchProblemsReview,
   fetchSessionLearnings,
   fetchSessionReviews,
   type ReviewerChoice,
@@ -20,7 +20,9 @@ import type {
   AiTimelineEntry,
   AiTimelineEntryKind,
   CapturedArtifact,
+  ProblemsReviewSignals,
   ReviewerTranscriptEntry,
+  ReviewProblem,
   SessionDetailPayload,
   SessionFacts,
   SessionLearning,
@@ -638,6 +640,14 @@ const AI_ANALYZER = "ai-v1"
 const aiReviewOf = (reviews: ReadonlyArray<SessionReviewSummary>): SessionReviewSummary | null =>
   reviews.find((review) => review.analyzer === AI_ANALYZER) ?? null
 
+// What Analyze runs: the problems review, whose problems live in their own table.
+const PROBLEMS_ANALYZER = "ai-problems-v2"
+
+const problemsReviewOf = (
+  reviews: ReadonlyArray<SessionReviewSummary>,
+): SessionReviewSummary | null =>
+  reviews.find((review) => review.analyzer === PROBLEMS_ANALYZER) ?? null
+
 const aiSignalsOf = (review: SessionReviewSummary): AiReviewSignals | null =>
   review.signals as AiReviewSignals | null
 
@@ -1159,27 +1169,17 @@ const ReviewerSessionModal = ({
   )
 }
 
-const AiReviewCard = ({
-  review,
-  analysis,
-  onRedo,
-}: {
-  review: SessionReviewSummary
-  analysis: AiAnalysis
-  onRedo: (choice: ReviewerChoice) => void
-}) => {
+// A grounding link names the record in the ?m= permalink the conversation already resolves,
+// and says which tab to land on — from here that is always the conversation. Timeline rows
+// and evidence chips ride the same link, so everything deep-links one way. A review cites
+// export aliases (msg-N); run.recordIds is the seq → real-id bridge, so a link scrolls to
+// the actual record instead of landing nowhere.
+const useGroundingLink = (
+  recordIds: ReadonlyArray<string | null> | undefined,
+): ((messageId: string) => GroundingHref) => {
   const [params] = useSearchParams()
   const { pathname } = useLocation()
-
-  const signals = aiSignalsOf(review)
-
-  // A grounding link names the record in the ?m= permalink the conversation already resolves,
-  // and says which tab to land on — from here that is always the conversation. Timeline rows
-  // and evidence chips ride the same link, so everything deep-links one way. The review
-  // cites export aliases (msg-N); run.recordIds is the seq → real-id bridge, so a link
-  // scrolls to the actual record instead of landing nowhere.
-  const recordIds = signals?.run?.recordIds
-  const linkFor = useCallback(
+  return useCallback(
     (messageId: string): GroundingHref => {
       const alias = /^(?:msg-)?(\d+)$/.exec(messageId)
       const resolved =
@@ -1194,20 +1194,24 @@ const AiReviewCard = ({
     },
     [recordIds, params, pathname],
   )
-  const entries = timelineEntriesOf(signals)
-  const groups = LEARNING_GROUPS.map((group) => ({
-    ...group,
-    learnings: learningsOf(signals, group.name),
-  })).filter((group) => group.learnings.length > 0)
-  const breadcrumbs = breadcrumbsOf(signals)
-  const numbers = signals?.numbers
-  const totalMs = numbers?.durationMs ?? signals?.totalDurationMs ?? 0
+}
+
+/** The top of either AI review card: label, time, redo, verdict, and the redo's own state. */
+const AiReviewHeader = ({
+  review,
+  signals,
+  analysis,
+  onRedo,
+}: {
+  review: SessionReviewSummary
+  signals: { readonly model: string; readonly harness: string } | null
+  analysis: AiAnalysis
+  onRedo: (choice: ReviewerChoice) => void
+}) => {
   const [redoOpen, setRedoOpen] = useState(false)
   const redoRef = useRef<HTMLButtonElement>(null)
-  const [logOpen, setLogOpen] = useState(false)
-
   return (
-    <article className="border border-rule bg-panel p-4">
+    <>
       <div className="flex flex-wrap items-center gap-2">
         <span className="rounded-xs border border-rule px-2 py-0.5 font-mono text-[0.72rem] text-ink-soft">
           AI review
@@ -1253,6 +1257,43 @@ const AiReviewCard = ({
           The server is running 4 analyses already — try again in a minute.
         </p>
       ) : null}
+      <AnalyzeDialog
+        open={redoOpen}
+        onClose={() => setRedoOpen(false)}
+        restoreFocusTo={() => redoRef.current}
+        onRun={(choice) => {
+          setRedoOpen(false)
+          onRedo({ ...choice, force: true })
+        }}
+      />
+    </>
+  )
+}
+
+const AiReviewCard = ({
+  review,
+  analysis,
+  onRedo,
+}: {
+  review: SessionReviewSummary
+  analysis: AiAnalysis
+  onRedo: (choice: ReviewerChoice) => void
+}) => {
+  const signals = aiSignalsOf(review)
+  const linkFor = useGroundingLink(signals?.run?.recordIds)
+  const entries = timelineEntriesOf(signals)
+  const groups = LEARNING_GROUPS.map((group) => ({
+    ...group,
+    learnings: learningsOf(signals, group.name),
+  })).filter((group) => group.learnings.length > 0)
+  const breadcrumbs = breadcrumbsOf(signals)
+  const numbers = signals?.numbers
+  const totalMs = numbers?.durationMs ?? signals?.totalDurationMs ?? 0
+  const [logOpen, setLogOpen] = useState(false)
+
+  return (
+    <article className="border border-rule bg-panel p-4">
+      <AiReviewHeader review={review} signals={signals} analysis={analysis} onRedo={onRedo} />
       <p className="mt-2 text-ink">{review.summary}</p>
       {numbers === undefined ? null : <NumbersLine numbers={numbers} />}
       {signals?.partial === undefined ? null : (
@@ -1313,15 +1354,137 @@ const AiReviewCard = ({
           />
         </>
       )}
-      <AnalyzeDialog
-        open={redoOpen}
-        onClose={() => setRedoOpen(false)}
-        restoreFocusTo={() => redoRef.current}
-        onRun={(choice) => {
-          setRedoOpen(false)
-          onRedo({ ...choice, force: true })
-        }}
-      />
+    </article>
+  )
+}
+
+// One problem, one accordion: the closed row is the triage view (severity, title, kind, where
+// the fix goes); opening it shows what went wrong, the quotes that prove it, and what to change.
+const ProblemRow = ({
+  problem,
+  linkFor,
+}: {
+  problem: ReviewProblem
+  linkFor: (messageId: string) => GroundingHref
+}) => {
+  const [open, setOpen] = useState(false)
+  return (
+    <li className="border border-rule bg-panel">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+        className="flex w-full flex-wrap items-baseline gap-x-2 gap-y-1 p-3 text-left transition-colors hover:bg-panel-2"
+      >
+        <ToneChip tone={SEVERITY_TONE[problem.severity] ?? "border-rule text-ink-soft"}>
+          {problem.severity}
+        </ToneChip>
+        <span className="text-[0.9375rem] font-semibold leading-snug">{problem.title}</span>
+        <span className="font-mono text-[0.72rem] text-ink-soft">
+          {problem.class} · fix: {problem.fixType.replaceAll("_", " ")}
+        </span>
+      </button>
+      {open ? (
+        <div className="border-t border-rule px-3 pb-3 pt-2">
+          <p className="text-[0.82rem] text-ink">{problem.description}</p>
+          <p className="mt-1.5 text-[0.82rem] text-ink-soft">
+            <span className="font-semibold">Why {problem.severity}:</span> {problem.severityReason}
+          </p>
+          <ul className="mt-2 flex flex-col gap-2">
+            {problem.evidence.map((item) => {
+              const href = linkFor(item.from)
+              const ids = item.from === item.to ? item.from : `${item.from} to ${item.to}`
+              return (
+                <li key={`${ids}·${item.quote}`} className="text-[0.82rem]">
+                  {href === null ? (
+                    <span className="font-mono text-[0.72rem] text-ink-soft">{ids}</span>
+                  ) : (
+                    <Link
+                      to={href}
+                      className="font-mono text-[0.72rem] text-custody hover:underline"
+                    >
+                      {ids}
+                    </Link>
+                  )}
+                  <blockquote className="mt-0.5 border-l-2 border-rule pl-2 text-ink">
+                    {item.quote}
+                  </blockquote>
+                  <p className="mt-0.5 text-ink-soft">{item.why}</p>
+                </li>
+              )
+            })}
+          </ul>
+          <p className="mt-2 text-[0.82rem] text-ink">
+            <span className="font-semibold">Next time:</span> {problem.learning}
+          </p>
+        </div>
+      ) : null}
+    </li>
+  )
+}
+
+type ProblemsState =
+  | { readonly phase: "loading" }
+  | { readonly phase: "failed"; readonly message: string }
+  | { readonly phase: "ready"; readonly problems: ReadonlyArray<ReviewProblem> }
+
+/** The problems review (ai-problems-v2): the verdict and summary, then every problem it saved. */
+const ProblemsReviewCard = ({
+  sessionId,
+  review,
+  analysis,
+  onRedo,
+}: {
+  sessionId: string
+  review: SessionReviewSummary
+  analysis: AiAnalysis
+  onRedo: (choice: ReviewerChoice) => void
+}) => {
+  const signals = review.signals as ProblemsReviewSignals | null
+  const linkFor = useGroundingLink(signals?.run?.recordIds)
+  const [problems, setProblems] = useState<ProblemsState>({ phase: "loading" })
+
+  // The review list carries the row but not its problems; they live in their own table.
+  const reviewKey = `${review.id}·${review.analyzedAt ?? review.createdAt}`
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reviewKey is never read — a redo that lands changes it, and that is the refetch.
+  useEffect(() => {
+    let active = true
+    setProblems({ phase: "loading" })
+    fetchProblemsReview(sessionId).then((result) => {
+      if (!active) return
+      if (!result.ok) {
+        setProblems({ phase: "failed", message: result.error.message })
+        return
+      }
+      setProblems({ phase: "ready", problems: result.data.review?.problems ?? [] })
+    })
+    return () => {
+      active = false
+    }
+  }, [sessionId, reviewKey])
+
+  return (
+    <article className="border border-rule bg-panel p-4">
+      <AiReviewHeader review={review} signals={signals} analysis={analysis} onRedo={onRedo} />
+      <p className="mt-2 text-ink">{review.summary}</p>
+      <section className="mt-4">
+        <LensHeading>
+          {problems.phase === "ready" ? `Problems (${problems.problems.length})` : "Problems"}
+        </LensHeading>
+        {problems.phase === "loading" ? null : problems.phase === "failed" ? (
+          <p className="text-[0.82rem] text-ink-soft">
+            The problems could not be retrieved. {problems.message}
+          </p>
+        ) : problems.problems.length === 0 ? (
+          <p className="text-[0.82rem] text-ink-soft">No problems found.</p>
+        ) : (
+          <ul className="flex flex-col gap-2">
+            {problems.problems.map((problem) => (
+              <ProblemRow key={problem.id} problem={problem} linkFor={linkFor} />
+            ))}
+          </ul>
+        )}
+      </section>
     </article>
   )
 }
@@ -1426,8 +1589,9 @@ const AI_POLL_INTERVAL_MS = 3000
 /** Plain-language reasons for the codes a failed analyze job carries. */
 const FAILURE_REASONS: Readonly<Record<string, string>> = {
   harnessFailed: "the reviewer harness exited before finishing",
-  deliverableMissing: "the reviewer finished but never wrote review.xml",
-  unparseable: "the reviewer's XML could not be parsed",
+  deliverableMissing: "the reviewer finished but never wrote its review file",
+  unparseable: "the reviewer's review file could not be parsed",
+  promptMergeFailed: "your review prompt could not be merged into the base prompt",
   invalidSchema: "the review failed schema validation",
   ungrounded: "the review cited records this session does not contain",
 }
@@ -1490,7 +1654,7 @@ const useAiAnalysis = (
   // button.
   useEffect(() => {
     let active = true
-    fetchAiReview(sessionId).then((result) => {
+    fetchProblemsReview(sessionId).then((result) => {
       if (!active || !result.ok) return
       if (result.data.job !== null) {
         setAnalysis({
@@ -1551,7 +1715,7 @@ const useAiAnalysis = (
       }
       // Joined a run without its job id: adopt the id so job status decides the outcome. On a
       // redo the old verdict is still there, so a review alone only counts once no job remains.
-      fetchAiReview(sessionId).then((result) => {
+      fetchProblemsReview(sessionId).then((result) => {
         if (!active || !result.ok) return
         const { review, job } = result.data
         if (job !== null) {
@@ -1579,10 +1743,12 @@ const useAiAnalysis = (
 }
 
 const ReviewPanel = ({
+  sessionId,
   review,
   analysis,
   onAnalyze,
 }: {
+  sessionId: string
   review: ReviewState
   analysis: AiAnalysis
   onAnalyze: (choice: ReviewerChoice) => void
@@ -1592,16 +1758,26 @@ const ReviewPanel = ({
   if (review.phase === "loading") return null
   // The AI review is the card. The static analyzer still runs server-side, but its counts
   // read as noise next to the AI verdict, so it no longer renders here.
+  const problemsReview = problemsReviewOf(review.reviews)
   const ai = aiReviewOf(review.reviews)
   return (
     <div className="flex flex-col gap-4">
       {review.reviews.length === 0 ? (
         <p className="text-ink-soft">This session has not been reviewed yet.</p>
       ) : null}
-      {ai === null ? (
-        <AnalyzeSection analysis={analysis} onStart={onAnalyze} />
-      ) : (
+      {/* The problems review is what Analyze runs now; an older ai-v1 row still shows when
+       * it is the only AI review the session has. */}
+      {problemsReview !== null ? (
+        <ProblemsReviewCard
+          sessionId={sessionId}
+          review={problemsReview}
+          analysis={analysis}
+          onRedo={onAnalyze}
+        />
+      ) : ai !== null ? (
         <AiReviewCard review={ai} analysis={analysis} onRedo={onAnalyze} />
+      ) : (
+        <AnalyzeSection analysis={analysis} onStart={onAnalyze} />
       )}
       {review.reviews.length === 0 ? null : (
         <section>
@@ -1651,7 +1827,14 @@ const Panel = ({
   if (tab === "pulls")
     return <PullRequestsView pullRequests={payload.pullRequests} onJump={onJump} />
   if (tab === "review")
-    return <ReviewPanel review={review} analysis={analysis} onAnalyze={onAnalyze} />
+    return (
+      <ReviewPanel
+        sessionId={detail.session.id}
+        review={review}
+        analysis={analysis}
+        onAnalyze={onAnalyze}
+      />
+    )
 
   return <Conversation detail={detail} inlineTools={inlineTools} />
 }

@@ -225,6 +225,13 @@
       "when": 1791549649082,
       "tag": "0031_white_nitro",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1793384274570,
+      "tag": "0032_milky_micromax",
+      "breakpoints": true
     }
   ]
 }
