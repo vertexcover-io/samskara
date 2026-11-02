@@ -78,14 +78,33 @@ export const reviewBatchRoutes = ({ db, env, reviewBatches, credentialEnv }: Dep
         if (!hasCredential(env.aiReviewHarness, credentialEnv ?? process.env))
           return c.json({ error: "harnessUnauthenticated" }, 400)
         const sessionIds = [...new Set(c.req.valid("json").sessionIds)]
-        // The same gate as Analyze: the session is visible, and its project editable.
-        const checked = await Promise.all(
-          sessionIds.map(async (sessionId) => {
-            const projectId = await visibleSessionProjectId(db, userId, sessionId)
-            const allowed = projectId !== null && (await canWrite(db, userId, projectId))
-            return { sessionId, projectId: allowed ? projectId : null }
-          }),
+        // The same gate as Analyze: the session is visible, and its project editable. Edit
+        // rights are asked once per project, since 50 sessions usually share one or two.
+        const visible = await Promise.all(
+          sessionIds.map(async (sessionId) => ({
+            sessionId,
+            projectId: await visibleSessionProjectId(db, userId, sessionId),
+          })),
         )
+        const projectIds = [
+          ...new Set(
+            visible.flatMap((entry) => (entry.projectId === null ? [] : [entry.projectId])),
+          ),
+        ]
+        const editable = new Set(
+          (
+            await Promise.all(
+              projectIds.map(async (projectId) =>
+                (await canWrite(db, userId, projectId)) ? [projectId] : [],
+              ),
+            )
+          ).flat(),
+        )
+        const checked = visible.map((entry) => ({
+          sessionId: entry.sessionId,
+          projectId:
+            entry.projectId !== null && editable.has(entry.projectId) ? entry.projectId : null,
+        }))
         const sessions = checked.flatMap((entry) =>
           entry.projectId === null
             ? []
