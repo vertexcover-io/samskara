@@ -39,6 +39,12 @@ export default defineConfig({
         PUBLIC_BASE_URL: API_BASE,
         WEB_BASE_URL: WEB_BASE,
         COOKIE_SECURE: "false",
+        // A batch's fix step needs a harness. The e2e reviews have no problems, so the run
+        // ends at "nothing to do" and never clones this repo. The server refuses a repo and a
+        // path together, so a path from the caller's environment wins.
+        ...(process.env.LEARNINGS_HARNESS_PATH === undefined
+          ? { LEARNINGS_HARNESS_REPO: "vertexcover-io/yok" }
+          : {}),
       },
     },
     {
