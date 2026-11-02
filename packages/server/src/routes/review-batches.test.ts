@@ -115,6 +115,7 @@ describe.skipIf(!dockerAvailable())("review batch routes", () => {
       jobs,
       aiReview: { db, runner: {} as HarnessRunner, env, log: silentLog },
       hasReview: async () => false,
+      canWrite: async () => true,
       startLearningRun: undefined,
       log: silentLog,
       sleep: () => new Promise((resolve) => setImmediate(resolve)),

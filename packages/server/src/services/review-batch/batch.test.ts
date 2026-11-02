@@ -82,6 +82,7 @@ const build = (
     jobs,
     aiReview,
     hasReview: async () => false,
+    canWrite: async () => true,
     startLearningRun: async () => started(Promise.resolve("done")),
     log: silentLog,
     sleep: tick,
@@ -394,6 +395,32 @@ describe("review batch registry", () => {
       expect(project?.state).toBe("failed")
       expect(project?.reason).toContain("Finding fixes is not set up on this server")
     }
+  })
+
+  test("a user who lost edit rights during step 1 gets no fix run for that project", async () => {
+    const jobs = createAiReviewJobRegistry({ run: async (_d, _u, id) => ok(id) })
+    const learningCalls: string[] = []
+    const registry = build(jobs, {
+      canWrite: async (_user, projectId) => projectId !== "project-a",
+      startLearningRun: async (projectId) => {
+        learningCalls.push(projectId)
+        return started(Promise.resolve("done"))
+      },
+    })
+
+    const result = registry.start(
+      input([
+        ["a1", "project-a"],
+        ["b1", "project-b"],
+      ]),
+    )
+    if ("error" in result) throw new Error("refused")
+    await result.finished
+
+    expect(learningCalls).toEqual(["project-b"])
+    expect(projectOf(registry, "project-a")?.state).toBe("failed")
+    expect(projectOf(registry, "project-a")?.reason).toBeTruthy()
+    expect(projectOf(registry, "project-b")?.state).toBe("done")
   })
 
   test("SC10: a review job the registry already dropped is judged by its saved row", async () => {

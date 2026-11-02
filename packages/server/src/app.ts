@@ -12,6 +12,7 @@ import type pino from "pino"
 import type { Db } from "./db/client.js"
 import type { Env } from "./lib/env.js"
 import { loggingMiddleware } from "./lib/logging-middleware.js"
+import { canWrite } from "./repositories/projects.repo.js"
 import { listReviewsForSession } from "./repositories/reviews.repo.js"
 import { artifactRoutes } from "./routes/artifacts.js"
 import { authRoutes } from "./routes/auth.js"
@@ -130,6 +131,7 @@ export const buildApp = (db: Db, env: Env, deps: Deps = {}) => {
         (await listReviewsForSession(db, userId, sessionId)).some(
           (row) => row.analyzer === PROBLEMS_ANALYZER,
         ),
+      canWrite: (userId, projectId) => canWrite(db, userId, projectId),
       startLearningRun:
         learningsHarness === undefined
           ? undefined

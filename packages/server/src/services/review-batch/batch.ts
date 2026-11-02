@@ -67,6 +67,8 @@ export type ReviewBatchDeps = {
   readonly aiReview: AiReviewDeps
   /** True when the session already has a problems review. */
   readonly hasReview: (userId: string, sessionId: string) => Promise<boolean>
+  /** Asked again just before step 2, which can start an hour after the batch was allowed. */
+  readonly canWrite: (userId: string, projectId: string) => Promise<boolean>
   /** Starts one project's learning run; undefined when the server has no learnings harness. */
   readonly startLearningRun: ((projectId: string) => Promise<StartedLearningRun>) | undefined
   readonly log: pino.Logger
@@ -116,6 +118,7 @@ const NO_REVIEWS = "No session of this project got a review."
 const WAITED_TOO_LONG = "Another fix run for this project did not end within 2 hours."
 const RUN_FAILED = "The fix run failed. Its log is on the server."
 const RUN_COULD_NOT_START = "The fix run could not start."
+const NO_LONGER_EDITABLE = "You can no longer edit this project, so its fixes were not looked for."
 
 export const createReviewBatchRegistry = (deps: ReviewBatchDeps): ReviewBatchRegistry => {
   const sleep =
@@ -260,6 +263,10 @@ export const createReviewBatchRegistry = (deps: ReviewBatchDeps): ReviewBatchReg
         continue
       }
       try {
+        if (!(await deps.canWrite(userId, projectId))) {
+          setProject(userId, projectId, "failed", NO_LONGER_EDITABLE)
+          continue
+        }
         await findFixesFor(userId, projectId, deps.startLearningRun)
       } catch (error) {
         log.error({ err: error, projectId }, "review batch could not start a learning run")
