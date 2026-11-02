@@ -1,4 +1,4 @@
-import { estimateMinutes } from "../sessions/reviewBatch.js"
+import { estimateMinutes, MAX_BATCH_SESSIONS } from "../sessions/reviewBatch.js"
 
 type Props = {
   readonly count: number
@@ -25,6 +25,9 @@ export const ReviewBar = ({ count, starting, blocked, onStart, onClear }: Props)
       <button type="button" onClick={onClear} className="text-[0.75rem] text-ink-soft underline">
         Clear
       </button>
+    )}
+    {count < MAX_BATCH_SESSIONS ? null : (
+      <p className="text-[0.75rem] text-ink-soft">{MAX_BATCH_SESSIONS} is the most in one batch.</p>
     )}
     <button
       type="button"

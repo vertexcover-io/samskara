@@ -313,6 +313,7 @@ export const Sessions = () => {
   const hasFilters = hasActiveFilters(filters)
   const pageIds = payload === null ? [] : payload.sessions.map((session) => session.id)
   const pageSelected = pageIds.length > 0 && pageIds.every((id) => selected.has(id))
+  const room = MAX_BATCH_SESSIONS - selected.size
 
   return (
     <section>
@@ -356,6 +357,7 @@ export const Sessions = () => {
                 <input
                   type="checkbox"
                   checked={pageSelected}
+                  disabled={room === 0 && !pageSelected}
                   onChange={(event) =>
                     setSelected((current) => withPage(current, pageIds, event.target.checked))
                   }
@@ -363,15 +365,17 @@ export const Sessions = () => {
                 />
                 Select this page
               </label>
-              {payload.pagination.total > payload.sessions.length ? (
+              {payload.pagination.total > payload.sessions.length && room > 0 ? (
                 <button
                   type="button"
                   onClick={() => void selectAllMatching()}
                   className="underline"
                 >
-                  {payload.pagination.total > MAX_BATCH_SESSIONS
-                    ? `Select the first ${MAX_BATCH_SESSIONS} of ${payload.pagination.total} matching`
-                    : `Select all ${payload.pagination.total} matching`}
+                  {selected.size > 0
+                    ? `Add up to ${room} more of ${payload.pagination.total} matching`
+                    : payload.pagination.total > MAX_BATCH_SESSIONS
+                      ? `Select the first ${MAX_BATCH_SESSIONS} of ${payload.pagination.total} matching`
+                      : `Select all ${payload.pagination.total} matching`}
                 </button>
               ) : null}
             </div>
@@ -384,6 +388,7 @@ export const Sessions = () => {
                     type="checkbox"
                     aria-label={`Select ${session.title ?? "untitled session"}`}
                     checked={selected.has(session.id)}
+                    disabled={room === 0 && !selected.has(session.id)}
                     onChange={() => setSelected((current) => toggled(current, session.id))}
                     className="mt-3 size-4 shrink-0"
                   />

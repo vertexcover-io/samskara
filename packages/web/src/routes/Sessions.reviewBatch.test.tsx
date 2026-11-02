@@ -165,10 +165,30 @@ test("Select all N matching keeps sessions picked earlier, up to 50 in total", a
   await screen.findByRole("link", { name: /first session/i })
   await userEvent.click(screen.getByRole("checkbox", { name: "Select First session" }))
 
-  await userEvent.click(screen.getByRole("button", { name: "Select the first 50 of 51 matching" }))
+  await userEvent.click(screen.getByRole("button", { name: "Add up to 49 more of 51 matching" }))
 
   await waitFor(() => expect(summary()).toBe("50 selected · about 55 min"))
   expect(screen.getByRole("checkbox", { name: "Select First session" })).toBeChecked()
+})
+
+test("with 50 picked the bar says 50 is the most, unpicked rows cannot be ticked, and Select all matching is gone", async () => {
+  const fifty = Array.from({ length: 50 }, (_, index) => row(`m-${index}`, `Matching ${index}`))
+  stubFetch({
+    list: (url) =>
+      url.searchParams.get("limit") === "50" ? listOf(fifty, 51) : listOf([first, second], 51),
+  })
+  renderAt("/sessions?tags=yok")
+  await screen.findByRole("link", { name: /first session/i })
+
+  await userEvent.click(screen.getByRole("button", { name: "Select the first 50 of 51 matching" }))
+
+  await waitFor(() => expect(summary()).toBe("50 selected · about 55 min"))
+  expect(screen.getByRole("region", { name: "Selected sessions" })).toHaveTextContent(
+    "50 is the most in one batch.",
+  )
+  expect(rowBox("First session")).toBeDisabled()
+  expect(pageBox()).toBeDisabled()
+  expect(screen.queryByRole("button", { name: /matching/ })).toBeNull()
 })
 
 test("SC23: starting sends the picked ids, clears the selection and shows the panel", async () => {
