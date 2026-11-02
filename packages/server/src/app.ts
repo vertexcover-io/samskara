@@ -13,7 +13,7 @@ import type { Db } from "./db/client.js"
 import type { Env } from "./lib/env.js"
 import { loggingMiddleware } from "./lib/logging-middleware.js"
 import { canWrite } from "./repositories/projects.repo.js"
-import { listReviewsForSession } from "./repositories/reviews.repo.js"
+import { hasReviewFrom } from "./repositories/reviews.repo.js"
 import { artifactRoutes } from "./routes/artifacts.js"
 import { authRoutes } from "./routes/auth.js"
 import { compoundLearningsRoutes } from "./routes/compound-learnings.js"
@@ -127,10 +127,8 @@ export const buildApp = (db: Db, env: Env, deps: Deps = {}) => {
         log: batchLog,
         ...(deps.credentialEnv === undefined ? {} : { credentialEnv: deps.credentialEnv }),
       },
-      hasReview: async (userId, sessionId) =>
-        (await listReviewsForSession(db, userId, sessionId)).some(
-          (row) => row.analyzer === PROBLEMS_ANALYZER,
-        ),
+      hasReview: (userId, sessionId) =>
+        hasReviewFrom(db, { userId, sessionId, analyzer: PROBLEMS_ANALYZER }),
       canWrite: (userId, projectId) => canWrite(db, userId, projectId),
       startLearningRun:
         learningsHarness === undefined
