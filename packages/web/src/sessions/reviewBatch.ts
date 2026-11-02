@@ -19,7 +19,7 @@ export const toggled = (selected: ReadonlySet<string>, id: string): ReadonlySet<
   return selected.size >= MAX_BATCH_SESSIONS ? selected : new Set([...selected, id])
 }
 
-/** Selects or clears every id on the page and keeps picks from other pages, never past the cap. */
+/** Adds or removes these ids and keeps every other pick, never past the cap. */
 export const withPage = (
   selected: ReadonlySet<string>,
   pageIds: ReadonlyArray<string>,

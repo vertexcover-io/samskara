@@ -151,6 +151,22 @@ test("SC22: Select all N matching picks the first 50 matching sessions across pa
   expect(selectAll.searchParams.get("limit")).toBe("50")
 })
 
+test("Select all N matching keeps sessions picked earlier, up to 50 in total", async () => {
+  const fifty = Array.from({ length: 50 }, (_, index) => row(`m-${index}`, `Matching ${index}`))
+  stubFetch({
+    list: (url) =>
+      url.searchParams.get("limit") === "50" ? listOf(fifty, 51) : listOf([first, second], 51),
+  })
+  renderAt("/sessions?tags=yok")
+  await screen.findByRole("link", { name: /first session/i })
+  await userEvent.click(screen.getByRole("checkbox", { name: "Select First session" }))
+
+  await userEvent.click(screen.getByRole("button", { name: "Select the first 50 of 51 matching" }))
+
+  await waitFor(() => expect(summary()).toBe("50 selected · about 55 min"))
+  expect(screen.getByRole("checkbox", { name: "Select First session" })).toBeChecked()
+})
+
 test("SC23: starting sends the picked ids, clears the selection and shows the panel", async () => {
   let started = false
   const calls = stubFetch({

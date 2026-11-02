@@ -245,7 +245,7 @@ export const Sessions = () => {
   const applyFilters = (next: SessionFilters) => setSearchParams(serializeFilters(next))
   const resetFilters = () => applyFilters(EMPTY_FILTERS)
 
-  /** The first 50 sessions the current filters match, across pages, through the list endpoint. */
+  /** Adds the first 50 sessions the current filters match to the picks, never past 50 in all. */
   const selectAllMatching = async (): Promise<void> => {
     const query = Object.fromEntries(new URLSearchParams(effectiveQuery))
     const result = await request(() =>
@@ -253,7 +253,14 @@ export const Sessions = () => {
         query: { ...query, page: "1", limit: String(MAX_BATCH_SESSIONS) },
       }),
     )
-    if (result.ok) setSelected(new Set(result.data.sessions.map((session) => session.id)))
+    if (result.ok)
+      setSelected((current) =>
+        withPage(
+          current,
+          result.data.sessions.map((session) => session.id),
+          true,
+        ),
+      )
   }
 
   const startReview = async (): Promise<void> => {
