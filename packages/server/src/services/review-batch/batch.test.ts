@@ -171,6 +171,39 @@ describe("review batch registry", () => {
     )
   })
 
+  test("two users' batches together run at most 3 reviews, so a manual Analyze still finds the 4th slot", async () => {
+    const control = controlledRun()
+    const jobs = createAiReviewJobRegistry({ run: control.run })
+    const registry = build(jobs)
+    const first = ["a1", "a2", "a3"]
+    const second = ["b1", "b2", "b3"]
+
+    const one = registry.start(input(first.map((id) => [id, "project-a"] as const)))
+    const two = registry.start(
+      input(
+        second.map((id) => [id, "project-b"] as const),
+        { userId: "user-2" },
+      ),
+    )
+    if ("error" in one || "error" in two) throw new Error("refused")
+    await waitUntil(() => control.pending.length === 3, "3 reviews running")
+    await settleLoop()
+
+    expect(runningCount(jobs, [...first, ...second])).toBe(3)
+    expect("jobId" in jobs.startAiReviewJob(aiReview, "someone-else", "manual", {})).toBe(true)
+
+    control.settle("manual", ok("manual"))
+    while (control.pending.length > 0) {
+      const next = control.pending[0]
+      if (next === undefined) break
+      control.settle(next.sessionId, ok(next.sessionId))
+      await settleLoop()
+      expect(runningCount(jobs, [...first, ...second])).toBeLessThanOrEqual(3)
+    }
+    await Promise.all([one.finished, two.finished])
+    expect(sessionOf(registry, "b3", "user-2")?.state).toBe("reviewed")
+  })
+
   test("SC3: a busy job registry makes a lane wait, not fail", async () => {
     const control = controlledRun()
     const jobs = createAiReviewJobRegistry({ run: control.run, maxConcurrent: 1 })

@@ -4,8 +4,8 @@ import type { AiReviewDeps, AiReviewErrorCode } from "../ai-review/pipeline.js"
 import type { StartedLearningRun } from "../learnings/run.js"
 
 /**
- * How many of a batch's reviews run at once. The job registry allows 4, so one stays open for
- * someone clicking Analyze by hand while a batch runs.
+ * How many batch reviews run at once, counted across every user's batch. The job registry allows
+ * 4, so one stays open for someone clicking Analyze by hand while batches run.
  */
 export const REVIEW_BATCH_LANES = 3
 
@@ -126,6 +126,8 @@ export const createReviewBatchRegistry = (deps: ReviewBatchDeps): ReviewBatchReg
   const learningWaitLimitMs = deps.learningWaitLimitMs ?? LEARNING_WAIT_LIMIT_MS
   /** One entry per user: their latest batch. Bounded by the number of users. */
   const batches = new Map<string, ReviewBatch>()
+  /** Batch reviews in flight across all users; kept at REVIEW_BATCH_LANES or below. */
+  let batchJobsRunning = 0
 
   const update = (userId: string, change: (batch: ReviewBatch) => ReviewBatch): void => {
     const batch = batches.get(userId)
@@ -174,17 +176,25 @@ export const createReviewBatchRegistry = (deps: ReviewBatchDeps): ReviewBatchReg
   }
 
   /**
-   * Reviews one session, or skips it when it already has a review. `busy` (4 reviews running)
-   * and `alreadyRunning` (someone is analyzing this session by hand) both wait and ask again;
+   * Reviews one session, or skips it when it already has a review. The batch cap, `busy` (4
+   * reviews running) and `alreadyRunning` (someone is analyzing this session by hand) both wait and ask again;
    * the second ends as skipped once that review lands.
    */
   const reviewOne = async (userId: string, sessionId: string): Promise<void> => {
     for (;;) {
       if (await deps.hasReview(userId, sessionId)) return setSession(userId, sessionId, "skipped")
-      const started = deps.jobs.startAiReviewJob(deps.aiReview, userId, sessionId, {})
-      if ("jobId" in started) {
+      const started =
+        batchJobsRunning < REVIEW_BATCH_LANES
+          ? deps.jobs.startAiReviewJob(deps.aiReview, userId, sessionId, {})
+          : undefined
+      if (started !== undefined && "jobId" in started) {
         setSession(userId, sessionId, "reviewing")
-        return waitForJob(userId, sessionId, started.jobId)
+        batchJobsRunning += 1
+        try {
+          return await waitForJob(userId, sessionId, started.jobId)
+        } finally {
+          batchJobsRunning -= 1
+        }
       }
       await sleep(pollMs)
     }
