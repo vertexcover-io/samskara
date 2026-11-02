@@ -55,7 +55,8 @@ const doneBatch: ReviewBatchView = {
 
 type Handlers = {
   readonly list?: (url: URL) => unknown
-  readonly current?: () => ReviewBatchView | null
+  /** A Response is sent as it is, such as a 401. */
+  readonly current?: () => ReviewBatchView | null | Response
   readonly start?: (body: unknown) => Response
 }
 
@@ -77,7 +78,10 @@ const stubFetch = (handlers: Handlers): Calls => {
       )
     if (path === "/api/review-batches/current") {
       calls.current += 1
-      return Promise.resolve(jsonResponse(200, { batch: handlers.current?.() ?? null }))
+      const answer = handlers.current?.() ?? null
+      return Promise.resolve(
+        answer instanceof Response ? answer : jsonResponse(200, { batch: answer }),
+      )
     }
     if (path === "/api/review-batches" && init?.method === "POST") {
       const body: unknown = JSON.parse(String(init.body))
@@ -227,4 +231,27 @@ test("SC25: the panel comes back after a refresh and keeps checking until the ba
     vi.advanceTimersByTime(10_000)
   })
   expect(calls.current).toBe(checksWhenDone)
+})
+
+test("a check that answers 401 while a batch runs stops the checks and sends the person to sign in", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
+  const answers: Array<ReviewBatchView | Response> = [runningBatch]
+  const calls = stubFetch({
+    current: () => answers.shift() ?? jsonResponse(401, { error: "unauthorized" }),
+  })
+  renderAt("/sessions")
+  await screen.findByRole("region", { name: "Review progress" })
+
+  await act(async () => {
+    vi.advanceTimersByTime(3_000)
+  })
+  // waitFor polls on setInterval, which is faked here, so flush the pending fetch by hand.
+  for (let i = 0; i < 5; i += 1) await act(async () => {})
+  expect(screen.getByTestId("location").textContent).toBe("/login")
+
+  const checksAfterExpiry = calls.current
+  await act(async () => {
+    vi.advanceTimersByTime(10_000)
+  })
+  expect(calls.current).toBe(checksAfterExpiry)
 })

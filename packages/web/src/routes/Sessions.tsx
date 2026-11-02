@@ -302,7 +302,8 @@ export const Sessions = () => {
     setSearchParams(serializeFilters(effectiveFilters), { replace: true })
   }, [effectiveFilters, filters, setSearchParams])
 
-  if (state.phase === "failed" && state.error.kind === "unauthorized") return <SessionExpired />
+  if (reviewBatch.expired || (state.phase === "failed" && state.error.kind === "unauthorized"))
+    return <SessionExpired />
 
   const answered = state.phase !== "loading" && state.query === effectiveQuery
   const payload = answered && state.phase === "ready" ? state.payload : null
