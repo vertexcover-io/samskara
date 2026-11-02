@@ -3,7 +3,13 @@ import { Link, useParams, useSearchParams } from "react-router-dom"
 import { type ApiError, client, request } from "../api/client.js"
 import type { LearningDetailPayload, LearningProblem } from "../api/types.js"
 import { SessionExpired } from "../auth/SessionExpired.js"
-import { FIX_TYPE_LABEL, IMPACT_LABEL, PRIORITY_TONE, plural } from "../learnings/labels.js"
+import {
+  asSentence,
+  FIX_TYPE_LABEL,
+  IMPACT_LABEL,
+  PRIORITY_TONE,
+  plural,
+} from "../learnings/labels.js"
 import { SkipButton } from "../learnings/SkipButton.js"
 import { LoadingShell } from "../shell/LoadingShell.js"
 import { absoluteTime, relativeTime } from "../time.js"
@@ -82,7 +88,9 @@ const Fix = ({
             <span className="font-semibold">
               {IMPACT_LABEL[learning.impact] ?? learning.impact}.
             </span>{" "}
-            {learning.impactReason}
+            {learning.impactReason === null ? null : (
+              <span>{asSentence(learning.impactReason)}</span>
+            )}
           </p>
         </div>
       )}

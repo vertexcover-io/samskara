@@ -138,10 +138,10 @@ describe.skipIf(!dockerAvailable())("reviews", () => {
     expect(res.status).toBe(201)
     const body = (await res.json()) as {
       reviewId: string
-      review: { outcome: string; friction: string; signals: { errorLoops: unknown[] } }
+      review: { outcome: string; signals: { errorLoops: unknown[] } }
     }
     expect(body.review.outcome).toBe("struggled")
-    expect(body.review.friction).toBe("high")
+    expect(body.review).not.toHaveProperty("friction")
     expect(body.review.signals.errorLoops).toHaveLength(1)
   })
 
@@ -183,7 +183,6 @@ describe.skipIf(!dockerAvailable())("reviews", () => {
       projectId: hidden?.id as string,
       analyzer: "heuristic-v1",
       outcome: "shipped",
-      friction: "none",
       summary: "shipped: 1 turn, 1 commit",
       signals: {},
     })

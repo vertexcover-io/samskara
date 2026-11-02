@@ -45,7 +45,6 @@ describe.skipIf(!dockerAvailable())("dropping the old ai-v1 reviews", () => {
       projectId,
       analyzer,
       outcome: "productive",
-      friction: "none",
       summary: analyzer,
       signals: {},
     })

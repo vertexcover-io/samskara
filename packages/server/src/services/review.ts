@@ -83,7 +83,6 @@ export const reviewAndPersist = async (
     projectId,
     analyzer: review.analyzer,
     outcome: review.outcome,
-    friction: review.friction,
     summary: review.summary,
     signals: review.signals as unknown as object,
   })

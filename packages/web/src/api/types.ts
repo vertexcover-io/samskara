@@ -92,7 +92,6 @@ export type ProblemsReview = {
   readonly createdAt: string
   readonly analyzedAt: string
   readonly outcome: string
-  readonly friction: string
   readonly summary: string
   readonly signals: ProblemsReviewSignals | null
   readonly problems: ReadonlyArray<ReviewProblem>

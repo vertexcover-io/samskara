@@ -536,7 +536,7 @@ const RULE = "─".repeat(72)
 
 const report = (review: ProblemReview, outDir: string, stdout: Writer): void => {
   stdout.write(`\n${RULE}\n`)
-  stdout.write(`outcome: ${review.outcome}   friction: ${review.friction}\n`)
+  stdout.write(`outcome: ${review.outcome}\n`)
   stdout.write(`\n${review.summary}\n\n`)
   stdout.write(`${RULE}\nPROBLEMS (${review.problems.length})\n`)
   for (const problem of review.problems) {

@@ -1,9 +1,4 @@
-import {
-  REVIEW_FRICTIONS,
-  REVIEW_OUTCOMES,
-  type ReviewFriction,
-  type ReviewOutcome,
-} from "../events.js"
+import { REVIEW_OUTCOMES, type ReviewOutcome } from "../events.js"
 import type { SessionExportRecord } from "../export.js"
 
 export const PROBLEM_CLASSES = ["missed", "blocked", "slow", "caught"] as const
@@ -64,7 +59,6 @@ export type Problem = {
 
 export type ProblemReview = {
   readonly outcome: ReviewOutcome
-  readonly friction: ReviewFriction
   readonly summary: string
   readonly problems: ReadonlyArray<Problem>
 }
@@ -319,7 +313,6 @@ export const parseReviewMd = (markdown: string): ParseResult => {
   const header = fieldsOf(firstSection === -1 ? lines : lines.slice(0, firstSection))
   const headerField = (name: string): string => header.find(([key]) => key === name)?.[1] ?? ""
   const outcome = oneOf(REVIEW_OUTCOMES, headerField("outcome"), "Outcome", errors, "")
-  const friction = oneOf(REVIEW_FRICTIONS, headerField("friction"), "Friction", errors, "")
 
   const fullSummary = section(lines, "summary")?.join("\n").trim() ?? ""
   if (fullSummary === "") errors.push("missing ## Summary")
@@ -327,8 +320,7 @@ export const parseReviewMd = (markdown: string): ParseResult => {
 
   const problemLines = section(lines, "problems")
   if (problemLines === undefined) errors.push("missing ## Problems")
-  if (errors.length > 0 || outcome === undefined || friction === undefined || !problemLines)
-    return { ok: false, errors }
+  if (errors.length > 0 || outcome === undefined || !problemLines) return { ok: false, errors }
 
   const blocks = blocksOf(problemLines)
   if (blocks.length === 0 && !NOTHING_TO_CHANGE.test(problemLines.join("\n").trim()))
@@ -346,7 +338,7 @@ export const parseReviewMd = (markdown: string): ParseResult => {
   if (blocks.length > LIMITS.problems)
     dropped.push(`${blocks.length - LIMITS.problems} problems past the limit of ${LIMITS.problems}`)
 
-  return { ok: true, value: { outcome, friction, summary, problems }, dropped }
+  return { ok: true, value: { outcome, summary, problems }, dropped }
 }
 
 const JSON_ESCAPES: Readonly<Record<string, string>> = { n: " ", r: " ", t: " " }

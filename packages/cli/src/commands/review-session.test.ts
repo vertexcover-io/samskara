@@ -36,7 +36,6 @@ const assistantLine = (uuid: string, extra: Record<string, unknown> = {}) =>
 const reviewMd = (messageId: string, quote = "hi") => `# Review
 
 - **Outcome:** productive
-- **Friction:** moderate
 
 ## Summary
 

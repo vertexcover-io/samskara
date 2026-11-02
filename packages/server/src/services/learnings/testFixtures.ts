@@ -94,7 +94,6 @@ export const seedSession = async (
     projectId,
     analyzer: "ai-problems-v2",
     outcome: "shipped",
-    friction: "none",
     summary: "s",
     signals: recordIds.length === 0 ? {} : { run: { recordIds } },
   })

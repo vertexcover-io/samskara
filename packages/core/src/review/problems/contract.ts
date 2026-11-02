@@ -130,7 +130,6 @@ Write exactly this shape. A word in [brackets] takes only the listed values.
 # Review
 
 - **Outcome:** [shipped | productive | struggled | aborted]
-- **Friction:** [none | moderate | high]
 
 ## Summary
 
@@ -194,7 +193,6 @@ export const assembleReviewContract = (instructions: string): string =>
 export const reviewMdSkeleton = (): string => `# Review
 
 - **Outcome:** [shipped | productive | struggled | aborted]
-- **Friction:** [none | moderate | high]
 
 ## Summary
 

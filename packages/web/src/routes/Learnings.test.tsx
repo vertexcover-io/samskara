@@ -144,8 +144,9 @@ test("SC14: the card shows the impact in words with its sentence, and how the fi
 
   const card = (await screen.findByText(LEARNING.title)).closest("article") as HTMLElement
   expect(within(card).getByText(/Person had to step in/)).toBeInTheDocument()
+  // The writer often starts the sentence in lowercase; it reads as a sentence after the label.
   expect(
-    within(card).getByText(/the person had to chase the coder three times/),
+    within(card).getByText(/^The person had to chase the coder three times$/),
   ).toBeInTheDocument()
   expect(within(card).getByText(/How it helps:/)).toBeInTheDocument()
   expect(within(card).getByText(/Saves about 10 minutes a run/)).toBeInTheDocument()

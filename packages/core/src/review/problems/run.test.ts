@@ -36,7 +36,6 @@ const exported: SessionExport = {
 const reviewMd = (quote: string) => `# Review
 
 - **Outcome:** shipped
-- **Friction:** none
 
 ## Summary
 

@@ -49,8 +49,8 @@ const seedFix = async () => {
       values (${project}, 'done', now()) returning id
     `
     const [review] = await sql`
-      insert into "sessionReviews" ("sessionId", "projectId", analyzer, outcome, friction, summary, signals)
-      values (${SESSION}, ${project}, 'ai-problems-v2', 'shipped', 'none', 's',
+      insert into "sessionReviews" ("sessionId", "projectId", analyzer, outcome, summary, signals)
+      values (${SESSION}, ${project}, 'ai-problems-v2', 'shipped', 's',
               ${sql.json({ run: { recordIds } })})
       returning id
     `
@@ -117,7 +117,7 @@ test("SC25: a fix card shows its impact and wraps a long path on a phone, opens 
     true,
   )
 
-  await proof.getByRole("link", { name: "Open message" }).click()
+  await proof.getByRole("link", { name: "Open in session" }).click()
   await expect(page).toHaveURL(`/sessions/${SESSION}?tab=conversation&m=${QUOTED_MESSAGE}`)
   await expect(page.locator(`#r-${QUOTED_MESSAGE}`)).toBeInViewport()
 })

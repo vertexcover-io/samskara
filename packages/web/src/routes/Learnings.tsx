@@ -3,7 +3,13 @@ import { Link, useSearchParams } from "react-router-dom"
 import { type ApiError, client, request } from "../api/client.js"
 import type { LearningRun, LearningSummary, ProjectSummary } from "../api/types.js"
 import { SessionExpired } from "../auth/SessionExpired.js"
-import { FIX_TYPE_LABEL, IMPACT_LABEL, PRIORITY_TONE, plural } from "../learnings/labels.js"
+import {
+  asSentence,
+  FIX_TYPE_LABEL,
+  IMPACT_LABEL,
+  PRIORITY_TONE,
+  plural,
+} from "../learnings/labels.js"
 import { SkipButton } from "../learnings/SkipButton.js"
 import { LoadingShell } from "../shell/LoadingShell.js"
 
@@ -104,7 +110,7 @@ const LearningCard = ({
       {row.impact === null ? null : (
         <p className="mt-2 text-[0.82rem]">
           <span className="font-semibold">Impact: {IMPACT_LABEL[row.impact] ?? row.impact}.</span>{" "}
-          {row.impactReason}
+          {row.impactReason === null ? null : <span>{asSentence(row.impactReason)}</span>}
         </p>
       )}
       <p className="mt-2 text-[0.82rem]">

@@ -644,24 +644,17 @@ const problemsReviewOf = (
   reviews.find((review) => review.analyzer === PROBLEMS_ANALYZER) ?? null
 
 /**
- * The verdict is a sentence, not a stamp: the owner ruled that SHIPPED/MODERATE carry no
+ * The verdict is a sentence, not a stamp: the owner ruled that a bare SHIPPED carries no
  * meaning on their own. The mapping derives from the enum values the analyzers already
  * emit — nothing here invents a new outcome. `clarified` is mapped ahead of the server
  * adopting it; anything unknown still gets a readable sentence.
  */
-export const verdictSentence = (outcome: string, friction: string): string => {
+export const verdictSentence = (outcome: string): string => {
   switch (outcome) {
     case "shipped":
-      if (friction === "none")
-        return "Delivered cleanly — the task's artifact landed with nothing to flag."
-      if (friction === "moderate")
-        return "Delivered, after real friction — the why lives in the summary below."
-      return "Delivered, but most of the session was fighting friction."
+      return "Delivered — the task's artifact landed."
     case "productive":
-      if (friction === "none") return "Useful work, nothing delivered to show."
-      if (friction === "moderate")
-        return "Useful work, nothing delivered to show, after some friction."
-      return "Useful work, nothing delivered to show, after heavy friction."
+      return "Useful work, nothing delivered to show."
     case "struggled":
       return "The agent spent most of the session stuck."
     case "aborted":
@@ -669,7 +662,7 @@ export const verdictSentence = (outcome: string, friction: string): string => {
     case "clarified":
       return "Mostly back-and-forth to shape the task."
     default:
-      return `The review reported ${outcome} with ${friction} friction.`
+      return `The review reported ${outcome}.`
   }
 }
 
@@ -685,15 +678,13 @@ const OUTCOME_DOT: Readonly<Record<string, string>> = {
   clarified: "bg-custody",
 }
 
-const Verdict = ({ outcome, friction }: { outcome: string; friction: string }) => (
+const Verdict = ({ outcome }: { outcome: string }) => (
   <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
     <span
       aria-hidden="true"
       className={`size-2 shrink-0 rounded-full ${OUTCOME_DOT[outcome] ?? "bg-faded"}`}
     />
-    <span className="text-[1.0625rem] font-semibold leading-snug">
-      {verdictSentence(outcome, friction)}
-    </span>
+    <span className="text-[1.0625rem] font-semibold leading-snug">{verdictSentence(outcome)}</span>
   </p>
 )
 
@@ -866,7 +857,7 @@ const AiReviewHeader = ({
           {analysis.phase === "running" ? "Redo running…" : "Redo review"}
         </button>
       </div>
-      <Verdict outcome={review.outcome} friction={review.friction} />
+      <Verdict outcome={review.outcome} />
       {signals === null ? null : (
         <p className="mt-1.5 font-mono text-[0.72rem] text-ink-soft">
           {signals.model} · {signals.harness}

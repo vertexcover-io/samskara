@@ -5,6 +5,9 @@ export const IMPACT_LABEL: Readonly<Record<string, string>> = {
   time_only: "Time only",
 }
 
+/** A sentence the writer started in lowercase, read after a label that ends with a full stop. */
+export const asSentence = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1)
+
 export const PRIORITY_TONE: Readonly<Record<string, string>> = {
   high: "border-err/40 text-err",
   medium: "border-stamp/40 text-stamp",

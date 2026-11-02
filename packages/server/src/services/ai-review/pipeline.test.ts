@@ -193,7 +193,6 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
     const problemsMd = (quote: string) => `# Review
 
 - **Outcome:** struggled
-- **Friction:** moderate
 
 ## Summary
 
@@ -273,7 +272,6 @@ The agent claimed the build was fixed after the tests failed.
       expect(row).toMatchObject({
         analyzer: "ai-problems-v2",
         outcome: "struggled",
-        friction: "moderate",
       })
       expect(row?.signals).toMatchObject({ prompt: "base", dropped: [], model: "fake-model" })
       const problems = await savedProblems()

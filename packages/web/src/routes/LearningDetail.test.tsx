@@ -99,7 +99,9 @@ test("SC20: the page shows the fix, and the proof by session with a link to each
   expect(within(fix).getByRole("heading", { name: LEARNING.title })).toBeInTheDocument()
   expect(within(fix).getByText(LEARNING.problem)).toBeInTheDocument()
   expect(within(fix).getByText(/Wrong result/)).toBeInTheDocument()
-  expect(within(fix).getByText(/two sessions shipped code/)).toBeInTheDocument()
+  expect(
+    within(fix).getByText(/^Two sessions shipped code whose tests had not finished$/),
+  ).toBeInTheDocument()
   expect(within(fix).getByText(LEARNING.howItHelps)).toBeInTheDocument()
   expect(within(fix).getByText(/The fix \(Skill\)/)).toBeInTheDocument()
   expect(within(fix).getByText(LEARNING.fix)).toBeInTheDocument()

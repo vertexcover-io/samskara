@@ -66,7 +66,6 @@ const fixtures: ReadonlyArray<NormalizedMessage> = [
 const okReviewMd = `# Review
 
 - **Outcome:** productive
-- **Friction:** none
 
 ## Summary
 
@@ -196,7 +195,6 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
     expect(body.review).toMatchObject({
       id: job.status === "succeeded" ? job.reviewId : undefined,
       outcome: "productive",
-      friction: "none",
       summary: "Clean two-message session.",
       problems: [
         {
@@ -240,7 +238,6 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
       projectId,
       analyzer: "heuristic-v1",
       outcome: "shipped",
-      friction: "none",
       summary: "static",
       signals: {},
     })
@@ -277,7 +274,6 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
       projectId,
       analyzer: "ai-problems-v2",
       outcome: "productive",
-      friction: "none",
       summary: "already reviewed",
       signals: {},
     })
@@ -316,7 +312,6 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
       projectId,
       analyzer: "ai-problems-v2",
       outcome: "productive",
-      friction: "none",
       summary: "already reviewed",
       signals: {},
     })
@@ -381,7 +376,6 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
       projectId,
       analyzer: "ai-problems-v2",
       outcome: "productive",
-      friction: "none",
       summary: "the old verdict",
       signals: {},
     })

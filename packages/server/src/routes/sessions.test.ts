@@ -672,7 +672,6 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
         projectId,
         analyzer,
         outcome: "productive",
-        friction: "none",
         summary: `${analyzer} review`,
         signals: {},
       })

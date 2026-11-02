@@ -58,7 +58,6 @@ export const upsertReview = async (
       target: [sessionReviews.sessionId, sessionReviews.analyzer],
       set: {
         outcome: values.outcome,
-        friction: values.friction,
         summary: values.summary,
         signals: values.signals,
         updatedAt: new Date(),

@@ -1140,7 +1140,6 @@ const REVIEW = {
   id: "rev-1",
   analyzer: "heuristic-v1",
   outcome: "struggled",
-  friction: "high",
   summary: "struggled: the same Bash call failed three times in a row",
   signals: { turns: 4, toolCalls: 12, toolFailures: 6, commits: 0, userPrompts: 2 },
   createdAt: "2026-08-25T10:00:00.000Z",
@@ -1193,7 +1192,6 @@ const PROBLEMS_REVIEW_ROW = {
   id: "rev-p",
   analyzer: "ai-problems-v2",
   outcome: "struggled",
-  friction: "heavy",
   summary: "The agent wrote the upsert twice before finding the missing constraint.",
   signals: {
     model: "fake-model",
@@ -1233,7 +1231,6 @@ const problemsReply = (problems: ReadonlyArray<unknown>): Reply => ({
 const REVIEW_WITH_TRANSCRIPT = {
   ...PROBLEMS_REVIEW_ROW,
   outcome: "shipped",
-  friction: "moderate",
   signals: {
     ...PROBLEMS_REVIEW_ROW.signals,
     run: {
@@ -1639,28 +1636,20 @@ test("AI review: 409 analysisAlreadyRunning joins the existing run and polls it 
   ).not.toBeInTheDocument()
 })
 
-// AI-9c: the verdict is one plain-language sentence built from outcome+friction — the
-// stamp vocabulary (SHIPPED/MODERATE) is the anchor word, never the verdict itself.
+// AI-9c: the verdict is one plain-language sentence built from the outcome — the stamp
+// vocabulary (SHIPPED) is the anchor word, never the verdict itself.
 test.each([
-  ["shipped", "none", "Delivered cleanly — the task's artifact landed with nothing to flag."],
-  ["shipped", "moderate", "Delivered, after real friction — the why lives in the summary below."],
-  ["shipped", "high", "Delivered, but most of the session was fighting friction."],
-  ["productive", "none", "Useful work, nothing delivered to show."],
-  ["productive", "moderate", "Useful work, nothing delivered to show, after some friction."],
-  ["productive", "high", "Useful work, nothing delivered to show, after heavy friction."],
-  ["struggled", "none", "The agent spent most of the session stuck."],
-  ["struggled", "high", "The agent spent most of the session stuck."],
-  ["aborted", "moderate", "The session ended before the work finished."],
-  ["clarified", "none", "Mostly back-and-forth to shape the task."],
-  ["mysterious", "high", "The review reported mysterious with high friction."],
-])(
-  "verdict sentence: %s + %s reads as the sentence the owner ruled",
-  (outcome, friction, expected) => {
-    expect(verdictSentence(outcome, friction)).toBe(expected)
-  },
-)
+  ["shipped", "Delivered — the task's artifact landed."],
+  ["productive", "Useful work, nothing delivered to show."],
+  ["struggled", "The agent spent most of the session stuck."],
+  ["aborted", "The session ended before the work finished."],
+  ["clarified", "Mostly back-and-forth to shape the task."],
+  ["mysterious", "The review reported mysterious."],
+])("verdict sentence: %s reads as the sentence the owner ruled", (outcome, expected) => {
+  expect(verdictSentence(outcome)).toBe(expected)
+})
 
-test("AI-9c: the verdict is built from the review's own friction, and the reviewer session modal renders the transcript like a conversation - roles, text, inline tools", async () => {
+test("AI-9c: the verdict is built from the review's own outcome, and the reviewer session modal renders the transcript like a conversation - roles, text, inline tools", async () => {
   const user = userEvent.setup()
   renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1", {
     review: { status: 200, body: { reviews: [REVIEW_WITH_TRANSCRIPT] } },
@@ -1668,7 +1657,7 @@ test("AI-9c: the verdict is built from the review's own friction, and the review
 
   await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Review/ }))
-  expect(within(panelOf()).getByText(/^Delivered, after real friction/)).toBeInTheDocument()
+  expect(within(panelOf()).getByText(/^Delivered — the task's artifact landed/)).toBeInTheDocument()
   await user.click(await screen.findByRole("button", { name: "Reviewer session" }))
 
   const dialog = screen.getByRole("dialog")

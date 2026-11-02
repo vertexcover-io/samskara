@@ -143,7 +143,6 @@ export const reviewRoutes = ({
             analyzer: review.analyzer,
             analyzedAt: review.analyzedAt,
             outcome: review.outcome,
-            friction: review.friction,
             summary: review.summary,
             signals: review.signals,
             agentLearnings: review.agentLearnings,
@@ -162,7 +161,6 @@ export const reviewRoutes = ({
               id: string
               analyzer: string
               outcome: string
-              friction: string
               summary: string
               signals: unknown
               createdAt: Date
@@ -171,7 +169,6 @@ export const reviewRoutes = ({
               id: row.id,
               analyzer: row.analyzer,
               outcome: row.outcome,
-              friction: row.friction,
               summary: row.summary,
               signals: row.signals,
               createdAt: new Date(row.createdAt).toISOString(),
@@ -306,7 +303,6 @@ export const reviewRoutes = ({
                   // updatedAt is when the current review was actually written.
                   analyzedAt: new Date(row.updatedAt).toISOString(),
                   outcome: row.outcome,
-                  friction: row.friction,
                   summary: row.summary,
                   signals: row.signals,
                   problems: problems.map((problem) => ({

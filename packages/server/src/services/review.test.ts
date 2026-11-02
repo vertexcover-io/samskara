@@ -145,7 +145,7 @@ describe("reviewFromDetail", () => {
       }),
     )
     // The analyzer's precedence: an abort wins only when nothing landed, so landing evidence
-    // overrides even a final aborted turn — "shipped" with the abort still visible in friction.
+    // overrides even a final aborted turn — "shipped".
     expect(review.outcome).toBe("shipped")
   })
 

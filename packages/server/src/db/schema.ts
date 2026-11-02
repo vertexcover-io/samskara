@@ -497,7 +497,6 @@ export const sessionReviews = pgTable(
       .references(() => projects.id, { onDelete: "cascade" }),
     analyzer: text("analyzer").notNull(),
     outcome: text("outcome").notNull(),
-    friction: text("friction").notNull(),
     summary: text("summary").notNull(),
     signals: jsonb("signals").notNull(),
     createdAt,
@@ -509,7 +508,6 @@ export const sessionReviews = pgTable(
       "sessionReviews_outcome_check",
       sql`${t.outcome} in ('shipped', 'productive', 'struggled', 'aborted')`,
     ),
-    check("sessionReviews_friction_check", sql`${t.friction} in ('none', 'moderate', 'high')`),
     index("sessionReviews_project_idx").on(t.projectId),
   ],
 )

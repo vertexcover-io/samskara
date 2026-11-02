@@ -48,7 +48,6 @@ describe.skipIf(!dockerAvailable())("review problems repository", () => {
       projectId,
       analyzer: "ai-problems-v2",
       outcome: "shipped",
-      friction: "none",
       summary: "s",
       signals: {},
     })
@@ -133,7 +132,6 @@ describe.skipIf(!dockerAvailable())("review problems repository", () => {
       projectId,
       analyzer: "heuristic-v1",
       outcome: "shipped",
-      friction: "none",
       summary: "s",
       signals: {},
     })

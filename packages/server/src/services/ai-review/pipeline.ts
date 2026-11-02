@@ -282,7 +282,6 @@ export const runAiReview = async (
         projectId: detail.session.projectId,
         analyzer: PROBLEMS_ANALYZER,
         outcome: result.review.outcome,
-        friction: result.review.friction,
         summary: result.review.summary,
         signals: signals as unknown as object,
       })
