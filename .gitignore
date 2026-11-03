@@ -33,3 +33,6 @@ scripts/deploy.sh
 
 # Learning run logs: hold problem text, which can quote a secret.
 .samskara/
+
+# yok run state
+.yok/
