@@ -482,3 +482,64 @@ test("SC8: a member sees the org's project card; a non-member does not", async (
   await page.goto("/projects")
   await expect(acmeWidgetCard).toHaveCount(0)
 })
+
+test("project names in the session list share one column however wide each row's time is", async ({
+  authedPage: page,
+}) => {
+  // Each row is its own grid, so a column sized by its content lands somewhere different per row.
+  // Times of different widths ("just now", "3 hours ago", "yesterday") and names of different
+  // lengths are what pushed the project names out of line.
+  const now = Date.now()
+  const MINUTE = 60_000
+  const HOUR = 60 * MINUTE
+  const rows = [
+    { slug: "ion", name: "Ion", title: "Short name, fresh", ago: 0 },
+    // "59 minutes ago" is the widest label relativeTime produces, so it sizes the time track.
+    {
+      slug: "andromeda",
+      name: "Andromeda",
+      title: "Medium name, widest time",
+      ago: 59 * MINUTE + 30_000,
+    },
+    {
+      slug: "observatory",
+      name: "Observatory telemetry pipeline backfill",
+      title: "Long name, a day old",
+      ago: 30 * HOUR,
+    },
+  ] as const
+  await seedDatabase({
+    projects: rows.map((row) => ({
+      slug: row.slug,
+      name: row.name,
+      sessions: [
+        { id: `${row.slug}-session`, title: row.title, updatedAt: new Date(now - row.ago) },
+      ],
+    })),
+  })
+
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await page.goto("/sessions")
+
+  const boxes = await Promise.all(
+    rows.map(async (row) => {
+      const cell = page
+        .getByRole("link", { name: new RegExp(row.title) })
+        .getByText(row.name, { exact: true })
+      await expect(cell).toBeVisible()
+      const box = await cell.boundingBox()
+      if (box === null) throw new Error(`${row.name} has no layout box`)
+      return box
+    }),
+  )
+
+  expect(new Set(boxes.map((box) => Math.round(box.x))).size).toBe(1)
+  // One line each: a name that wrapped would be taller than the short ones.
+  expect(new Set(boxes.map((box) => Math.round(box.height))).size).toBe(1)
+
+  await expect(page.getByText("59 minutes ago", { exact: true })).toBeVisible()
+  const overflowingTimes = await page
+    .locator("time")
+    .evaluateAll((times) => times.filter((time) => time.scrollWidth > time.clientWidth).length)
+  expect(overflowingTimes).toBe(0)
+})

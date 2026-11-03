@@ -27,6 +27,11 @@ type Props = {
 /** Shared with SessionListSkeleton, so a placeholder row keeps the frame of the row it stands in for. */
 export const rowFrameClass = "border border-rule bg-panel-2 px-4 py-2"
 
+/**
+ * Every row is its own grid, so a track sized by content would sit at a different x in each row.
+ * The time track is fixed at the widest relative time ("59 minutes ago") rather than `auto`, which
+ * is what keeps the project column lined up down the list.
+ */
 export const SessionRow = ({ session, to, showProject = true }: Props) => {
   const { title, projectName, userLogin, messageCount, startedAt, lastActiveAt, tags } = session
   const match = session.match ?? null
@@ -34,7 +39,7 @@ export const SessionRow = ({ session, to, showProject = true }: Props) => {
   return (
     <Link
       to={to}
-      className={`grid w-full grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 gap-y-0.5 ${rowFrameClass} text-left transition-colors hover:border-ink-soft min-[900px]:grid-cols-[auto_minmax(0,1fr)_minmax(0,14rem)_auto]`}
+      className={`grid w-full grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 gap-y-0.5 ${rowFrameClass} text-left transition-colors hover:border-ink-soft min-[900px]:grid-cols-[auto_minmax(0,1fr)_minmax(0,14rem)_6.5rem]`}
     >
       <span
         aria-hidden="true"
@@ -70,7 +75,7 @@ export const SessionRow = ({ session, to, showProject = true }: Props) => {
       <time
         dateTime={lastActiveAt}
         title={absoluteTime(lastActiveAt)}
-        className="col-start-2 font-mono text-[0.72rem] text-ink-soft min-[900px]:col-start-4 min-[900px]:self-center min-[900px]:text-right"
+        className="col-start-2 whitespace-nowrap font-mono text-[0.72rem] text-ink-soft min-[900px]:col-start-4 min-[900px]:self-center min-[900px]:text-right"
       >
         {relativeTime(lastActiveAt)}
       </time>
