@@ -407,6 +407,33 @@ test("a full page of 50 sessions keeps the page count and build version on scree
   expect(rowBox.y + rowBox.height).toBeLessThanOrEqual(pagerBox.y)
 })
 
+test("tabbing down the session list never moves keyboard focus behind the pinned footer", async ({
+  authedPage: page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 720 })
+  await page.goto("/sessions")
+  await expect(page.getByText(/Page 1 of 2/)).toBeVisible()
+
+  await page.locator("main ul > li a").first().focus()
+  const hidden: Array<string> = []
+  for (let press = 0; press < 15; press += 1) {
+    await page.keyboard.press("Tab")
+    const focus = await page.evaluate(() => {
+      const active = document.activeElement
+      const footer = document.querySelector("footer")
+      if (active === null || footer === null || !active.closest("main")) return null
+      const box = active.getBoundingClientRect()
+      return {
+        label: active.textContent?.trim().slice(0, 40) ?? "",
+        bottom: box.bottom,
+        footerTop: footer.getBoundingClientRect().top,
+      }
+    })
+    if (focus !== null && focus.bottom > focus.footerTop) hidden.push(focus.label)
+  }
+  expect(hidden).toEqual([])
+})
+
 test("Today and custom local-date filters serialize the browser timezone and preserve it on reload", async ({
   authedPage: page,
 }) => {

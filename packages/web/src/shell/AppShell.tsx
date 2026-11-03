@@ -3,7 +3,7 @@ import { Link, NavLink } from "react-router-dom"
 import { useAuth } from "../auth/AuthProvider.js"
 import { AccountMenu } from "./AccountMenu.js"
 import { BuildStamp } from "./BuildStamp.js"
-import { FooterSlotProvider } from "./FooterSlot.js"
+import { FooterSlotProvider, usePublishedFooterHeight } from "./FooterSlot.js"
 
 const NavItem = ({ to, children }: { to: string; children: ReactNode }) => (
   <NavLink
@@ -23,6 +23,8 @@ const NavItem = ({ to, children }: { to: string; children: ReactNode }) => (
 export const AppShell = ({ children }: { children: ReactNode }) => {
   const { user } = useAuth()
   const [footerSlot, setFooterSlot] = useState<HTMLElement | null>(null)
+  const [footer, setFooter] = useState<HTMLElement | null>(null)
+  usePublishedFooterHeight(footer)
 
   return (
     <div className="relative z-10 flex min-h-dvh w-full flex-col">
@@ -60,7 +62,10 @@ export const AppShell = ({ children }: { children: ReactNode }) => {
 
       {/* Pinned only while a page has put something in the slot: a long page then keeps its footer
           on screen, and every other page leaves it at the end of the document. */}
-      <footer className="border-t border-rule-soft bg-panel-2/60 px-4 py-3 sm:px-6 has-[[data-footer-slot]>*]:sticky has-[[data-footer-slot]>*]:bottom-0 has-[[data-footer-slot]>*]:z-20 has-[[data-footer-slot]>*]:bg-panel-2">
+      <footer
+        ref={setFooter}
+        className="border-t border-rule-soft bg-panel-2/60 px-4 py-3 sm:px-6 has-[[data-footer-slot]>*]:sticky has-[[data-footer-slot]>*]:bottom-0 has-[[data-footer-slot]>*]:z-20 has-[[data-footer-slot]>*]:bg-panel-2"
+      >
         <div ref={setFooterSlot} data-footer-slot className="mx-auto max-w-[1440px]" />
         <div className="mx-auto flex max-w-[1440px] flex-wrap items-center justify-between gap-x-6 gap-y-2">
           <p className="text-label uppercase text-ink-soft">samskara</p>
