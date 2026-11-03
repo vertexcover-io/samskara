@@ -499,7 +499,7 @@ test("project names in the session list share one column however wide each row's
       slug: "andromeda",
       name: "Andromeda",
       title: "Medium name, widest time",
-      ago: 59 * MINUTE + 30_000,
+      ago: 59 * MINUTE + 1_000,
     },
     {
       slug: "observatory",
