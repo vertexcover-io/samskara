@@ -120,6 +120,13 @@ html {
   }
 }
 
+/* While a page pins the footer (it has put something in the footer slot), focusing an element or
+   scrolling to it stops above the footer instead of behind it. `--footer-height` is the footer's
+   measured height, published by AppShell; the extra rem leaves room for the focus ring. */
+html:has([data-footer-slot] > *) {
+  scroll-padding-bottom: calc(var(--footer-height, 0px) + 0.5rem);
+}
+
 body {
   background-color: var(--color-paper);
   color: var(--color-ink);

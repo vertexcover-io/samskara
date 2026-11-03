@@ -16,6 +16,7 @@ import {
   serializeFilters,
 } from "../sessions/filters.js"
 import { useFilterOptions } from "../sessions/useFilterOptions.js"
+import { InFooter } from "../shell/FooterSlot.js"
 import { LoadingShell } from "../shell/LoadingShell.js"
 
 // `query` is the URL the answer belongs to. A settled state outlives the URL that asked for it by
@@ -168,12 +169,15 @@ const Pagination = ({
   totalPages,
   total,
   limit,
+  placeholder = false,
   onPage,
 }: {
   readonly page: number
   readonly totalPages: number
   readonly total: number
   readonly limit: number
+  /** Holds the pager's place without showing counts the pending request has not answered. */
+  readonly placeholder?: boolean
   readonly onPage: (page: number) => void
 }) => {
   if (totalPages <= 1 && total === 0) return null
@@ -181,13 +185,14 @@ const Pagination = ({
   const last = first === 0 ? 0 : Math.min(page * limit, total)
   return (
     <nav
-      className="mt-3 grid grid-cols-2 items-center gap-2 border-t border-rule pt-3 min-[600px]:grid-cols-[1fr_auto_1fr]"
+      className={`grid grid-cols-2 items-center gap-2 min-[600px]:grid-cols-[1fr_auto_1fr] ${placeholder ? "invisible" : ""}`}
       aria-label="Search results pagination"
+      aria-hidden={placeholder || undefined}
     >
       <button
         type="button"
         onClick={() => onPage(page - 1)}
-        disabled={page <= 1}
+        disabled={placeholder || page <= 1}
         className={`h-9 rounded-xs border border-ink bg-panel-2 px-3 font-semibold disabled:border-rule disabled:bg-panel min-[600px]:justify-self-start ${inertClass}`}
       >
         Previous
@@ -203,7 +208,7 @@ const Pagination = ({
       <button
         type="button"
         onClick={() => onPage(page + 1)}
-        disabled={totalPages === 0 || page >= totalPages}
+        disabled={placeholder || totalPages === 0 || page >= totalPages}
         className={`h-9 rounded-xs border border-ink bg-panel-2 px-3 font-semibold disabled:border-rule disabled:bg-panel min-[600px]:col-start-3 min-[600px]:justify-self-end ${inertClass}`}
       >
         Next
@@ -276,6 +281,9 @@ export const Sessions = () => {
   const previous = lastPayload(state)
   const loading = payload === null && error === null
   const hasFilters = hasActiveFilters(filters)
+  const noResults =
+    payload !== null && payload.sessions.length === 0 && payload.pagination.total === 0
+  const pager = payload ?? (loading ? previous : null)
 
   return (
     <section>
@@ -295,8 +303,7 @@ export const Sessions = () => {
         ) : (
           <ErrorState error={error} />
         )}
-        {payload === null ? null : payload.sessions.length === 0 &&
-          payload.pagination.total === 0 ? (
+        {payload === null ? null : noResults ? (
           <NoResults hasFilters={hasFilters} onClear={resetFilters} />
         ) : (
           <>
@@ -308,13 +315,20 @@ export const Sessions = () => {
                 </li>
               ))}
             </ul>
-            <Pagination
-              {...payload.pagination}
-              onPage={(page) => applyFilters({ ...filters, page })}
-            />
           </>
         )}
       </div>
+      {/* While the next page loads, the previous pager keeps its place, hidden and disabled: the
+          pinned footer neither jumps nor shows counts the pending request has not answered. */}
+      <InFooter>
+        {pager === null || (payload !== null && noResults) ? null : (
+          <Pagination
+            {...pager.pagination}
+            placeholder={payload === null}
+            onPage={(page) => applyFilters({ ...filters, page })}
+          />
+        )}
+      </InFooter>
     </section>
   )
 }

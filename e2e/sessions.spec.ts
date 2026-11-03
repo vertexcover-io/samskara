@@ -385,6 +385,126 @@ test("relevance evidence, pagination, clear-search reset, reload, and browser hi
   await expect(page.getByRole("combobox", { name: "Sort by" })).toHaveValue("recent")
 })
 
+test("a full page of 50 sessions keeps the page count and build version on screen at the top of the list, and the pinned footer hides no row at the bottom", async ({
+  authedPage: page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 720 })
+  await page.goto("/sessions")
+  await expect(page.getByText(/Page 1 of 2/)).toBeVisible()
+
+  const pager = page.getByRole("navigation", { name: /search results pagination/i })
+  await expect(pager).toBeInViewport()
+  await expect(page.getByTestId("build-stamp")).toBeInViewport()
+
+  const lastRow = page.getByRole("listitem").last()
+  await lastRow.scrollIntoViewIfNeeded()
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight))
+  const rowBox = await lastRow.boundingBox()
+  const pagerBox = await pager.boundingBox()
+  expect(rowBox).not.toBeNull()
+  expect(pagerBox).not.toBeNull()
+  if (rowBox === null || pagerBox === null) return
+  expect(rowBox.y + rowBox.height).toBeLessThanOrEqual(pagerBox.y)
+})
+
+test("tabbing down the session list never moves keyboard focus behind the pinned footer", async ({
+  authedPage: page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 720 })
+  await page.goto("/sessions")
+  await expect(page.getByText(/Page 1 of 2/)).toBeVisible()
+
+  await page.locator("main ul > li a").first().focus()
+  const hidden: Array<string> = []
+  for (let press = 0; press < 15; press += 1) {
+    await page.keyboard.press("Tab")
+    const focus = await page.evaluate(() => {
+      const active = document.activeElement
+      const footer = document.querySelector("footer")
+      if (active === null || footer === null || !active.closest("main")) return null
+      const box = active.getBoundingClientRect()
+      return {
+        label: active.textContent?.trim().slice(0, 40) ?? "",
+        bottom: box.bottom,
+        footerTop: footer.getBoundingClientRect().top,
+      }
+    })
+    if (focus !== null && focus.bottom > focus.footerTop) hidden.push(focus.label)
+  }
+  expect(hidden).toEqual([])
+})
+
+test("the footer is pinned on the session list and stays in normal flow on a session's detail page", async ({
+  authedPage: page,
+}) => {
+  const footerPosition = () =>
+    page.getByRole("contentinfo").evaluate((footer) => getComputedStyle(footer).position)
+
+  await page.goto("/sessions")
+  await expect(page.getByText(/Page 1 of 2/)).toBeVisible()
+  expect(await footerPosition()).toBe("sticky")
+
+  await page.goto(`/sessions/${paginationSessions[0]?.id}`)
+  await expect(page.getByRole("heading", { level: 1, name: /Pagination ledger 01/ })).toBeVisible()
+  expect(await footerPosition()).not.toBe("sticky")
+})
+
+test("the pinned footer keeps its height while the next page loads", async ({
+  authedPage: page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 720 })
+  await page.goto("/sessions")
+  await expect(page.getByText(/Page 1 of 2/)).toBeVisible()
+  const footer = page.getByRole("contentinfo")
+  const before = await footer.boundingBox()
+
+  let release: (() => void) | undefined
+  const held = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  await page.route(/\/api\/sessions\?(.*&)?page=2/, async (route) => {
+    await held
+    await route.continue()
+  })
+  await page.getByRole("button", { name: "Next" }).click()
+  await expect(page.getByTestId("list-skeleton")).toBeVisible()
+  const during = await footer.boundingBox()
+  release?.()
+  await expect(page.getByText(/Page 2 of 2/)).toBeVisible()
+
+  expect(during?.height).toBe(before?.height)
+  expect(during?.y).toBe(before?.y)
+})
+
+test("a filter menu that reaches down into the pinned footer opens over it, so every option stays clickable", async ({
+  authedPage: page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 640 })
+  await page.goto("/sessions")
+  await expect(page.getByText(/Page 1 of 2/)).toBeVisible()
+
+  await openMenu(page, "Project")
+  await expect(page.getByRole("option").first()).toBeVisible()
+  const layout = await page.evaluate(() => {
+    const listbox = document.querySelector('[role="listbox"]')
+    const footer = document.querySelector("footer")
+    if (listbox === null || footer === null) return null
+    const menu = listbox.getBoundingClientRect()
+    const covered = Array.from(listbox.querySelectorAll('[role="option"]'))
+      .map((option) => option.getBoundingClientRect())
+      .filter((box) => box.top >= menu.top && box.bottom <= menu.bottom)
+      .filter((box) => {
+        const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)
+        return hit === null || !listbox.contains(hit)
+      })
+    return { menuBottom: menu.bottom, footerTop: footer.getBoundingClientRect().top, covered }
+  })
+  expect(layout).not.toBeNull()
+  if (layout === null) return
+  expect(layout.menuBottom).toBeGreaterThan(layout.footerTop)
+  expect(layout.covered).toEqual([])
+})
+
 test("Today and custom local-date filters serialize the browser timezone and preserve it on reload", async ({
   authedPage: page,
 }) => {

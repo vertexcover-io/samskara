@@ -319,6 +319,58 @@ test("out-of-range pages render truthful empty pagination rather than a no-match
   expect(screen.queryByText(/no sessions match/i)).not.toBeInTheDocument()
 })
 
+test("the session list's pager sits in the page footer beside the build version, and leaves it when the list unmounts", async () => {
+  stubFetch(() =>
+    Promise.resolve(
+      jsonResponse(200, payload([session], { page: 1, limit: 1, total: 2, totalPages: 2 })),
+    ),
+  )
+  renderAt("/sessions")
+
+  await screen.findByText("Page 1 of 2")
+  const footer = within(screen.getByRole("contentinfo"))
+  expect(footer.getByRole("navigation", { name: /search results pagination/i })).toBeVisible()
+  expect(footer.getByTestId("build-stamp")).toBeInTheDocument()
+
+  await userEvent.click(screen.getByRole("link", { name: /port the session detail surface/i }))
+  await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("/sessions/s-1"))
+  expect(screen.queryByText("Page 1 of 2")).not.toBeInTheDocument()
+})
+
+test("while the next page loads, the footer holds the previous pager's place, hidden and with both buttons disabled", async () => {
+  let settle: ((response: Response) => void) | undefined
+  stubFetch((url) => {
+    if (url.searchParams.get("page") === "2") {
+      return new Promise((resolve) => {
+        settle = resolve
+      })
+    }
+    return Promise.resolve(
+      jsonResponse(200, payload([session], { page: 1, limit: 1, total: 2, totalPages: 2 })),
+    )
+  })
+  renderAt("/sessions")
+
+  await screen.findByText("Page 1 of 2")
+  await userEvent.click(screen.getByRole("button", { name: "Next" }))
+
+  const footer = within(screen.getByRole("contentinfo"))
+  expect(
+    footer.queryByRole("navigation", { name: /search results pagination/i }),
+  ).not.toBeInTheDocument()
+  // An aria-hidden element has no accessible name, so the hidden pager is found by its role alone.
+  const placeholder = footer.getByRole("navigation", { hidden: true })
+  expect(placeholder).toHaveAttribute("aria-hidden", "true")
+  expect(placeholder).toHaveTextContent("Page 1 of 2")
+  for (const button of within(placeholder).getAllByRole("button", { hidden: true })) {
+    expect(button).toBeDisabled()
+  }
+
+  settle?.(jsonResponse(200, payload([session], { page: 2, limit: 1, total: 2, totalPages: 2 })))
+  await screen.findByText("Page 2 of 2")
+  expect(footer.getByRole("button", { name: "Previous" })).toBeEnabled()
+})
+
 test("S26: activating the row for s-1 navigates to /sessions/s-1", async () => {
   stubFetch(okWith([session]))
 
