@@ -39,7 +39,7 @@ ENV WEB_DIST=packages/web/dist
 ARG CLAUDE_CODE_VERSION=latest
 ARG OPENCODE_VERSION=latest
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git \
+    && apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g --no-fund --no-audit \
         "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
