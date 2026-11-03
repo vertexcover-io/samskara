@@ -434,6 +434,35 @@ test("tabbing down the session list never moves keyboard focus behind the pinned
   expect(hidden).toEqual([])
 })
 
+test("a filter menu that reaches down into the pinned footer opens over it, so every option stays clickable", async ({
+  authedPage: page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 640 })
+  await page.goto("/sessions")
+  await expect(page.getByText(/Page 1 of 2/)).toBeVisible()
+
+  await openMenu(page, "Project")
+  await expect(page.getByRole("option").first()).toBeVisible()
+  const layout = await page.evaluate(() => {
+    const listbox = document.querySelector('[role="listbox"]')
+    const footer = document.querySelector("footer")
+    if (listbox === null || footer === null) return null
+    const menu = listbox.getBoundingClientRect()
+    const covered = Array.from(listbox.querySelectorAll('[role="option"]'))
+      .map((option) => option.getBoundingClientRect())
+      .filter((box) => box.top >= menu.top && box.bottom <= menu.bottom)
+      .filter((box) => {
+        const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)
+        return hit === null || !listbox.contains(hit)
+      })
+    return { menuBottom: menu.bottom, footerTop: footer.getBoundingClientRect().top, covered }
+  })
+  expect(layout).not.toBeNull()
+  if (layout === null) return
+  expect(layout.menuBottom).toBeGreaterThan(layout.footerTop)
+  expect(layout.covered).toEqual([])
+})
+
 test("Today and custom local-date filters serialize the browser timezone and preserve it on reload", async ({
   authedPage: page,
 }) => {

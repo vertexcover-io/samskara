@@ -61,10 +61,11 @@ export const AppShell = ({ children }: { children: ReactNode }) => {
       </main>
 
       {/* Pinned only while a page has put something in the slot: a long page then keeps its footer
-          on screen, and every other page leaves it at the end of the document. */}
+          on screen, and every other page leaves it at the end of the document. z-10 keeps it over
+          the page's rows but under the z-20 filter and account menus, which may open down into it. */}
       <footer
         ref={setFooter}
-        className="border-t border-rule-soft bg-panel-2/60 px-4 py-3 sm:px-6 has-[[data-footer-slot]>*]:sticky has-[[data-footer-slot]>*]:bottom-0 has-[[data-footer-slot]>*]:z-20 has-[[data-footer-slot]>*]:bg-panel-2"
+        className="border-t border-rule-soft bg-panel-2/60 px-4 py-3 sm:px-6 has-[[data-footer-slot]>*]:sticky has-[[data-footer-slot]>*]:bottom-0 has-[[data-footer-slot]>*]:z-10 has-[[data-footer-slot]>*]:bg-panel-2"
       >
         <div ref={setFooterSlot} data-footer-slot className="mx-auto max-w-[1440px]" />
         <div className="mx-auto flex max-w-[1440px] flex-wrap items-center justify-between gap-x-6 gap-y-2">
