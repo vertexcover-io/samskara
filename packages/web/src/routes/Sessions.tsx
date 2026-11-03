@@ -169,12 +169,15 @@ const Pagination = ({
   totalPages,
   total,
   limit,
+  placeholder = false,
   onPage,
 }: {
   readonly page: number
   readonly totalPages: number
   readonly total: number
   readonly limit: number
+  /** Holds the pager's place without showing counts the pending request has not answered. */
+  readonly placeholder?: boolean
   readonly onPage: (page: number) => void
 }) => {
   if (totalPages <= 1 && total === 0) return null
@@ -182,13 +185,14 @@ const Pagination = ({
   const last = first === 0 ? 0 : Math.min(page * limit, total)
   return (
     <nav
-      className="grid grid-cols-2 items-center gap-2 min-[600px]:grid-cols-[1fr_auto_1fr]"
+      className={`grid grid-cols-2 items-center gap-2 min-[600px]:grid-cols-[1fr_auto_1fr] ${placeholder ? "invisible" : ""}`}
       aria-label="Search results pagination"
+      aria-hidden={placeholder || undefined}
     >
       <button
         type="button"
         onClick={() => onPage(page - 1)}
-        disabled={page <= 1}
+        disabled={placeholder || page <= 1}
         className={`h-9 rounded-xs border border-ink bg-panel-2 px-3 font-semibold disabled:border-rule disabled:bg-panel min-[600px]:justify-self-start ${inertClass}`}
       >
         Previous
@@ -204,7 +208,7 @@ const Pagination = ({
       <button
         type="button"
         onClick={() => onPage(page + 1)}
-        disabled={totalPages === 0 || page >= totalPages}
+        disabled={placeholder || totalPages === 0 || page >= totalPages}
         className={`h-9 rounded-xs border border-ink bg-panel-2 px-3 font-semibold disabled:border-rule disabled:bg-panel min-[600px]:col-start-3 min-[600px]:justify-self-end ${inertClass}`}
       >
         Next
@@ -279,6 +283,7 @@ export const Sessions = () => {
   const hasFilters = hasActiveFilters(filters)
   const noResults =
     payload !== null && payload.sessions.length === 0 && payload.pagination.total === 0
+  const pager = payload ?? (loading ? previous : null)
 
   return (
     <section>
@@ -313,11 +318,13 @@ export const Sessions = () => {
           </>
         )}
       </div>
-      {/* Mounted through loading too, so the footer stays pinned while the next page is fetched. */}
+      {/* While the next page loads, the previous pager keeps its place, hidden and disabled: the
+          pinned footer neither jumps nor shows counts the pending request has not answered. */}
       <InFooter>
-        {payload === null || noResults ? null : (
+        {pager === null || (payload !== null && noResults) ? null : (
           <Pagination
-            {...payload.pagination}
+            {...pager.pagination}
+            placeholder={payload === null}
             onPage={(page) => applyFilters({ ...filters, page })}
           />
         )}

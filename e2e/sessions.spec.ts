@@ -434,6 +434,33 @@ test("tabbing down the session list never moves keyboard focus behind the pinned
   expect(hidden).toEqual([])
 })
 
+test("the pinned footer keeps its height while the next page loads", async ({
+  authedPage: page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 720 })
+  await page.goto("/sessions")
+  await expect(page.getByText(/Page 1 of 2/)).toBeVisible()
+  const footer = page.getByRole("contentinfo")
+  const before = await footer.boundingBox()
+
+  let release: (() => void) | undefined
+  const held = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  await page.route(/\/api\/sessions\?(.*&)?page=2/, async (route) => {
+    await held
+    await route.continue()
+  })
+  await page.getByRole("button", { name: "Next" }).click()
+  await expect(page.getByTestId("list-skeleton")).toBeVisible()
+  const during = await footer.boundingBox()
+  release?.()
+  await expect(page.getByText(/Page 2 of 2/)).toBeVisible()
+
+  expect(during?.height).toBe(before?.height)
+  expect(during?.y).toBe(before?.y)
+})
+
 test("a filter menu that reaches down into the pinned footer opens over it, so every option stays clickable", async ({
   authedPage: page,
 }) => {
