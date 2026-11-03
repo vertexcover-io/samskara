@@ -434,6 +434,21 @@ test("tabbing down the session list never moves keyboard focus behind the pinned
   expect(hidden).toEqual([])
 })
 
+test("the footer is pinned on the session list and stays in normal flow on a session's detail page", async ({
+  authedPage: page,
+}) => {
+  const footerPosition = () =>
+    page.getByRole("contentinfo").evaluate((footer) => getComputedStyle(footer).position)
+
+  await page.goto("/sessions")
+  await expect(page.getByText(/Page 1 of 2/)).toBeVisible()
+  expect(await footerPosition()).toBe("sticky")
+
+  await page.goto(`/sessions/${paginationSessions[0]?.id}`)
+  await expect(page.getByRole("heading", { level: 1, name: /Pagination ledger 01/ })).toBeVisible()
+  expect(await footerPosition()).not.toBe("sticky")
+})
+
 test("the pinned footer keeps its height while the next page loads", async ({
   authedPage: page,
 }) => {
