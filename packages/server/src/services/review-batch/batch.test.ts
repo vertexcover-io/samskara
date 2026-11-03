@@ -92,11 +92,15 @@ const build = (
   })
 
 const input = (
-  sessions: ReadonlyArray<readonly [string, string]>,
+  sessions: ReadonlyArray<readonly [string, string] | readonly [string, string, string]>,
   extra: Partial<ReviewBatchInput> = {},
 ): ReviewBatchInput => ({
   userId: "user-1",
-  sessions: sessions.map(([sessionId, projectId]) => ({ sessionId, projectId })),
+  sessions: sessions.map(([sessionId, projectId, title]) => ({
+    sessionId,
+    projectId,
+    title: title ?? null,
+  })),
   notAllowed: [],
   projectNames: new Map([
     ["project-a", "Project A"],
@@ -554,10 +558,94 @@ describe("review batch registry", () => {
     expect(sessionOf(registry, "hidden")).toEqual({
       sessionId: "hidden",
       projectId: null,
+      title: null,
       state: "notAllowed",
       reason: null,
     })
     expect(control.calls).toEqual([])
     expect(registry.current("user-1")?.status).toBe("done")
+  })
+
+  test("a session keeps its title, so the page can name a review that failed", async () => {
+    const jobs = createAiReviewJobRegistry({ run: async () => failed("harnessFailed") })
+    const registry = build(jobs)
+
+    const result = registry.start(input([["s1", "project-a", "Fix the login page"]]))
+    if ("error" in result) throw new Error("refused")
+    await result.finished
+
+    expect(sessionOf(registry, "s1")).toMatchObject({
+      title: "Fix the login page",
+      state: "failed",
+      reason: "The reviewer stopped with an error.",
+    })
+  })
+
+  test("a fix run that fails shows the run's own error, not a pointer to the server log", async () => {
+    const jobs = createAiReviewJobRegistry({ run: async (_d, _u, id) => ok(id) })
+    const run = started(Promise.resolve("failed"))
+    if (run.status !== "started") throw new Error("not started")
+    const registry = build(jobs, {
+      startLearningRun: async () => run,
+      learningRunError: async (runId) =>
+        runId === run.runId ? "git clone failed: repository not found" : null,
+    })
+
+    const result = registry.start(input([["a1", "project-a"]]))
+    if ("error" in result) throw new Error("refused")
+    await result.finished
+
+    expect(projectOf(registry, "project-a")).toMatchObject({
+      state: "failed",
+      reason: "The fix run failed: git clone failed: repository not found",
+    })
+  })
+
+  test("a fix run that fails with no saved error says so plainly", async () => {
+    const jobs = createAiReviewJobRegistry({ run: async (_d, _u, id) => ok(id) })
+    const registry = build(jobs, {
+      startLearningRun: async () => started(Promise.resolve("failed")),
+      learningRunError: async () => null,
+    })
+
+    const result = registry.start(input([["a1", "project-a"]]))
+    if ("error" in result) throw new Error("refused")
+    await result.finished
+
+    expect(projectOf(registry, "project-a")?.reason).toBe("The fix run failed.")
+  })
+
+  test("a long fix run error is cut to 300 characters", async () => {
+    const jobs = createAiReviewJobRegistry({ run: async (_d, _u, id) => ok(id) })
+    const registry = build(jobs, {
+      startLearningRun: async () => started(Promise.resolve("failed")),
+      learningRunError: async () => "x".repeat(1000),
+    })
+
+    const result = registry.start(input([["a1", "project-a"]]))
+    if ("error" in result) throw new Error("refused")
+    await result.finished
+
+    expect(projectOf(registry, "project-a")?.reason).toBe(`The fix run failed: ${"x".repeat(300)}…`)
+  })
+
+  test("dismiss forgets a finished batch, refuses a running one, and is a no-op with none", async () => {
+    const control = controlledRun()
+    const jobs = createAiReviewJobRegistry({ run: control.run })
+    const registry = build(jobs)
+
+    expect(registry.dismiss("user-1")).toBe("none")
+
+    const result = registry.start(input([["s1", "project-a"]]))
+    if ("error" in result) throw new Error("refused")
+    expect(registry.dismiss("user-1")).toBe("running")
+    expect(registry.current("user-1")?.status).toBe("running")
+
+    await waitUntil(() => control.pending.length === 1, "review started")
+    control.settle("s1", ok("s1"))
+    await result.finished
+
+    expect(registry.dismiss("user-1")).toBe("dismissed")
+    expect(registry.current("user-1")).toBeUndefined()
   })
 })

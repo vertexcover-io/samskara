@@ -338,7 +338,9 @@ export const Sessions = () => {
           {refusalMessage(reviewBatch.error)}
         </p>
       )}
-      {reviewBatch.batch === null ? null : <ReviewBatchPanel batch={reviewBatch.batch} />}
+      {reviewBatch.batch === null ? null : (
+        <ReviewBatchPanel batch={reviewBatch.batch} onDismiss={() => void reviewBatch.dismiss()} />
+      )}
       <div className="mt-4" aria-busy={loading}>
         {loading ? <Loading previous={previous} /> : null}
         {error === null ? null : error.kind === "notFound" ? (

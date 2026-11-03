@@ -41,6 +41,7 @@ type BatchBody = {
     readonly sessions: ReadonlyArray<{
       readonly sessionId: string
       readonly projectId: string | null
+      readonly title: string | null
       readonly state: string
     }>
     readonly projects: ReadonlyArray<{ readonly projectId: string; readonly name: string }>
@@ -173,7 +174,10 @@ describe.skipIf(!dockerAvailable())("review batch routes", () => {
     const { batch } = await current()
     expect(batch?.batchId).toBe(body.batchId)
     expect(batch?.status).toBe("running")
-    expect(batch?.sessions.map((session) => session.sessionId).sort()).toEqual(["a-1", "a-2"])
+    expect(batch?.sessions.map((session) => [session.sessionId, session.title]).sort()).toEqual([
+      ["a-1", "a one"],
+      ["a-2", "a two"],
+    ])
     expect(batch?.projects).toEqual([
       { projectId: projectA, name: "Project A", state: "waiting", reason: null },
     ])
@@ -268,5 +272,37 @@ describe.skipIf(!dockerAvailable())("review batch routes", () => {
 
     expect(await states()).toEqual({ "a-1": "reviewing", "a-2": "skipped" })
     expect(reviewCalls).toEqual(["a-1"])
+  })
+
+  const dismiss = (asUserId?: string) =>
+    request("/api/review-batches/current", {
+      method: "DELETE",
+      ...(asUserId === undefined ? {} : { asUserId }),
+    })
+
+  test("dismissing a running batch is a 409 and the batch stays", async () => {
+    expect((await start(["a-1"])).status).toBe(202)
+
+    const res = await dismiss()
+    expect(res.status).toBe(409)
+    expect(await res.json()).toEqual({ error: "reviewBatchStillRunning" })
+    expect((await current()).batch?.status).toBe("running")
+  })
+
+  test("dismissing a finished batch forgets it, and dismissing with none is fine too", async () => {
+    // Only a session the user may not edit: nothing to review, so the batch ends at once.
+    expect((await start(["b-1"])).status).toBe(202)
+    for (let i = 0; i < 50 && (await current()).batch?.status !== "done"; i += 1) await tick()
+    expect((await current()).batch?.status).toBe("done")
+
+    expect((await dismiss()).status).toBe(204)
+    expect(await current()).toEqual({ batch: null })
+    expect((await dismiss()).status).toBe(204)
+  })
+
+  test("dismissing never touches another user's batch", async () => {
+    expect((await start(["a-1"])).status).toBe(202)
+    expect((await dismiss(otherUserId)).status).toBe(204)
+    expect((await current()).batch?.status).toBe("running")
   })
 })

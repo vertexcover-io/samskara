@@ -6,6 +6,7 @@ import { type Env, hasCredential } from "../lib/env.js"
 import { type AuthVariables, requireAuth } from "../lib/require-auth.js"
 import { canWrite, projectNames } from "../repositories/projects.repo.js"
 import { visibleSessionProjectId } from "../repositories/reviews.repo.js"
+import { sessionTitles } from "../repositories/sessions.repo.js"
 import {
   type BatchProjectState,
   type BatchSessionState,
@@ -46,6 +47,7 @@ const serializeBatch = (batch: ReviewBatch) => ({
   sessions: batch.sessions.map((session) => ({
     sessionId: session.sessionId,
     projectId: session.projectId,
+    title: session.title,
     state: sessionState(session.state),
     reason: session.reason,
   })),
@@ -105,11 +107,19 @@ export const reviewBatchRoutes = ({ db, env, reviewBatches, credentialEnv }: Dep
           projectId:
             entry.projectId !== null && editable.has(entry.projectId) ? entry.projectId : null,
         }))
-        const sessions = checked.flatMap((entry) =>
+        const allowed = checked.flatMap((entry) =>
           entry.projectId === null
             ? []
             : [{ sessionId: entry.sessionId, projectId: entry.projectId }],
         )
+        const titles = await sessionTitles(
+          db,
+          allowed.map((entry) => entry.sessionId),
+        )
+        const sessions = allowed.map((entry) => ({
+          ...entry,
+          title: titles.get(entry.sessionId) ?? null,
+        }))
         const notAllowed = checked
           .filter((entry) => entry.projectId === null)
           .map((entry) => entry.sessionId)
@@ -124,4 +134,10 @@ export const reviewBatchRoutes = ({ db, env, reviewBatches, credentialEnv }: Dep
     .get("/current", requireAuth({ db, env }, ["web"]), (c) => {
       const batch = reviewBatches.current(c.get("user").id)
       return c.json({ batch: batch === undefined ? null : serializeBatch(batch) }, 200)
+    })
+    /** Hides the user's finished batch. Having none is fine; a running one is a 409. */
+    .delete("/current", requireAuth({ db, env }, ["web"]), (c) => {
+      if (reviewBatches.dismiss(c.get("user").id) === "running")
+        return c.json({ error: "reviewBatchStillRunning" }, 409)
+      return c.body(null, 204)
     })

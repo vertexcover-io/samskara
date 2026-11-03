@@ -1,4 +1,4 @@
-import { and, asc, eq, type SQL, sql } from "drizzle-orm"
+import { and, asc, eq, inArray, type SQL, sql } from "drizzle-orm"
 import type { PgColumn } from "drizzle-orm/pg-core"
 import type { Querier } from "../db/client.js"
 import {
@@ -103,6 +103,19 @@ export const existsForUser = async (db: Querier, id: string, userId: string): Pr
     .from(sessions)
     .where(and(eq(sessions.id, id), eq(sessions.userId, userId)))
   return row !== undefined
+}
+
+/** Each session's title by id. Callers check access first; an id with no row is left out. */
+export const sessionTitles = async (
+  db: Querier,
+  ids: ReadonlyArray<string>,
+): Promise<ReadonlyMap<string, string | null>> => {
+  if (ids.length === 0) return new Map()
+  const rows = await db
+    .select({ id: sessions.id, title: sessions.title })
+    .from(sessions)
+    .where(inArray(sessions.id, [...ids]))
+  return new Map(rows.map((row) => [row.id, row.title]))
 }
 
 /**

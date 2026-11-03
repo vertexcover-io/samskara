@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useState } from "react"
 import type { ApiError } from "../api/client.js"
-import { fetchCurrentReviewBatch, startReviewBatch } from "../api/reviewBatch.js"
+import {
+  dismissReviewBatch,
+  fetchCurrentReviewBatch,
+  startReviewBatch,
+} from "../api/reviewBatch.js"
 import type { ReviewBatchView } from "../api/types.js"
 
 /** How often a running batch is checked. Reviews take minutes; 3 seconds is plenty. */
@@ -44,5 +48,13 @@ export const useReviewBatch = () => {
     [refresh],
   )
 
-  return { batch, error, expired, start }
+  /** Asks the server to forget the batch, then hides the panel. If the server says no, the panel stays and the reason is shown. */
+  const dismiss = useCallback(async (): Promise<void> => {
+    setError(null)
+    const result = await dismissReviewBatch()
+    if (result.ok) setBatch(null)
+    else setError(result.error)
+  }, [])
+
+  return { batch, error, expired, start, dismiss }
 }

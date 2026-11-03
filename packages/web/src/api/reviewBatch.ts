@@ -12,3 +12,9 @@ export const fetchCurrentReviewBatch = (): Promise<ApiResult<ReviewBatchView | n
   request(() => client.api["review-batches"].current.$get()).then((result) =>
     result.ok ? { ok: true, data: result.data.batch } : result,
   )
+
+/** Hides the user's finished batch; the server answers 409 while it still runs. */
+export const dismissReviewBatch = (): Promise<ApiResult<null>> =>
+  request(() => client.api["review-batches"].current.$delete()).then((result) =>
+    result.ok ? { ok: true, data: null } : result,
+  )

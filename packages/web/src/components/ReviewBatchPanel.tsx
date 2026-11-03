@@ -8,9 +8,13 @@ const PROJECT_STATE: Readonly<Record<ReviewBatchProject["state"], string>> = {
   failed: "Failed",
 }
 
-type Props = { readonly batch: ReviewBatchView }
+type Props = {
+  readonly batch: ReviewBatchView
+  /** Hides a finished batch; offered only once it is done. */
+  readonly onDismiss: () => void
+}
 
-export const ReviewBatchPanel = ({ batch }: Props) => {
+export const ReviewBatchPanel = ({ batch, onDismiss }: Props) => {
   const counted = (state: ReviewBatchView["sessions"][number]["state"]): number =>
     batch.sessions.filter((session) => session.state === state).length
   const failed = batch.sessions.filter((session) => session.state === "failed")
@@ -18,7 +22,17 @@ export const ReviewBatchPanel = ({ batch }: Props) => {
     counted("reviewed") + counted("skipped") + counted("failed") + counted("notAllowed")
   const left = batch.sessions.length - settled
   return (
-    <section aria-label="Review progress" className="mt-3 border border-rule bg-panel p-4">
+    <section aria-label="Review progress" className="relative mt-3 border border-rule bg-panel p-4">
+      {batch.status === "done" ? (
+        <button
+          type="button"
+          onClick={onDismiss}
+          aria-label="Dismiss review progress"
+          className="absolute top-1 right-1 flex size-11 items-center justify-center text-[1.25rem] leading-none text-ink-soft hover:text-ink"
+        >
+          ×
+        </button>
+      ) : null}
       <h2 className="text-[0.9375rem] font-semibold">
         {batch.status === "running" ? "Reviewing and finding fixes" : "Review finished"}
       </h2>
@@ -37,8 +51,11 @@ export const ReviewBatchPanel = ({ batch }: Props) => {
           <ul className="mt-1 grid gap-1">
             {failed.map((session) => (
               <li key={session.sessionId}>
-                <Link to={`/sessions/${session.sessionId}`} className="font-mono underline">
-                  {session.sessionId}
+                <Link
+                  to={`/sessions/${session.sessionId}`}
+                  className={session.title === null ? "font-mono underline" : "underline"}
+                >
+                  {session.title ?? session.sessionId}
                 </Link>
                 : {session.reason}
               </li>

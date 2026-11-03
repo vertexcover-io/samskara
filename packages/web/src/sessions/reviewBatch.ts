@@ -34,6 +34,7 @@ export const withPage = (
 /** Why the server would not start a batch, in plain words. */
 const REFUSED: Readonly<Record<string, string>> = {
   reviewBatchAlreadyRunning: "A review is already running. Wait for it to finish.",
+  reviewBatchStillRunning: "The review is still running. It can be closed once it finishes.",
   tooManySessions: `Pick ${MAX_BATCH_SESSIONS} sessions or fewer.`,
   harnessUnauthenticated: "The reviewer has no key on this server.",
 }

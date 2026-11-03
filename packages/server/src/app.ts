@@ -12,6 +12,7 @@ import type pino from "pino"
 import type { Db } from "./db/client.js"
 import type { Env } from "./lib/env.js"
 import { loggingMiddleware } from "./lib/logging-middleware.js"
+import { getRun } from "./repositories/learnings.repo.js"
 import { canWrite } from "./repositories/projects.repo.js"
 import { hasReviewFrom } from "./repositories/reviews.repo.js"
 import { artifactRoutes } from "./routes/artifacts.js"
@@ -139,6 +140,7 @@ export const buildApp = (db: Db, env: Env, deps: Deps = {}) => {
                 projectId,
                 { harness: learningsHarness },
               ),
+      learningRunError: async (runId) => (await getRun(db, runId))?.error ?? null,
       log: batchLog,
     })
   const commandExists = deps.commandExists

@@ -40,8 +40,14 @@ const runningBatch: ReviewBatchView = {
   status: "running",
   startedAt: "2026-11-02T10:00:00.000Z",
   sessions: [
-    { sessionId: "s-1", projectId: "p-a", state: "reviewing", reason: null },
-    { sessionId: "s-2", projectId: "p-a", state: "waiting", reason: null },
+    {
+      sessionId: "s-1",
+      projectId: "p-a",
+      title: "First session",
+      state: "reviewing",
+      reason: null,
+    },
+    { sessionId: "s-2", projectId: "p-a", title: "Second session", state: "waiting", reason: null },
   ],
   projects: [{ projectId: "p-a", name: "A", state: "waiting", reason: null }],
 }
@@ -58,9 +64,10 @@ type Handlers = {
   /** A Response is sent as it is, such as a 401. */
   readonly current?: () => ReviewBatchView | null | Response
   readonly start?: (body: unknown) => Response
+  readonly dismiss?: () => Response
 }
 
-type Calls = { list: string[]; current: number; starts: unknown[] }
+type Calls = { list: string[]; current: number; starts: unknown[]; dismisses: number }
 
 const listOf = (rows: ReadonlyArray<SessionSummary>, total = rows.length) => ({
   sessions: rows,
@@ -68,7 +75,7 @@ const listOf = (rows: ReadonlyArray<SessionSummary>, total = rows.length) => ({
 })
 
 const stubFetch = (handlers: Handlers): Calls => {
-  const calls: Calls = { list: [], current: 0, starts: [] }
+  const calls: Calls = { list: [], current: 0, starts: [], dismisses: 0 }
   vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
     const path = typeof input === "string" ? input : input.toString()
     if (path.endsWith("/api/auth/me")) return Promise.resolve(jsonResponse(200, user))
@@ -76,6 +83,10 @@ const stubFetch = (handlers: Handlers): Calls => {
       return Promise.resolve(
         jsonResponse(200, { projects: [], authors: [], repositories: [], branches: [], tags: [] }),
       )
+    if (path === "/api/review-batches/current" && init?.method === "DELETE") {
+      calls.dismisses += 1
+      return Promise.resolve(handlers.dismiss?.() ?? new Response(null, { status: 204 }))
+    }
     if (path === "/api/review-batches/current") {
       calls.current += 1
       const answer = handlers.current?.() ?? null
@@ -289,4 +300,29 @@ test("a check that answers 401 while a batch runs stops the checks and sends the
     vi.advanceTimersByTime(10_000)
   })
   expect(calls.current).toBe(checksAfterExpiry)
+})
+
+test("the dismiss button on a finished batch tells the server and hides the panel", async () => {
+  const calls = stubFetch({ current: () => doneBatch })
+  renderAt("/sessions")
+
+  const panel = await screen.findByRole("region", { name: "Review progress" })
+  await userEvent.click(within(panel).getByRole("button", { name: "Dismiss review progress" }))
+
+  await waitFor(() => expect(screen.queryByRole("region", { name: "Review progress" })).toBeNull())
+  expect(calls.dismisses).toBe(1)
+})
+
+test("a dismiss the server refuses keeps the panel and says why", async () => {
+  stubFetch({
+    current: () => doneBatch,
+    dismiss: () => jsonResponse(409, { error: "reviewBatchStillRunning" }),
+  })
+  renderAt("/sessions")
+
+  const panel = await screen.findByRole("region", { name: "Review progress" })
+  await userEvent.click(within(panel).getByRole("button", { name: "Dismiss review progress" }))
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("The review is still running.")
+  expect(screen.getByRole("region", { name: "Review progress" })).toBeInTheDocument()
 })

@@ -25,6 +25,9 @@ export const LEARNING_RETRY_MS = 30_000
  */
 export const LEARNING_WAIT_LIMIT_MS = 2 * 60 * 60 * 1000
 
+/** How much of a failed fix run's error the page shows; the full text stays on the run's row. */
+export const RUN_ERROR_CHARS = 300
+
 export type BatchSessionState =
   | "waiting"
   | "reviewing"
@@ -39,6 +42,8 @@ export type BatchSession = {
   readonly sessionId: string
   /** Null for a session the user may not review: its project is not theirs to see. */
   readonly projectId: string | null
+  /** The session's title, so the page can name one that failed; null when it has none. */
+  readonly title: string | null
   readonly state: BatchSessionState
   /** Why it failed, in plain words; null otherwise. */
   readonly reason: string | null
@@ -71,6 +76,8 @@ export type ReviewBatchDeps = {
   readonly canWrite: (userId: string, projectId: string) => Promise<boolean>
   /** Starts one project's learning run; undefined when the server has no learnings harness. */
   readonly startLearningRun: ((projectId: string) => Promise<StartedLearningRun>) | undefined
+  /** The error a failed learning run saved on its row, or null when it saved none. */
+  readonly learningRunError?: (runId: string) => Promise<string | null>
   readonly log: pino.Logger
   /** Test seams: production waits in real time. */
   readonly sleep?: (ms: number) => Promise<void>
@@ -83,7 +90,11 @@ export type ReviewBatchDeps = {
 export type ReviewBatchInput = {
   readonly userId: string
   /** The sessions to review, each with its project. */
-  readonly sessions: ReadonlyArray<{ readonly sessionId: string; readonly projectId: string }>
+  readonly sessions: ReadonlyArray<{
+    readonly sessionId: string
+    readonly projectId: string
+    readonly title: string | null
+  }>
   /** Ids the user may not review; recorded so the page can say so, never reviewed. */
   readonly notAllowed: ReadonlyArray<string>
   readonly projectNames: ReadonlyMap<string, string>
@@ -98,6 +109,8 @@ export type ReviewBatchRegistry = {
     | { readonly error: "alreadyRunning" }
   /** The user's latest batch, kept after it ends so a refreshed page still shows it. */
   readonly current: (userId: string) => ReviewBatch | undefined
+  /** Forgets the user's finished batch, so the page stops showing it. A running one stays. */
+  readonly dismiss: (userId: string) => "dismissed" | "running" | "none"
 }
 
 /** Why a review failed, in words the person who started the batch can act on. */
@@ -116,7 +129,7 @@ const NO_HARNESS =
   "Finding fixes is not set up on this server. Set LEARNINGS_HARNESS_REPO or LEARNINGS_HARNESS_PATH."
 const NO_REVIEWS = "No session of this project got a review."
 const WAITED_TOO_LONG = "Another fix run for this project did not end within 2 hours."
-const RUN_FAILED = "The fix run failed. Its log is on the server."
+const RUN_FAILED = "The fix run failed."
 const RUN_COULD_NOT_START = "The fix run could not start."
 const NO_LONGER_EDITABLE = "You can no longer edit this project, so its fixes were not looked for."
 
@@ -224,6 +237,14 @@ export const createReviewBatchRegistry = (deps: ReviewBatchDeps): ReviewBatchReg
     await Promise.all(Array.from({ length: lanes }, lane))
   }
 
+  /** The run's own error, cut short, so the person sees why without the server log. */
+  const runFailedReason = async (runId: string): Promise<string> => {
+    const error = (await deps.learningRunError?.(runId))?.trim()
+    if (error === undefined || error === "") return RUN_FAILED
+    const short = error.length > RUN_ERROR_CHARS ? `${error.slice(0, RUN_ERROR_CHARS)}…` : error
+    return `The fix run failed: ${short}`
+  }
+
   /** One project's learning run: started, or retried while another run there is going. */
   const findFixesFor = async (
     userId: string,
@@ -236,7 +257,12 @@ export const createReviewBatchRegistry = (deps: ReviewBatchDeps): ReviewBatchReg
       if (started.status === "started") {
         setProject(userId, projectId, "running")
         const result = await started.finished
-        return setProject(userId, projectId, result, result === "failed" ? RUN_FAILED : null)
+        return setProject(
+          userId,
+          projectId,
+          result,
+          result === "failed" ? await runFailedReason(started.runId) : null,
+        )
       }
       if (now().getTime() >= giveUpAt)
         return setProject(userId, projectId, "failed", WAITED_TOO_LONG)
@@ -289,12 +315,14 @@ export const createReviewBatchRegistry = (deps: ReviewBatchDeps): ReviewBatchReg
           ...input.sessions.map((session) => ({
             sessionId: session.sessionId,
             projectId: session.projectId,
+            title: session.title,
             state: "waiting" as const,
             reason: null,
           })),
           ...input.notAllowed.map((sessionId) => ({
             sessionId,
             projectId: null,
+            title: null,
             state: "notAllowed" as const,
             reason: null,
           })),
@@ -328,5 +356,12 @@ export const createReviewBatchRegistry = (deps: ReviewBatchDeps): ReviewBatchReg
       return { batchId, finished }
     },
     current: (userId) => batches.get(userId),
+    dismiss: (userId) => {
+      const batch = batches.get(userId)
+      if (batch === undefined) return "none"
+      if (batch.status === "running") return "running"
+      batches.delete(userId)
+      return "dismissed"
+    },
   }
 }
