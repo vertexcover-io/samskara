@@ -319,6 +319,24 @@ test("out-of-range pages render truthful empty pagination rather than a no-match
   expect(screen.queryByText(/no sessions match/i)).not.toBeInTheDocument()
 })
 
+test("the session list's pager sits in the page footer beside the build version, and leaves it when the list unmounts", async () => {
+  stubFetch(() =>
+    Promise.resolve(
+      jsonResponse(200, payload([session], { page: 1, limit: 1, total: 2, totalPages: 2 })),
+    ),
+  )
+  renderAt("/sessions")
+
+  await screen.findByText("Page 1 of 2")
+  const footer = within(screen.getByRole("contentinfo"))
+  expect(footer.getByRole("navigation", { name: /search results pagination/i })).toBeVisible()
+  expect(footer.getByTestId("build-stamp")).toBeInTheDocument()
+
+  await userEvent.click(screen.getByRole("link", { name: /port the session detail surface/i }))
+  await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("/sessions/s-1"))
+  expect(screen.queryByText("Page 1 of 2")).not.toBeInTheDocument()
+})
+
 test("S26: activating the row for s-1 navigates to /sessions/s-1", async () => {
   stubFetch(okWith([session]))
 

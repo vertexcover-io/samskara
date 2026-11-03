@@ -385,6 +385,28 @@ test("relevance evidence, pagination, clear-search reset, reload, and browser hi
   await expect(page.getByRole("combobox", { name: "Sort by" })).toHaveValue("recent")
 })
 
+test("a full page of 50 sessions keeps the page count and build version on screen at the top of the list, and the pinned footer hides no row at the bottom", async ({
+  authedPage: page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 720 })
+  await page.goto("/sessions")
+  await expect(page.getByText(/Page 1 of 2/)).toBeVisible()
+
+  const pager = page.getByRole("navigation", { name: /search results pagination/i })
+  await expect(pager).toBeInViewport()
+  await expect(page.getByTestId("build-stamp")).toBeInViewport()
+
+  const lastRow = page.getByRole("listitem").last()
+  await lastRow.scrollIntoViewIfNeeded()
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight))
+  const rowBox = await lastRow.boundingBox()
+  const pagerBox = await pager.boundingBox()
+  expect(rowBox).not.toBeNull()
+  expect(pagerBox).not.toBeNull()
+  if (rowBox === null || pagerBox === null) return
+  expect(rowBox.y + rowBox.height).toBeLessThanOrEqual(pagerBox.y)
+})
+
 test("Today and custom local-date filters serialize the browser timezone and preserve it on reload", async ({
   authedPage: page,
 }) => {

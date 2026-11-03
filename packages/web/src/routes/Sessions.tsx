@@ -16,6 +16,7 @@ import {
   serializeFilters,
 } from "../sessions/filters.js"
 import { useFilterOptions } from "../sessions/useFilterOptions.js"
+import { InFooter } from "../shell/FooterSlot.js"
 import { LoadingShell } from "../shell/LoadingShell.js"
 
 // `query` is the URL the answer belongs to. A settled state outlives the URL that asked for it by
@@ -181,7 +182,7 @@ const Pagination = ({
   const last = first === 0 ? 0 : Math.min(page * limit, total)
   return (
     <nav
-      className="mt-3 grid grid-cols-2 items-center gap-2 border-t border-rule pt-3 min-[600px]:grid-cols-[1fr_auto_1fr]"
+      className="grid grid-cols-2 items-center gap-2 min-[600px]:grid-cols-[1fr_auto_1fr]"
       aria-label="Search results pagination"
     >
       <button
@@ -276,6 +277,8 @@ export const Sessions = () => {
   const previous = lastPayload(state)
   const loading = payload === null && error === null
   const hasFilters = hasActiveFilters(filters)
+  const noResults =
+    payload !== null && payload.sessions.length === 0 && payload.pagination.total === 0
 
   return (
     <section>
@@ -295,8 +298,7 @@ export const Sessions = () => {
         ) : (
           <ErrorState error={error} />
         )}
-        {payload === null ? null : payload.sessions.length === 0 &&
-          payload.pagination.total === 0 ? (
+        {payload === null ? null : noResults ? (
           <NoResults hasFilters={hasFilters} onClear={resetFilters} />
         ) : (
           <>
@@ -308,13 +310,18 @@ export const Sessions = () => {
                 </li>
               ))}
             </ul>
-            <Pagination
-              {...payload.pagination}
-              onPage={(page) => applyFilters({ ...filters, page })}
-            />
           </>
         )}
       </div>
+      {/* Mounted through loading too, so the footer stays pinned while the next page is fetched. */}
+      <InFooter>
+        {payload === null || noResults ? null : (
+          <Pagination
+            {...payload.pagination}
+            onPage={(page) => applyFilters({ ...filters, page })}
+          />
+        )}
+      </InFooter>
     </section>
   )
 }
