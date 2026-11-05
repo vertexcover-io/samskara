@@ -31,10 +31,13 @@ export const SessionRow = ({ session, to, showProject = true }: Props) => {
   const { title, projectName, userLogin, messageCount, startedAt, lastActiveAt, tags } = session
   const match = session.match ?? null
 
+  // Every row is its own grid, so an `auto` track would size to that row's content. The stamp
+  // column is fixed instead: "just now" and "59 minutes ago" then leave the project column at the
+  // same x in every row, rather than shifting it by the width of the stamp beside it.
   return (
     <Link
       to={to}
-      className={`grid w-full grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 gap-y-0.5 ${rowFrameClass} text-left transition-colors hover:border-ink-soft min-[900px]:grid-cols-[auto_minmax(0,1fr)_minmax(0,14rem)_auto]`}
+      className={`grid w-full grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 gap-y-0.5 ${rowFrameClass} text-left transition-colors hover:border-ink-soft min-[900px]:grid-cols-[auto_minmax(0,1fr)_minmax(0,14rem)_7rem]`}
     >
       <span
         aria-hidden="true"
@@ -70,7 +73,7 @@ export const SessionRow = ({ session, to, showProject = true }: Props) => {
       <time
         dateTime={lastActiveAt}
         title={absoluteTime(lastActiveAt)}
-        className="col-start-2 font-mono text-[0.72rem] text-ink-soft min-[900px]:col-start-4 min-[900px]:self-center min-[900px]:text-right"
+        className="col-start-2 whitespace-nowrap font-mono text-[0.72rem] text-ink-soft min-[900px]:col-start-4 min-[900px]:self-center min-[900px]:text-right"
       >
         {relativeTime(lastActiveAt)}
       </time>

@@ -67,6 +67,8 @@ export type SeedSession = {
   readonly id: string
   readonly title: string
   readonly author?: "primary" | "other"
+  /** When the session was last active. Defaults to a fixed day in Feb 2026, one minute apart by order. */
+  readonly activeAt?: Date
   readonly messages?: ReadonlyArray<SeedMessage>
   readonly commits?: ReadonlyArray<SeedCommit>
   readonly pullRequests?: ReadonlyArray<SeedPullRequest>
@@ -296,7 +298,7 @@ export const seedDatabase = async (spec: SeedSpec): Promise<void> => {
       }
 
       for (const [order, session] of project.sessions.entries()) {
-        const updatedAt = new Date(Date.UTC(2026, 1, 1 + index, 9, order))
+        const updatedAt = session.activeAt ?? new Date(Date.UTC(2026, 1, 1 + index, 9, order))
         const author = session.author === "other" ? E2E_OTHER_USER_ID : E2E_USER_ID
         await sql`
           insert into sessions (id, source, "userId", "projectId", title, "updatedAt")
