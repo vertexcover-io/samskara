@@ -46,6 +46,7 @@ import { type Tab, type TabId, Tabs } from "../session/Tabs.js"
 import { ToolCallsView } from "../session/ToolCallsView.js"
 import { useFilterOptions } from "../sessions/useFilterOptions.js"
 import { LoadingShell } from "../shell/LoadingShell.js"
+import { useMeasuredHeight } from "../shell/useMeasuredHeight.js"
 import { absoluteTime } from "../time.js"
 
 type State =
@@ -1421,28 +1422,6 @@ const useSessionReview = (
   }, [sessionId, reloadCount])
 
   return { state, refresh }
-}
-
-/**
- * Tracks an element's rendered height so a second sticky layer can sit exactly beneath the
- * first. A hardcoded offset would leave a gap -- or clip the title -- at any other font size.
- */
-const useMeasuredHeight = <T extends HTMLElement>() => {
-  const ref = useRef<T | null>(null)
-  const [height, setHeight] = useState(0)
-
-  useEffect(() => {
-    const node = ref.current
-    if (!node) return
-    const measure = () => setHeight(node.getBoundingClientRect().height)
-    measure()
-    if (typeof ResizeObserver === "undefined") return
-    const observer = new ResizeObserver(measure)
-    observer.observe(node)
-    return () => observer.disconnect()
-  }, [])
-
-  return { ref, height }
 }
 
 const Ready = ({
