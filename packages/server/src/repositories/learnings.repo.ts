@@ -3,6 +3,7 @@ import {
   LEARNING_PRIORITIES,
   type LearningInput,
   type ProblemInput,
+  parseStory,
   type WrittenLearning,
 } from "@samskara/core"
 import { and, asc, desc, eq, gt, inArray, isNull, notExists, sql } from "drizzle-orm"
@@ -176,6 +177,7 @@ export const learningsWithProblems = async (
     .orderBy(asc(reviewProblems.createdAt))
   return rows.map((row) => ({
     ...(row as LearningInput),
+    story: parseStory(row.story),
     updatedByRunId: row.updatedByRunId,
     problems: linked.filter((problem) => problem.learningId === row.id).map(asProblem),
   }))

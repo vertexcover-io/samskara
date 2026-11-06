@@ -117,17 +117,32 @@ export const harnessRepoFixture = (): string => {
   return dir
 }
 
+/** The example every fake learning tells; each quote is the fixture problem's evidence. */
+export const STORY_MD =
+  "- **Step 1:** The helper started the tests.\n- **Step 1 quote:** waiting on jest\n" +
+  "- **Step 2:** It reported before they finished.\n- **Step 2 quote:** waiting on jest\n" +
+  "- **Step 3:** The main agent took that as done.\n- **Step 3 quote:** waiting on jest\n" +
+  "- **Why it's a problem:** Nobody saw the tests pass.\n" +
+  "- **What should have happened:** It should have waited for the tests.\n"
+
 /**
  * Both agents, faked. Agent 1 puts every problem into one group (joining K1 when there is
  * one), or one group each; agent 2 writes each group up as a learning — high while the batch
  * has any high left, then low — or drops it. What each was handed is kept.
  */
 export const fakeAgents = (
-  options: { badGroups?: boolean; verdict?: "learning" | "drop"; oneGroupEach?: boolean } = {},
+  options: {
+    badGroups?: boolean
+    verdict?: "learning" | "drop"
+    oneGroupEach?: boolean
+    /** The example each learning tells, as learnings.md fields; `STORY_MD` when unset. */
+    story?: string
+  } = {},
 ) => {
-  const seen: { knownLearningsMd: string[]; writerMd: string[] } = {
+  const seen: { knownLearningsMd: string[]; writerMd: string[]; writerCheck: string[] } = {
     knownLearningsMd: [],
     writerMd: [],
+    writerCheck: [],
   }
   const runner: HarnessRunner = {
     run: async ({ workspaceDir }) => {
@@ -154,6 +169,7 @@ export const fakeAgents = (
         throw new Error("agent 2 was not given the harness")
       const groupIds = [...read("groups.md").matchAll(/^## (G\d+)/gm)].map((m) => m[1])
       seen.writerMd.push(read("groups.md"))
+      seen.writerCheck.push(read("check.mjs"))
       let highLeft = Number(/at most (\d+) new high/.exec(read("groups.md"))?.[1] ?? "99")
       writeFileSync(
         join(workspaceDir, "learnings.md"),
@@ -161,7 +177,7 @@ export const fakeAgents = (
           .map((id) =>
             options.verdict === "drop"
               ? `## ${id}\n- **Verdict:** drop\n- **Why:** One session, medium and slow, a one-off typo.\n`
-              : `## ${id}\n- **Verdict:** learning\n- **Title:** Helpers report early\n- **Problem:** They stop before jest exits.\n- **Priority:** ${highLeft-- > 0 ? "high" : "low"} — many sessions\n- **Impact:** time_only — lost a few minutes\n- **Fix type:** skill\n- **Fix:** Add a wait rule to SKILL.md.\n- **How it helps:** Saves a few minutes a run.\n- **In plain words:** Make the agent wait before it reports.\n`,
+              : `## ${id}\n- **Verdict:** learning\n- **Title:** Helpers report early\n- **Problem:** They stop before jest exits.\n- **Priority:** ${highLeft-- > 0 ? "high" : "low"} — many sessions\n- **Impact:** time_only — lost a few minutes\n- **Fix type:** skill\n- **Fix:** Add a wait rule to SKILL.md.\n- **How it helps:** Saves a few minutes a run.\n- **In plain words:** Make the agent wait before it reports.\n${options.story ?? STORY_MD}`,
           )
           .join("\n"),
       )

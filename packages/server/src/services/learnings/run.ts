@@ -162,6 +162,7 @@ const work = async (
         runId,
         projectId,
         harnessDir: harness.dir,
+        harnessName: harnessName(options.harness),
         batchSize: options.batchSize ?? LEARNING_BATCH_SIZE,
         left: { high: limits.high - used.high, medium: limits.medium - used.medium },
         trace: (step, fields = {}) => runLog.event(step, { batch, ...fields }),
@@ -188,6 +189,8 @@ const runBatch = async (
     readonly runId: string
     readonly projectId: string
     readonly harnessDir: string
+    /** The harness's short name, refused in a fix's list lines. */
+    readonly harnessName: string
     readonly batchSize: number
     /** New high and medium learnings the run may still make. */
     readonly left: PriorityCount
@@ -209,7 +212,7 @@ const runBatch = async (
 
   const grouped = await groupProblems({ problems, learnings: known, runner, run: choice, trace })
   if (!grouped.ok) throw new Error(`grouping failed: ${grouped.errors.join("; ")}`)
-  const groups = await writerGroups(db, grouped.groups, problems, input.runId)
+  const groups = await writerGroups(db, grouped.groups, problems, input)
 
   // A one-off is dropped here, whatever agent 2 would say; only the rest reach it.
   const answers: Array<WrittenLearning | undefined> = groups.map((group) => {
@@ -226,6 +229,7 @@ const runBatch = async (
     const written = await writeLearnings({
       groups: toWrite,
       harnessDir: input.harnessDir,
+      harnessName: input.harnessName,
       priorityLimits: input.left,
       runner,
       run: choice,
@@ -285,7 +289,7 @@ const writerGroups = async (
   db: Db,
   grouped: ReadonlyArray<ProblemGroup>,
   problems: ReadonlyArray<ProblemInput>,
-  runId: string,
+  batch: { readonly runId: string; readonly projectId: string },
 ) => {
   const joined = new Map(
     (
@@ -295,14 +299,16 @@ const writerGroups = async (
       )
     ).map((learning) => [learning.id, learning]),
   )
-  const byId = new Map((await withExcerpts(db, problems)).map((problem) => [problem.id, problem]))
+  const byId = new Map(
+    (await withExcerpts(db, problems, batch.projectId)).map((problem) => [problem.id, problem]),
+  )
   return grouped.map((group) => {
     const found = group.learningId === null ? undefined : joined.get(group.learningId)
     const { problems: linked = [], ...existing } = found ?? {}
     return {
       cause: found?.cause ?? group.cause,
       existing: found === undefined ? null : (existing as LearningInput),
-      existingFromThisRun: found?.updatedByRunId === runId,
+      existingFromThisRun: found?.updatedByRunId === batch.runId,
       problems: [...linked, ...group.problemIds.map((id) => byId.get(id) as ProblemInput)],
       learningId: group.learningId,
       newProblemIds: group.problemIds,
@@ -334,16 +340,18 @@ const newPrioritiesSaved = (
 /**
  * The batch's problems, each with its evidence excerpt: the records it cites and a few on each
  * side, read from the session in the order its review numbered them. Agent 2 judges a drop on
- * these. One read per session; a review that saved no record order gets no excerpts.
+ * these. One read per session; a review that saved no record order gets no excerpts, and nor
+ * does a session since moved out of `projectId`: its records are that project's to show.
  */
 const withExcerpts = async (
   db: Db,
   problems: ReadonlyArray<ProblemInput>,
+  projectId: string,
 ): Promise<ProblemInput[]> => {
   const reviewIds = [...new Set(problems.flatMap((problem) => problem.reviewId ?? []))]
   const excerpts = new Map<string, string>()
   for (const review of await learningsRepo.reviewSessions(db, reviewIds)) {
-    if (review.recordIds === null) continue
+    if (review.recordIds === null || review.projectId !== projectId) continue
     const records = recordsInReviewOrder(
       reviewSessionExport({
         session: { id: review.sessionId, title: review.title, source: review.source },
