@@ -1,9 +1,11 @@
 import type { UseComboboxPropGetters } from "downshift"
 import type { FilterOption } from "../api/types.js"
 
-/** The chrome the free-text `Autocomplete` and the value-picking `Picker` share. */
+/** The chrome the free-text `Autocomplete` and the value-picking `Picker` share. `z-30` so an open
+ *  menu paints over the shell's sticky `z-20` footer; the `fixed inset-0 z-30` dialogs come later in
+ *  the page, so they still cover it. */
 export const menuClass =
-  "absolute left-0 top-full z-20 mt-1 max-h-56 w-full overflow-y-auto rounded-xs border border-rule bg-panel-2 py-1 shadow-lg"
+  "absolute left-0 top-full z-30 mt-1 max-h-56 w-full overflow-y-auto rounded-xs border border-rule bg-panel-2 py-1 shadow-lg"
 
 export const itemClass = "cursor-pointer px-2 py-1 font-mono text-[0.78rem]"
 
