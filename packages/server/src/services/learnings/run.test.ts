@@ -1,12 +1,12 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { basename, join } from "node:path"
 import { gunzipSync } from "node:zlib"
 import type { HarnessRunner, Problem } from "@samskara/core"
 import { eq, isNull } from "drizzle-orm"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import type { Db } from "../../db/client.js"
-import { learningRuns, learnings, reviewProblems, users } from "../../db/schema.js"
+import { learningRuns, learnings, reviewProblems, sessions, users } from "../../db/schema.js"
 import { dockerAvailable, startTestDb } from "../../db/testDb.js"
 import type { Env } from "../../lib/env.js"
 import { captureLogger } from "../../lib/test-logger.js"
@@ -141,6 +141,15 @@ describe.skipIf(!dockerAvailable())("runLearnings", () => {
     })
   })
 
+  test("SC208: the run hands the harness's own name to the writer's check as a project word", async () => {
+    await seedSession(["A"])
+    await seedSession(["B"])
+    const { runner, seen } = fakeAgents()
+    await run(runner)
+    const words = /"projectWords":(\[[^\]]*\])/.exec(seen.writerCheck[0] ?? "")?.[1] ?? "[]"
+    expect(JSON.parse(words)).toContain(basename(harnessPath).toLowerCase())
+  })
+
   test("LS2: the run's log is gzipped JSONL, one line per step, with the decisions as fields", async () => {
     await seedSession(["A"])
     await seedSession(["B"])
@@ -187,6 +196,26 @@ describe.skipIf(!dockerAvailable())("runLearnings", () => {
     expect(seen.writerMd[0]).toContain("I am waiting on jest before I report")
     expect(seen.writerMd[0]).toContain("message number 4")
     expect(seen.writerMd[0]).not.toContain("message number 5")
+  })
+
+  test("security-1: a session moved to another project gives agent 2 no excerpt of its records, so none can become a story quote", async () => {
+    const texts = Array.from({ length: 4 }, (_, index) => `message number ${index}`)
+    texts[1] = "I am waiting on jest before I report"
+    await seedSession(["A"], { texts, ...high })
+    const elsewhere = await seedProject(
+      db,
+      await seedOrg(db, `moved-org-${counter}`),
+      `moved-${counter}`,
+    )
+    await db
+      .update(sessions)
+      .set({ projectId: elsewhere })
+      .where(eq(sessions.id, `run-learn-${counter}`))
+    const { runner, seen } = fakeAgents()
+    await run(runner)
+    expect(seen.writerMd[0]).toContain("[slow, high] A — Expected a wait.")
+    expect(seen.writerMd[0]).not.toContain("I am waiting on jest before I report")
+    expect(seen.writerCheck[0]).not.toContain("I am waiting on jest before I report")
   })
 
   test("LS4: a group agent 2 drops makes no learning; its problems are marked and the reason logged", async () => {

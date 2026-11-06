@@ -19,9 +19,11 @@ import {
   parseGroupsMd,
   parseWrittenMd,
   problemsMd,
+  storyEvidence,
   type WriterGroup,
   writtenCheckScript,
 } from "./format.js"
+import { projectWords } from "./jargon.js"
 import type { LearningInput, ProblemGroup, ProblemInput, WrittenLearning } from "./types.js"
 
 const execFileAsync = promisify(execFile)
@@ -159,6 +161,8 @@ export const groupProblems = async (input: {
 export const writeLearnings = async (input: {
   readonly groups: ReadonlyArray<Omit<WriterGroup, "id">>
   readonly harnessDir: string
+  /** The harness's short name, e.g. `yok`: a word the four list lines may not use. */
+  readonly harnessName?: string
   /** New high and medium learnings this batch may still make; updated ones do not count. */
   readonly priorityLimits: { readonly high: number; readonly medium: number }
   readonly runner: HarnessRunner
@@ -174,6 +178,8 @@ export const writeLearnings = async (input: {
     joined: groups.flatMap((group) => (group.existing === null ? [] : [group.id])),
     maxHigh: input.priorityLimits.high,
     maxMedium: input.priorityLimits.medium,
+    evidence: Object.fromEntries(groups.map((group) => [group.id, storyEvidence(group.problems)])),
+    projectWords: await projectWords(input.harnessDir, input.harnessName),
   }
   const result = await withWorkspace(
     "samskara-learnings-write-",

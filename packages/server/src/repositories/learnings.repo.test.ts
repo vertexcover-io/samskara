@@ -1,4 +1,4 @@
-import type { Problem } from "@samskara/core"
+import type { LearningStory, Problem } from "@samskara/core"
 import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import type { Db } from "../db/client.js"
@@ -14,6 +14,16 @@ import * as learningsRepo from "./learnings.repo.js"
 
 const problem = problemFixture
 
+const story: LearningStory = {
+  steps: [
+    { text: "The helper started the tests.", quote: "waiting on jest" },
+    { text: "It reported before they finished.", quote: "waiting on jest" },
+    { text: "The main agent took that as done.", quote: "waiting on jest" },
+  ],
+  whyProblem: "Nobody saw the tests pass.",
+  shouldHave: "It should have waited for the tests.",
+}
+
 const written = {
   verdict: "learning",
   title: "Helpers report while their run is still going",
@@ -26,6 +36,7 @@ const written = {
   impactReason: "lost a few minutes",
   howItHelps: "Saves a few minutes a run.",
   fixSummary: "Make the agent wait before it reports.",
+  story,
 } as const
 
 describe.skipIf(!dockerAvailable())("learnings repository", () => {

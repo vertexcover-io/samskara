@@ -1,4 +1,4 @@
-import { PROBLEM_CLASSES, PROBLEM_SEVERITIES } from "../problems/reviewMd.js"
+import { LIMITS, PROBLEM_CLASSES, PROBLEM_SEVERITIES } from "../problems/reviewMd.js"
 import {
   LEARNING_IMPACTS,
   LEARNING_PRIORITIES,
@@ -10,15 +10,23 @@ import {
 /** Longest cause agent 1 may write; a cause is a sentence or two, not a report. */
 export const CAUSE_MAX = 400
 
-/** The limits on what agent 2 writes, the same idea as review.md's. Impact and how it helps are one sentence each. */
+/**
+ * The limits on what agent 2 writes, the same idea as review.md's. Title, problem, the impact
+ * sentence and the fix in plain words are the four lines the Fixes list shows, so they are
+ * short; the story's parts are short so the fix's page reads as steps, not paragraphs.
+ */
 export const WRITTEN_LIMITS = {
-  title: 120,
-  problem: 600,
+  title: 80,
+  problem: 250,
   priorityReason: 300,
   fix: 1200,
-  impactReason: 300,
+  impactReason: 200,
   howItHelps: 300,
-  fixSummary: 200,
+  fixSummary: 250,
+  storyStep: 200,
+  storyQuote: 150,
+  whyProblem: 250,
+  shouldHave: 250,
 } as const
 
 /**
@@ -28,6 +36,60 @@ export const WRITTEN_LIMITS = {
  * node and nothing else.
  */
 const PARSERS_JS = String.raw`
+const QUOTE_MIN = ${LIMITS.quoteMin}
+const JSON_ESCAPES = { n: " ", r: " ", t: " " }
+/**
+ * Text as a quote is compared, the same as squash in problems/reviewMd.ts: JSON escapes
+ * undone, quote marks dropped, whitespace and case ignored. Change both together.
+ */
+const squash = (text) =>
+  String(text)
+    .replace(/\\(["\\/nrt])/g, (_, char) => JSON_ESCAPES[char] ?? char)
+    .replace(/["“”]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase()
+/** Whether every piece is in the text, each one after the piece before it. */
+const piecesInOrder = (text, pieces) => {
+  let from = 0
+  for (const piece of pieces) {
+    const at = text.indexOf(piece, from)
+    if (at === -1) return false
+    from = at + piece.length
+  }
+  return true
+}
+/**
+ * Whether a quote is in the evidence: the pieces between "…" (a quote may skip words) all sit
+ * in one of the texts, in order, and together are long enough to prove anything. One text,
+ * so pieces of unrelated messages cannot be stitched into words nobody said.
+ */
+const quoteFound = (quote, texts) => {
+  const pieces = String(quote).split(/…|\.\.\./).map(squash).filter((piece) => piece !== "")
+  if (pieces.join("").length < QUOTE_MIN) return false
+  return texts.some((text) => piecesInOrder(squash(text), pieces))
+}
+const FILE_NAME = /\b[\w-]+\.(?:md|mdx|ts|tsx|js|jsx|mjs|cjs|json|ya?ml|toml|sh|py|txt|lock|env)\b/i
+const escapeRegExp = (text) => text.replace(/[.*+?^$(){}|[\]\\]/g, "\\$&")
+/** Slash pairs that are everyday words, not paths. */
+const SLASH_PAIRS = ["and/or", "either/or", "pass/fail", "yes/no", "on/off", "read/write", "true/false"]
+/** The first path-like word in a text (a / between two words), skipping fractions and SLASH_PAIRS. */
+const pathIn = (text) =>
+  (String(text).match(/[\w./~-]*\w\/\w[\w./~-]*/g) ?? [])
+    .map((token) => token.replace(/\.+$/, ""))
+    .find((token) => !/^[\d./]+$/.test(token) && !SLASH_PAIRS.includes(token.toLowerCase())) ?? null
+/** What in a list line a reader outside the project would not know, or null when it is plain. */
+const projectWordIn = (text, words) => {
+  if (text.includes("\u0060")) return "a backtick"
+  const path = pathIn(text)
+  if (path !== null) return 'the file path "' + path + '"'
+  const file = FILE_NAME.exec(text)
+  if (file) return 'the file name "' + file[0] + '"'
+  for (const word of words)
+    if (new RegExp("(^|[^\\w-])" + escapeRegExp(word) + "($|[^\\w-])", "i").test(text))
+      return 'the project word "' + word + '"'
+  return null
+}
 /**
  * "## heading" sections, each with its "- **Name:** value" fields; a field may wrap. The same
  * job as fieldsOf in problems/reviewMd.ts, written again here because the check scripts
@@ -48,7 +110,7 @@ const sections = (text) => {
     if (current === null) continue
     const named = /^\s*-\s+\*\*([^*]+?):?\*\*:?\s*(.*)$/.exec(line)
     if (named) {
-      field = named[1].trim().toLowerCase()
+      field = named[1].trim().toLowerCase().replace(/’/g, "'")
       current.fields[field] = named[2].trim()
       continue
     }
@@ -169,10 +231,50 @@ const parseWrittenMd = (text, groupIds, fixTypes, priorities, impacts, limits, r
       errors.push(id + ": the impact sentence is over " + limits.impactReason + " characters")
     const howItHelps = required("How it helps", limits.howItHelps)
     const fixSummary = required("In plain words", limits.fixSummary)
+    const steps = []
+    for (let n = 1; f["step " + n] !== undefined || f["step " + n + " quote"] !== undefined; n += 1) {
+      const step = "Step " + n
+      const text = (f["step " + n] ?? "").trim()
+      const quote = (f["step " + n + " quote"] ?? "").trim()
+      if (text === "") errors.push(id + ": " + step + " has a quote but no text")
+      else if (text.length > limits.storyStep)
+        errors.push(id + ": " + step + " is over " + limits.storyStep + " characters")
+      if (quote === "")
+        errors.push(id + ": " + step + " needs - **" + step + " quote:** with words from the evidence")
+      else if (quote.length > limits.storyQuote)
+        errors.push(id + ": " + step + " quote is over " + limits.storyQuote + " characters")
+      else if (!quoteFound(quote, rules.evidence[id] ?? []))
+        errors.push(
+          id + ": " + step + ' quote "' + quote + '" is not in this group\'s evidence: copy the words' +
+            " from one of its quotes or from the session records shown under it in groups.md",
+        )
+      steps.push({ text, quote })
+    }
+    if (steps.length < 3 || steps.length > 4)
+      errors.push(
+        id + ": the example needs 3 or 4 steps, numbered from Step 1 with no gap; it has " +
+          steps.length,
+      )
+    const whyProblem = required("Why it's a problem", limits.whyProblem)
+    const shouldHave = required("What should have happened", limits.shouldHave)
+    for (const [name, value] of [
+      ["Title", title],
+      ["Problem", problem],
+      ["the impact sentence", impactReason],
+      ["In plain words", fixSummary],
+    ]) {
+      const found = projectWordIn(value, rules.projectWords)
+      if (found !== null)
+        errors.push(
+          id + ": " + name + " uses " + found + ". It is shown to readers who never saw this" +
+            " project: say it in everyday words",
+        )
+    }
     if (errors.length === before)
       answers[id] = {
         verdict: "learning", title, problem, priority, priorityReason, fixType, fix,
         impact, impactReason, howItHelps, fixSummary,
+        story: { steps, whyProblem, shouldHave },
       }
   }
   const missing = groupIds.filter((id) => answers[id] === undefined && !errors.some((e) => e.startsWith(id + ":")))
@@ -191,11 +293,17 @@ const parseWrittenMd = (text, groupIds, fixTypes, priorities, impacts, limits, r
 }
 `
 
-/** What agent 2 may do in one batch: which groups update a learning, and the priority limits. */
+/**
+ * What agent 2 may do in one batch: which groups update a learning, the priority limits, and
+ * the text each group's story quotes must come from (`storyEvidence`), by group id.
+ */
 export type WrittenRules = {
   readonly joined: ReadonlyArray<string>
   readonly maxHigh: number
   readonly maxMedium: number
+  readonly evidence: Readonly<Record<string, ReadonlyArray<string>>>
+  /** Words the four list lines may not use (`projectWords`), lowercase. */
+  readonly projectWords: ReadonlyArray<string>
 }
 
 type Parsers = {
@@ -290,6 +398,19 @@ console.log("All " + ${groupIds.length} + " groups are answered.")
 
 const quotesOf = (problem: ProblemInput): string =>
   problem.evidence.map((evidence) => `"${evidence.quote}"`).join("; ")
+
+/**
+ * The text a group's story quotes may come from: each problem's evidence quotes, and the
+ * session records its excerpt shows (the fenced text blocks of `problemExcerpt`). Never the
+ * reviewer's own note on why a quote matters, which is not the session's words.
+ */
+export const storyEvidence = (problems: ReadonlyArray<ProblemInput>): string[] =>
+  problems.flatMap((problem) => [
+    ...problem.evidence.map((item) => item.quote),
+    ...[...(problem.excerpt ?? "").matchAll(/```text\n([\s\S]*?)\n```/g)].map(
+      (match) => match[1] ?? "",
+    ),
+  ])
 
 /**
  * problems.md for agent 1: the new problems, each under a short id. Evidence goes in as its

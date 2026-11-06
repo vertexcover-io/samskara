@@ -90,7 +90,9 @@ dropped. The existing fix did not stop them:
 1. Read its current fix, and check it against all its problems, the old and the new, and
    against \`harness/\` as it is now. If the fix is already in the harness, it is not working.
 2. Write one fix that would stop all of them, not only the new ones.
-3. Set the priority again from all its problems. Keep the title unless it is wrong.
+3. Set the priority again from all its problems. Keep the title unless it is wrong, over
+   ${WRITTEN_LIMITS.title} characters, or uses a word the list lines may not hold (see
+   learnings.md below); then write a new one.
 
 ## A new group
 
@@ -164,17 +166,27 @@ One section per group, headed by its id:
 ## G1
 
 - **Verdict:** learning
-- **Title:** Helpers report while their test run is still going
-- **Problem:** Coder and verify agents end their turn saying they are "waiting" on jest, so
-  the orchestrator has to chase them, sometimes many times in one session.
+- **Title:** Helpers report while their tests still run
+- **Problem:** Helper agents say they are done while their tests are still running, so the
+  main agent has to chase them, often several times in one session.
 - **Priority:** high — 9 problems in 6 sessions, and two shipped work nobody had tested
 - **Impact:** wrong_result — two sessions shipped code whose tests had not finished running
 - **Fix type:** skill
 - **Fix:** In skills/implement/SKILL.md, under "Running tests", add: wait for the test command
   to exit and read its result before reporting; never report a run as pending.
-- **In plain words:** Make helper agents wait for their tests to finish before they report.
+- **In plain words:** Make helper agents wait for their tests to finish before they report,
+  so a result they hand back is one somebody saw.
 - **How it helps:** Saves about 10 minutes a run of chasing helpers, and stops untested work
   from shipping.
+- **Step 1:** A helper agent started the test suite in the background.
+- **Step 1 quote:** started jest in the background
+- **Step 2:** It reported back before the tests finished.
+- **Step 2 quote:** waiting on jest, will report results later
+- **Step 3:** The main agent took that as done and shipped the change.
+- **Step 3 quote:** all helpers reported, opening the pull request
+- **Why it's a problem:** The change shipped without anyone seeing its tests pass.
+- **What should have happened:** The helper should have waited for the tests to finish and
+  reported whether they passed.
 
 ## G2
 
@@ -183,31 +195,40 @@ One section per group, headed by its id:
   nothing in the harness makes it likely again.
 \`\`\`
 
-- Title: at most ${WRITTEN_LIMITS.title} characters. It must make sense with every project
-  name removed.
-- Problem: what goes wrong and why it matters, at most ${WRITTEN_LIMITS.problem} characters.
-  Tell one story, not many: pick the clearest time it happened and do not add a second one.
-  Tell it in this order:
-  1. What the agent was doing.
-  2. What it did wrong.
-  3. What happened because of it.
-  4. What it should have done instead.
-  Then one line on how often: "This happened in 11 sessions." A list of half-told cases is what
-  makes a learning unreadable. For example: "The agent brought in the latest shared code, and
-  34 tests started failing. It told the user they had nothing to do with its change, without
-  checking. The user had to ask again before the real cause was found. It should have run the
-  same tests on the code without its change: if they pass there, its change broke them. This
-  happened in 11 sessions."
+Four fields are the lines the Fixes list shows: Title, Problem, the Impact sentence and In
+plain words. A reader who never saw the code or this project scans them in seconds, so keep
+them short and plain. \`check.mjs\` refuses any of the four that holds a backtick, a file name
+or path, the words yok or harness, or the name of a skill, agent, hook or command in
+\`harness/\`. Avoid skill and step names even when they are everyday words, such as review or
+implement: say what that step does instead.
+
+- Title: the pattern in a few words, at most ${WRITTEN_LIMITS.title} characters. It must make
+  sense with every project name removed.
+- Problem: what goes wrong, in one or two lines, at most ${WRITTEN_LIMITS.problem}
+  characters. It must be true of every session in the group, not one of them: describe the
+  pattern, not an example. The example goes in the steps below. For example: "After bringing
+  in the latest shared code, the agent blames new test failures on that code without checking
+  whether its own change caused them."
 - Priority: the word, a dash, then one sentence why, at most ${WRITTEN_LIMITS.priorityReason}
   characters.
 - Impact: one of ${LEARNING_IMPACTS.join(", ")}, a dash, then one sentence, at most
-  ${WRITTEN_LIMITS.impactReason} characters.
+  ${WRITTEN_LIMITS.impactReason} characters. The sentence is why it matters, with the numbers.
 - Fix: at most ${WRITTEN_LIMITS.fix} characters.
-- In plain words: the fix in one sentence a person who never opened the code would follow,
-  with no file paths or code, at most ${WRITTEN_LIMITS.fixSummary} characters. It is shown
-  first; the Fix field's exact text sits under it.
+- In plain words: the fix in one line a person who never opened the code would follow, then
+  why it works, with no file paths or code, at most ${WRITTEN_LIMITS.fixSummary} characters.
+  It is shown first; the Fix field's exact text sits under it.
 - How it helps: one sentence on what changes once the fix is in, at most
   ${WRITTEN_LIMITS.howItHelps} characters. Say it in time saved or harm stopped.
+- The example: the fix's own page opens on one time it happened. Pick the one time that
+  proves the problem on its own, for example where the agent admits the mistake or a result
+  shows it. Tell it as Step 1 to Step 3, or Step 4, each one short sentence of at most
+  ${WRITTEN_LIMITS.storyStep} characters, in the order it happened, ending where it turned out
+  wrong. Give each step a quote: the session's own words, at most ${WRITTEN_LIMITS.storyQuote}
+  characters, copied from this group's evidence quotes or the session records shown under
+  them in \`groups.md\`. A quote may skip words with \`…\`. \`check.mjs\` refuses a quote it
+  cannot find there.
+- Why it's a problem: one sentence, at most ${WRITTEN_LIMITS.whyProblem} characters.
+- What should have happened: one sentence, at most ${WRITTEN_LIMITS.shouldHave} characters.
 - Why (for a drop): one sentence, at most ${WRITTEN_LIMITS.priorityReason} characters: which
   step dropped it, and what in the numbers or the evidence says so.
 
