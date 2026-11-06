@@ -2,6 +2,7 @@ import {
   FIX_TYPES,
   LEARNING_IMPACTS,
   LEARNING_PRIORITIES,
+  type LearningStory,
   type LearnOutcome,
   type LearnStatus,
   type LearnTrigger,
@@ -574,6 +575,11 @@ export const learnings = pgTable(
     howItHelps: text("howItHelps"),
     /** The fix in one plain sentence, shown before its exact text. Null on an older learning. */
     fixSummary: text("fixSummary"),
+    /**
+     * The example the fix's page opens on, `{ steps: [{ text, quote }], whyProblem,
+     * shouldHave }`; read it through `parseStory`. Null on a learning written before it.
+     */
+    story: jsonb("story").$type<LearningStory>(),
     /**
      * Set when a project editor skips the fix: it leaves the Fixes list but stays a known
      * learning, so a later run joins its cause here (keeping it skipped) rather than making a
