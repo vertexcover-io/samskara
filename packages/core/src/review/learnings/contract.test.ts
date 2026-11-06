@@ -142,17 +142,27 @@ test("SC513: the contract's parts example passes the check, and the contract say
 describe("the grouping contract", () => {
   const flat = GROUPER_CONTRACT.replace(/\s+/g, " ")
 
-  test("SC530: the grouping instructions group by habit, with the join and keep-apart examples", () => {
-    expect(flat).toContain("the same habit, even when it shows up at different moments")
+  test("SC530: the grouping instructions define a habit by the kind of thing done and what it skipped", () => {
+    expect(flat).toContain("What kind of thing the agent did")
+    expect(flat).toContain("What it skipped or got wrong in doing it")
     expect(flat).toContain(
-      '"tells the user how things work without checking", "says something is done before seeing it work" and "runs commands that delete or publish without checking or asking" are one habit',
+      "the same kind of thing and skip the same thing, even when they show up at different moments",
     )
-    expect(flat).toContain('"writes text too dense to read" are two habits')
+    expect(flat).toContain(
+      "Never split one habit into several groups because it shows up at many moments",
+    )
+    expect(flat).not.toContain("probably two habits")
     expect(flat).toContain(
       "even when that learning was written for one moment and this group shows the habit at another",
     )
     expect(flat).not.toContain("one fix would stop both")
     expect(buildGrouperPrompt()).toContain("by the agent's habit")
+  })
+
+  test("SC532: the examples teach the rule without naming habits a real run is judged on", () => {
+    expect(flat).toContain('"keeps using tabs after the person asked for spaces"')
+    for (const hint of ["something is done", "how things work", "speaks or acts", "too dense"])
+      expect(flat).not.toContain(hint)
   })
 
   test("SC531: the grouping instructions' groups.md example still passes the grouping check", () => {
@@ -161,5 +171,27 @@ describe("the grouping contract", () => {
     expect(parsed.errors).toEqual([])
     expect(parsed.groups).toHaveLength(1)
     expect(parsed.groups[0]).toMatchObject({ joins: null, problems: ["P1", "P4", "P9"] })
+  })
+})
+
+describe("who stepped in decides the priority", () => {
+  const flat = WRITER_CONTRACT.replace(/\s+/g, " ")
+
+  test("SC533: a person re-running or chasing a failure is stepping in, not recovering", () => {
+    expect(flat).toContain("Recovered means the agent or an automatic check fixed it without help")
+    expect(flat).toContain("re-run it, retry it, chase it or ask about it, the person stepped in")
+    expect(flat).toContain("re-run or chase what the agent left failing or stuck")
+  })
+
+  test("SC534: a failed release or work stuck for hours is high", () => {
+    expect(flat).toContain(
+      "A release or other ship step that failed, or work left stuck for hours, is high",
+    )
+  })
+
+  test("SC535: every writer is told to name who did it, never someone", () => {
+    expect(WRITING_RULES.replace(/\s+/g, " ")).toContain(
+      'Say who did it: the agent, the person, or a named tool or check. Never "someone"',
+    )
   })
 })

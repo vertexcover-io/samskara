@@ -20,26 +20,34 @@ far. Put problems that are the same habit into one group.
 
 ## What a habit is
 
-A habit is the thing the agent does wrong, said so that it covers every time it happens. "The
-agent does not check before it speaks or acts" is a habit; "the agent said the tests pass
-without running them" is one time it happened.
+A habit is the thing the agent does wrong, said so that it covers every time it happens. Name
+it by two things:
 
-Two problems belong in one group when they are the same habit, even when it shows up at
-different moments: before explaining how something works, before saying something is done,
-before running something that deletes or publishes. Group by what the agent does wrong, not by
-how a fix for it would be worded. One habit can need a different change at each moment; the
-next step writes those changes as parts of one fix, up to ${FIX_PARTS_MAX}.
+1. What kind of thing the agent did: a claim it made to the person, an action it took, a
+   question it asked or failed to ask, or text it wrote.
+2. What it skipped or got wrong in doing it: for example checking, asking, reading what the
+   person said, or following a rule it was given.
 
-- Join: "tells the user how things work without checking", "says something is done before
-  seeing it work" and "runs commands that delete or publish without checking or asking" are
-  one habit: the agent does not check before it speaks or acts.
-- Keep apart: "does not check before it speaks" and "writes text too dense to read" are two
-  habits, even when both show up in the same reply. One is about checking, the other about
-  how it writes.
+Two problems are the same habit when both are the same kind of thing and skip the same thing,
+even when they show up at different moments or in different parts of the work. Group by the
+habit, not by how a fix for it would be worded: one habit can need a different change at each
+moment, and the next step writes those changes as parts of one fix, up to ${FIX_PARTS_MAX}.
+
+For example, only to show the rule:
+
+- One habit: "keeps using tabs after the person asked for spaces" and "commits straight to
+  the main branch after the person said to use a branch". Both are actions that skip an
+  instruction the person gave, at two different moments.
+- Two habits: "commits to the main branch after being told not to" and "asks the person a
+  question it could have answered by reading the file". The first skips an instruction; the
+  second skips looking it up.
+
 - The same thing seen, for different habits: different groups.
-- A habit is still specific: "the agent makes mistakes" is not one. Name what it skips or
-  does wrong, so one learning can tell it what to do instead. A habit seen at more than
-  ${FIX_PARTS_MAX} different moments is probably two habits.
+- A habit is still specific: "the agent makes mistakes" is not one. Name the kind of thing
+  and what it skips, so one learning can tell it what to do instead.
+- When a habit shows up at more than ${FIX_PARTS_MAX} moments, still keep it as one group:
+  the next step folds related moments into one part. Never split one habit into several
+  groups because it shows up at many moments.
 - Work the habit out from the title, description and learning. When a problem's habit is not
   clear, give it a group of its own. A group of one is fine.
 
@@ -54,11 +62,11 @@ habit at another. Only one group may join a given learning. Otherwise write \`ne
 One section per group:
 
 \`\`\`markdown
-## Does not check before it speaks or acts
+## Ignores instructions the person gave
 
 - **Joins:** new
-- **Cause:** The agent tells the user how something works, says work is done, or runs
-  something risky, without first checking: it reads no code, runs nothing, asks no one.
+- **Cause:** The agent takes actions that go against an instruction the person already gave,
+  such as a style, a branch or a tool to use, because it does not check what was asked.
 - **Problems:** P1, P4, P9
 \`\`\`
 
@@ -143,8 +151,14 @@ Set it from the problems and their evidence:
 
 - high: it keeps happening or will, and each time costs a wrong result, real time, or a
   person stepping in.
-- medium: it costs time more than once, but the agent or a check recovers.
+- medium: it costs time more than once, but the agent or an automatic check recovers on its
+  own.
 - low: small, rare, or caught early.
+
+Recovered means the agent or an automatic check fixed it without help. When the person had to
+re-run it, retry it, chase it or ask about it, the person stepped in: that is not recovered. A
+release or other ship step that failed, or work left stuck for hours, is high unless it
+happened once and cost almost nothing.
 
 How often is not the only measure. A problem that happens whenever someone works on one part
 of the system, and costs a lot each time, ranks above a frequent one that costs seconds.
@@ -154,7 +168,8 @@ of the system, and costs a lot each time, ranks above a frequent one that costs 
 What happens when the problem happens, the worst its evidence shows. One of:
 
 - wrong_result: without this fix the output can be wrong, or untested work ships.
-- person_stepped_in: a person had to notice it and correct the agent.
+- person_stepped_in: a person had to notice it, correct the agent, or re-run or chase what
+  the agent left failing or stuck.
 - time_only: the agent got there, but wasted time or tokens.
 
 Then a dash and one sentence that says what happened, with the numbers.
@@ -253,17 +268,17 @@ implement: say what that step does instead.
 
 ## Fix in parts
 
-One habit can show up at different moments: before explaining how something works, before
-saying something is done, before running something that deletes or publishes. Each moment
-may need its own change. Then write the fix in parts, in place of the Fix field:
+One habit can show up at different moments, and each moment may need its own change. Then
+write the fix in parts, in place of the Fix field. When the habit shows up at more moments
+than there may be parts, fold related moments into one part. For example:
 
 \`\`\`markdown
-- **Part 1:** Before explaining how something works
-- **Part 1 change:** In skills/answer/SKILL.md, add: read the code or run it before you
-  say how it works, and say which file you read.
-- **Part 2:** Before saying something is done
-- **Part 2 change:** In skills/implement/SKILL.md, under "Finishing", add: run the change
-  and read its output before you report it done.
+- **Part 1:** When writing code
+- **Part 1 change:** In skills/implement/SKILL.md, under "Style", add: before writing, read
+  the person's style choices in this session and follow them.
+- **Part 2:** When committing
+- **Part 2 change:** In skills/commit/SKILL.md, add: commit to the branch the person named;
+  if none was named, ask before using the main branch.
 \`\`\`
 
 - 2 to ${FIX_PARTS_MAX} parts, numbered from Part 1 with no gap. A habit seen at one moment
