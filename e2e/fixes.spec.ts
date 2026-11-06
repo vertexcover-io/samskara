@@ -14,11 +14,14 @@ const TITLE = "Helpers report while their test run is still going"
  * learning, written straight to the tables. No agent runs. The learning's problem names a real
  * file path, a word too long to wrap at phone width, the way the writing rules ask a fix to.
  */
-const seedFix = async () => {
+const seedFix = async (
+  options: { readonly project?: string; readonly story?: Record<string, unknown> } = {},
+) => {
+  const slug = options.project ?? PROJECT
   await seedDatabase({
     projects: [
       {
-        slug: PROJECT,
+        slug,
         name: "Fixes Project",
         sessions: [
           {
@@ -40,7 +43,7 @@ const seedFix = async () => {
   })
   const sql = postgres(requireDatabaseUrl())
   try {
-    const project = projectId(PROJECT)
+    const project = projectId(slug)
     const [first] =
       await sql`select id from messages where "sessionId" = ${SESSION} and "lineNumber" = 1`
     const recordIds = [first?.id, QUOTED_MESSAGE]
@@ -56,12 +59,13 @@ const seedFix = async () => {
     `
     const [learning] = await sql`
       insert into learnings ("projectId", "updatedByRunId", title, cause, problem, priority,
-        "priorityReason", "fixType", fix, impact, "impactReason", "howItHelps")
+        "priorityReason", "fixType", fix, impact, "impactReason", "howItHelps", story)
       values (${project}, ${run?.id}, ${TITLE}, 'No wait rule.',
         'Coder agents end their turn while packages/server/src/repositories/learnings.repo.test.ts still runs.', 'high', 'it keeps happening',
         'skill', 'In skills/implement/SKILL.md, wait for the test command to exit.',
         'wrong_result', 'one session shipped code whose tests had not finished',
-        'Stops untested work from shipping.')
+        'Stops untested work from shipping.',
+        ${options.story === undefined ? null : JSON.stringify(options.story)}::jsonb)
       returning id
     `
     await sql`
@@ -79,7 +83,7 @@ const seedFix = async () => {
   }
 }
 
-test("SC25: a fix card shows its impact and wraps a long path on a phone, opens a page whose quote links to the exact message, two columns wide and stacked narrow", async ({
+test("SC25: a fix card shows why it matters and wraps a long path on a phone, opens a page whose quote links to the exact message, two columns wide and stacked narrow", async ({
   authedPage: page,
 }) => {
   const id = await seedFix()
@@ -87,8 +91,12 @@ test("SC25: a fix card shows its impact and wraps a long path on a phone, opens 
   await page.goto(`/learnings?project=${projectId(PROJECT)}&show=10`)
 
   const card = page.locator("article", { hasText: TITLE })
-  await expect(card.getByText("Impact: Wrong result.")).toBeVisible()
-  await expect(card.getByText("Stops untested work from shipping.")).toBeVisible()
+  await expect(card).toContainText(
+    "Why it matters: One session shipped code whose tests had not finished",
+  )
+  await expect(card).toContainText("Fix: In skills/implement/SKILL.md")
+  await expect(card).not.toContainText("Impact:")
+  await expect(card).not.toContainText("Stops untested work from shipping.")
   await page.setViewportSize({ width: 390, height: 900 })
   const linesFit = await card
     .locator("p")
@@ -163,4 +171,47 @@ test("the Fixes page fits a phone when a project the user sees has a very long n
   const box = await projectPicker.boundingBox()
   expect(box === null ? Number.POSITIVE_INFINITY : box.x + box.width).toBeLessThanOrEqual(390)
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
+})
+
+const STORY = {
+  steps: [
+    { text: "A helper started the test suite in the background.", quote: "Add the search page." },
+    {
+      text: "It reported back before the tests finished.",
+      quote: "the tests are still running in the background",
+    },
+    { text: "The main agent took that as done.", quote: "Done, the tests are still running" },
+  ],
+  whyProblem: "The change shipped without anyone seeing its tests pass.",
+  shouldHave: "The helper should have waited for the tests to finish.",
+}
+
+test("SC403/SC404: a fix with a story opens on its example, with every time it happened folded shut until opened, at phone and desktop width", async ({
+  authedPage: page,
+}) => {
+  const project = "fixes-e2e-story"
+  const id = await seedFix({ project, story: STORY })
+
+  for (const width of [1280, 390]) {
+    await page.setViewportSize({ width, height: 900 })
+    await page.goto(`/learnings/${id}?project=${projectId(project)}`)
+
+    const example = page.getByRole("region", { name: "An example" })
+    await expect(example.getByRole("listitem")).toHaveText([
+      /A helper started the test suite.*“Add the search page\.”/,
+      /It reported back before the tests finished\..*“the tests are still running/,
+      /The main agent took that as done\..*“Done, the tests are still running”/,
+    ])
+    await expect(example).toContainText(STORY.whyProblem)
+    await expect(example).toContainText(STORY.shouldHave)
+
+    const proof = page.getByRole("region", { name: "The proof" })
+    await expect(proof).toBeHidden()
+    await page.getByText("Every time it happened: 1 problem in 1 session").click()
+    await expect(proof.getByRole("heading", { name: /Add the search page/ })).toBeVisible()
+    await expect(proof.getByRole("button", { name: "Show messages" })).toBeVisible()
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+    ).toBe(true)
+  }
 })

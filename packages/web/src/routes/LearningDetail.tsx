@@ -53,6 +53,40 @@ const listSearch = (params: URLSearchParams): string => {
 const label = "font-mono text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-stamp"
 
 type Learning = LearningDetailPayload["learning"]
+type Story = NonNullable<Learning["story"]>
+
+/** The one time the writer picked to show the problem: its steps and quotes, then why and what instead. */
+const Example = ({ story }: { readonly story: Story }) => (
+  <section aria-label="An example" className="flex flex-col gap-3">
+    <p className={label}>An example</p>
+    <ol className="flex list-decimal flex-col gap-2 pl-5">
+      {story.steps.map((step) => (
+        <li key={`${step.text}-${step.quote}`}>
+          <p>{step.text}</p>
+          <blockquote className="mt-0.5 border-l-2 border-rule pl-2 text-[0.82rem] text-ink-soft">
+            “{step.quote}”
+          </blockquote>
+        </li>
+      ))}
+    </ol>
+    <div>
+      <p className={label}>Why it's a problem</p>
+      <p className="mt-1">{story.whyProblem}</p>
+    </div>
+    <div>
+      <p className={label}>What should have happened</p>
+      <p className="mt-1">{story.shouldHave}</p>
+    </div>
+  </section>
+)
+
+const HowItHelps = ({ text }: { readonly text: string | null }) =>
+  text === null ? null : (
+    <div>
+      <p className={label}>How it helps</p>
+      <p className="mt-1">{text}</p>
+    </div>
+  )
 
 const Fix = ({
   payload,
@@ -77,28 +111,29 @@ const Fix = ({
         </span>
         {`${plural(problems.length, "problem")} in ${plural(sessions, "session")}`}
       </p>
-      <div>
-        <p className={label}>What goes wrong</p>
-        <p className="mt-1">{learning.problem}</p>
-      </div>
-      {learning.impact === null ? null : (
-        <div>
-          <p className={label}>Impact</p>
-          <p className="mt-1">
-            <span className="font-semibold">
-              {IMPACT_LABEL[learning.impact] ?? learning.impact}.
-            </span>{" "}
-            {learning.impactReason === null ? null : (
-              <span>{asSentence(learning.impactReason)}</span>
-            )}
-          </p>
-        </div>
-      )}
-      {learning.howItHelps === null ? null : (
-        <div>
-          <p className={label}>How it helps</p>
-          <p className="mt-1">{learning.howItHelps}</p>
-        </div>
+      {learning.story === null ? (
+        <>
+          <div>
+            <p className={label}>What goes wrong</p>
+            <p className="mt-1">{learning.problem}</p>
+          </div>
+          {learning.impact === null ? null : (
+            <div>
+              <p className={label}>Impact</p>
+              <p className="mt-1">
+                <span className="font-semibold">
+                  {IMPACT_LABEL[learning.impact] ?? learning.impact}.
+                </span>{" "}
+                {learning.impactReason === null ? null : (
+                  <span>{asSentence(learning.impactReason)}</span>
+                )}
+              </p>
+            </div>
+          )}
+          <HowItHelps text={learning.howItHelps} />
+        </>
+      ) : (
+        <Example story={learning.story} />
       )}
       <div>
         <p className={label}>The fix ({FIX_TYPE_LABEL[learning.fixType] ?? learning.fixType})</p>
@@ -114,6 +149,7 @@ const Fix = ({
           </>
         )}
       </div>
+      {learning.story === null ? null : <HowItHelps text={learning.howItHelps} />}
       <div>
         <p className={label}>Why {learning.priority}</p>
         <p className="mt-1 text-ink-soft">{learning.priorityReason}</p>
@@ -371,13 +407,29 @@ export const LearningDetail = () => {
         </section>
       </div>
     )
+  const { learning, problems } = state.payload
+  const sessions = new Set(problems.map((problem) => problem.sessionId)).size
   return (
     <div className="flex flex-col gap-3">
       {back}
-      <div className="grid items-start gap-6 min-[900px]:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
-        <Fix payload={state.payload} onChange={onSkipChange} />
-        <Proof learningId={state.payload.learning.id} problems={state.payload.problems} />
-      </div>
+      {learning.story === null ? (
+        <div className="grid items-start gap-6 min-[900px]:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
+          <Fix payload={state.payload} onChange={onSkipChange} />
+          <Proof learningId={learning.id} problems={problems} />
+        </div>
+      ) : (
+        <div className="flex max-w-3xl flex-col gap-6">
+          <Fix payload={state.payload} onChange={onSkipChange} />
+          <details className="border border-rule bg-panel p-4">
+            <summary className="cursor-pointer font-semibold">
+              {`Every time it happened: ${plural(problems.length, "problem")} in ${plural(sessions, "session")}`}
+            </summary>
+            <div className="mt-4">
+              <Proof learningId={learning.id} problems={problems} />
+            </div>
+          </details>
+        </div>
+      )}
     </div>
   )
 }

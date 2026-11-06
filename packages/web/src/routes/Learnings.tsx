@@ -3,13 +3,7 @@ import { Link, useSearchParams } from "react-router-dom"
 import { type ApiError, client, request } from "../api/client.js"
 import type { LearningRun, LearningSummary, ProjectSummary } from "../api/types.js"
 import { SessionExpired } from "../auth/SessionExpired.js"
-import {
-  asSentence,
-  FIX_TYPE_LABEL,
-  IMPACT_LABEL,
-  PRIORITY_TONE,
-  plural,
-} from "../learnings/labels.js"
+import { asSentence, PRIORITY_TONE, plural } from "../learnings/labels.js"
 import { SkipButton } from "../learnings/SkipButton.js"
 import { LoadingShell } from "../shell/LoadingShell.js"
 
@@ -107,23 +101,13 @@ const LearningCard = ({
         </p>
       </div>
       <p className="mt-1.5 text-ink-soft">{row.problem}</p>
-      {row.impact === null ? null : (
+      {row.impactReason === null ? null : (
         <p className="mt-2 text-[0.82rem]">
-          <span className="font-semibold">Impact: {IMPACT_LABEL[row.impact] ?? row.impact}.</span>{" "}
-          {row.impactReason === null ? null : <span>{asSentence(row.impactReason)}</span>}
+          <span className="font-semibold">Why it matters:</span> {asSentence(row.impactReason)}
         </p>
       )}
       <p className="mt-2 text-[0.82rem]">
-        <span className="font-semibold">Fix ({FIX_TYPE_LABEL[row.fixType] ?? row.fixType}):</span>{" "}
-        {row.fixSummary ?? row.fix}
-      </p>
-      {row.howItHelps === null ? null : (
-        <p className="mt-1.5 text-[0.82rem]">
-          <span className="font-semibold">How it helps:</span> {row.howItHelps}
-        </p>
-      )}
-      <p className="mt-1.5 text-[0.82rem] text-ink-soft">
-        Why {row.priority}: {row.priorityReason}
+        <span className="font-semibold">Fix:</span> {row.fixSummary ?? row.fix}
       </p>
       {canEdit ? (
         <div className="mt-3">
