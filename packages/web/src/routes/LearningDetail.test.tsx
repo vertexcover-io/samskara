@@ -20,6 +20,7 @@ const LEARNING = {
   impactReason: "two sessions shipped code whose tests had not finished",
   howItHelps: "Stops untested work from shipping.",
   fixSummary: "Make helpers wait for their tests to finish before reporting.",
+  story: null,
   skippedAt: null,
   updatedByRunId: "r-1",
   createdAt: "2026-10-20T10:00:00.000Z",
@@ -111,6 +112,7 @@ test("SC20: the page shows the fix, and the proof by session with a link to each
   expect(within(fix).getByText(/3 problems in 2 sessions/)).toBeInTheDocument()
 
   const proof = screen.getByRole("region", { name: "The proof" })
+  expect(proof.closest("details")).toBeNull()
   const [first, second] = within(proof).getAllByRole("article")
   expect(within(first as HTMLElement).getByRole("heading")).toHaveTextContent(
     "Add the search page 2 problems",
@@ -142,6 +144,62 @@ test("SC21: an older learning's page shows no Impact or How it helps block, and 
   expect(within(fix).queryByText("Impact")).toBeNull()
   expect(within(fix).queryByText("How it helps")).toBeNull()
   expect(within(fix).getByText(LEARNING.fix)).toBeInTheDocument()
+})
+
+const STORY = {
+  steps: [
+    { text: "A helper started the test suite in the background.", quote: "started jest" },
+    { text: "It reported back before the tests finished.", quote: "waiting on jest" },
+    { text: "The main agent shipped the change.", quote: "opening the pull request" },
+  ],
+  whyProblem: "The change shipped without anyone seeing its tests pass.",
+  shouldHave: "The helper should have waited for the tests to finish.",
+}
+
+const precedes = (a: Node, b: Node) =>
+  (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
+
+test("SC403: a fix with a story opens on its example, then the fix, then the proof folded shut", async () => {
+  stubFetch(200, { learning: { ...LEARNING, story: STORY }, problems: PROBLEMS })
+
+  renderPage()
+
+  const example = await screen.findByRole("region", { name: "An example" })
+  const steps = within(example).getAllByRole("listitem")
+  expect(steps.map((step) => step.textContent)).toEqual([
+    "A helper started the test suite in the background.“started jest”",
+    "It reported back before the tests finished.“waiting on jest”",
+    "The main agent shipped the change.“opening the pull request”",
+  ])
+  expect(within(example).getByText("Why it's a problem")).toBeInTheDocument()
+  expect(within(example).getByText(STORY.whyProblem)).toBeInTheDocument()
+  expect(within(example).getByText("What should have happened")).toBeInTheDocument()
+  expect(within(example).getByText(STORY.shouldHave)).toBeInTheDocument()
+
+  const fix = screen.getByRole("region", { name: "The fix" })
+  expect(precedes(example, within(fix).getByText(LEARNING.fixSummary))).toBe(true)
+  expect(
+    precedes(within(fix).getByText(LEARNING.fixSummary), within(fix).getByText("Exact change")),
+  ).toBe(true)
+
+  const fold = screen.getByText("Every time it happened: 3 problems in 2 sessions")
+  expect(fold.closest("details")).not.toHaveAttribute("open")
+  expect(precedes(fix, fold)).toBe(true)
+  expect(screen.getByText("“still running”")).not.toBeVisible()
+})
+
+test("SC404: opening the fold shows every session's quotes, each with its own Show messages button", async () => {
+  stubFetch(200, { learning: { ...LEARNING, story: STORY }, problems: PROBLEMS })
+  const user = userEvent.setup()
+
+  renderPage()
+
+  await user.click(await screen.findByText("Every time it happened: 3 problems in 2 sessions"))
+
+  const proof = screen.getByRole("region", { name: "The proof" })
+  expect(within(proof).getByText("Add the search page")).toBeVisible()
+  expect(within(proof).getByText("“still running”")).toBeVisible()
+  expect(within(proof).getAllByRole("button", { name: "Show messages" })).toHaveLength(3)
 })
 
 test("SC22: Back returns to the list with its project and Show kept", async () => {

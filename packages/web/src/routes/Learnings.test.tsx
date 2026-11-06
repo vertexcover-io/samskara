@@ -17,6 +17,7 @@ const LEARNING = {
   impactReason: null,
   howItHelps: null,
   fixSummary: null,
+  story: null,
   skippedAt: null,
   updatedByRunId: "r-1",
   createdAt: "2026-10-20T10:00:00.000Z",
@@ -99,7 +100,6 @@ test("LR1: shows the first project's learnings with priority, counts, fix and th
   expect(within(card).getByText("high")).toBeInTheDocument()
   expect(within(card).getByText(/9 problems in 6 sessions/)).toBeInTheDocument()
   expect(within(card).getByText(/wait for the test command to exit/)).toBeInTheDocument()
-  expect(within(card).getByText(/Fix \(Skill\)/)).toBeInTheDocument()
   expect(screen.getByText(/Last run .* succeeded/)).toBeInTheDocument()
   expect(urls.some((url) => url.includes("/api/learnings?project=p-1"))).toBe(true)
 })
@@ -124,18 +124,19 @@ test("SC23: a card's link opens its fix page carrying the list's filters, and Sh
   expect(within(card).queryByRole("button", { name: "Show problems" })).toBeNull()
 })
 
-test("SC14: the card shows the impact in words with its sentence, and how the fix helps", async () => {
-  const withImpact = {
+test("SC401: a card shows only its title row, what goes wrong, why it matters and the plain fix", async () => {
+  const written = {
     ...LEARNING,
     impact: "person_stepped_in",
     impactReason: "the person had to chase the coder three times",
     howItHelps: "Saves about 10 minutes a run of chasing helpers.",
+    fixSummary: "Make helpers wait for their tests to finish before they report.",
   }
   stubFetch([
     {
       match: "/api/learnings",
       status: 200,
-      body: { learnings: [withImpact], latestRun: RUN, canEdit: true },
+      body: { learnings: [written], latestRun: RUN, canEdit: true },
     },
     { match: "/api/projects", status: 200, body: projectsBody },
   ])
@@ -143,16 +144,18 @@ test("SC14: the card shows the impact in words with its sentence, and how the fi
   renderPage()
 
   const card = (await screen.findByText(LEARNING.title)).closest("article") as HTMLElement
-  expect(within(card).getByText(/Person had to step in/)).toBeInTheDocument()
-  // The writer often starts the sentence in lowercase; it reads as a sentence after the label.
-  expect(
-    within(card).getByText(/^The person had to chase the coder three times$/),
-  ).toBeInTheDocument()
-  expect(within(card).getByText(/How it helps:/)).toBeInTheDocument()
-  expect(within(card).getByText(/Saves about 10 minutes a run/)).toBeInTheDocument()
+  expect(within(card).getByText("high")).toBeInTheDocument()
+  expect(within(card).getByText(/9 problems in 6 sessions/)).toBeInTheDocument()
+  expect(within(card).getByText(LEARNING.problem)).toBeInTheDocument()
+  expect(card).toHaveTextContent("Why it matters: The person had to chase the coder three times")
+  expect(card).toHaveTextContent(
+    "Fix: Make helpers wait for their tests to finish before they report.",
+  )
+  for (const gone of [/How it helps/, /Why high/, /Impact:/, /\(Skill\)/, /Saves about 10 minutes/])
+    expect(card.textContent).not.toMatch(gone)
 })
 
-test("SC15: an older learning's card shows no impact or how-it-helps line, and the rest still shows", async () => {
+test("SC402: an older fix's card shows its own problem text and exact fix, and no Why it matters line", async () => {
   stubFetch([
     {
       match: "/api/learnings",
@@ -165,10 +168,9 @@ test("SC15: an older learning's card shows no impact or how-it-helps line, and t
   renderPage()
 
   const card = (await screen.findByText(LEARNING.title)).closest("article") as HTMLElement
-  expect(within(card).queryByText(/Impact:/)).toBeNull()
-  expect(within(card).queryByText(/How it helps:/)).toBeNull()
   expect(within(card).getByText(LEARNING.problem)).toBeInTheDocument()
-  expect(within(card).getByText(/wait for the test command to exit/)).toBeInTheDocument()
+  expect(card).toHaveTextContent(`Fix: ${LEARNING.fix}`)
+  expect(card.textContent).not.toMatch(/Why it matters/)
 })
 
 test("LR3: choosing another project loads that project's learnings", async () => {
