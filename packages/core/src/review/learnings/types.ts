@@ -30,6 +30,13 @@ export const learningStorySchema = z
 
 export type LearningStory = z.infer<typeof learningStorySchema>
 
+/**
+ * One moment of a habit's fix: a short plain heading naming when it applies ("Before
+ * explaining how something works"), and the exact change for that moment. A fix in parts is
+ * stored inside the learning's fix text; `fixParts` in format.ts reads it back.
+ */
+export type FixPart = { readonly heading: string; readonly change: string }
+
 /** A stored story, or null when there is none or it no longer fits the shape. */
 export const parseStory = (value: unknown): LearningStory | null => {
   const parsed = learningStorySchema.safeParse(value)

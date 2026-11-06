@@ -5,6 +5,7 @@ import { join } from "node:path"
 import { describe, expect, test } from "vitest"
 import { quoteChecker } from "../problems/reviewMd.js"
 import {
+  fixParts,
   groupsForWriter,
   knownLearningsMd,
   oneOffReason,
@@ -796,5 +797,272 @@ ${STORY}`
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe("a fix in parts", () => {
+  const learning = (fix: string) => `## G1
+- **Verdict:** learning
+- **Title:** Does not check before it speaks or acts
+- **Problem:** The agent says how things work, or that work is done, without checking first.
+- **Priority:** high — 3 sessions
+- **Impact:** wrong_result — one session shipped untested code
+- **Fix type:** skill
+${fix}
+- **How it helps:** Stops claims nobody checked.
+- **In plain words:** Make the agent check before it explains, reports or runs something risky.
+${STORY}`
+  const RULES = {
+    joined: [],
+    maxHigh: 9,
+    maxMedium: 9,
+    evidence: { G1: JEST },
+    projectWords: [] as ReadonlyArray<string>,
+  }
+  const part = (n: number, heading: string, change = `In skills/s${n}/SKILL.md, add rule ${n}.`) =>
+    `- **Part ${n}:** ${heading}\n- **Part ${n} change:** ${change}`
+  const parts = (count: number) =>
+    Array.from({ length: count }, (_, i) => part(i + 1, `Before moment ${i + 1}`)).join("\n")
+  const parse = (fix: string, rules = RULES) =>
+    parseWrittenMd(learning(fix), ["G1"], FIX_TYPES, rules)
+  const errorsOf = (fix: string, rules = RULES) => parse(fix, rules).errors.join("\n")
+
+  test("SC501: a 3-part fix is read back as one learning whose fix splits into the same 3 parts", () => {
+    const parsed = parse(
+      [
+        part(
+          1,
+          "Before explaining how something works",
+          "In skills/answer/SKILL.md, read the code first.",
+        ),
+        part(2, "Before saying something is done", "In skills/implement/SKILL.md, run it first."),
+        part(3, "Before deleting or publishing", "In skills/ship/SKILL.md, ask first."),
+      ].join("\n"),
+    )
+    expect(parsed.errors).toEqual([])
+    const g1 = parsed.answers.G1
+    if (g1?.verdict !== "learning") throw new Error("G1 is not a learning")
+    expect(g1.fix.startsWith("### Before explaining how something works")).toBe(true)
+    expect(fixParts(g1.fix)).toEqual([
+      {
+        heading: "Before explaining how something works",
+        change: "In skills/answer/SKILL.md, read the code first.",
+      },
+      {
+        heading: "Before saying something is done",
+        change: "In skills/implement/SKILL.md, run it first.",
+      },
+      { heading: "Before deleting or publishing", change: "In skills/ship/SKILL.md, ask first." },
+    ])
+  })
+
+  test("SC502: a plain Fix field is read exactly as before and has no parts", () => {
+    const parsed = parse("- **Fix:** In skills/implement/SKILL.md, add a wait rule.")
+    expect(parsed.errors).toEqual([])
+    const g1 = parsed.answers.G1
+    if (g1?.verdict !== "learning") throw new Error("G1 is not a learning")
+    expect(g1.fix).toBe("In skills/implement/SKILL.md, add a wait rule.")
+    expect(fixParts(g1.fix)).toBeNull()
+  })
+
+  test("SC503: five parts are refused, and G1 gets no answer", () => {
+    const parsed = parse(parts(5))
+    expect(parsed.errors.join("\n")).toContain("G1: the fix has 5 parts; at most 4")
+    expect(parsed.answers.G1).toBeUndefined()
+  })
+
+  test("a part number far past 4 is refused at once, with one error, not one per gap", () => {
+    const started = Date.now()
+    const errors = parse([part(1, "Before a"), part(10_000_000, "Before z")].join("\n")).errors
+    expect(Date.now() - started).toBeLessThan(500)
+    expect(errors).toEqual([
+      "G1: the parts are numbered from Part 1 with no gap; Part 2 is missing: renumber Part 10000000",
+    ])
+  })
+
+  test("a Part 0 is refused, beside other parts or beside a plain Fix", () => {
+    const zero = "G1: the parts are numbered from Part 1; there is no Part 0"
+    expect(errorsOf([part(0, "Before z"), parts(2)].join("\n"))).toContain(zero)
+    expect(errorsOf(`- **Fix:** Add a rule.\n${part(0, "Before z")}`)).toContain(zero)
+  })
+
+  test("a change starting with a markdown heading is refused, since it would read as a new part", () => {
+    expect(
+      errorsOf([part(1, "Before a", "### hashes first"), part(2, "Before b")].join("\n")),
+    ).toContain("G1: Part 1 change starts with #: start it with words, not a heading")
+  })
+
+  test.each<[string, ReadonlyArray<{ heading: string; change: string }>]>([
+    [
+      "a change starting with ### ",
+      [
+        { heading: "Before a", change: "### hashes first" },
+        { heading: "Before b", change: "Add a rule." },
+      ],
+    ],
+    [
+      "a heading starting with ### ",
+      [
+        { heading: "### Before a", change: "Add a rule." },
+        { heading: "Before b", change: "Add another rule." },
+      ],
+    ],
+    [
+      "a heading and a change holding # in the middle",
+      [
+        { heading: "Before step #3 runs", change: "Add a rule, then ### mark it." },
+        { heading: "Before b", change: "Add a rule ## here." },
+      ],
+    ],
+    [
+      "four parts at the length limits",
+      [1, 2, 3, 4].map((n) => ({ heading: `${n}`.repeat(60), change: `${n}`.repeat(240) })),
+    ],
+  ])("every fix in parts the check accepts splits back into the same parts: %s", (_, written) => {
+    const parsed = parse(written.map((p, i) => part(i + 1, p.heading, p.change)).join("\n"))
+    const g1 = parsed.answers.G1
+    if (g1?.verdict !== "learning") {
+      expect(parsed.errors).not.toEqual([])
+      return
+    }
+    expect(fixParts(g1.fix)).toEqual(written)
+  })
+
+  test("the 1200 limit counts the headings and changes written, not the markup between them", () => {
+    const full = (extra: string) =>
+      [1, 2, 3, 4]
+        .map((n) => part(n, `${n}`.repeat(60), `${n}`.repeat(240) + (n === 4 ? extra : "")))
+        .join("\n")
+    expect(parse(full("")).errors).toEqual([])
+    expect(errorsOf(full("x"))).toContain("G1: the parts together are over 1200 characters")
+  })
+
+  test("two parts with the same heading are refused, naming the repeat", () => {
+    expect(errorsOf([part(1, "Before a"), part(2, "before A ")].join("\n"))).toContain(
+      "G1: Part 2 has the same heading as Part 1: give each moment its own heading",
+    )
+    expect(
+      errorsOf([part(1, "Before a"), part(3, "Before c"), part(4, "Before c")].join("\n")),
+    ).toContain("G1: Part 4 has the same heading as Part 3: give each moment its own heading")
+  })
+
+  test("SC504: one part on its own is refused, pointing at the Fix field", () => {
+    expect(errorsOf(parts(1))).toContain(
+      "G1: a fix with one part is a plain fix: write it as - **Fix:** instead",
+    )
+  })
+
+  test("SC505: a gap in the numbering is refused, naming the missing part", () => {
+    expect(errorsOf([part(1, "Before a"), part(3, "Before c")].join("\n"))).toContain(
+      "G1: the parts are numbered from Part 1 with no gap; Part 2 is missing",
+    )
+  })
+
+  test("four parts with a gap past Part 4 are told which part is missing, not that there are too many", () => {
+    const fix = [part(1, "Before a"), part(2, "Before b"), part(3, "Before c"), part(6, "Before f")]
+    expect(parse(fix.join("\n")).errors).toEqual([
+      "G1: the parts are numbered from Part 1 with no gap; Part 4 is missing: renumber Part 6",
+    ])
+  })
+
+  test("SC506: a part missing its change, or its heading, is refused by number", () => {
+    expect(errorsOf(`${part(1, "Before a")}\n- **Part 2:** Before b`)).toContain(
+      "G1: Part 2 needs - **Part 2 change:** with its exact change",
+    )
+    expect(errorsOf(`${part(1, "Before a")}\n- **Part 2 change:** Add a rule.`)).toContain(
+      "G1: Part 2 has a change but no heading",
+    )
+  })
+
+  test("SC507: a Fix field written beside parts is refused", () => {
+    expect(errorsOf(`- **Fix:** Add a rule.\n${parts(2)}`)).toContain(
+      "G1: write the fix as - **Fix:** or as parts (- **Part 1:** and on), not both",
+    )
+  })
+
+  test("SC508: a heading holding a file path or a project word is refused", () => {
+    expect(
+      errorsOf(
+        [part(1, "Before editing skills/implement/SKILL.md"), part(2, "Before b")].join("\n"),
+      ),
+    ).toContain('G1: Part 1 uses the file path "skills/implement/SKILL.md"')
+    expect(
+      errorsOf([part(1, "Before implement ends"), part(2, "Before b")].join("\n"), {
+        ...RULES,
+        projectWords: ["implement"],
+      }),
+    ).toContain('G1: Part 1 uses the project word "implement"')
+  })
+
+  test("SC509: parts over their limits are refused", () => {
+    expect(
+      errorsOf([part(1, "Before a", "c".repeat(401)), part(2, "Before b")].join("\n")),
+    ).toContain("G1: Part 1 change is over 400 characters")
+    const long = [1, 2, 3, 4].map((n) => part(n, `Before ${n}`, "c".repeat(390))).join("\n")
+    expect(errorsOf(long)).toContain("G1: the parts together are over 1200 characters")
+  })
+
+  test.each([
+    ["one block", "### a\n\nAdd a rule."],
+    ["a heading with no change", "### a\n\nAdd a rule.\n\n### b"],
+    ["a plain line starting ### ", "### Add a rule to the skill."],
+    ["five blocks", [1, 2, 3, 4, 5].map((n) => `### h${n}\n\nchange ${n}`).join("\n\n")],
+  ])("SC510: text that only looks like parts splits into none: %s", (_, text) => {
+    expect(fixParts(text)).toBeNull()
+  })
+
+  test("SC511: the generated check.mjs refuses five parts, as code does", () => {
+    const dir = mkdtempSync(join(tmpdir(), "written-check-"))
+    try {
+      writeFileSync(join(dir, "check.mjs"), writtenCheckScript(["G1"], FIX_TYPES, RULES))
+      writeFileSync(join(dir, "learnings.md"), learning(parts(5)))
+      let output = ""
+      let status = 0
+      try {
+        execFileSync("node", ["check.mjs"], { cwd: dir, encoding: "utf8" })
+      } catch (error) {
+        const failed = error as { status: number; stdout: string }
+        status = failed.status
+        output = failed.stdout
+      }
+      expect(status).toBe(1)
+      expect(output).toContain("G1: the fix has 5 parts; at most 4")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("SC512: an existing learning's parts reach the writer as numbered parts", () => {
+    const fix = parse(parts(2)).answers.G1
+    if (fix?.verdict !== "learning") throw new Error("G1 is not a learning")
+    const md = groupsForWriter(
+      [
+        {
+          id: "G1",
+          cause: "Does not check first.",
+          existing: {
+            id: "k",
+            title: "Does not check",
+            cause: "Does not check first.",
+            problem: "It speaks before checking.",
+            priority: "high",
+            priorityReason: "Many sessions.",
+            fixType: "skill",
+            fix: fix.fix,
+            impact: null,
+            impactReason: null,
+            howItHelps: null,
+            fixSummary: null,
+            story: null,
+          },
+          problems: [problem("a")],
+        },
+      ],
+      ROOM,
+    )
+    expect(md).toContain("  - Fix, in 2 parts:")
+    expect(md).toContain("    - Part 1: Before moment 1 — In skills/s1/SKILL.md, add rule 1.")
+    expect(md).toContain("    - Part 2: Before moment 2 — In skills/s2/SKILL.md, add rule 2.")
+    expect(md).not.toContain("### ")
   })
 })
