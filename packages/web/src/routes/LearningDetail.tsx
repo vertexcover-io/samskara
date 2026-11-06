@@ -88,6 +88,34 @@ const HowItHelps = ({ text }: { readonly text: string | null }) =>
     </div>
   )
 
+const exactLabel = "mt-2 font-mono text-[0.66rem] uppercase tracking-[0.08em] text-ink-soft"
+
+/**
+ * The fix's exact text. A fix in parts shows one section per moment, its heading then its
+ * change; a plain fix shows as before, under its plain words or alone when it has none.
+ */
+const ExactChange = ({ learning }: { readonly learning: Learning }) => {
+  if (learning.fixParts !== null)
+    return (
+      <>
+        {learning.fixParts.map((part) => (
+          <section key={part.heading} aria-label={part.heading} className="mt-3">
+            <h2 className="font-semibold">{part.heading}</h2>
+            <p className={exactLabel}>Exact change</p>
+            <p className="mt-0.5 text-[0.82rem] text-ink-soft">{part.change}</p>
+          </section>
+        ))}
+      </>
+    )
+  if (learning.fixSummary === null) return <p className="mt-1">{learning.fix}</p>
+  return (
+    <>
+      <p className={exactLabel}>Exact change</p>
+      <p className="mt-0.5 text-[0.82rem] text-ink-soft">{learning.fix}</p>
+    </>
+  )
+}
+
 const Fix = ({
   payload,
   onChange,
@@ -137,17 +165,10 @@ const Fix = ({
       )}
       <div>
         <p className={label}>The fix ({FIX_TYPE_LABEL[learning.fixType] ?? learning.fixType})</p>
-        {learning.fixSummary === null ? (
-          <p className="mt-1">{learning.fix}</p>
-        ) : (
-          <>
-            <p className="mt-1 font-semibold">{learning.fixSummary}</p>
-            <p className="mt-2 font-mono text-[0.66rem] uppercase tracking-[0.08em] text-ink-soft">
-              Exact change
-            </p>
-            <p className="mt-0.5 text-[0.82rem] text-ink-soft">{learning.fix}</p>
-          </>
+        {learning.fixSummary === null ? null : (
+          <p className="mt-1 font-semibold">{learning.fixSummary}</p>
         )}
+        <ExactChange learning={learning} />
       </div>
       {learning.story === null ? null : <HowItHelps text={learning.howItHelps} />}
       <div>

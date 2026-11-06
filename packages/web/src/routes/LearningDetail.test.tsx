@@ -16,6 +16,7 @@ const LEARNING = {
   priorityReason: "it keeps happening, and two sessions shipped untested work",
   fixType: "skill",
   fix: "In skills/implement/SKILL.md, wait for the test command to exit before reporting.",
+  fixParts: null,
   impact: "wrong_result",
   impactReason: "two sessions shipped code whose tests had not finished",
   howItHelps: "Stops untested work from shipping.",
@@ -144,6 +145,56 @@ test("SC21: an older learning's page shows no Impact or How it helps block, and 
   expect(within(fix).queryByText("Impact")).toBeNull()
   expect(within(fix).queryByText("How it helps")).toBeNull()
   expect(within(fix).getByText(LEARNING.fix)).toBeInTheDocument()
+})
+
+const PARTS = [
+  {
+    heading: "Before explaining how something works",
+    change: "In skills/answer/SKILL.md, read first.",
+  },
+  {
+    heading: "Before saying something is done",
+    change: "In skills/implement/SKILL.md, run it first.",
+  },
+  { heading: "Before deleting or publishing", change: "In skills/ship/SKILL.md, ask first." },
+]
+
+test("SC520: a fix in parts shows one section per part, heading then exact change, under its plain words", async () => {
+  const joined = PARTS.map((part) => `### ${part.heading}\n\n${part.change}`).join("\n\n")
+  stubFetch(200, { learning: { ...LEARNING, fix: joined, fixParts: PARTS }, problems: PROBLEMS })
+
+  renderPage()
+
+  const fix = await screen.findByRole("region", { name: "The fix" })
+  expect(within(fix).getAllByText(LEARNING.fixSummary)).toHaveLength(1)
+  for (const part of PARTS) {
+    const section = within(fix).getByRole("region", { name: part.heading })
+    expect(
+      within(section).getByRole("heading", { level: 2, name: part.heading }),
+    ).toBeInTheDocument()
+    expect(within(section).getByText("Exact change")).toBeInTheDocument()
+    expect(within(section).getByText(part.change)).toBeInTheDocument()
+  }
+  expect(within(fix).getAllByText("Exact change")).toHaveLength(3)
+  expect(within(fix).queryByText(/### /)).toBeNull()
+})
+
+test("SC521: a plain fix looks as it does today, with no part sections", async () => {
+  stubFetch(200, { learning: LEARNING, problems: PROBLEMS })
+  renderPage()
+  const fix = await screen.findByRole("region", { name: "The fix" })
+  expect(within(fix).getByText(LEARNING.fixSummary)).toBeInTheDocument()
+  expect(within(fix).getAllByText("Exact change")).toHaveLength(1)
+  expect(within(fix).getByText(LEARNING.fix)).toBeInTheDocument()
+  expect(within(fix).queryAllByRole("region")).toHaveLength(0)
+
+  vi.restoreAllMocks()
+  stubFetch(200, { learning: { ...LEARNING, fixSummary: null }, problems: PROBLEMS })
+  const older = renderPage()
+  const olderFix = await within(older.container).findByRole("region", { name: "The fix" })
+  expect(within(olderFix).getByText(LEARNING.fix)).toBeInTheDocument()
+  expect(within(olderFix).queryByText("Exact change")).toBeNull()
+  expect(within(olderFix).queryAllByRole("region")).toHaveLength(0)
 })
 
 const STORY = {

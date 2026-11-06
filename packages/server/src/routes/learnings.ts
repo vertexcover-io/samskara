@@ -1,6 +1,7 @@
 import {
   type Evidence,
   evidenceMessages,
+  fixParts,
   type HarnessRunner,
   type LearningImpact,
   messageIdAt,
@@ -45,6 +46,7 @@ const serializeLearning = (row: learningsRepo.LearningRow) => ({
   priorityReason: row.priorityReason,
   fixType: row.fixType,
   fix: row.fix,
+  fixParts: fixParts(row.fix),
   impact: row.impact as LearningImpact | null,
   impactReason: row.impactReason,
   howItHelps: row.howItHelps,

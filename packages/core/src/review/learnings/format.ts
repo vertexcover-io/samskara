@@ -1,5 +1,6 @@
 import { LIMITS, PROBLEM_CLASSES, PROBLEM_SEVERITIES } from "../problems/reviewMd.js"
 import {
+  type FixPart,
   LEARNING_IMPACTS,
   LEARNING_PRIORITIES,
   type LearningInput,
@@ -13,7 +14,8 @@ export const CAUSE_MAX = 400
 /**
  * The limits on what agent 2 writes, the same idea as review.md's. Title, problem, the impact
  * sentence and the fix in plain words are the four lines the Fixes list shows, so they are
- * short; the story's parts are short so the fix's page reads as steps, not paragraphs.
+ * short; the story's parts are short so the fix's page reads as steps, not paragraphs. A fix
+ * in parts keeps `fix` as the limit on all its parts together.
  */
 export const WRITTEN_LIMITS = {
   title: 80,
@@ -27,7 +29,12 @@ export const WRITTEN_LIMITS = {
   storyQuote: 150,
   whyProblem: 250,
   shouldHave: 250,
+  fixPartHeading: 60,
+  fixPartChange: 400,
 } as const
+
+/** Most parts one fix may have: one habit seen at more moments than this is two habits. */
+export const FIX_PARTS_MAX = 4
 
 /**
  * The readers of both agents' files, as plain JavaScript source. The check scripts the agents
@@ -37,6 +44,7 @@ export const WRITTEN_LIMITS = {
  */
 const PARSERS_JS = String.raw`
 const QUOTE_MIN = ${LIMITS.quoteMin}
+const FIX_PARTS_MAX = ${FIX_PARTS_MAX}
 const JSON_ESCAPES = { n: " ", r: " ", t: " " }
 /**
  * Text as a quote is compared, the same as squash in problems/reviewMd.ts: JSON escapes
@@ -121,6 +129,102 @@ const sections = (text) => {
   return out
 }
 
+/**
+ * A fix in parts, as one text: each part's heading on a "### " line, a blank line, then its
+ * change, with a blank line between parts. splitFixParts reads it back; change both together.
+ * A part's heading and change are each one line (sections joins a field's lines), and
+ * fixPartsOf refuses a change that starts with "#", so a "\n\n### " can only be the start of
+ * the next part.
+ */
+const joinFixParts = (parts) =>
+  parts.map((part) => "### " + part.heading + "\n\n" + part.change).join("\n\n")
+/**
+ * The parts of a stored fix, or null for a plain one. Null too for text that only looks like
+ * parts: a block that is not a heading then a change, or fewer than 2 or more than
+ * FIX_PARTS_MAX of them.
+ */
+const splitFixParts = (fix) => {
+  const text = String(fix).trim()
+  if (!text.startsWith("### ")) return null
+  const parts = []
+  for (const block of text.split(/\n\n(?=### )/)) {
+    const match = /^### ([^\n]+)\n\n([\s\S]+)$/.exec(block)
+    if (match === null) return null
+    parts.push({ heading: match[1].trim(), change: match[2].trim() })
+  }
+  return parts.length >= 2 && parts.length <= FIX_PARTS_MAX ? parts : null
+}
+/**
+ * The writer's "Part N" and "Part N change" fields in order, with what is wrong with them
+ * pushed to errors. No part fields at all is a plain fix: null.
+ */
+const fixPartsOf = (fields, id, limits, projectWords, errors) => {
+  const numbers = Object.keys(fields)
+    .map((name) => /^part (\d+)(?: change)?$/.exec(name))
+    .filter((match) => match !== null)
+    .map((match) => Number(match[1]))
+  if (numbers.length === 0) return null
+  if (numbers.includes(0))
+    errors.push(id + ": the parts are numbered from Part 1; there is no Part 0")
+  // Refused before the loop below, which walks every number up to the highest: a Part 10000000
+  // would otherwise take seconds and gigabytes, inside the server.
+  const highest = Math.max(...numbers)
+  if (highest > FIX_PARTS_MAX) {
+    const count = new Set(numbers).size
+    // At most 4 parts numbered past 4 leave a gap below 5: name it, as the loop would, so the
+    // writer renumbers instead of deleting a part it needs.
+    let missing = 1
+    while (numbers.includes(missing)) missing += 1
+    errors.push(
+      count > FIX_PARTS_MAX
+        ? id + ": the fix has " + count + " parts; at most " + FIX_PARTS_MAX
+        : id + ": the parts are numbered from Part 1 with no gap; Part " + missing +
+            " is missing: renumber Part " + highest,
+    )
+    return []
+  }
+  const parts = []
+  const headings = new Map()
+  for (let n = 1; n <= highest; n += 1) {
+    const part = "Part " + n
+    if (fields["part " + n] === undefined && fields["part " + n + " change"] === undefined) {
+      errors.push(id + ": the parts are numbered from Part 1 with no gap; " + part + " is missing")
+      continue
+    }
+    const heading = (fields["part " + n] ?? "").trim()
+    const change = (fields["part " + n + " change"] ?? "").trim()
+    if (heading === "") errors.push(id + ": " + part + " has a change but no heading")
+    else if (heading.length > limits.fixPartHeading)
+      errors.push(id + ": " + part + " is over " + limits.fixPartHeading + " characters")
+    else {
+      const found = projectWordIn(heading, projectWords)
+      const same = headings.get(heading.toLowerCase())
+      if (found !== null)
+        errors.push(
+          id + ": " + part + " uses " + found + ". It is shown to readers who never saw this" +
+            " project: say it in everyday words",
+        )
+      // The fix page names and keys each part's section by its heading.
+      else if (same !== undefined)
+        errors.push(
+          id + ": " + part + " has the same heading as Part " + same +
+            ": give each moment its own heading",
+        )
+    }
+    if (change === "")
+      errors.push(id + ": " + part + " needs - **" + part + " change:** with its exact change")
+    else if (change.length > limits.fixPartChange)
+      errors.push(id + ": " + part + " change is over " + limits.fixPartChange + " characters")
+    else if (change.startsWith("#"))
+      errors.push(id + ": " + part + " change starts with #: start it with words, not a heading")
+    if (!headings.has(heading.toLowerCase())) headings.set(heading.toLowerCase(), n)
+    parts.push({ heading, change })
+  }
+  if (parts.length === 1)
+    errors.push(id + ": a fix with one part is a plain fix: write it as - **Fix:** instead")
+  return parts
+}
+
 const parseGroupsMd = (text, problemIds, learningIds, causeMax) => {
   const errors = []
   const groups = []
@@ -199,7 +303,14 @@ const parseWrittenMd = (text, groupIds, fixTypes, priorities, impacts, limits, r
     }
     const title = required("Title", limits.title)
     const problem = required("Problem", limits.problem)
-    const fix = required("Fix", limits.fix)
+    const parts = fixPartsOf(f, id, limits, rules.projectWords, errors)
+    const fix = parts === null ? required("Fix", limits.fix) : joinFixParts(parts)
+    if (parts !== null && (f.fix ?? "").trim() !== "")
+      errors.push(id + ": write the fix as - **Fix:** or as parts (- **Part 1:** and on), not both")
+    // The limit counts what the writer wrote, not the "### " lines and blank lines the join adds.
+    const written = (parts ?? []).reduce((sum, p) => sum + p.heading.length + p.change.length, 0)
+    if (parts !== null && written > limits.fix)
+      errors.push(id + ": the parts together are over " + limits.fix + " characters")
     const priorityRaw = required("Priority")
     const [word, ...reason] = priorityRaw.split(/\s+[—–-]\s+/)
     const priority = (word ?? "").trim().toLowerCase()
@@ -325,10 +436,16 @@ type Parsers = {
     limits: typeof WRITTEN_LIMITS,
     rules: WrittenRules,
   ) => { answers: Record<string, WrittenLearning>; errors: string[] }
+  splitFixParts: (fix: string) => FixPart[] | null
 }
 
 // One source for both: the check scripts embed PARSERS_JS, and this is the same text, run.
-const PARSERS = new Function(`${PARSERS_JS}\nreturn { parseGroupsMd, parseWrittenMd }`)() as Parsers
+const PARSERS = new Function(
+  `${PARSERS_JS}\nreturn { parseGroupsMd, parseWrittenMd, splitFixParts }`,
+)() as Parsers
+
+/** A stored fix's parts, each its heading then its change, or null when it is one plain fix. */
+export const fixParts = (fix: string): ReadonlyArray<FixPart> | null => PARSERS.splitFixParts(fix)
 
 /** Agent 1's groups.md, checked against the ids it was given. */
 export const parseGroupsMd = (
@@ -504,6 +621,17 @@ export type WriterGroup = {
  */
 const MAX_LISTED_PROBLEMS = 30
 
+/** An existing learning's fix as agent 2 reads it: one line, or one line per part. */
+const existingFixLines = (fix: string): ReadonlyArray<string> => {
+  const parts = fixParts(fix)
+  return parts === null
+    ? [`  - Fix: ${fix}`]
+    : [
+        `  - Fix, in ${parts.length} parts:`,
+        ...parts.map((part, index) => `    - Part ${index + 1}: ${part.heading} — ${part.change}`),
+      ]
+}
+
 /**
  * groups.md for agent 2: per group, its cause, the learning it updates if any, the numbers
  * priority is set from (over every problem), and the newest problems behind it — each new
@@ -541,7 +669,7 @@ export const groupsForWriter = (
                 ? []
                 : [`  - How it helps: ${group.existing.howItHelps}`]),
               `  - Fix type: ${group.existing.fixType}`,
-              `  - Fix: ${group.existing.fix}`,
+              ...existingFixLines(group.existing.fix),
               ...(group.existing.fixSummary === null
                 ? []
                 : [`  - In plain words: ${group.existing.fixSummary}`]),

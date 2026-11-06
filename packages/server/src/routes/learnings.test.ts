@@ -321,6 +321,53 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
     expect((await storyOf(list[0]?.id))?.steps[0]?.text).toBe("Again it reported early.")
   })
 
+  type FixPart = { heading: string; change: string }
+  const fixOf = async (id: string | undefined) =>
+    (
+      (await (await request(`/api/learnings/${id}`)).json()) as {
+        learning: { fix: string; fixParts: FixPart[] | null }
+      }
+    ).learning
+
+  test("SC514: a learning run that writes a fix in parts returns them split from the fix's API", async () => {
+    await seedProblems(["A"])
+    await runWith(
+      fakeAgents({
+        fix:
+          "- **Part 1:** Before explaining how something works\n" +
+          "- **Part 1 change:** Add a read-first rule to SKILL.md.\n" +
+          "- **Part 2:** Before saying something is done\n" +
+          "- **Part 2 change:** Add a run-first rule to SKILL.md.",
+      }).runner,
+    )
+    const [learning] = await listOf()
+    const detail = await fixOf(learning?.id)
+    expect(detail.fixParts).toEqual([
+      {
+        heading: "Before explaining how something works",
+        change: "Add a read-first rule to SKILL.md.",
+      },
+      { heading: "Before saying something is done", change: "Add a run-first rule to SKILL.md." },
+    ])
+    expect(detail.fix).toBe(
+      "### Before explaining how something works\n\nAdd a read-first rule to SKILL.md.\n\n" +
+        "### Before saying something is done\n\nAdd a run-first rule to SKILL.md.",
+    )
+  })
+
+  test("SC515: a plain fix returns fixParts null on the list and the fix's API", async () => {
+    await seedProblems(["A"])
+    await runWith()
+    const list = (
+      (await (await request(`/api/learnings?project=${projectId}`)).json()) as {
+        learnings: Array<{ id: string; fix: string; fixParts: FixPart[] | null }>
+      }
+    ).learnings
+    expect(list[0]?.fixParts).toBeNull()
+    expect(list[0]?.fix).toBe("Add a wait rule to SKILL.md.")
+    expect((await fixOf(list[0]?.id)).fixParts).toBeNull()
+  })
+
   test("SC18: the one learning carries each problem's session title and each quote's real message id", async () => {
     await seedSession(db, {
       sessionId: `route-proof-a-${counter}`,
