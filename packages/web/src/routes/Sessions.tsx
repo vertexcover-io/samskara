@@ -5,6 +5,8 @@ import type { FilterOption, SessionFilterOptions, SessionListPayload } from "../
 import { SessionExpired } from "../auth/SessionExpired.js"
 import { optionFor } from "../components/combobox.js"
 import { FilterBar, inertClass } from "../components/FilterBar.js"
+import { ReviewBar } from "../components/ReviewBar.js"
+import { ReviewBatchPanel } from "../components/ReviewBatchPanel.js"
 import { SessionListSkeleton } from "../components/SessionListSkeleton.js"
 import { SessionRow } from "../components/SessionRow.js"
 import {
@@ -15,7 +17,9 @@ import {
   type SessionFilters,
   serializeFilters,
 } from "../sessions/filters.js"
+import { MAX_BATCH_SESSIONS, refusalMessage, toggled, withPage } from "../sessions/reviewBatch.js"
 import { useFilterOptions } from "../sessions/useFilterOptions.js"
+import { useReviewBatch } from "../sessions/useReviewBatch.js"
 import { LoadingShell } from "../shell/LoadingShell.js"
 
 // `query` is the URL the answer belongs to. A settled state outlives the URL that asked for it by
@@ -232,9 +236,39 @@ export const Sessions = () => {
   )
   const [state, setState] = useState<State>({ phase: "loading", previous: null })
   const filterOptions = useFilterOptions()
+  // In page memory only: a refresh clears it. It survives paging and filter changes, so a
+  // person can pick across several filters before starting one batch.
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
+  const [starting, setStarting] = useState(false)
+  const reviewBatch = useReviewBatch()
 
   const applyFilters = (next: SessionFilters) => setSearchParams(serializeFilters(next))
   const resetFilters = () => applyFilters(EMPTY_FILTERS)
+
+  /** Adds the first 50 sessions the current filters match to the picks, never past 50 in all. */
+  const selectAllMatching = async (): Promise<void> => {
+    const query = Object.fromEntries(new URLSearchParams(effectiveQuery))
+    const result = await request(() =>
+      client.api.sessions.$get({
+        query: { ...query, page: "1", limit: String(MAX_BATCH_SESSIONS) },
+      }),
+    )
+    if (result.ok)
+      setSelected((current) =>
+        withPage(
+          current,
+          result.data.sessions.map((session) => session.id),
+          true,
+        ),
+      )
+  }
+
+  const startReview = async (): Promise<void> => {
+    setStarting(true)
+    const started = await reviewBatch.start([...selected])
+    setStarting(false)
+    if (started) setSelected(new Set())
+  }
 
   useEffect(() => {
     const controller = new AbortController()
@@ -268,7 +302,8 @@ export const Sessions = () => {
     setSearchParams(serializeFilters(effectiveFilters), { replace: true })
   }, [effectiveFilters, filters, setSearchParams])
 
-  if (state.phase === "failed" && state.error.kind === "unauthorized") return <SessionExpired />
+  if (reviewBatch.expired || (state.phase === "failed" && state.error.kind === "unauthorized"))
+    return <SessionExpired />
 
   const answered = state.phase !== "loading" && state.query === effectiveQuery
   const payload = answered && state.phase === "ready" ? state.payload : null
@@ -276,6 +311,9 @@ export const Sessions = () => {
   const previous = lastPayload(state)
   const loading = payload === null && error === null
   const hasFilters = hasActiveFilters(filters)
+  const pageIds = payload === null ? [] : payload.sessions.map((session) => session.id)
+  const pageSelected = pageIds.length > 0 && pageIds.every((id) => selected.has(id))
+  const room = MAX_BATCH_SESSIONS - selected.size
 
   return (
     <section>
@@ -288,6 +326,21 @@ export const Sessions = () => {
           onClear={resetFilters}
         />
       </div>
+      <ReviewBar
+        count={selected.size}
+        starting={starting}
+        blocked={reviewBatch.batch?.status === "running"}
+        onStart={() => void startReview()}
+        onClear={() => setSelected(new Set())}
+      />
+      {reviewBatch.error === null ? null : (
+        <p role="alert" className="mt-2 text-[0.8125rem] text-err">
+          {refusalMessage(reviewBatch.error)}
+        </p>
+      )}
+      {reviewBatch.batch === null ? null : (
+        <ReviewBatchPanel batch={reviewBatch.batch} onDismiss={() => void reviewBatch.dismiss()} />
+      )}
       <div className="mt-4" aria-busy={loading}>
         {loading ? <Loading previous={previous} /> : null}
         {error === null ? null : error.kind === "notFound" ? (
@@ -301,10 +354,52 @@ export const Sessions = () => {
         ) : (
           <>
             <ResultSummary payload={payload} filterOptions={filterOptions} filters={filters} />
+            <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[0.8125rem]">
+              <label className="inline-flex min-h-11 cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={pageSelected}
+                  disabled={room === 0 && !pageSelected}
+                  onChange={(event) =>
+                    setSelected((current) => withPage(current, pageIds, event.target.checked))
+                  }
+                  className="size-4"
+                />
+                Select this page
+              </label>
+              {payload.pagination.total > payload.sessions.length && room > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => void selectAllMatching()}
+                  className="underline"
+                >
+                  {selected.size > 0
+                    ? `Add up to ${room} more of ${payload.pagination.total} matching`
+                    : payload.pagination.total > MAX_BATCH_SESSIONS
+                      ? `Select the first ${MAX_BATCH_SESSIONS} of ${payload.pagination.total} matching`
+                      : `Select all ${payload.pagination.total} matching`}
+                </button>
+              ) : null}
+            </div>
             <ul className="grid grid-cols-1 gap-1.5">
               {payload.sessions.map((session) => (
-                <li key={session.id}>
-                  <SessionRow session={session} to={`/sessions/${session.id}`} />
+                // The checkbox stays outside SessionRow: the whole row is a link, so a checkbox
+                // inside it would both toggle and open the session. Its label is a 44px tap area,
+                // since a near miss on the bare 16px box opens the session and loses the picks.
+                <li key={session.id} className="flex items-start">
+                  <label className="flex size-11 shrink-0 cursor-pointer justify-center pt-3">
+                    <input
+                      type="checkbox"
+                      aria-label={`Select ${session.title ?? "untitled session"}`}
+                      checked={selected.has(session.id)}
+                      disabled={room === 0 && !selected.has(session.id)}
+                      onChange={() => setSelected((current) => toggled(current, session.id))}
+                      className="size-4"
+                    />
+                  </label>
+                  <div className="min-w-0 flex-1">
+                    <SessionRow session={session} to={`/sessions/${session.id}`} />
+                  </div>
                 </li>
               ))}
             </ul>
