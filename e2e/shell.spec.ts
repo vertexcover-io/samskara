@@ -132,6 +132,36 @@ test("tabbing down a long page never leaves the focused element behind the pinne
   expect(hidden).toEqual([])
 })
 
+test("an open filter menu that reaches the pinned footer paints over it", async ({
+  authedPage: page,
+}) => {
+  await page.setViewportSize({ width: 640, height: 600 })
+  await page.goto("/sessions")
+  await page.getByRole("button", { name: "Show Project suggestions" }).click()
+  const menu = page.getByRole("listbox")
+  await expect(menu.getByRole("option", { name: "Andromeda" })).toBeVisible()
+
+  // Shorten the window until the footer band covers the menu's bottom 20px, as on a phone held
+  // sideways, then ask the browser which of the two is on top there.
+  const menuBox = await menu.boundingBox()
+  const footerBox = await page.getByRole("contentinfo").boundingBox()
+  if (menuBox === null || footerBox === null) throw new Error("menu or footer is not rendered")
+  const menuBottom = menuBox.y + menuBox.height
+  await page.setViewportSize({ width: 640, height: Math.round(menuBottom + footerBox.height - 20) })
+  await expect(menu).toBeVisible()
+
+  const menuOnTop = await page.evaluate(
+    ({ x, y }) => {
+      const footer = document.querySelector("footer")
+      const hit = document.elementFromPoint(x, y)
+      const overlapsFooter = footer !== null && y > footer.getBoundingClientRect().top
+      return overlapsFooter && hit?.closest("[role=listbox]") !== null
+    },
+    { x: menuBox.x + 10, y: menuBottom - 8 },
+  )
+  expect(menuOnTop).toBe(true)
+})
+
 test("SC17: typing the slug deletes the project and returns to the list", async ({
   authedPage: page,
 }) => {
