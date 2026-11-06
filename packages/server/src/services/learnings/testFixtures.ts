@@ -137,6 +137,8 @@ export const fakeAgents = (
     oneGroupEach?: boolean
     /** The example each learning tells, as learnings.md fields; `STORY_MD` when unset. */
     story?: string
+    /** The fix, as learnings.md fields; one plain Fix line when unset. */
+    fix?: string
   } = {},
 ) => {
   const seen: { knownLearningsMd: string[]; writerMd: string[]; writerCheck: string[] } = {
@@ -177,7 +179,7 @@ export const fakeAgents = (
           .map((id) =>
             options.verdict === "drop"
               ? `## ${id}\n- **Verdict:** drop\n- **Why:** One session, medium and slow, a one-off typo.\n`
-              : `## ${id}\n- **Verdict:** learning\n- **Title:** Helpers report early\n- **Problem:** They stop before jest exits.\n- **Priority:** ${highLeft-- > 0 ? "high" : "low"} — many sessions\n- **Impact:** time_only — lost a few minutes\n- **Fix type:** skill\n- **Fix:** Add a wait rule to SKILL.md.\n- **How it helps:** Saves a few minutes a run.\n- **In plain words:** Make the agent wait before it reports.\n${options.story ?? STORY_MD}`,
+              : `## ${id}\n- **Verdict:** learning\n- **Title:** Helpers report early\n- **Problem:** They stop before jest exits.\n- **Priority:** ${highLeft-- > 0 ? "high" : "low"} — many sessions\n- **Impact:** time_only — lost a few minutes\n- **Fix type:** skill\n${options.fix ?? "- **Fix:** Add a wait rule to SKILL.md."}\n- **How it helps:** Saves a few minutes a run.\n- **In plain words:** Make the agent wait before it reports.\n${options.story ?? STORY_MD}`,
           )
           .join("\n"),
       )

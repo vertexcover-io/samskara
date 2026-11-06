@@ -1,5 +1,5 @@
 import { WRITING_RULES } from "../writingRules.js"
-import { CAUSE_MAX, ONE_OFF_BELOW, WRITTEN_LIMITS } from "./format.js"
+import { CAUSE_MAX, FIX_PARTS_MAX, ONE_OFF_BELOW, WRITTEN_LIMITS } from "./format.js"
 import { LEARNING_IMPACTS } from "./types.js"
 
 /** Agent 1's instructions: put the new problems into groups by cause. */
@@ -68,7 +68,8 @@ export const buildGrouperPrompt = (): string =>
 export const WRITER_CONTRACT = `# Turn groups of problems into learnings
 
 Each group in \`groups.md\` is a set of problems, from reviews of recorded AI agent sessions,
-that share one cause. \`harness/\` is the code of the agent harness those sessions ran: its
+that share one habit: one thing the agent does wrong, which may show up at different moments.
+Write one learning per habit. \`harness/\` is the code of the agent harness those sessions ran: its
 skills, agents, hooks, commands and docs. For each group, decide whether it is worth a
 learning, and if it is, write what should change.
 
@@ -89,7 +90,9 @@ dropped. The existing fix did not stop them:
 
 1. Read its current fix, and check it against all its problems, the old and the new, and
    against \`harness/\` as it is now. If the fix is already in the harness, it is not working.
-2. Write one fix that would stop all of them, not only the new ones.
+2. Write one fix that would stop all of them, not only the new ones. When the new problems
+   show the habit at a moment the current fix does not cover, add a part for that moment
+   (see "Fix in parts" below), and keep the parts that still hold.
 3. Set the priority again from all its problems. Keep the title unless it is wrong, over
    ${WRITTEN_LIMITS.title} characters, or uses a word the list lines may not hold (see
    learnings.md below); then write a new one.
@@ -213,10 +216,12 @@ implement: say what that step does instead.
   characters.
 - Impact: one of ${LEARNING_IMPACTS.join(", ")}, a dash, then one sentence, at most
   ${WRITTEN_LIMITS.impactReason} characters. The sentence is why it matters, with the numbers.
-- Fix: at most ${WRITTEN_LIMITS.fix} characters.
+- Fix: at most ${WRITTEN_LIMITS.fix} characters. For a habit seen at different moments,
+  write Part 1 to Part ${FIX_PARTS_MAX} instead (see "Fix in parts" below).
 - In plain words: the fix in one line a person who never opened the code would follow, then
   why it works, with no file paths or code, at most ${WRITTEN_LIMITS.fixSummary} characters.
-  It is shown first; the Fix field's exact text sits under it.
+  It is shown first; the Fix field's exact text, or each part, sits under it. For a fix in
+  parts it describes the whole habit, not one part.
 - How it helps: one sentence on what changes once the fix is in, at most
   ${WRITTEN_LIMITS.howItHelps} characters. Say it in time saved or harm stopped.
 - The example: the fix's own page opens on one time it happened. Pick the one time that
@@ -231,6 +236,31 @@ implement: say what that step does instead.
 - What should have happened: one sentence, at most ${WRITTEN_LIMITS.shouldHave} characters.
 - Why (for a drop): one sentence, at most ${WRITTEN_LIMITS.priorityReason} characters: which
   step dropped it, and what in the numbers or the evidence says so.
+
+## Fix in parts
+
+One habit can show up at different moments: before explaining how something works, before
+saying something is done, before running something that deletes or publishes. Each moment
+may need its own change. Then write the fix in parts, in place of the Fix field:
+
+\`\`\`markdown
+- **Part 1:** Before explaining how something works
+- **Part 1 change:** In skills/answer/SKILL.md, add: read the code or run it before you
+  say how it works, and say which file you read.
+- **Part 2:** Before saying something is done
+- **Part 2 change:** In skills/implement/SKILL.md, under "Finishing", add: run the change
+  and read its output before you report it done.
+\`\`\`
+
+- 2 to ${FIX_PARTS_MAX} parts, numbered from Part 1 with no gap. A habit seen at one moment
+  keeps one Fix field and no parts; never write both.
+- Each heading names the moment in plain words, at most ${WRITTEN_LIMITS.fixPartHeading}
+  characters. \`check.mjs\` holds it to the same plain-word check as the four list lines.
+- Each change says where and what, the same as a Fix, at most
+  ${WRITTEN_LIMITS.fixPartChange} characters; all parts together at most
+  ${WRITTEN_LIMITS.fix}.
+- Title, Problem, the impact sentence and In plain words describe the whole habit, not one
+  moment. The example is still one time it happened, for the whole learning.
 
 ${WRITING_RULES}
 

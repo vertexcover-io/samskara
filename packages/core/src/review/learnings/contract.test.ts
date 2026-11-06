@@ -3,7 +3,7 @@ import { REVIEW_OUTPUT_CONTRACT } from "../problems/contract.js"
 import { LIMITS } from "../problems/reviewMd.js"
 import { WRITING_RULES } from "../writingRules.js"
 import { WRITER_CONTRACT } from "./contract.js"
-import { CAUSE_MAX, parseWrittenMd, WRITTEN_LIMITS } from "./format.js"
+import { CAUSE_MAX, FIX_PARTS_MAX, fixParts, parseWrittenMd, WRITTEN_LIMITS } from "./format.js"
 
 const FIX_TYPES = ["skill", "code", "project_guidelines", "knowledge_base", "human"]
 
@@ -30,6 +30,8 @@ describe("the writing rules both contracts share", () => {
       storyQuote: 150,
       whyProblem: 250,
       shouldHave: 250,
+      fixPartHeading: 60,
+      fixPartChange: 400,
     })
     expect(CAUSE_MAX).toBe(400)
     expect(LIMITS).toEqual({
@@ -112,4 +114,20 @@ test("spec-3: the contract says what check.mjs refuses in the four list lines, a
   expect(flat).toContain(
     `Keep the title unless it is wrong, over ${WRITTEN_LIMITS.title} characters, or uses a word the list lines may not hold`,
   )
+})
+
+test("SC513: the contract's parts example passes the check, and the contract says 2 to 4 parts or one Fix", () => {
+  const partsBlock =
+    /## Fix in parts\n[\s\S]*?```markdown\n([\s\S]*?)```/.exec(WRITER_CONTRACT)?.[1] ?? ""
+  expect(partsBlock).toContain("- **Part 1:**")
+  const withParts = EXAMPLE.replace(/- \*\*Fix:\*\* [^\n]*(\n {2}[^\n]*)*\n/, partsBlock)
+  const parsed = parseWrittenMd(withParts, ["G1", "G2"], FIX_TYPES, EXAMPLE_RULES)
+  expect(parsed.errors).toEqual([])
+  const g1 = parsed.answers.G1
+  if (g1?.verdict !== "learning") throw new Error("G1 is not a learning")
+  expect(fixParts(g1.fix)).toHaveLength(2)
+  const flat = WRITER_CONTRACT.replace(/\s+/g, " ")
+  expect(flat).toContain(`2 to ${FIX_PARTS_MAX} parts`)
+  expect(flat).toContain("A habit seen at one moment keeps one Fix field and no parts")
+  expect(flat).toContain("Write one learning per habit")
 })
