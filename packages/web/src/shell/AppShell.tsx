@@ -1,4 +1,4 @@
-import type { CSSProperties, ReactNode } from "react"
+import { type ReactNode, useEffect } from "react"
 import { Link, NavLink } from "react-router-dom"
 import { useAuth } from "../auth/AuthProvider.js"
 import { AccountMenu } from "./AccountMenu.js"
@@ -26,11 +26,18 @@ export const AppShell = ({ children }: { children: ReactNode }) => {
   // of sliding under it. Measured, because the footer wraps to two lines on a narrow screen.
   const { ref: footerRef, height: footerHeight } = useMeasuredHeight<HTMLElement>()
 
+  // On <html> rather than this div, because <html> is the page's scroller: its bottom
+  // scroll-padding (index.css) reads the variable to keep focused elements clear of the footer.
+  useEffect(() => {
+    const root = document.documentElement
+    root.style.setProperty("--app-footer", `${footerHeight}px`)
+    return () => {
+      root.style.removeProperty("--app-footer")
+    }
+  }, [footerHeight])
+
   return (
-    <div
-      className="relative z-10 flex min-h-dvh w-full flex-col"
-      style={{ "--app-footer": `${footerHeight}px` } as CSSProperties}
-    >
+    <div className="relative z-10 flex min-h-dvh w-full flex-col">
       <a
         href="#main"
         className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-20 focus:rounded-xs focus:bg-panel-2 focus:px-3 focus:py-2"
