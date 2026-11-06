@@ -80,13 +80,56 @@ test("the footer stays pinned to the viewport bottom while a long page scrolls u
   const midway = await footerBox()
   expect(midway.y + midway.height).toBeCloseTo(600, 0)
 
-  // At the very bottom the last row clears the footer instead of sitting behind it.
+  // At the very bottom the last row clears the footer instead of sitting behind it. The list is
+  // newest first, and seeded sessions grow newer with their index, so session 00 is the last row.
   await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight))
   const atBottom = await footerBox()
   expect(atBottom.y + atBottom.height).toBeCloseTo(600, 0)
-  const lastRow = await page.getByText(`Footer session ${sessions.length - 1}`).boundingBox()
+  const lastRow = await page.getByText("Footer session 00").boundingBox()
   expect(lastRow).not.toBeNull()
   expect((lastRow?.y ?? 0) + (lastRow?.height ?? 0)).toBeLessThanOrEqual(atBottom.y)
+})
+
+test("tabbing down a long page never leaves the focused element behind the pinned footer", async ({
+  authedPage: page,
+}) => {
+  const sessions = Array.from({ length: 40 }, (_, index) => ({
+    id: `e2e-footer-focus-s-${index}`,
+    title: `Focus session ${String(index).padStart(2, "0")}`,
+  }))
+  await seedDatabase({ projects: [{ slug: "footer-focus", name: "Footer focus", sessions }] })
+
+  await page.setViewportSize({ width: 1280, height: 600 })
+  await page.goto("/sessions")
+  await expect(page.getByText("Focus session 00")).toBeVisible()
+
+  // The browser scrolls each newly focused element into view; with the footer pinned over the
+  // bottom of the window, that scroll has to stop short of the footer, not at the window's edge.
+  const hidden: Array<string> = []
+  for (let press = 0; press < 80; press += 1) {
+    await page.keyboard.press("Tab")
+    const overlap = await page.evaluate(() => {
+      const focused = document.activeElement
+      const footer = document.querySelector("footer")
+      // Once Tab runs off the end of the page, focus rests on <body>, which is not a control.
+      if (
+        !(focused instanceof HTMLElement) ||
+        focused === document.body ||
+        footer === null ||
+        footer.contains(focused)
+      ) {
+        return null
+      }
+      const bottom = focused.getBoundingClientRect().bottom
+      const footerTop = footer.getBoundingClientRect().top
+      // Half a pixel of slack for sub-pixel rounding between the two rects.
+      return bottom > footerTop + 0.5
+        ? `${focused.textContent?.trim().slice(0, 40)}: bottom ${bottom}, footer top ${footerTop}`
+        : null
+    })
+    if (overlap !== null) hidden.push(overlap)
+  }
+  expect(hidden).toEqual([])
 })
 
 test("SC17: typing the slug deletes the project and returns to the list", async ({
