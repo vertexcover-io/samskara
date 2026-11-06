@@ -2,11 +2,11 @@ import { WRITING_RULES } from "../writingRules.js"
 import { CAUSE_MAX, FIX_PARTS_MAX, ONE_OFF_BELOW, WRITTEN_LIMITS } from "./format.js"
 import { LEARNING_IMPACTS } from "./types.js"
 
-/** Agent 1's instructions: put the new problems into groups by cause. */
-export const GROUPER_CONTRACT = `# Group problems by cause
+/** Agent 1's instructions: put the new problems into groups by the agent's habit. */
+export const GROUPER_CONTRACT = `# Group problems by habit
 
 You get problems found in reviews of recorded AI agent sessions, and the learnings found so
-far. Put problems with the same cause into one group.
+far. Put problems that are the same habit into one group.
 
 ## Your working directory
 
@@ -18,38 +18,52 @@ far. Put problems with the same cause into one group.
 - \`groups.md\` — your answer, which you write.
 - \`check.mjs\` — run \`node check.mjs\`. You are done when it says every problem is in a group.
 
-## What a cause is
+## What a habit is
 
-The cause is why it happened, not what was seen. "The implement skill has no rule to wait for
-a background run to exit" is a cause; "the agent returned early" is what was seen.
+A habit is the thing the agent does wrong, said so that it covers every time it happens. "The
+agent does not check before it speaks or acts" is a habit; "the agent said the tests pass
+without running them" is one time it happened.
 
-Two problems share a cause when one fix would stop both of them.
+Two problems belong in one group when they are the same habit, even when it shows up at
+different moments: before explaining how something works, before saying something is done,
+before running something that deletes or publishes. Group by what the agent does wrong, not by
+how a fix for it would be worded. One habit can need a different change at each moment; the
+next step writes those changes as parts of one fix, up to ${FIX_PARTS_MAX}.
 
-- The same thing seen, for different reasons: different groups.
-- Different things seen, for one reason: one group.
-- Work the cause out from the title, description and learning. When a problem's cause is not
+- Join: "tells the user how things work without checking", "says something is done before
+  seeing it work" and "runs commands that delete or publish without checking or asking" are
+  one habit: the agent does not check before it speaks or acts.
+- Keep apart: "does not check before it speaks" and "writes text too dense to read" are two
+  habits, even when both show up in the same reply. One is about checking, the other about
+  how it writes.
+- The same thing seen, for different habits: different groups.
+- A habit is still specific: "the agent makes mistakes" is not one. Name what it skips or
+  does wrong, so one learning can tell it what to do instead. A habit seen at more than
+  ${FIX_PARTS_MAX} different moments is probably two habits.
+- Work the habit out from the title, description and learning. When a problem's habit is not
   clear, give it a group of its own. A group of one is fine.
 
 ## Joining a learning
 
-When a group's cause is the cause of a learning in \`known-learnings.md\`, write that learning's id
-under Joins. Only one group may join a given learning. Otherwise write \`new\`.
+When a group's habit is the habit of a learning in \`known-learnings.md\`, write that learning's
+id under Joins, even when that learning was written for one moment and this group shows the
+habit at another. Only one group may join a given learning. Otherwise write \`new\`.
 
 ## groups.md
 
 One section per group:
 
 \`\`\`markdown
-## Helpers stop before background runs finish
+## Does not check before it speaks or acts
 
 - **Joins:** new
-- **Cause:** The implement skill never tells helper agents to wait for a test or build run to
-  exit before they report, so they report while it is still running.
+- **Cause:** The agent tells the user how something works, says work is done, or runs
+  something risky, without first checking: it reads no code, runs nothing, asks no one.
 - **Problems:** P1, P4, P9
 \`\`\`
 
-- The heading is a short name for the cause.
-- Cause: at most ${CAUSE_MAX} characters. It must make sense with every project name removed.
+- The heading is a short name for the habit.
+- Cause: the habit, at most ${CAUSE_MAX} characters. It must make sense with every project name removed.
 - Every problem is in exactly one group.
 
 Your final reply is one short line, for example "groups.md ready: 12 groups".
@@ -57,7 +71,7 @@ Your final reply is one short line, for example "groups.md ready: 12 groups".
 
 export const buildGrouperPrompt = (): string =>
   [
-    "You are grouping problems from AI agent session reviews by their cause.",
+    "You are grouping problems from AI agent session reviews by the agent's habit: the thing it does wrong.",
     "",
     "Read `CONTRACT.md` first: it says how to group and exactly how to write `groups.md`.",
     "Then read `problems.md` and `known-learnings.md`, write `groups.md`, and run `node check.mjs` until it passes.",

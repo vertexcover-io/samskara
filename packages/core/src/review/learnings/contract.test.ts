@@ -2,8 +2,15 @@ import { describe, expect, test } from "vitest"
 import { REVIEW_OUTPUT_CONTRACT } from "../problems/contract.js"
 import { LIMITS } from "../problems/reviewMd.js"
 import { WRITING_RULES } from "../writingRules.js"
-import { WRITER_CONTRACT } from "./contract.js"
-import { CAUSE_MAX, FIX_PARTS_MAX, fixParts, parseWrittenMd, WRITTEN_LIMITS } from "./format.js"
+import { buildGrouperPrompt, GROUPER_CONTRACT, WRITER_CONTRACT } from "./contract.js"
+import {
+  CAUSE_MAX,
+  FIX_PARTS_MAX,
+  fixParts,
+  parseGroupsMd,
+  parseWrittenMd,
+  WRITTEN_LIMITS,
+} from "./format.js"
 
 const FIX_TYPES = ["skill", "code", "project_guidelines", "knowledge_base", "human"]
 
@@ -130,4 +137,29 @@ test("SC513: the contract's parts example passes the check, and the contract say
   expect(flat).toContain(`2 to ${FIX_PARTS_MAX} parts`)
   expect(flat).toContain("A habit seen at one moment keeps one Fix field and no parts")
   expect(flat).toContain("Write one learning per habit")
+})
+
+describe("the grouping contract", () => {
+  const flat = GROUPER_CONTRACT.replace(/\s+/g, " ")
+
+  test("SC530: the grouping instructions group by habit, with the join and keep-apart examples", () => {
+    expect(flat).toContain("the same habit, even when it shows up at different moments")
+    expect(flat).toContain(
+      '"tells the user how things work without checking", "says something is done before seeing it work" and "runs commands that delete or publish without checking or asking" are one habit',
+    )
+    expect(flat).toContain('"writes text too dense to read" are two habits')
+    expect(flat).toContain(
+      "even when that learning was written for one moment and this group shows the habit at another",
+    )
+    expect(flat).not.toContain("one fix would stop both")
+    expect(buildGrouperPrompt()).toContain("by the agent's habit")
+  })
+
+  test("SC531: the grouping instructions' groups.md example still passes the grouping check", () => {
+    const example = /```markdown\n([\s\S]*?)```/.exec(GROUPER_CONTRACT)?.[1] ?? ""
+    const parsed = parseGroupsMd(example, ["P1", "P4", "P9"], [])
+    expect(parsed.errors).toEqual([])
+    expect(parsed.groups).toHaveLength(1)
+    expect(parsed.groups[0]).toMatchObject({ joins: null, problems: ["P1", "P4", "P9"] })
+  })
 })
