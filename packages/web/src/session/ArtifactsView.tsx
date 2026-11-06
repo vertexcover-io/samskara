@@ -822,7 +822,7 @@ export const ArtifactsView = ({
           files never means scrolling back up. The same parking the agent rail already uses. */}
       <aside
         aria-label="Artifact index"
-        className="border-b border-rule bg-panel min-[720px]:sticky min-[720px]:top-[calc(var(--sticky-head,0px)_+_1rem)] min-[720px]:max-h-[calc(100dvh_-_var(--sticky-head,0px)_-_2rem)] min-[720px]:self-start min-[720px]:overflow-y-auto min-[720px]:border-r min-[720px]:border-b-0"
+        className="border-b border-rule bg-panel min-[720px]:sticky min-[720px]:top-[calc(var(--sticky-head,0px)_+_1rem)] min-[720px]:max-h-[calc(100dvh_-_var(--sticky-head,0px)_-_var(--app-footer,0px)_-_2rem)] min-[720px]:self-start min-[720px]:overflow-y-auto min-[720px]:border-r min-[720px]:border-b-0"
       >
         <div className="border-b border-rule px-3 py-3">
           {/* No heading: the tab above already reads Artifacts, and a tree of filenames beside a

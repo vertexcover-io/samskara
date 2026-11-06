@@ -46,6 +46,49 @@ test("S14: a signed-in visit to / lands on /projects showing both seeded project
   expect(overflow).toBeLessThanOrEqual(0)
 })
 
+test("the footer stays pinned to the viewport bottom while a long page scrolls under it", async ({
+  authedPage: page,
+}) => {
+  // Enough sessions that the list is several screens tall at this height.
+  const sessions = Array.from({ length: 40 }, (_, index) => ({
+    id: `e2e-footer-s-${index}`,
+    title: `Footer session ${String(index).padStart(2, "0")}`,
+  }))
+  await seedDatabase({ projects: [{ slug: "footer-long", name: "Footer long", sessions }] })
+
+  await page.setViewportSize({ width: 1280, height: 600 })
+  await page.goto("/sessions")
+  await expect(page.getByText("Footer session 00")).toBeVisible()
+
+  const footer = page.getByRole("contentinfo")
+  const footerBox = async () => {
+    const box = await footer.boundingBox()
+    if (box === null) throw new Error("footer is not rendered")
+    return box
+  }
+
+  // The document itself scrolls -- not an inner pane -- so window-relative scrolling keeps working.
+  const scrollable = await page.evaluate(
+    () => document.documentElement.scrollHeight > document.documentElement.clientHeight,
+  )
+  expect(scrollable).toBe(true)
+
+  const atTop = await footerBox()
+  expect(atTop.y + atTop.height).toBeCloseTo(600, 0)
+
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight / 2))
+  const midway = await footerBox()
+  expect(midway.y + midway.height).toBeCloseTo(600, 0)
+
+  // At the very bottom the last row clears the footer instead of sitting behind it.
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight))
+  const atBottom = await footerBox()
+  expect(atBottom.y + atBottom.height).toBeCloseTo(600, 0)
+  const lastRow = await page.getByText(`Footer session ${sessions.length - 1}`).boundingBox()
+  expect(lastRow).not.toBeNull()
+  expect((lastRow?.y ?? 0) + (lastRow?.height ?? 0)).toBeLessThanOrEqual(atBottom.y)
+})
+
 test("SC17: typing the slug deletes the project and returns to the list", async ({
   authedPage: page,
 }) => {

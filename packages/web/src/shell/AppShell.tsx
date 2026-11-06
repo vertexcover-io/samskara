@@ -1,8 +1,9 @@
-import type { ReactNode } from "react"
+import type { CSSProperties, ReactNode } from "react"
 import { Link, NavLink } from "react-router-dom"
 import { useAuth } from "../auth/AuthProvider.js"
 import { AccountMenu } from "./AccountMenu.js"
 import { BuildStamp } from "./BuildStamp.js"
+import { useMeasuredHeight } from "./useMeasuredHeight.js"
 
 const NavItem = ({ to, children }: { to: string; children: ReactNode }) => (
   <NavLink
@@ -21,9 +22,15 @@ const NavItem = ({ to, children }: { to: string; children: ReactNode }) => (
 
 export const AppShell = ({ children }: { children: ReactNode }) => {
   const { user } = useAuth()
+  // Published as `--app-footer` so panes pinned to the viewport stop short of the footer instead
+  // of sliding under it. Measured, because the footer wraps to two lines on a narrow screen.
+  const { ref: footerRef, height: footerHeight } = useMeasuredHeight<HTMLElement>()
 
   return (
-    <div className="relative z-10 flex min-h-dvh w-full flex-col">
+    <div
+      className="relative z-10 flex min-h-dvh w-full flex-col"
+      style={{ "--app-footer": `${footerHeight}px` } as CSSProperties}
+    >
       <a
         href="#main"
         className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-20 focus:rounded-xs focus:bg-panel-2 focus:px-3 focus:py-2"
@@ -56,7 +63,14 @@ export const AppShell = ({ children }: { children: ReactNode }) => {
         {children}
       </main>
 
-      <footer className="border-t border-rule-soft bg-panel-2/60 px-4 py-3 sm:px-6">
+      {/* Sticky rather than fixed: it stays in the flow, so the page keeps scrolling the window
+          (the session view's pinned bars and message permalinks rely on that) and the last row
+          of a long page scrolls clear of the footer without a padding guess. Opaque, because
+          content now passes underneath it. */}
+      <footer
+        ref={footerRef}
+        className="sticky bottom-0 z-20 border-t border-rule-soft bg-panel-2 px-4 py-3 sm:px-6"
+      >
         <div className="mx-auto flex max-w-[1440px] flex-wrap items-center justify-between gap-x-6 gap-y-2">
           <p className="text-label uppercase text-ink-soft">samskara</p>
           <BuildStamp />
