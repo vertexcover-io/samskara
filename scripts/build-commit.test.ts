@@ -1,6 +1,10 @@
 import { expect, test } from "bun:test"
 import { readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
+import { parse } from "yaml"
+
+// Workflows are parsed with the yaml package, not Bun.YAML: Bun.YAML arrived in Bun 1.2.21, and
+// CI, the Dockerfile and packageManager all pin Bun 1.2.19.
 
 // The footer's Commit field comes from packages/web/vite.config.ts, which asks git for HEAD and
 // falls back to "unknown". The image build has no .git (.dockerignore drops it), so the sha
@@ -33,9 +37,7 @@ type Workflow = {
 }
 
 const workflowSteps = (path: string): ReadonlyArray<Step> =>
-  Object.values((Bun.YAML.parse(read(path)) as Workflow).jobs ?? {}).flatMap(
-    (job) => job.steps ?? [],
-  )
+  Object.values((parse(read(path)) as Workflow).jobs ?? {}).flatMap((job) => job.steps ?? [])
 
 const isImageBuild = (step: Step): boolean =>
   step.uses?.startsWith("docker/build-push-action@") ?? false
