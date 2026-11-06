@@ -106,6 +106,14 @@ describe("groupProblems (agent 1)", () => {
 
 const LIMITS = { high: 5, medium: 8 }
 
+/** A 3-step example whose every quote is the fixture problem's evidence. */
+const STORY =
+  "- **Step 1:** The helper started the tests.\n- **Step 1 quote:** waiting on jest\n" +
+  "- **Step 2:** It reported before they finished.\n- **Step 2 quote:** waiting on jest\n" +
+  "- **Step 3:** The main agent took that as done.\n- **Step 3 quote:** waiting on jest\n" +
+  "- **Why it's a problem:** Nobody saw the tests pass.\n" +
+  "- **What should have happened:** It should have waited for the tests.\n"
+
 describe("writeLearnings (agent 2)", () => {
   const dirs: string[] = []
   afterEach(() => {
@@ -134,6 +142,7 @@ describe("writeLearnings (agent 2)", () => {
     impactReason: null,
     howItHelps: null,
     fixSummary: null,
+    story: null,
   }
   const written = `## G1
 - **Verdict:** learning
@@ -145,7 +154,7 @@ describe("writeLearnings (agent 2)", () => {
 - **Fix:** In skills/implement/SKILL.md, add a wait rule.
 - **How it helps:** Saves a few minutes a run.
 - **In plain words:** Make the agent wait before it reports.
-
+${STORY}
 ## G2
 - **Verdict:** drop
 - **Why:** One session, medium and slow, a one-off typo.
@@ -175,7 +184,7 @@ describe("writeLearnings (agent 2)", () => {
   test("LR5: too many new high learnings go back to the agent once, and a second miss fails", async () => {
     const prompts: string[] = []
     const high = (id: string) =>
-      `## ${id}\n- **Verdict:** learning\n- **Title:** t\n- **Problem:** p\n- **Priority:** high — why\n- **Impact:** time_only — lost a few minutes\n- **Fix type:** skill\n- **Fix:** f\n- **How it helps:** Saves a few minutes a run.\n- **In plain words:** Make the agent wait before it reports.\n`
+      `## ${id}\n- **Verdict:** learning\n- **Title:** t\n- **Problem:** p\n- **Priority:** high — why\n- **Impact:** time_only — lost a few minutes\n- **Fix type:** skill\n- **Fix:** f\n- **How it helps:** Saves a few minutes a run.\n- **In plain words:** Make the agent wait before it reports.\n${STORY}`
     const result = await writeLearnings({
       groups: [
         { cause: "a", existing: null, problems: [problem("a")] },
@@ -206,7 +215,7 @@ describe("writeLearnings (agent 2)", () => {
         run: async ({ workspaceDir }) => {
           writeFileSync(
             join(workspaceDir, "learnings.md"),
-            "## G1\n- **Verdict:** learning\n- **Title:** t\n- **Problem:** p\n- **Priority:** high — why\n- **Impact:** time_only — lost a few minutes\n- **Fix type:** skill\n- **Fix:** f\n- **How it helps:** Saves a few minutes a run.\n- **In plain words:** Make the agent wait before it reports.\n",
+            `## G1\n- **Verdict:** learning\n- **Title:** t\n- **Problem:** p\n- **Priority:** high — why\n- **Impact:** time_only — lost a few minutes\n- **Fix type:** skill\n- **Fix:** f\n- **How it helps:** Saves a few minutes a run.\n- **In plain words:** Make the agent wait before it reports.\n${STORY}`,
           )
           try {
             execFileSync("node", ["check.mjs"], { cwd: workspaceDir, encoding: "utf8" })
@@ -218,6 +227,58 @@ describe("writeLearnings (agent 2)", () => {
       },
     })
     expect(output).toContain("1 new learnings are high (G1), and this batch may make at most 0")
+  })
+
+  test("SC110: the writer's check is given each group's evidence, so a story quoting it passes and comes back", async () => {
+    let output = ""
+    const result = await writeLearnings({
+      groups: [{ cause: "a", existing: null, problems: [problem("a")] }],
+      harnessDir: harness(),
+      priorityLimits: LIMITS,
+      runner: {
+        run: async ({ workspaceDir }) => {
+          writeFileSync(
+            join(workspaceDir, "learnings.md"),
+            `## G1\n- **Verdict:** learning\n- **Title:** t\n- **Problem:** p\n- **Priority:** low — why\n- **Impact:** time_only — lost a few minutes\n- **Fix type:** skill\n- **Fix:** f\n- **How it helps:** Saves a few minutes a run.\n- **In plain words:** Make the agent wait before it reports.\n${STORY}`,
+          )
+          output = execFileSync("node", ["check.mjs"], { cwd: workspaceDir, encoding: "utf8" })
+          return { stdout: "", firstByteMs: 1 }
+        },
+      },
+    })
+    expect(output).toContain("All 1 groups are answered.")
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const answer = result.answers[0]
+    if (answer?.verdict !== "learning") throw new Error("G1 is not a learning")
+    expect(answer.story.steps[0]?.quote).toBe("waiting on jest")
+  })
+
+  test("SC207: the writer's check reads the project words from the harness, and the one retry fixes the Title", async () => {
+    const dir = harness()
+    mkdirSync(join(dir, "skills", "code-review"), { recursive: true })
+    writeFileSync(join(dir, "skills", "code-review", "SKILL.md"), "Review the change.\n")
+    const prompts: string[] = []
+    const result = await writeLearnings({
+      groups: [{ cause: "a", existing: null, problems: [problem("a")] }],
+      harnessDir: dir,
+      priorityLimits: LIMITS,
+      runner: {
+        run: async ({ workspaceDir, prompt }) => {
+          prompts.push(prompt)
+          const title =
+            prompts.length === 1 ? "The code-review step skips tests" : "Reviews skip tests"
+          writeFileSync(
+            join(workspaceDir, "learnings.md"),
+            `## G1\n- **Verdict:** learning\n- **Title:** ${title}\n- **Problem:** p\n- **Priority:** low — why\n- **Impact:** time_only — lost a few minutes\n- **Fix type:** skill\n- **Fix:** f\n- **How it helps:** Saves a few minutes a run.\n- **In plain words:** Make the agent wait before it reports.\n${STORY}`,
+          )
+          return { stdout: "", firstByteMs: 1 }
+        },
+      },
+    })
+    expect(prompts).toHaveLength(2)
+    expect(prompts[1]).toContain('G1: Title uses the project word "code-review"')
+    expect(result.ok).toBe(true)
   })
 })
 
