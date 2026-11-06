@@ -1,5 +1,6 @@
 export * from "./contract.js"
 export * from "./excerpt.js"
 export * from "./format.js"
+export * from "./jargon.js"
 export * from "./run.js"
 export * from "./types.js"
