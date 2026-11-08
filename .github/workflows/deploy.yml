@@ -161,7 +161,7 @@ jobs:
               + {SAMSKARA_TAG: $tag}
               | to_entries[] | "\(.key)=\(.value)"' \
           | ssh "$DEPLOY_USER@$HOST" 'cd /opt/samskara && flock -w 300 /var/lock/samskara-deploy sh -euc "
-              samskara-env-merge && docker compose pull app && docker compose up -d app && docker image prune -f"'
+              samskara-env-merge && docker compose pull app && docker compose up -d app && docker image prune -af"'
 
       # Runs in this job, not a separate one: environment variables like DOMAIN are only
       # visible to a job that declares `environment: production`.
