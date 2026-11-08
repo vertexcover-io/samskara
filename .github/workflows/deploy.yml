@@ -83,6 +83,11 @@ jobs:
         with:
           ref: ${{ env.REF }}
 
+      # The tag's own commit, for the footer's Commit field. github.sha is the dispatching
+      # branch's head on workflow_dispatch, not the tag being deployed.
+      - id: src
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -119,6 +124,7 @@ jobs:
           build-args: |
             CLAUDE_CODE_VERSION=${{ steps.cli.outputs.claude }}
             OPENCODE_VERSION=${{ steps.cli.outputs.opencode }}
+            GIT_COMMIT=${{ steps.src.outputs.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

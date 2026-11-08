@@ -23,6 +23,10 @@ COPY packages/web packages/web
 # `dependsOn: ["^build"]` ordering turbo derives for `bun run build`.
 RUN bun run --filter @samskara/core build
 RUN bun run --filter @samskara/server build
+# The footer's Commit field is read from git at build time, and .dockerignore leaves .git out
+# of the context, so the workflow passes the source sha in. Declared here, just above the web
+# build, so a new sha rebuilds only that layer.
+ARG GIT_COMMIT
 RUN bun run --filter @samskara/web build
 
 FROM node:22-slim AS runtime
