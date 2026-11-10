@@ -13,7 +13,8 @@
     "VITE_API_BASE_URL",
     "SAMSKARA_E2E_ADMIN_URL",
     "E2E_API_PORT",
-    "E2E_WEB_PORT"
+    "E2E_WEB_PORT",
+    "LEARNINGS_HARNESS_PATH"
   ],
   "tasks": {
     "build": {

@@ -1,5 +1,16 @@
 import type { ProjectIdentity } from "@samskara/core"
-import { type AnyColumn, aliasedTable, and, desc, eq, exists, or, type SQL, sql } from "drizzle-orm"
+import {
+  type AnyColumn,
+  aliasedTable,
+  and,
+  desc,
+  eq,
+  exists,
+  inArray,
+  or,
+  type SQL,
+  sql,
+} from "drizzle-orm"
 import type { Querier } from "../db/client.js"
 import {
   orgs,
@@ -180,6 +191,19 @@ export const canWrite = async (
 ): Promise<boolean> => {
   const scope = await authorityFor(db, userId, projectId)
   return scope !== null && meetsScope(scope, "editor")
+}
+
+/** Each project's name by id. Callers check access first; an id with no row is left out. */
+export const projectNames = async (
+  db: Querier,
+  ids: ReadonlyArray<string>,
+): Promise<ReadonlyMap<string, string>> => {
+  if (ids.length === 0) return new Map()
+  const rows = await db
+    .select({ id: projects.id, name: projects.name })
+    .from(projects)
+    .where(inArray(projects.id, [...ids]))
+  return new Map(rows.map((row) => [row.id, row.name]))
 }
 
 export type ProjectSummaryRow = {

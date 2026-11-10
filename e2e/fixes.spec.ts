@@ -141,3 +141,26 @@ test("SC37: Skip takes a fix off the list, Show Skipped lists it with Unskip, an
   await page.getByRole("combobox", { name: "Show" }).selectOption("5")
   await expect(card).toBeVisible()
 })
+
+test("the Fixes page fits a phone when a project the user sees has a very long name", async ({
+  authedPage: page,
+}) => {
+  await seedDatabase({
+    projects: [
+      { slug: "fixes-short", name: "Short", sessions: [] },
+      {
+        slug: "fixes-long-name",
+        name: "A project with a very long name that a real customer might give to a monorepo workspace",
+        sessions: [],
+      },
+    ],
+  })
+  await page.setViewportSize({ width: 390, height: 900 })
+  await page.goto(`/learnings?project=${projectId("fixes-short")}`)
+
+  const projectPicker = page.getByRole("combobox", { name: "Project" })
+  await expect(projectPicker).toHaveValue(projectId("fixes-short"))
+  const box = await projectPicker.boundingBox()
+  expect(box === null ? Number.POSITIVE_INFINITY : box.x + box.width).toBeLessThanOrEqual(390)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
+})

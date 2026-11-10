@@ -12,6 +12,9 @@ import type pino from "pino"
 import type { Db } from "./db/client.js"
 import type { Env } from "./lib/env.js"
 import { loggingMiddleware } from "./lib/logging-middleware.js"
+import { getRun } from "./repositories/learnings.repo.js"
+import { canWrite } from "./repositories/projects.repo.js"
+import { hasReviewFrom } from "./repositories/reviews.repo.js"
 import { artifactRoutes } from "./routes/artifacts.js"
 import { authRoutes } from "./routes/auth.js"
 import { compoundLearningsRoutes } from "./routes/compound-learnings.js"
@@ -19,18 +22,27 @@ import { ingestRoutes } from "./routes/ingest.js"
 import { learningsRoutes } from "./routes/learnings.js"
 import { orgsRoutes } from "./routes/orgs.js"
 import { projectsRoutes } from "./routes/projects.js"
+import { reviewBatchRoutes } from "./routes/review-batches.js"
 import { reviewerOptionsRoutes, reviewRoutes } from "./routes/reviews.js"
 import { sessionsRoutes } from "./routes/sessions.js"
 import { syncStatusRoutes } from "./routes/sync-status.js"
 import { type AiReviewJobRegistry, createAiReviewJobRegistry } from "./services/ai-review/jobs.js"
+import { PROBLEMS_ANALYZER } from "./services/ai-review/pipeline.js"
 import { createGithubClient, type GithubClient } from "./services/github.js"
+import { startLearningRun } from "./services/learnings/run.js"
 import { createPairingStore, type PairingStore } from "./services/pairing.js"
+import {
+  createReviewBatchRegistry,
+  type ReviewBatchRegistry,
+} from "./services/review-batch/batch.js"
 
 type Deps = {
   readonly githubClient?: GithubClient
   readonly pairingStore?: PairingStore
   readonly aiReviewRunner?: HarnessRunner
   readonly aiReviewJobs?: AiReviewJobRegistry
+  /** Test seam: a registry the test keeps across requests, since tests build an app per request. */
+  readonly reviewBatches?: ReviewBatchRegistry
   /** Test seam for the reviewer-options availability probe. */
   readonly commandExists?: (command: string) => boolean
   /** Test seam for the credential probe behind the same endpoint. */
@@ -103,6 +115,34 @@ export const buildApp = (db: Db, env: Env, deps: Deps = {}) => {
   // the one registry so the concurrency cap means something.
   const aiReviewRunner = deps.aiReviewRunner ?? defaultAiReviewRunner(env, rootLog)
   const aiReviewJobs = deps.aiReviewJobs ?? createAiReviewJobRegistry()
+  const learningsHarness = env.learningsHarness
+  const batchLog = rootLog.child({ component: "review-batch" })
+  const reviewBatches =
+    deps.reviewBatches ??
+    createReviewBatchRegistry({
+      jobs: aiReviewJobs,
+      aiReview: {
+        db,
+        runner: aiReviewRunner,
+        env,
+        log: batchLog,
+        ...(deps.credentialEnv === undefined ? {} : { credentialEnv: deps.credentialEnv }),
+      },
+      hasReview: (userId, sessionId) =>
+        hasReviewFrom(db, { userId, sessionId, analyzer: PROBLEMS_ANALYZER }),
+      canWrite: (userId, projectId) => canWrite(db, userId, projectId),
+      startLearningRun:
+        learningsHarness === undefined
+          ? undefined
+          : (projectId) =>
+              startLearningRun(
+                { db, runner: aiReviewRunner, env, log: rootLog.child({ component: "learnings" }) },
+                projectId,
+                { harness: learningsHarness },
+              ),
+      learningRunError: async (runId) => (await getRun(db, runId))?.error ?? null,
+      log: batchLog,
+    })
   const commandExists = deps.commandExists
 
   const app = new Hono<{ Variables: Variables }>()
@@ -131,6 +171,15 @@ export const buildApp = (db: Db, env: Env, deps: Deps = {}) => {
     .route(
       "/api/reviewer-options",
       reviewerOptionsRoutes({ db, env, commandExists, credentialEnv: deps.credentialEnv }),
+    )
+    .route(
+      "/api/review-batches",
+      reviewBatchRoutes({
+        db,
+        env,
+        reviewBatches,
+        ...(deps.credentialEnv === undefined ? {} : { credentialEnv: deps.credentialEnv }),
+      }),
     )
     .route("/api/sync-status", syncStatusRoutes({ db, env }))
     .route("/api/learnings", learningsRoutes({ db, env, runner: aiReviewRunner }))

@@ -313,13 +313,15 @@ export const Learnings = () => {
     <div>
       <h1 className="mb-3 text-[1.375rem] font-semibold leading-tight">Fixes</h1>
       <div className="mb-4 mt-4 flex flex-wrap items-end justify-between gap-2">
-        <div className="flex flex-wrap items-end gap-3">
-          <label className="flex flex-col gap-1">
+        <div className="flex max-w-full flex-wrap items-end gap-3">
+          {/* A select is as wide as its longest option, so one long project name would widen
+              the page past a phone screen without this cap. */}
+          <label className="flex max-w-full flex-col gap-1">
             <span className="text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-stamp">
               Project
             </span>
             <select
-              className={controlClass}
+              className={`${controlClass} max-w-full`}
               value={project}
               onChange={(e) => setParam("project", e.target.value)}
             >
