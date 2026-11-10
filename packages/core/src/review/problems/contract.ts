@@ -148,7 +148,6 @@ What the session set out to do and how it went, in one short paragraph.
   - msg-134 — "all tests pass" — this is wrong: no test command ran between msg-120 and msg-134.
   - msg-198 to msg-201 — "tests are green" — the same claim again, still with no test run.
 - **Learning:** Run the test command and read its result before saying tests pass.
-- **Extra:** name: value; name: value
 \`\`\`
 
 ## Each field
@@ -168,10 +167,10 @@ What the session set out to do and how it went, in one short paragraph.
   ${LIMITS.learning} characters.
 - Severity: the word, a dash, then one sentence why, at most ${LIMITS.severityReason}
   characters.
-- Extra: every field listed under "Extra fields" in your instructions, on every problem, as
-  \`name: value\` pairs separated by \`;\`, each value at most ${LIMITS.extraValue}
-  characters. A problem missing one is thrown away. Leave the line out only when your
-  instructions list no extra fields.
+- Extra: Only when your instructions have an "Extra fields" section, add a line
+  \`- **Extra:** name: value; name: value\` after Learning on every problem, with every field
+  listed there, each value at most ${LIMITS.extraValue} characters. A problem missing one is
+  thrown away. Otherwise write no Extra line: not "none", not empty.
 - Summary: at most ${LIMITS.summary} characters; anything longer is cut off.
 - At most ${LIMITS.problems} problems. If there is nothing to change, write
   \`Nothing to change.\` under \`## Problems\`.

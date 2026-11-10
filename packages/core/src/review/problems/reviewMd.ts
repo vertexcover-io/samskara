@@ -190,7 +190,10 @@ const withinLimit = (
 
 /**
  * `stage: coder; tool: bash` into `{ stage: "coder", tool: "bash" }`; names are lowercased. A
- * piece with no colon after a named one is part of that value — a value may hold a `;`.
+ * piece with no colon after a named one is part of that value — a value may hold a `;`. Text
+ * before any name ("none", "n/a") names no field and is ignored: a field the instructions
+ * require is still missing then, and `readProblemReview` drops that problem for it, but an
+ * Extra line nobody asked for never costs a problem.
  */
 const extraOf = (value: string, errors: string[], where: string): Record<string, string> => {
   const extra: Record<string, string> = {}
@@ -200,7 +203,6 @@ const extraOf = (value: string, errors: string[], where: string): Record<string,
     const colon = pair.indexOf(":")
     if (colon === -1) {
       if (lastKey !== undefined) extra[lastKey] = `${extra[lastKey]}; ${pair.trim()}`
-      else errors.push(`${where}Extra must read name: value, not "${pair.trim()}"`)
       continue
     }
     const key = pair.slice(0, colon).trim().toLowerCase()

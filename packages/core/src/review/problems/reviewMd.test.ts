@@ -323,7 +323,7 @@ describe("parseReviewMd, forgiving where the meaning is clear", () => {
     expect(parsed.dropped).toEqual([`Summary cut to ${LIMITS.summary} characters`])
   })
 
-  test("RM17: extra field names are read case-insensitively; a pair without a colon is named", () => {
+  test("RM17: extra field names are read case-insensitively; text with no name is not a field", () => {
     const parsed = parseReviewMd(
       review(
         problem("Case", { Extra: "Stage: coder" }),
@@ -331,8 +331,25 @@ describe("parseReviewMd, forgiving where the meaning is clear", () => {
       ),
     )
     if (!parsed.ok) throw new Error(parsed.errors.join("\n"))
-    expect(parsed.value.problems.map((p) => p.extra)).toEqual([{ stage: "coder" }])
-    expect(parsed.dropped).toEqual(['"No colon": Extra must read name: value, not "stage coder"'])
+    expect(parsed.value.problems.map((p) => p.extra)).toEqual([{ stage: "coder" }, {}])
+    expect(parsed.dropped).toEqual([])
+  })
+
+  test("RM22: an Extra line that says none, or nothing, keeps its problem, with no extra fields", () => {
+    const parsed = parseReviewMd(
+      review(
+        problem("Said none", { Extra: "none" }),
+        problem("Said n/a", { Extra: "n/a" }),
+        problem("Empty", { Extra: "" }),
+      ),
+    )
+    if (!parsed.ok) throw new Error(parsed.errors.join("\n"))
+    expect(parsed.value.problems.map((p) => [p.title, p.extra])).toEqual([
+      ["Said none", {}],
+      ["Said n/a", {}],
+      ["Empty", {}],
+    ])
+    expect(parsed.dropped).toEqual([])
   })
 
   test("RM18: a wrapped line that is not indented still belongs to its field", () => {

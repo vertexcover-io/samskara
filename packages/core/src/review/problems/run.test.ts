@@ -333,6 +333,21 @@ Find problems.
     expect(missing.ok && missing.dropped).toEqual(['"Claimed tests passed": missing Extra "topic"'])
   })
 
+  test("RR7: Extra: none is no field at all, so a required field is still missing and the problem dropped", () => {
+    const saidNone = reviewMd("all tests pass").replace(
+      "- **Learning:** Run the tests first.",
+      "- **Learning:** Run the tests first.\n- **Extra:** none",
+    )
+    expect(readProblemReview(saidNone, exported.records).ok).toBe(true)
+    const kept = readProblemReview(saidNone, exported.records)
+    expect(kept.ok && kept.review.problems).toHaveLength(1)
+    const required = readProblemReview(saidNone, exported.records, { extraFields: ["topic"] })
+    expect(required.ok && required.review.problems).toEqual([])
+    expect(required.ok && required.dropped).toEqual([
+      '"Claimed tests passed": missing Extra "topic"',
+    ])
+  })
+
   test("RR7: names are cleaned of markdown and case; a name that is not one short word is refused", () => {
     expect(
       requiredExtraFields("## Extra fields\n\n- **Stage**: which step\n- `Topic`: what\n"),
