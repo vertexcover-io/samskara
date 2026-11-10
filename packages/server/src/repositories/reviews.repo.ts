@@ -1,3 +1,4 @@
+import { MAIN_TRACK } from "@samskara/core"
 import { and, desc, eq } from "drizzle-orm"
 import type { Querier } from "../db/client.js"
 import { projects, sessionReviews, sessions } from "../db/schema.js"
@@ -86,29 +87,62 @@ export const getReview = async (db: Querier, id: string): Promise<DoneReviewRow 
   return row[0] === undefined ? null : asDone(row[0])
 }
 
+/** What a finished review writes. `reviewedThrough` is required so no writer forgets it. */
+export type ReviewWrite = {
+  readonly sessionId: string
+  readonly projectId: string
+  readonly analyzer: string
+  readonly outcome: string
+  readonly summary: string
+  readonly signals: object
+  /** The main-conversation lineNumber of the last message the review read; null when it read none. */
+  readonly reviewedThrough: number | null
+}
+
+/**
+ * The last line a review read: the highest main-conversation lineNumber among the messages it
+ * loaded. Each subagent transcript numbers its own lines from 1, so only the main track's
+ * numbers can be compared. A subagent is started and answered in the main track, so new
+ * subagent work always moves this forward.
+ */
+export const lastLineRead = (
+  messages: ReadonlyArray<{ readonly lineNumber: number; readonly trackId: string }>,
+): number | null =>
+  messages
+    .filter((message) => message.trackId === MAIN_TRACK)
+    .reduce<number | null>(
+      (last, message) => (last === null || message.lineNumber > last ? message.lineNumber : last),
+      null,
+    )
+
 /**
  * Replaces the same (sessionId, analyzer) pair's review — a re-review is a correction of the
- * same analysis, not a new fact.
+ * same analysis, not a new fact. A saved review is done, whatever state the row was in.
  */
-export const upsertReview = async (
-  db: Querier,
-  values: typeof sessionReviews.$inferInsert,
-): Promise<ReviewRow> => {
+export const upsertReview = async (db: Querier, values: ReviewWrite): Promise<DoneReviewRow> => {
+  const result = {
+    outcome: values.outcome,
+    summary: values.summary,
+    signals: values.signals,
+    status: "done",
+    error: null,
+    reviewedThrough: values.reviewedThrough,
+  } as const
   const [row] = await db
     .insert(sessionReviews)
-    .values(values)
+    .values({
+      sessionId: values.sessionId,
+      projectId: values.projectId,
+      analyzer: values.analyzer,
+      ...result,
+    })
     .onConflictDoUpdate({
       target: [sessionReviews.sessionId, sessionReviews.analyzer],
-      set: {
-        outcome: values.outcome,
-        summary: values.summary,
-        signals: values.signals,
-        updatedAt: new Date(),
-      },
+      set: { ...result, updatedAt: new Date() },
     })
     .returning()
   if (row === undefined) throw new Error("upsertReview returned no row")
-  return row
+  return asDone(row)
 }
 
 export const sessionProjectId = async (db: Querier, sessionId: string): Promise<string | null> => {

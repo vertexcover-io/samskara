@@ -69,3 +69,21 @@ describe.skipIf(!dockerAvailable())("reviews repository", () => {
     expect(await reviewsRepo.getReview(db, failed.id)).toMatchObject({ status: "done" })
   })
 })
+
+describe("lastLineRead", () => {
+  const main = (lineNumber: number) => ({ lineNumber, trackId: "main" })
+  const subagent = (lineNumber: number) => ({ lineNumber, trackId: "agent:a1" })
+
+  test.each([
+    { name: "main lines 3, 9 and 4", messages: [main(3), main(9), main(4)], expected: 9 },
+    {
+      name: "main lines up to 5 beside a subagent's line 40",
+      messages: [main(4), subagent(40), main(5)],
+      expected: 5,
+    },
+    { name: "only a subagent's lines", messages: [subagent(12)], expected: null },
+    { name: "no messages", messages: [], expected: null },
+  ])("SC7: $name were read through main line $expected", ({ messages, expected }) => {
+    expect(reviewsRepo.lastLineRead(messages)).toBe(expected)
+  })
+})

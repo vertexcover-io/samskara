@@ -50,6 +50,7 @@ describe.skipIf(!dockerAvailable())("review problems repository", () => {
       outcome: "shipped",
       summary: "s",
       signals: {},
+      reviewedThrough: null,
     })
     return { userId: user.id, projectId, reviewId: review.id }
   }
@@ -134,6 +135,7 @@ describe.skipIf(!dockerAvailable())("review problems repository", () => {
       outcome: "shipped",
       summary: "s",
       signals: {},
+      reviewedThrough: null,
     })
     const input = { sessionId: "problems-5", projectId }
     await problemsRepo.replaceReviewProblems(db, {

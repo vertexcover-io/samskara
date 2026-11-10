@@ -286,6 +286,19 @@ The agent claimed the build was fixed after the tests failed.
       })
     })
 
+    test("SC10: an AI review is saved done, with no error, through the highest line seeded", async () => {
+      const { runner } = problemsRunner(problemsMd("the build is fixed"))
+      const result = await runAiReview(depsWith(runner), userId, sessionId, {})
+
+      expect(result).toMatchObject({ kind: "ok" })
+      const lastSeeded = Math.max(...normalizedFixtures.map((message) => message.subIndex + 1))
+      const [row] = await db
+        .select()
+        .from(sessionReviews)
+        .where(eq(sessionReviews.sessionId, sessionId))
+      expect(row).toMatchObject({ status: "done", error: null, reviewedThrough: lastSeeded })
+    })
+
     test("PR2: a problem quoting what is not in the session is dropped, and the drop is recorded", async () => {
       const { runner } = problemsRunner(problemsMd("tests are all green"))
       const result = await runAiReview(depsWith(runner), userId, sessionId, {})

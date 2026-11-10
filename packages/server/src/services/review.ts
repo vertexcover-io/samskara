@@ -73,8 +73,9 @@ export const reviewAndPersist = async (
   userId: string,
   sessionId: string,
 ): Promise<{ readonly review: SessionReview; readonly reviewId: string } | null> => {
-  const review = await reviewSession(db, userId, sessionId)
-  if (review === null) return null
+  const detail = await getDetail(db, userId, sessionId)
+  if (detail === null) return null
+  const review = reviewFromDetail(sessionId, detail)
   const projectId = await reviewsRepo.sessionProjectId(db, sessionId)
   if (projectId === null) return null
 
@@ -85,6 +86,7 @@ export const reviewAndPersist = async (
     outcome: review.outcome,
     summary: review.summary,
     signals: review.signals as unknown as object,
+    reviewedThrough: reviewsRepo.lastLineRead(detail.messages),
   })
   return { review, reviewId: row.id }
 }

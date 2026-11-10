@@ -284,6 +284,7 @@ export const runAiReview = async (
         outcome: result.review.outcome,
         summary: result.review.summary,
         signals: signals as unknown as object,
+        reviewedThrough: reviewsRepo.lastLineRead(detail.messages),
       })
       await replaceReviewProblems(tx, {
         reviewId: row.id,
