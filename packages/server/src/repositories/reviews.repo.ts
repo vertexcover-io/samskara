@@ -6,6 +6,21 @@ import { visibleToUser } from "./projects.repo.js"
 export type ReviewRow = typeof sessionReviews.$inferSelect
 
 /**
+ * A finished review. The database refuses a done row without its result
+ * (`sessionReviews_done_has_result_check`), so a row read with `isDone` always has one.
+ */
+export type DoneReviewRow = ReviewRow & {
+  readonly status: "done"
+  readonly outcome: string
+  readonly summary: string
+}
+
+/** Only a done row is a review; waiting, running and failed rows have no result to show. */
+const isDone = eq(sessionReviews.status, "done")
+
+const asDone = (row: ReviewRow): DoneReviewRow => row as DoneReviewRow
+
+/**
  * Latest-first like every list in the server; callers paginate above this layer. Scoped by
  * `visibleToUser` — a session's reviews are readable exactly by whoever could open the session
  * itself.
@@ -14,16 +29,19 @@ export const listReviewsForSession = async (
   db: Querier,
   userId: string,
   sessionId: string,
-): Promise<ReviewRow[]> =>
+): Promise<DoneReviewRow[]> =>
   db
     .select()
     .from(sessionReviews)
     .innerJoin(projects, eq(projects.id, sessionReviews.projectId))
-    .where(and(eq(sessionReviews.sessionId, sessionId), visibleToUser(db, userId)))
+    .where(and(eq(sessionReviews.sessionId, sessionId), isDone, visibleToUser(db, userId)))
     .orderBy(desc(sessionReviews.createdAt))
-    .then((rows) => rows.map((row) => row.sessionReviews))
+    .then((rows) => rows.map((row) => asDone(row.sessionReviews)))
 
-/** Whether the session has a review from `analyzer` the viewer may read, without loading it. */
+/**
+ * Whether the session has a done review from `analyzer` the viewer may read, without loading
+ * it. A failed review does not count, so the batch tries that session again.
+ */
 export const hasReviewFrom = async (
   db: Querier,
   query: { readonly userId: string; readonly sessionId: string; readonly analyzer: string },
@@ -36,6 +54,7 @@ export const hasReviewFrom = async (
       and(
         eq(sessionReviews.sessionId, query.sessionId),
         eq(sessionReviews.analyzer, query.analyzer),
+        isDone,
         visibleToUser(db, query.userId),
       ),
     )
@@ -58,9 +77,13 @@ export const visibleSessionProjectId = async (
   return row[0]?.projectId ?? null
 }
 
-export const getReview = async (db: Querier, id: string): Promise<ReviewRow | null> => {
-  const row = await db.select().from(sessionReviews).where(eq(sessionReviews.id, id)).limit(1)
-  return row[0] ?? null
+export const getReview = async (db: Querier, id: string): Promise<DoneReviewRow | null> => {
+  const row = await db
+    .select()
+    .from(sessionReviews)
+    .where(and(eq(sessionReviews.id, id), isDone))
+    .limit(1)
+  return row[0] === undefined ? null : asDone(row[0])
 }
 
 /**

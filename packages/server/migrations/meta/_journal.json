@@ -281,6 +281,20 @@
       "when": 1793952401446,
       "tag": "0039_breezy_giant_girl",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1794331148258,
+      "tag": "0040_optimal_wind_dancer",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1794331152479,
+      "tag": "0041_review_state_backfill",
+      "breakpoints": true
     }
   ]
 }

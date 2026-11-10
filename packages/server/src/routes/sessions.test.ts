@@ -694,6 +694,43 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     ])
   })
 
+  test("SC4: a waiting AI review gives no badge and counts as missing, while a done one does", async () => {
+    const owner = await seedUser(db, 1602, "ai-waiting-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "AI waiting", slug: "ai-waiting" },
+      ownerId: owner,
+    })
+    for (const id of ["ai-waiting", "ai-done"]) {
+      await seedSession(db, {
+        id,
+        userId: owner,
+        projectId,
+        title: id,
+        updatedAt: new Date("2026-02-05T12:00:00Z"),
+      })
+    }
+    await db.insert(sessionReviews).values([
+      { sessionId: "ai-waiting", projectId, analyzer: "ai-problems-v2", status: "waiting" },
+      {
+        sessionId: "ai-done",
+        projectId,
+        analyzer: "ai-problems-v2",
+        outcome: "productive",
+        summary: "ai review",
+        signals: {},
+      },
+    ])
+
+    const badge = new Map(
+      (await listAs(db, owner)).map((session) => [session.id, session.hasAiReview]),
+    )
+    expect(badge.get("ai-waiting")).toBe(false)
+    expect(badge.get("ai-done")).toBe(true)
+
+    expect(idsOf(await listAs(db, owner, "?aiReview=done"))).toEqual(["ai-done"])
+    expect(idsOf(await listAs(db, owner, "?aiReview=missing"))).toEqual(["ai-waiting"])
+  })
+
   test("SC13: a summary carries its message count, status and start, and nothing it no longer shows", async () => {
     const owner = await seedUser(db, 1301, "shape-owner")
     const projectId = await projectsRepo.upsert(db, {

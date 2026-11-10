@@ -485,6 +485,10 @@ export const artifact = pgTable(
  * One structured analysis of a session. Unique on (sessionId, analyzer): re-running the same
  * analyzer version replaces its review rather than stacking copies, while a future analyzer
  * version writes its own row alongside — reviews are comparable, not overwritten.
+ *
+ * A row moves waiting -> running -> done | failed. Only a done row holds a result, so readers
+ * that show or count a review read done rows only. Nothing writes waiting, running or failed
+ * yet: the review worker that will is a later change.
  */
 export const sessionReviews = pgTable(
   "sessionReviews",
@@ -497,9 +501,19 @@ export const sessionReviews = pgTable(
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
     analyzer: text("analyzer").notNull(),
-    outcome: text("outcome").notNull(),
-    summary: text("summary").notNull(),
-    signals: jsonb("signals").notNull(),
+    /** Null until the review is done. */
+    outcome: text("outcome"),
+    summary: text("summary"),
+    signals: jsonb("signals"),
+    status: text("status").notNull().default("done"),
+    /** How many times this review has been tried. */
+    attempts: integer("attempts").notNull().default(0),
+    /** Why the last try failed. */
+    error: text("error"),
+    /** Touched by the worker while the review runs; a stale one means the worker died. */
+    heartbeatAt: timestamp("heartbeatAt", { withTimezone: true }),
+    /** The main-conversation lineNumber of the last message the review read; null when it read none. */
+    reviewedThrough: integer("reviewedThrough"),
     createdAt,
     updatedAt,
   },
@@ -509,7 +523,19 @@ export const sessionReviews = pgTable(
       "sessionReviews_outcome_check",
       sql`${t.outcome} in ('shipped', 'productive', 'struggled', 'aborted')`,
     ),
+    check(
+      "sessionReviews_status_check",
+      sql`${t.status} in ('waiting', 'running', 'done', 'failed')`,
+    ),
+    check(
+      "sessionReviews_done_has_result_check",
+      sql`${t.status} <> 'done' or (${t.outcome} is not null and ${t.summary} is not null and ${t.signals} is not null)`,
+    ),
     index("sessionReviews_project_idx").on(t.projectId),
+    // The worker's queue: waiting rows to pick up, running rows to check for a stale heartbeat.
+    index("sessionReviews_status_updatedAt_idx")
+      .on(t.status, t.updatedAt)
+      .where(sql`${t.status} in ('waiting', 'running')`),
   ],
 )
 

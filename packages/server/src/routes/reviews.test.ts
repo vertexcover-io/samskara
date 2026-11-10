@@ -222,4 +222,19 @@ describe.skipIf(!dockerAvailable())("reviews", () => {
     // Nothing was written on the way to the refusal.
     expect(await db.select().from(sessionReviews)).toHaveLength(0)
   })
+
+  test("SC3: a waiting AI review and a failed static review are not shown on the session page", async () => {
+    await db.insert(sessionReviews).values([
+      { sessionId, projectId, analyzer: "ai-problems-v2", status: "waiting" },
+      { sessionId, projectId, analyzer: "heuristic-v1", status: "failed", error: "boom" },
+    ])
+
+    const listed = await request(`/api/sessions/${sessionId}/review`)
+    expect(listed.status).toBe(200)
+    expect(await listed.json()).toEqual({ reviews: [] })
+
+    const ai = await request(`/api/sessions/${sessionId}/aireview`)
+    expect(ai.status).toBe(404)
+    expect(await ai.json()).toEqual({ error: "noAiReview" })
+  })
 })
