@@ -1,5 +1,6 @@
 import { rmSync } from "node:fs"
-import { asc, eq } from "drizzle-orm"
+import type { HarnessRunner } from "@samskara/core"
+import { asc, eq, sql } from "drizzle-orm"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import { buildApp } from "../app.js"
 import type { Db } from "../db/client.js"
@@ -21,6 +22,7 @@ import {
   fakeAgents,
   harnessRepoFixture,
   problemFixture,
+  STORY_MD,
   seedOrg,
   seedProject,
   seedSession,
@@ -57,11 +59,17 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
   /** With `serverHarness`, the server has its own harness checkout (LEARNINGS_HARNESS_PATH). */
   const request = async (
     path: string,
-    init: { method?: string; body?: unknown; as?: string; serverHarness?: boolean } = {},
+    init: {
+      method?: string
+      body?: unknown
+      as?: string
+      serverHarness?: boolean
+      runner?: HarnessRunner
+    } = {},
   ) => {
     const token = await signToken(env, { sub: init.as ?? userId, aud: "cli" })
     const appEnv = init.serverHarness ? { ...env, learningsHarness: { path: harnessPath } } : env
-    return buildApp(db, appEnv, { aiReviewRunner: agents }).request(path, {
+    return buildApp(db, appEnv, { aiReviewRunner: init.runner ?? agents }).request(path, {
       method: init.method ?? "GET",
       headers: {
         authorization: `Bearer ${token}`,
@@ -72,13 +80,15 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
   }
 
   /** High severity, so one session is not a one-off code drops before agent 2. */
-  const seedProblems = async (titles: ReadonlyArray<string>) => {
+  /** A session with these problems; with `withRecords` (the default) its messages too, so its evidence can be quoted. */
+  const seedProblems = async (titles: ReadonlyArray<string>, withRecords = true) => {
     counter += 1
     await seedSession(db, {
       sessionId: `route-learn-${counter}`,
       projectId,
       userId,
       problems: titles.map((title) => problemFixture(title, { severity: "high" })),
+      ...(withRecords ? { texts: ["first message", "waiting on jest"] } : {}),
     })
   }
 
@@ -220,6 +230,105 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
       learning: Record<string, unknown>
     }
     expect(old.learning).toMatchObject({ impact: null, impactReason: null, howItHelps: null })
+  })
+
+  /** Runs a learning run on the server's harness with `runner`, and returns the run's id. */
+  const runWith = async (runner: HarnessRunner = agents) => {
+    const started = await request("/api/learnings/runs", {
+      method: "POST",
+      body: { project: projectId },
+      serverHarness: true,
+      runner,
+    })
+    const { runId } = (await started.json()) as { runId: string }
+    expect((await waitForRun(runId)).status).toBe("done")
+    return runId
+  }
+  type Story = {
+    steps: Array<{ text: string; quote: string }>
+    whyProblem: string
+    shouldHave: string
+  }
+  const listOf = async () =>
+    (
+      (await (await request(`/api/learnings?project=${projectId}`)).json()) as {
+        learnings: Array<{ id: string; title: string; story: Story | null }>
+      }
+    ).learnings
+  const storyOf = async (id: string | undefined) =>
+    (
+      (await (await request(`/api/learnings/${id}`)).json()) as {
+        learning: { story: Story | null }
+      }
+    ).learning.story
+  const insertOlder = async (runId: string) => {
+    const [older] = await db
+      .insert(learnings)
+      .values({
+        projectId,
+        updatedByRunId: runId,
+        title: "Older one",
+        cause: "c",
+        problem: "p",
+        priority: "low",
+        priorityReason: "r",
+        fixType: "skill",
+        fix: "f",
+      })
+      .returning()
+    return older?.id
+  }
+
+  test("SC301: a learning run saves the writer's story, and the fix's page returns it step by step", async () => {
+    await seedProblems(["A"])
+    await runWith()
+    const [learning] = await listOf()
+    expect(await storyOf(learning?.id)).toEqual({
+      steps: [
+        { text: "The helper started the tests.", quote: "waiting on jest" },
+        { text: "It reported before they finished.", quote: "waiting on jest" },
+        { text: "The main agent took that as done.", quote: "waiting on jest" },
+      ],
+      whyProblem: "Nobody saw the tests pass.",
+      shouldHave: "It should have waited for the tests.",
+    })
+  })
+
+  test("SC302: a fix saved before the story was asked for returns story null on the list and its page", async () => {
+    await seedProblems(["A"])
+    const older = await insertOlder(await runWith())
+    const list = await listOf()
+    expect(list.find((learning) => learning.id === older)?.story).toBeNull()
+    expect(await storyOf(older)).toBeNull()
+  })
+
+  test("SC303: a stored story that does not fit the shape is returned as null, not as raw data", async () => {
+    await seedProblems(["A"])
+    const older = await insertOlder(await runWith())
+    await db.execute(sql`update learnings set story = '{"steps": []}'::jsonb where id = ${older}`)
+    expect(await storyOf(older)).toBeNull()
+  })
+
+  test("SC305: a run whose sessions show no records to quote still finishes, and saves no story", async () => {
+    await seedProblems(["A"], false)
+    await runWith()
+    const [learning] = await listOf()
+    expect(learning?.title).toBe("Helpers report early")
+    expect(await storyOf(learning?.id)).toBeNull()
+  })
+
+  test("SC304: a run that updates a fix replaces its story, and it stays one fix", async () => {
+    await seedProblems(["A"])
+    await runWith()
+    await seedProblems(["B"])
+    await runWith(
+      fakeAgents({
+        story: STORY_MD.replace("The helper started the tests.", "Again it reported early."),
+      }).runner,
+    )
+    const list = await listOf()
+    expect(list).toHaveLength(1)
+    expect((await storyOf(list[0]?.id))?.steps[0]?.text).toBe("Again it reported early.")
   })
 
   test("SC18: the one learning carries each problem's session title and each quote's real message id", async () => {

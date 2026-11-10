@@ -4,6 +4,7 @@ import {
   type HarnessRunner,
   type LearningImpact,
   messageIdAt,
+  parseStory,
   recordsInReviewOrder,
 } from "@samskara/core"
 import { type Context, Hono } from "hono"
@@ -48,6 +49,7 @@ const serializeLearning = (row: learningsRepo.LearningRow) => ({
   impactReason: row.impactReason,
   howItHelps: row.howItHelps,
   fixSummary: row.fixSummary,
+  story: parseStory(row.story),
   skippedAt: row.skippedAt?.toISOString() ?? null,
   updatedByRunId: row.updatedByRunId,
   createdAt: row.createdAt.toISOString(),

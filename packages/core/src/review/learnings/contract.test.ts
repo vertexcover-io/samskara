@@ -17,12 +17,19 @@ describe("the writing rules both contracts share", () => {
     expect(WRITING_RULES).toContain("No jargon or shorthand")
   })
 
-  test("SC5: every existing character limit is unchanged", () => {
-    expect(WRITTEN_LIMITS).toMatchObject({
-      title: 120,
-      problem: 600,
+  test("SC5: the four list lines are short, the story's parts are limited, and the other limits are unchanged", () => {
+    expect(WRITTEN_LIMITS).toEqual({
+      title: 80,
+      problem: 250,
       priorityReason: 300,
       fix: 1200,
+      impactReason: 200,
+      howItHelps: 300,
+      fixSummary: 250,
+      storyStep: 200,
+      storyQuote: 150,
+      whyProblem: 250,
+      shouldHave: 250,
     })
     expect(CAUSE_MAX).toBe(400)
     expect(LIMITS).toEqual({
@@ -42,14 +49,25 @@ describe("the writing rules both contracts share", () => {
   })
 })
 
+/** The contract's example learnings.md, and the evidence its story quotes. */
+const EXAMPLE = /```markdown\n([\s\S]*?)```/.exec(WRITER_CONTRACT)?.[1] ?? ""
+const EXAMPLE_RULES = {
+  joined: [],
+  maxHigh: 99,
+  maxMedium: 99,
+  projectWords: [],
+  evidence: {
+    G1: [
+      "started jest in the background",
+      "waiting on jest, will report results later",
+      "all helpers reported, opening the pull request",
+    ],
+  },
+}
+
 describe("the writer contract", () => {
   test("SC2: the example learnings.md parses whole, with impact and how it helps", () => {
-    const example = /```markdown\n([\s\S]*?)```/.exec(WRITER_CONTRACT)?.[1] ?? ""
-    const parsed = parseWrittenMd(example, ["G1", "G2"], FIX_TYPES, {
-      joined: [],
-      maxHigh: 99,
-      maxMedium: 99,
-    })
+    const parsed = parseWrittenMd(EXAMPLE, ["G1", "G2"], FIX_TYPES, EXAMPLE_RULES)
     expect(parsed.errors).toEqual([])
     const g1 = parsed.answers.G1
     if (g1?.verdict !== "learning") throw new Error("G1 is not a learning")
@@ -74,15 +92,24 @@ test("the writing rules ask for any project word to be said plainly or explained
   expect(WRITING_RULES).toContain("Use failed only when the thing itself broke")
 })
 
-test("the writer tells one story in a fixed order, says how often, and writes the fix in plain words", () => {
-  expect(WRITER_CONTRACT).toContain("Tell one story, not many")
-  for (const step of [
-    "1. What the agent was doing.",
-    "2. What it did wrong.",
-    "3. What happened because of it.",
-    "4. What it should have done instead.",
-  ])
-    expect(WRITER_CONTRACT).toContain(step)
-  expect(WRITER_CONTRACT).toContain("This happened in 11 sessions.")
+test("SC111: the example tells a 3-step story, and Problem describes the pattern, not one story", () => {
+  const parsed = parseWrittenMd(EXAMPLE, ["G1", "G2"], FIX_TYPES, EXAMPLE_RULES)
+  expect(parsed.errors).toEqual([])
+  const g1 = parsed.answers.G1
+  if (g1?.verdict !== "learning") throw new Error("G1 is not a learning")
+  expect(g1.story?.steps).toHaveLength(3)
+  expect(WRITER_CONTRACT).toContain("must be true of every session in the group")
+  expect(WRITER_CONTRACT).not.toContain("Tell one story, not many")
   expect(WRITER_CONTRACT).toContain("- **In plain words:**")
+})
+
+test("spec-3: the contract says what check.mjs refuses in the four list lines, and an updated fix keeps its title only when the check would pass it", () => {
+  const flat = WRITER_CONTRACT.replace(/\s+/g, " ")
+  expect(flat).toContain(
+    "check.mjs` refuses any of the four that holds a backtick, a file name or path, the words yok or harness, or the name of a skill, agent, hook or command in `harness/`",
+  )
+  expect(flat).toContain("Avoid skill and step names even when they are everyday words")
+  expect(flat).toContain(
+    `Keep the title unless it is wrong, over ${WRITTEN_LIMITS.title} characters, or uses a word the list lines may not hold`,
+  )
 })

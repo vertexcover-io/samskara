@@ -1,3 +1,4 @@
+import { z } from "zod"
 import type { FixType, Problem } from "../problems/reviewMd.js"
 
 export const LEARNING_PRIORITIES = ["high", "medium", "low"] as const
@@ -10,6 +11,30 @@ export type LearningPriority = (typeof LEARNING_PRIORITIES)[number]
  */
 export const LEARNING_IMPACTS = ["wrong_result", "person_stepped_in", "time_only"] as const
 export type LearningImpact = (typeof LEARNING_IMPACTS)[number]
+
+/**
+ * One time the problem happened, told as 3 or 4 short steps that end where it turned out
+ * wrong, then why that is a problem and what should have happened. Every quote is the
+ * session's own words, checked against the group's evidence before it is saved.
+ */
+export const learningStorySchema = z
+  .object({
+    steps: z
+      .array(z.object({ text: z.string().min(1), quote: z.string().min(1) }).strict())
+      .min(3)
+      .max(4),
+    whyProblem: z.string().min(1),
+    shouldHave: z.string().min(1),
+  })
+  .strict()
+
+export type LearningStory = z.infer<typeof learningStorySchema>
+
+/** A stored story, or null when there is none or it no longer fits the shape. */
+export const parseStory = (value: unknown): LearningStory | null => {
+  const parsed = learningStorySchema.safeParse(value)
+  return parsed.success ? parsed.data : null
+}
 
 /** A saved problem, as the learning run reads it: the review's fields, plus where it came from. */
 export type ProblemInput = Omit<Problem, "extra"> & {
@@ -41,6 +66,8 @@ export type LearningInput = {
   readonly howItHelps: string | null
   /** The fix in one plain sentence, before its exact text. Null on an older learning. */
   readonly fixSummary: string | null
+  /** The example the fix's page opens on. Null on a learning written before it was asked for. */
+  readonly story: LearningStory | null
 }
 
 /** One group from agent 1: problems with the same cause, and the learning they join, if any. */
@@ -55,12 +82,14 @@ export type ProblemGroup = {
 export type WrittenLearning =
   | ({ readonly verdict: "learning" } & Omit<
       LearningInput,
-      "id" | "cause" | "impact" | "impactReason" | "howItHelps" | "fixSummary"
+      "id" | "cause" | "impact" | "impactReason" | "howItHelps" | "fixSummary" | "story"
     > & {
         readonly impact: LearningImpact
         readonly impactReason: string
         readonly howItHelps: string
         readonly fixSummary: string
+        /** Null when the group showed no session records to quote. */
+        readonly story: LearningStory | null
       })
   | {
       /** Not worth a learning: a one-off, or its excerpts did not clearly show it matters. */
