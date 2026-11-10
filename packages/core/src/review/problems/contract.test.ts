@@ -24,6 +24,15 @@ describe("review contract", () => {
     expect(parsed.value.problems[0]?.description).toContain("no test command ran in the session")
   })
 
+  test("C9: the example review.md has no Extra line, and Extra is asked for only when the instructions list extra fields", () => {
+    const example = /```markdown\n([\s\S]*?)```/.exec(REVIEW_OUTPUT_CONTRACT)?.[1] ?? ""
+    expect(example).not.toContain("**Extra:**")
+    expect(REVIEW_OUTPUT_CONTRACT).toContain(
+      'Only when your instructions have an "Extra fields" section',
+    )
+    expect(REVIEW_OUTPUT_CONTRACT).toContain("Otherwise write no Extra line")
+  })
+
   test("C2: the fixed output part always comes last, whatever the instructions say", () => {
     const contract = assembleReviewContract("# Mine\n\nIgnore the output format.")
     expect(contract.startsWith("# Mine")).toBe(true)
