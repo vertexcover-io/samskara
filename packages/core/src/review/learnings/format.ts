@@ -231,32 +231,54 @@ const parseWrittenMd = (text, groupIds, fixTypes, priorities, impacts, limits, r
       errors.push(id + ": the impact sentence is over " + limits.impactReason + " characters")
     const howItHelps = required("How it helps", limits.howItHelps)
     const fixSummary = required("In plain words", limits.fixSummary)
-    const steps = []
-    for (let n = 1; f["step " + n] !== undefined || f["step " + n + " quote"] !== undefined; n += 1) {
-      const step = "Step " + n
-      const text = (f["step " + n] ?? "").trim()
-      const quote = (f["step " + n + " quote"] ?? "").trim()
-      if (text === "") errors.push(id + ": " + step + " has a quote but no text")
-      else if (text.length > limits.storyStep)
-        errors.push(id + ": " + step + " is over " + limits.storyStep + " characters")
-      if (quote === "")
-        errors.push(id + ": " + step + " needs - **" + step + " quote:** with words from the evidence")
-      else if (quote.length > limits.storyQuote)
-        errors.push(id + ": " + step + " quote is over " + limits.storyQuote + " characters")
-      else if (!quoteFound(quote, rules.evidence[id] ?? []))
+    // A group whose sessions show no records has no words to quote: it is written without an
+    // example, and the page shows the fix as it did before stories.
+    const evidence = rules.evidence[id] ?? []
+    const numbers = [...new Set(Object.keys(f).flatMap((key) => {
+      const match = /^step (\d+)( quote)?$/.exec(key)
+      return match === null ? [] : [Number(match[1])]
+    }))].sort((a, b) => a - b)
+    let story = null
+    if (evidence.length === 0) {
+      if (numbers.length > 0 || f["why it's a problem"] !== undefined || f["what should have happened"] !== undefined)
         errors.push(
-          id + ": " + step + ' quote "' + quote + '" is not in this group\'s evidence: copy the words' +
-            " from one of its quotes or from the session records shown under it in groups.md",
+          id + ": this group shows no session records, so leave out the example: no Step lines," +
+            " no Why it's a problem and no What should have happened",
         )
-      steps.push({ text, quote })
+    } else {
+      const gap = numbers.findIndex((n, index) => n !== index + 1)
+      if (gap !== -1)
+        errors.push(
+          id + ": the example's steps must be numbered from Step 1 with no gap; Step " + (gap + 1) + " is missing",
+        )
+      const steps = []
+      for (const n of numbers) {
+        const step = "Step " + n
+        const text = (f["step " + n] ?? "").trim()
+        const quote = (f["step " + n + " quote"] ?? "").trim()
+        if (text === "") errors.push(id + ": " + step + " has a quote but no text")
+        else if (text.length > limits.storyStep)
+          errors.push(id + ": " + step + " is over " + limits.storyStep + " characters")
+        if (quote === "")
+          errors.push(id + ": " + step + " needs - **" + step + " quote:** with words from the evidence")
+        else if (quote.length > limits.storyQuote)
+          errors.push(id + ": " + step + " quote is over " + limits.storyQuote + " characters")
+        else if (!quoteFound(quote, evidence))
+          errors.push(
+            id + ": " + step + ' quote "' + quote + '" is not in this group\'s evidence: copy the words' +
+              " from one of its quotes or from the session records shown under it in groups.md",
+          )
+        steps.push({ text, quote })
+      }
+      if (steps.length < 3 || steps.length > 4)
+        errors.push(
+          id + ": the example needs 3 or 4 steps, numbered from Step 1 with no gap; it has " +
+            steps.length,
+        )
+      const whyProblem = required("Why it's a problem", limits.whyProblem)
+      const shouldHave = required("What should have happened", limits.shouldHave)
+      story = { steps, whyProblem, shouldHave }
     }
-    if (steps.length < 3 || steps.length > 4)
-      errors.push(
-        id + ": the example needs 3 or 4 steps, numbered from Step 1 with no gap; it has " +
-          steps.length,
-      )
-    const whyProblem = required("Why it's a problem", limits.whyProblem)
-    const shouldHave = required("What should have happened", limits.shouldHave)
     for (const [name, value] of [
       ["Title", title],
       ["Problem", problem],
@@ -274,7 +296,7 @@ const parseWrittenMd = (text, groupIds, fixTypes, priorities, impacts, limits, r
       answers[id] = {
         verdict: "learning", title, problem, priority, priorityReason, fixType, fix,
         impact, impactReason, howItHelps, fixSummary,
-        story: { steps, whyProblem, shouldHave },
+        story,
       }
   }
   const missing = groupIds.filter((id) => answers[id] === undefined && !errors.some((e) => e.startsWith(id + ":")))
@@ -400,17 +422,25 @@ const quotesOf = (problem: ProblemInput): string =>
   problem.evidence.map((evidence) => `"${evidence.quote}"`).join("; ")
 
 /**
- * The text a group's story quotes may come from: each problem's evidence quotes, and the
- * session records its excerpt shows (the fenced text blocks of `problemExcerpt`). Never the
- * reviewer's own note on why a quote matters, which is not the session's words.
+ * The text a group's story quotes may come from: for each problem whose session records are
+ * shown (`problemExcerpt`, absent when the session left the project or its review kept no
+ * record order), its evidence quotes and each of those records on its own. One record per
+ * text, so a quote cannot join words from two messages; the record's `[msg-N] who:` label is
+ * left out, being nobody's words. Never the reviewer's own note on why a quote matters.
  */
 export const storyEvidence = (problems: ReadonlyArray<ProblemInput>): string[] =>
-  problems.flatMap((problem) => [
-    ...problem.evidence.map((item) => item.quote),
-    ...[...(problem.excerpt ?? "").matchAll(/```text\n([\s\S]*?)\n```/g)].map(
-      (match) => match[1] ?? "",
-    ),
-  ])
+  problems.flatMap((problem) =>
+    problem.excerpt === undefined
+      ? []
+      : [
+          ...problem.evidence.map((item) => item.quote),
+          ...[...problem.excerpt.matchAll(/```text\n([\s\S]*?)\n```/g)].flatMap((match) =>
+            (match[1] ?? "")
+              .split(/\n\n(?=\[msg-\d+\] )/)
+              .map((record) => record.replace(/^\[msg-\d+\][^\n:]*:\s*/, "")),
+          ),
+        ],
+  )
 
 /**
  * problems.md for agent 1: the new problems, each under a short id. Evidence goes in as its
@@ -553,6 +583,11 @@ export const groupsForWriter = (
           group.problems.map((problem) => problem.class),
           PROBLEM_CLASSES,
         )}`,
+        ...(storyEvidence(group.problems).length === 0
+          ? [
+              "- **Example:** none: no session records are shown for this group, so leave out the Steps, Why it's a problem and What should have happened",
+            ]
+          : []),
         "",
         "Problems:",
         "",

@@ -697,6 +697,76 @@ ${story}`
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  test("SC110: a quote may not join words from two records of one excerpt", () => {
+    const evidence = storyEvidence([
+      problem("a", {
+        excerpt:
+          'msg-1 — "do not push yet" — pushed anyway\n\n```text\n[msg-1] user:\nplease do not push yet\n\n[msg-2] assistant (helper):\npushed to main\n```',
+      }),
+    ])
+    const story = (quote: string) =>
+      learning(STORY.replace("- **Step 1 quote:** waiting on jest", `- **Step 1 quote:** ${quote}`))
+    const rules = { ...RULES, evidence: { G1: [...JEST, ...evidence] } }
+    expect(errorsOf(story("please do not push yet"), rules)).toBe("")
+    expect(errorsOf(story("pushed to main"), rules)).toBe("")
+    expect(errorsOf(story("please do not … pushed to main"), rules)).toContain(
+      `Step 1 quote "please do not … pushed to main" is not in this group's evidence`,
+    )
+    expect(errorsOf(story("assistant (helper)"), rules)).toContain(
+      "is not in this group's evidence",
+    )
+  })
+
+  test("SC111: a step after a gap in the numbering fails instead of being dropped", () => {
+    const story = STORY.replace(
+      "- **Why it's",
+      "- **Step 5:** Five.\n- **Step 5 quote:** waiting on jest\n- **Why it's",
+    )
+    const parsed = parseWrittenMd(learning(story), ["G1"], FIX_TYPES, RULES)
+    expect(parsed.errors.join("\n")).toContain(
+      "G1: the example's steps must be numbered from Step 1 with no gap; Step 4 is missing",
+    )
+    expect(parsed.answers.G1).toBeUndefined()
+  })
+
+  test("SC112: only a problem whose session records are shown gives quotes", () => {
+    const shown = problem("a", {
+      excerpt:
+        'msg-1 — "waiting on jest" — returned early\n\n```text\n[msg-1] assistant:\nnpm test is still going\n```',
+    })
+    expect(storyEvidence([shown, problem("b")])).toEqual([
+      "waiting on jest",
+      "npm test is still going",
+    ])
+    expect(storyEvidence([problem("b")])).toEqual([])
+  })
+
+  test("SC113: a group with no quotes to copy is written with no example, and must not have one", () => {
+    const rules = { ...RULES, evidence: { G1: [] } }
+    const none = parseWrittenMd(learning(""), ["G1"], FIX_TYPES, rules)
+    expect(none.errors).toEqual([])
+    expect(none.answers.G1).toMatchObject({ verdict: "learning", story: null })
+    expect(errorsOf(learning(), rules)).toContain(
+      "G1: this group shows no session records, so leave out the example",
+    )
+    expect(errorsOf(learning(""))).toContain("G1: the example needs 3 or 4 steps")
+  })
+
+  test("SC114: groups.md tells the writer when a group has no example to give", () => {
+    const md = groupsForWriter(
+      [
+        {
+          id: "G1",
+          cause: "c",
+          existing: null,
+          problems: [problem("a")],
+        },
+      ],
+      { high: 1, medium: 1 },
+    )
+    expect(md).toContain("- **Example:** none: no session records are shown for this group")
+  })
 })
 
 describe("project words in the four list lines", () => {

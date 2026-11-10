@@ -18,6 +18,8 @@ const problem = (id: string): ProblemInput => ({
   description: "Expected a wait. It returned early.",
   learning: "Wait for the run to finish.",
   evidence: [{ from: "msg-1", to: "msg-1", quote: "waiting on jest", why: "returned early" }],
+  excerpt:
+    'msg-1 — "waiting on jest" — returned early\n\n```text\n[msg-1] assistant:\nwaiting on jest\n```',
 })
 
 /** A fake agent: writes `file` into its workspace, after checking what it was handed. */
@@ -251,7 +253,7 @@ ${STORY}
     if (!result.ok) return
     const answer = result.answers[0]
     if (answer?.verdict !== "learning") throw new Error("G1 is not a learning")
-    expect(answer.story.steps[0]?.quote).toBe("waiting on jest")
+    expect(answer.story?.steps[0]?.quote).toBe("waiting on jest")
   })
 
   test("SC207: the writer's check reads the project words from the harness, and the one retry fixes the Title", async () => {

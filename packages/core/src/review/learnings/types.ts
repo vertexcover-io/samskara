@@ -88,7 +88,8 @@ export type WrittenLearning =
         readonly impactReason: string
         readonly howItHelps: string
         readonly fixSummary: string
-        readonly story: LearningStory
+        /** Null when the group showed no session records to quote. */
+        readonly story: LearningStory | null
       })
   | {
       /** Not worth a learning: a one-off, or its excerpts did not clearly show it matters. */

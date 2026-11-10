@@ -80,13 +80,15 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
   }
 
   /** High severity, so one session is not a one-off code drops before agent 2. */
-  const seedProblems = async (titles: ReadonlyArray<string>) => {
+  /** A session with these problems; with `withRecords` (the default) its messages too, so its evidence can be quoted. */
+  const seedProblems = async (titles: ReadonlyArray<string>, withRecords = true) => {
     counter += 1
     await seedSession(db, {
       sessionId: `route-learn-${counter}`,
       projectId,
       userId,
       problems: titles.map((title) => problemFixture(title, { severity: "high" })),
+      ...(withRecords ? { texts: ["first message", "waiting on jest"] } : {}),
     })
   }
 
@@ -305,6 +307,14 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
     const older = await insertOlder(await runWith())
     await db.execute(sql`update learnings set story = '{"steps": []}'::jsonb where id = ${older}`)
     expect(await storyOf(older)).toBeNull()
+  })
+
+  test("SC305: a run whose sessions show no records to quote still finishes, and saves no story", async () => {
+    await seedProblems(["A"], false)
+    await runWith()
+    const [learning] = await listOf()
+    expect(learning?.title).toBe("Helpers report early")
+    expect(await storyOf(learning?.id)).toBeNull()
   })
 
   test("SC304: a run that updates a fix replaces its story, and it stays one fix", async () => {

@@ -97,7 +97,7 @@ test("SC111: the example tells a 3-step story, and Problem describes the pattern
   expect(parsed.errors).toEqual([])
   const g1 = parsed.answers.G1
   if (g1?.verdict !== "learning") throw new Error("G1 is not a learning")
-  expect(g1.story.steps).toHaveLength(3)
+  expect(g1.story?.steps).toHaveLength(3)
   expect(WRITER_CONTRACT).toContain("must be true of every session in the group")
   expect(WRITER_CONTRACT).not.toContain("Tell one story, not many")
   expect(WRITER_CONTRACT).toContain("- **In plain words:**")

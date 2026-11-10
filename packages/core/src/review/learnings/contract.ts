@@ -226,7 +226,8 @@ implement: say what that step does instead.
   wrong. Give each step a quote: the session's own words, at most ${WRITTEN_LIMITS.storyQuote}
   characters, copied from this group's evidence quotes or the session records shown under
   them in \`groups.md\`. A quote may skip words with \`…\`. \`check.mjs\` refuses a quote it
-  cannot find there.
+  cannot find there. When a group says "Example: none", it has nothing to quote: leave out the
+  steps and the two lines after them.
 - Why it's a problem: one sentence, at most ${WRITTEN_LIMITS.whyProblem} characters.
 - What should have happened: one sentence, at most ${WRITTEN_LIMITS.shouldHave} characters.
 - Why (for a drop): one sentence, at most ${WRITTEN_LIMITS.priorityReason} characters: which

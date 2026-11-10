@@ -135,7 +135,10 @@ export const fakeAgents = (
     badGroups?: boolean
     verdict?: "learning" | "drop"
     oneGroupEach?: boolean
-    /** The example each learning tells, as learnings.md fields; `STORY_MD` when unset. */
+    /**
+     * The example each learning tells, as learnings.md fields; `STORY_MD` when unset. A group
+     * groups.md marks "Example: none" gets none, as the real writer is told.
+     */
     story?: string
   } = {},
 ) => {
@@ -171,13 +174,20 @@ export const fakeAgents = (
       seen.writerMd.push(read("groups.md"))
       seen.writerCheck.push(read("check.mjs"))
       let highLeft = Number(/at most (\d+) new high/.exec(read("groups.md"))?.[1] ?? "99")
+      // A group whose sessions show no records says so, and is written without an example.
+      const noExample = new Set(
+        read("groups.md")
+          .split(/^(?=## G\d+)/m)
+          .filter((section) => section.includes("- **Example:** none"))
+          .map((section) => /^## (G\d+)/.exec(section)?.[1]),
+      )
       writeFileSync(
         join(workspaceDir, "learnings.md"),
         groupIds
           .map((id) =>
             options.verdict === "drop"
               ? `## ${id}\n- **Verdict:** drop\n- **Why:** One session, medium and slow, a one-off typo.\n`
-              : `## ${id}\n- **Verdict:** learning\n- **Title:** Helpers report early\n- **Problem:** They stop before jest exits.\n- **Priority:** ${highLeft-- > 0 ? "high" : "low"} — many sessions\n- **Impact:** time_only — lost a few minutes\n- **Fix type:** skill\n- **Fix:** Add a wait rule to SKILL.md.\n- **How it helps:** Saves a few minutes a run.\n- **In plain words:** Make the agent wait before it reports.\n${options.story ?? STORY_MD}`,
+              : `## ${id}\n- **Verdict:** learning\n- **Title:** Helpers report early\n- **Problem:** They stop before jest exits.\n- **Priority:** ${highLeft-- > 0 ? "high" : "low"} — many sessions\n- **Impact:** time_only — lost a few minutes\n- **Fix type:** skill\n- **Fix:** Add a wait rule to SKILL.md.\n- **How it helps:** Saves a few minutes a run.\n- **In plain words:** Make the agent wait before it reports.\n${noExample.has(id) ? "" : (options.story ?? STORY_MD)}`,
           )
           .join("\n"),
       )
