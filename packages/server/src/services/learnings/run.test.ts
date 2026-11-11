@@ -103,7 +103,7 @@ describe.skipIf(!dockerAvailable())("runLearnings", () => {
     await teardown?.()
   })
 
-  test("LS1: a first run turns the new problems into a learning and marks them all", async () => {
+  test("LS1, SC48: a first run turns the new problems into a learning and marks them all", async () => {
     await seedSession(["A", "B"])
     await seedSession(["C"])
     const { runner } = fakeAgents()

@@ -1,5 +1,5 @@
 import { rmSync } from "node:fs"
-import type { HarnessRunner } from "@samskara/core"
+import { createLogger, type HarnessRunner } from "@samskara/core"
 import { asc, eq, sql } from "drizzle-orm"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import { buildApp } from "../app.js"
@@ -18,6 +18,7 @@ import type { Env } from "../lib/env.js"
 import { signToken } from "../lib/jwt.js"
 import * as learningsRepo from "../repositories/learnings.repo.js"
 import * as projectsRepo from "../repositories/projects.repo.js"
+import { executeLearningRun } from "../services/learnings/run.js"
 import {
   fakeAgents,
   harnessRepoFixture,
@@ -27,6 +28,7 @@ import {
   seedProject,
   seedSession,
 } from "../services/learnings/testFixtures.js"
+import { createWorkLoop } from "../worker/loop.js"
 
 const env: Env = {
   githubClientId: "id",
@@ -55,6 +57,9 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
   let strangerId: string
   let projectId: string
   let counter = 0
+  let notified = 0
+  /** The agents the next drained run uses: what the last request named, as the worker would. */
+  let agentsForRuns: HarnessRunner = agents
 
   /** With `serverHarness`, the server has its own harness checkout (LEARNINGS_HARNESS_PATH). */
   const request = async (
@@ -69,7 +74,12 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
   ) => {
     const token = await signToken(env, { sub: init.as ?? userId, aud: "cli" })
     const appEnv = init.serverHarness ? { ...env, learningsHarness: { path: harnessPath } } : env
-    return buildApp(db, appEnv, { aiReviewRunner: init.runner ?? agents }).request(path, {
+    agentsForRuns = init.runner ?? agents
+    return buildApp(db, appEnv, {
+      notifyWorker: () => {
+        notified += 1
+      },
+    }).request(path, {
       method: init.method ?? "GET",
       headers: {
         authorization: `Bearer ${token}`,
@@ -92,14 +102,25 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
     })
   }
 
+  /** Runs what is queued the way the worker does, then reads the run back through the route. */
   const waitForRun = async (runId: string) => {
-    for (let i = 0; i < 100; i += 1) {
-      const res = await request(`/api/learnings/runs/${runId}`)
-      const body = (await res.json()) as { run: { status: string; error: string | null } }
-      if (body.run.status !== "running") return body.run
-      await new Promise((resolve) => setTimeout(resolve, 20))
-    }
-    throw new Error("run did not finish")
+    const runner = agentsForRuns
+    const log = createLogger({ service: "learnings-route-test", level: "silent" })
+    const loop = createWorkLoop({
+      db,
+      log,
+      runReview: async () => {
+        throw new Error("no review is queued in these tests")
+      },
+      runFixRun: (run) =>
+        executeLearningRun({ db, runner, env, log }, run.id, run.projectId, {
+          harness: { path: run.harnessPath ?? harnessPath },
+        }),
+    })
+    await loop.tick()
+    await loop.idle()
+    const res = await request(`/api/learnings/runs/${runId}`)
+    return ((await res.json()) as { run: { status: string; error: string | null } }).run
   }
 
   beforeAll(async () => {
@@ -123,6 +144,7 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
     await db.delete(reviewProblems)
     await db.delete(learnings)
     await db.delete(learningRuns)
+    notified = 0
     counter += 1
     const orgId = await seedOrg(db, `acme-${counter}`)
     // An org member is the project's editor: it may read and start runs, not pick a harness.
@@ -650,5 +672,101 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
     })
     expect(post.status).toBe(403)
     expect(await post.json()).toEqual({ error: "notEditable" })
+  })
+
+  const runRows = () => db.select().from(learningRuns).where(eq(learningRuns.projectId, projectId))
+
+  test("SC42: Run now queues a run that waits for reviews by default", async () => {
+    await seedProblems(["A"])
+    const finished = await learningsRepo.startRun(db, projectId)
+    await learningsRepo.finishRun(db, finished?.id as string, { status: "done" })
+    let agentRuns = 0
+    const res = await request("/api/learnings/runs", {
+      method: "POST",
+      body: { project: projectId },
+      serverHarness: true,
+      runner: {
+        run: async (input) => {
+          agentRuns += 1
+          return agents.run(input)
+        },
+      },
+    })
+
+    expect(res.status).toBe(202)
+    const { runId } = (await res.json()) as { runId: string }
+    const [row] = (await runRows()).filter((run) => run.id === runId)
+    expect(row).toMatchObject({ status: "waiting", waitForReviews: true, harnessPath: null })
+    expect(notified).toBe(1)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(agentRuns).toBe(0)
+  })
+
+  test("SC43: Run now with waitForReviews false queues a run that starts at once", async () => {
+    const res = await request("/api/learnings/runs", {
+      method: "POST",
+      body: { project: projectId, waitForReviews: false },
+      serverHarness: true,
+    })
+
+    expect(res.status).toBe(202)
+    const [row] = await runRows()
+    expect(row).toMatchObject({ status: "waiting", waitForReviews: false })
+  })
+
+  test("SC44: Run now reuses the waiting run and takes the caller's choice", async () => {
+    const [automatic] = await db
+      .insert(learningRuns)
+      .values({ projectId, status: "waiting", waitForReviews: true })
+      .returning()
+
+    const res = await request("/api/learnings/runs", {
+      method: "POST",
+      body: { project: projectId, waitForReviews: false },
+      serverHarness: true,
+    })
+
+    expect(res.status).toBe(202)
+    expect(await res.json()).toEqual({ runId: automatic?.id })
+    const rows = await runRows()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ status: "waiting", waitForReviews: false })
+  })
+
+  test("SC45: Run now is refused while a run is running", async () => {
+    await learningsRepo.startRun(db, projectId)
+    const res = await request("/api/learnings/runs", {
+      method: "POST",
+      body: { project: projectId },
+      serverHarness: true,
+    })
+    expect(res.status).toBe(409)
+    expect(await res.json()).toEqual({ error: "learningRunAlreadyRunning" })
+    expect(notified).toBe(0)
+  })
+
+  test("SC46: Run now still refuses viewers and a non-admin's harness path, writing no row", async () => {
+    const [viewer] = await db
+      .insert(users)
+      .values({ githubId: 8300 + counter, githubLogin: `sc46-viewer-${counter}` })
+      .returning()
+    await projectsRepo.grant(db, viewer?.id as string, projectId, "viewer")
+    const asViewer = await request("/api/learnings/runs", {
+      method: "POST",
+      body: { project: projectId },
+      as: viewer?.id,
+      serverHarness: true,
+    })
+    expect(asViewer.status).toBe(403)
+    expect(await asViewer.json()).toEqual({ error: "notEditable" })
+    const withPath = await request("/api/learnings/runs", {
+      method: "POST",
+      body: { project: projectId, harnessPath },
+      serverHarness: true,
+    })
+    expect(withPath.status).toBe(403)
+    expect(await withPath.json()).toEqual({ error: "harnessPathNeedsAdmin" })
+    expect(await runRows()).toEqual([])
+    expect(notified).toBe(0)
   })
 })

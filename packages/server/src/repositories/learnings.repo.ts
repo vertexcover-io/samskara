@@ -6,7 +6,7 @@ import {
   parseStory,
   type WrittenLearning,
 } from "@samskara/core"
-import { and, asc, desc, eq, gt, inArray, isNull, notExists, sql } from "drizzle-orm"
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm"
 import type { Db, Querier } from "../db/client.js"
 import { learningRuns, learnings, reviewProblems, sessionReviews, sessions } from "../db/schema.js"
 
@@ -14,14 +14,14 @@ export type LearningRunRow = typeof learningRuns.$inferSelect
 export type LearningRow = typeof learnings.$inferSelect
 
 /**
- * Starts a run for the project, or returns null when one is already running there: two runs at
- * once would read the same unmarked problems. The partial unique index is the guard, so two
- * starts racing each other cannot both win.
+ * Starts a run for the project outside the worker, or returns null when one is already waiting
+ * or running there: two runs at once would read the same unmarked problems. The partial unique
+ * index is the guard, so two starts racing each other cannot both win.
  */
 export const startRun = async (db: Querier, projectId: string): Promise<LearningRunRow | null> => {
   const [row] = await db
     .insert(learningRuns)
-    .values({ projectId })
+    .values({ projectId, status: "running" })
     .onConflictDoNothing()
     .returning()
   return row ?? null
@@ -51,51 +51,10 @@ export const finishRun = async (db: Querier, runId: string, result: RunOutcome):
     .where(eq(learningRuns.id, runId))
 }
 
-/**
- * A run lives in the server process; one still `running` when the server starts again was cut
- * off by the restart. Failing it frees the project for the next run, and its problems were never
- * marked, so that run reads them again.
- */
-export const failInterruptedRuns = async (db: Querier): Promise<number> => {
-  const rows = await db
-    .update(learningRuns)
-    .set({ status: "failed", error: "the server stopped during the run", finishedAt: new Date() })
-    .where(eq(learningRuns.status, "running"))
-    .returning({ id: learningRuns.id })
-  return rows.length
-}
-
 export const getRun = async (db: Querier, runId: string): Promise<LearningRunRow | null> => {
   const [row] = await db.select().from(learningRuns).where(eq(learningRuns.id, runId)).limit(1)
   return row ?? null
 }
-
-/**
- * Projects with problems no run has read whose last run started before `since` (or that never
- * had one) — the ones the weekly schedule starts a run for. A failed run counts: it is retried
- * a week later, not every hour.
- */
-export const projectsDueForRun = async (db: Querier, since: Date): Promise<string[]> =>
-  db
-    .selectDistinct({ projectId: reviewProblems.projectId })
-    .from(reviewProblems)
-    .where(
-      and(
-        isNull(reviewProblems.learningRunId),
-        notExists(
-          db
-            .select({ one: sql`1` })
-            .from(learningRuns)
-            .where(
-              and(
-                eq(learningRuns.projectId, reviewProblems.projectId),
-                gt(learningRuns.startedAt, since),
-              ),
-            ),
-        ),
-      ),
-    )
-    .then((rows) => rows.map((row) => row.projectId))
 
 /** The project's most recent run, whatever its status. */
 export const latestRun = async (db: Querier, projectId: string): Promise<LearningRunRow | null> => {

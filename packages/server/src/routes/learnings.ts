@@ -1,7 +1,6 @@
 import {
   type Evidence,
   evidenceMessages,
-  type HarnessRunner,
   type LearningImpact,
   messageIdAt,
   parseStory,
@@ -16,13 +15,14 @@ import { validate } from "../lib/validate.js"
 import * as learningsRepo from "../repositories/learnings.repo.js"
 import { authorityFor, canRead, type Scope } from "../repositories/projects.repo.js"
 import { sessionMessages } from "../repositories/sessions.repo.js"
+import { queueFixRun } from "../repositories/workQueue.repo.js"
 import { reviewSessionExport } from "../services/ai-review/sessionExport.js"
-import { startLearningRun } from "../services/learnings/run.js"
 
 type Deps = {
   readonly db: Db
   readonly env: Env
-  readonly runner: HarnessRunner
+  /** Wakes the worker once the run is queued. */
+  readonly notifyWorker: () => void
 }
 
 const uuid = z.string().uuid()
@@ -89,12 +89,12 @@ const serializeProblem = (
 })
 
 /**
- * Learnings: problems from many sessions grouped by cause, each with what to change. A run
- * starts weekly on its own (see `startLearningSchedule`) or here, by hand. Everything is
+ * Learnings: problems from many sessions grouped by cause, each with what to change. A run is
+ * queued for the worker every few days on its own (`queueDueFixRuns`) or here, by hand. Everything is
  * scoped to a project: whoever may read the project sees its learnings, and an editor may
  * start a run.
  */
-export const learningsRoutes = ({ db, env, runner }: Deps) => {
+export const learningsRoutes = ({ db, env, notifyWorker }: Deps) => {
   /** What the caller may do in the project, or null when they cannot see it (a 404). */
   const scopeIn = async (userId: string, projectId: string): Promise<Scope | null> =>
     uuid.safeParse(projectId).success ? authorityFor(db, userId, projectId) : null
@@ -118,14 +118,22 @@ export const learningsRoutes = ({ db, env, runner }: Deps) => {
        * Start a run now; an editor of the project may. The harness path names a checkout on
        * the server's machine, so only a project admin may pass one — anyone else gets the
        * server's own harness (LEARNINGS_HARNESS_REPO or LEARNINGS_HARNESS_PATH). 202 with the
-       * run id, which the caller polls.
+       * run id, which the caller polls. The run is queued for the worker and, by default, waits
+       * until the project has no review waiting or running; a run already waiting is reused.
        */
       .post(
         "/runs",
         requireAuth({ db, env }, ["web", "cli"]),
         validate(
           "json",
-          z.object({ project: uuid, harnessPath: z.string().min(1).optional() }).strict(),
+          z
+            .object({
+              project: uuid,
+              harnessPath: z.string().min(1).optional(),
+              /** False starts it even while the project's reviews run; the popup's "Run anyway". */
+              waitForReviews: z.boolean().optional(),
+            })
+            .strict(),
         ),
         async (c) => {
           const body = c.req.valid("json")
@@ -137,13 +145,14 @@ export const learningsRoutes = ({ db, env, runner }: Deps) => {
           const harness =
             body.harnessPath === undefined ? env.learningsHarness : { path: body.harnessPath }
           if (harness === undefined) return c.json({ error: "noHarnessPath" }, 400)
-          const started = await startLearningRun(
-            { db, runner, env, log: c.get("log") },
-            body.project,
-            { harness },
-          )
-          if (started.status === "busy") return c.json({ error: "learningRunAlreadyRunning" }, 409)
-          return c.json({ runId: started.runId }, 202)
+          const queued = await queueFixRun(db, {
+            projectId: body.project,
+            waitForReviews: body.waitForReviews ?? true,
+            harnessPath: body.harnessPath ?? null,
+          })
+          if (queued === null) return c.json({ error: "learningRunAlreadyRunning" }, 409)
+          notifyWorker()
+          return c.json({ runId: queued.id }, 202)
         },
       )
       .get("/runs/:id", requireAuth({ db, env }, ["web", "cli"]), async (c) => {

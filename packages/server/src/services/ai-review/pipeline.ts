@@ -16,10 +16,9 @@ import {
 import type pino from "pino"
 import type { Db } from "../../db/client.js"
 import type { Env, ReviewHarness } from "../../lib/env.js"
-import { canWrite } from "../../repositories/projects.repo.js"
 import { replaceReviewProblems } from "../../repositories/reviewProblems.repo.js"
 import * as reviewsRepo from "../../repositories/reviews.repo.js"
-import { getDetail } from "../../repositories/sessions.repo.js"
+import { reviewableSession } from "../../repositories/sessions.repo.js"
 import { reviewSessionExport } from "./sessionExport.js"
 import { transcriptFromClaudeConfigDir, transcriptFromOpencodeDataDir } from "./transcript.js"
 
@@ -77,7 +76,6 @@ const STDOUT_EXCERPT_CHARS = 400
  */
 export const runAiReview = async (
   deps: AiReviewDeps,
-  userId: string,
   sessionId: string,
   options: AiReviewOptions = {},
 ): Promise<AiReviewResult> => {
@@ -101,12 +99,9 @@ export const runAiReview = async (
     log.info({ sessionId, milestone: name, elapsedMs, ...extra }, "ai review milestone")
   }
 
-  const detail = await getDetail(db, userId, sessionId)
+  // No viewer check: the route checked edit rights before it queued the review.
+  const detail = await reviewableSession(db, sessionId)
   if (detail === null) return { kind: "error", code: "sessionNotFound" }
-
-  // Editor-gated, because the run writes the session's review.
-  const editable = await canWrite(db, userId, detail.session.projectId)
-  if (!editable) return { kind: "error", code: "notEditable" }
 
   // loadEnv proved the configured harness authenticates; a request may name the other one.
   const credentialProblem = missingCredentialMessage(harness, deps.credentialEnv ?? process.env)

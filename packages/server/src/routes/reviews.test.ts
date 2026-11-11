@@ -223,7 +223,7 @@ describe.skipIf(!dockerAvailable())("reviews", () => {
     expect(await db.select().from(sessionReviews)).toHaveLength(0)
   })
 
-  test("SC3: a waiting AI review and a failed static review are not shown on the session page", async () => {
+  test("SC3: a waiting AI review and a failed static review show no result; the waiting one shows as a job", async () => {
     await db.insert(sessionReviews).values([
       { sessionId, projectId, analyzer: "ai-problems-v2", status: "waiting" },
       { sessionId, projectId, analyzer: "heuristic-v1", status: "failed", error: "boom" },
@@ -234,8 +234,28 @@ describe.skipIf(!dockerAvailable())("reviews", () => {
     expect(await listed.json()).toEqual({ reviews: [] })
 
     const ai = await request(`/api/sessions/${sessionId}/aireview`)
-    expect(ai.status).toBe(404)
-    expect(await ai.json()).toEqual({ error: "noAiReview" })
+    expect(ai.status).toBe(200)
+    expect(await ai.json()).toMatchObject({ review: null, job: { status: "running" } })
+  })
+
+  test("a kept AI review whose redo failed lists analyzedAt as its own finish time, not the redo's", async () => {
+    await db.insert(sessionReviews).values({
+      sessionId,
+      projectId,
+      analyzer: "ai-problems-v2",
+      status: "failed",
+      attempts: 3,
+      error: "harnessFailed: harness run exited with code 1",
+      outcome: "productive",
+      summary: "The earlier result.",
+      signals: { run: { finishedAt: "2026-11-11T13:22:28.736Z" } },
+      updatedAt: new Date("2026-11-11T13:32:49.531Z"),
+    })
+
+    const listed = await request(`/api/sessions/${sessionId}/review`)
+
+    const body = (await listed.json()) as { reviews: { analyzedAt: string }[] }
+    expect(body.reviews.map((review) => review.analyzedAt)).toEqual(["2026-11-11T13:22:28.736Z"])
   })
 
   test("SC8: a rule-based review is saved done, with no error, through the last line it read (7)", async () => {
