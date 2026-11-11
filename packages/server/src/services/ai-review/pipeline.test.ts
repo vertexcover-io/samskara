@@ -641,6 +641,28 @@ The agent fixed the build, then deployed it without the smoke tests.
         expect((await reviewRow())?.reviewedThrough).toBe(4)
       })
 
+      test("a review marked new-part-only whose earlier result kept no record order reads the whole session and replaces the problems", async () => {
+        await earlierPass()
+        // Saved before reviews kept signals.run.recordIds.
+        await db
+          .update(sessionReviews)
+          .set({ signals: {} })
+          .where(eq(sessionReviews.sessionId, sessionId))
+        await addMessages(newMessages)
+        const { runner, seen } = problemsRunner(deployMd)
+
+        const result = await runAiReview(depsWith(runner), sessionId, { newPartOnly: true })
+
+        expect(result).toMatchObject({ kind: "ok" })
+        const reviewer = seen.find((entry) => entry.session !== undefined)
+        expect(recordsSeen(reviewer?.session)).toHaveLength(6)
+        expect(reviewer?.contract).not.toContain("## Already reviewed")
+        expect((await savedProblems()).map((row) => row.title)).toEqual([
+          "Deployed without running the smoke tests",
+        ])
+        expect((await reviewRow())?.reviewedThrough).toBe(7)
+      })
+
       test("SC19: a redo without the mark reads the whole session and replaces the problems", async () => {
         await earlierPass()
         await addMessages(newMessages)
