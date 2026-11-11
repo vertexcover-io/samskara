@@ -122,6 +122,12 @@ describe.skipIf(!dockerAvailable())("work queue: reviews", () => {
     expect(await rowById(newest.id)).toMatchObject({ status: "waiting", attempts: 0 })
   })
 
+  test("SC20: a claimed review the nightly pick marked new-part-only carries newPartOnly true", async () => {
+    await seedReview("s-20", { ...finished, status: "waiting", newPartOnly: true })
+
+    expect(await claimReview(db)).toMatchObject({ sessionId: "s-20", newPartOnly: true })
+  })
+
   test("SC3: two claimers never take the same row", async () => {
     const ids: string[] = []
     for (let i = 0; i < 5; i += 1) ids.push((await seedReview(`s-${i}`, { status: "waiting" })).id)

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest"
 import type { SessionExportRecord } from "../export.js"
-import { checkEvidence, LIMITS, parseReviewMd } from "./reviewMd.js"
+import { checkEvidence, LIMITS, parseReviewMd, quoteChecker } from "./reviewMd.js"
 
 const problem = (title: string, fields: Record<string, string>): string =>
   [
@@ -435,4 +435,43 @@ test("a review.md that still has a Friction line reads the same, with no frictio
   expect(parsed.value.outcome).toBe("shipped")
   expect(parsed.value).not.toHaveProperty("friction")
   expect(parsed.value.problems).toHaveLength(1)
+})
+
+describe("quoteChecker", () => {
+  const said = (seq: number, text: string): SessionExportRecord => ({
+    seq,
+    id: `msg-${seq}`,
+    msgType: "message",
+    role: "assistant",
+    track: "main",
+    text,
+  })
+
+  test("SC9: on records numbered from msg-100, a quote is checked against the record it cites, not one at that number's position", () => {
+    const partWay = [
+      said(100, "starting the migration now"),
+      said(101, "the deploy script is broken on staging"),
+      said(102, "all tests pass after the retry"),
+      said(103, "pushing the branch"),
+      said(104, "opened the pull request"),
+    ]
+    const check = quoteChecker(partWay)
+
+    expect(check({ from: "msg-102", to: "msg-102", quote: "all tests pass after the retry" })).toBe(
+      undefined,
+    )
+    expect(
+      check({ from: "msg-102", to: "msg-102", quote: "the deploy script is broken" }),
+    ).toContain("is not in")
+  })
+
+  test("SC10: on a whole session numbered from msg-0, a quote across two records holds and a too-wide range is refused", () => {
+    const check = quoteChecker(records)
+
+    expect(check({ from: "msg-1", to: "msg-2", quote: "Done — all tests pass" })).toBe(undefined)
+    expect(check({ from: "msg-0", to: "msg-3", quote: "use port 7169" })).toBe(undefined)
+    expect(
+      quoteChecker(records, 2)({ from: "msg-0", to: "msg-3", quote: "use port 7169" }),
+    ).toContain("wider than 2")
+  })
 })

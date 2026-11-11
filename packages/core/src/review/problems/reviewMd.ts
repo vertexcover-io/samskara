@@ -372,12 +372,13 @@ export const quoteChecker = (
   /** The widest range a quote may cite; leads pass Infinity, since they only point the way. */
   maxRange: number = LIMITS.evidenceRange,
 ): ((item: Pick<Evidence, "from" | "to" | "quote">) => string | undefined) => {
-  const seqById = new Map(records.map((record) => [record.id, record.seq]))
+  // By position, not seq: a re-review's records start part-way through the session's numbering.
+  const positionById = new Map(records.map((record, position) => [record.id, position]))
   const squashed = records.map((record) => squash(recordText(record)))
   return (item) => {
     const ids = idsLabel(item)
-    const from = seqById.get(item.from)
-    const to = seqById.get(item.to)
+    const from = positionById.get(item.from)
+    const to = positionById.get(item.to)
     if (from === undefined || to === undefined) return `${ids}: no such message`
     if (to < from) return `${ids}: range runs backwards`
     if (to - from + 1 > maxRange) return `${ids}: range is wider than ${maxRange} messages`

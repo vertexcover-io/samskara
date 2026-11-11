@@ -16,7 +16,7 @@ import { upsertReview } from "../repositories/reviews.repo.js"
 import type { ClaimedFixRun, ClaimedReview } from "../repositories/workQueue.repo.js"
 import type { AiReviewResult } from "../services/ai-review/pipeline.js"
 import { problemFixture, seedSession } from "../services/learnings/testFixtures.js"
-import { createWorkLoop, fixRunner } from "./loop.js"
+import { createWorkLoop, fixRunner, reviewOptions } from "./loop.js"
 
 const ANALYZER = "ai-problems-v2"
 const log = createLogger({ service: "loop-test", level: "silent" })
@@ -541,5 +541,22 @@ describe("fix runner", () => {
       error: "No harness for fix runs: set LEARNINGS_HARNESS_REPO or LEARNINGS_HARNESS_PATH.",
     })
     expect(seen).toEqual([])
+  })
+})
+
+describe("reviewOptions", () => {
+  const claimed = (newPartOnly: boolean): ClaimedReview => ({
+    id: "r-1",
+    sessionId: "s-1",
+    attempts: 1,
+    harness: null,
+    model: null,
+    prompt: null,
+    newPartOnly,
+  })
+
+  test("SC15: a review the nightly pick marked new-part-only is run with newPartOnly, and an unmarked one without it", () => {
+    expect(reviewOptions(claimed(true))).toEqual({ newPartOnly: true })
+    expect(reviewOptions(claimed(false))).toEqual({})
   })
 })

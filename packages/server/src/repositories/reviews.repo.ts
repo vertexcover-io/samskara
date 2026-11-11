@@ -1,7 +1,7 @@
-import { MAIN_TRACK } from "@samskara/core"
-import { and, desc, eq, isNotNull } from "drizzle-orm"
+import { MAIN_TRACK, type ReviewOutcome } from "@samskara/core"
+import { and, asc, desc, eq, isNotNull } from "drizzle-orm"
 import type { Querier } from "../db/client.js"
-import { projects, sessionReviews, sessions } from "../db/schema.js"
+import { projects, reviewProblems, sessionReviews, sessions } from "../db/schema.js"
 import { visibleToUser } from "./projects.repo.js"
 
 export type ReviewRow = typeof sessionReviews.$inferSelect
@@ -114,6 +114,49 @@ export const lastLineRead = (
       (last, message) => (last === null || message.lineNumber > last ? message.lineNumber : last),
       null,
     )
+
+/** What a re-review builds on: the earlier result, and the problems it already found. */
+export type EarlierResult = {
+  readonly outcome: ReviewOutcome
+  readonly summary: string
+  readonly signals: object
+  /** The message id behind each msg-N the earlier passes numbered. */
+  readonly recordIds: ReadonlyArray<string | null>
+  readonly problemTitles: ReadonlyArray<string>
+}
+
+/**
+ * The session's review result for `analyzer`, or null when there is nothing to build on: no
+ * result, no `reviewedThrough`, or no `signals.run.recordIds` (saved before they were kept).
+ */
+export const earlierResult = async (
+  db: Querier,
+  sessionId: string,
+  analyzer: string,
+): Promise<EarlierResult | null> => {
+  const [row] = await db
+    .select()
+    .from(sessionReviews)
+    .where(
+      and(eq(sessionReviews.sessionId, sessionId), eq(sessionReviews.analyzer, analyzer), isDone),
+    )
+    .limit(1)
+  if (row === undefined || row.reviewedThrough === null) return null
+  const recordIds = (row.signals as { run?: { recordIds?: unknown } } | null)?.run?.recordIds
+  if (!Array.isArray(recordIds)) return null
+  const titles = await db
+    .select({ title: reviewProblems.title })
+    .from(reviewProblems)
+    .where(eq(reviewProblems.reviewId, row.id))
+    .orderBy(asc(reviewProblems.position))
+  return {
+    outcome: row.outcome as ReviewOutcome,
+    summary: row.summary as string,
+    signals: row.signals as object,
+    recordIds: recordIds as ReadonlyArray<string | null>,
+    problemTitles: titles.map((problem) => problem.title),
+  }
+}
 
 /**
  * Replaces the same (sessionId, analyzer) pair's review — a re-review is a correction of the

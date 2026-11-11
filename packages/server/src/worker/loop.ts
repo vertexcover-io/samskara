@@ -258,6 +258,7 @@ export const reviewOptions = (review: ClaimedReview): AiReviewOptions => {
     ...(harness === undefined ? {} : { harness }),
     ...(review.model === null ? {} : { model: review.model }),
     ...(review.prompt === null ? {} : { prompt: review.prompt }),
+    ...(review.newPartOnly ? { newPartOnly: true } : {}),
   }
 }
 

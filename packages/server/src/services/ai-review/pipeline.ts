@@ -7,6 +7,7 @@ import {
   HARNESS_STATE_DIR,
   type HarnessRunner,
   mergeReviewPrompt,
+  messageIdOf,
   missingCredentialMessage,
   type ProblemReview,
   prepareProblems,
@@ -16,9 +17,13 @@ import {
 import type pino from "pino"
 import type { Db } from "../../db/client.js"
 import type { Env, ReviewHarness } from "../../lib/env.js"
-import { replaceReviewProblems } from "../../repositories/reviewProblems.repo.js"
+import {
+  appendReviewProblems,
+  replaceReviewProblems,
+} from "../../repositories/reviewProblems.repo.js"
 import * as reviewsRepo from "../../repositories/reviews.repo.js"
 import { reviewableSession } from "../../repositories/sessions.repo.js"
+import { alreadyReviewedNote, keepNewPart, newPartExport } from "./newPart.js"
 import { reviewSessionExport } from "./sessionExport.js"
 import { transcriptFromClaudeConfigDir, transcriptFromOpencodeDataDir } from "./transcript.js"
 
@@ -28,6 +33,8 @@ export type AiReviewOptions = {
   readonly model?: string
   /** The user's own prompt, any shape, merged into the review's base instructions. */
   readonly prompt?: string
+  /** Read only what the session's earlier review has not, and add to its problems. */
+  readonly newPartOnly?: boolean
 }
 
 export type AiReviewDeps = {
@@ -110,7 +117,33 @@ export const runAiReview = async (
     return { kind: "error", code: "harnessUnauthenticated", detail: { message: credentialProblem } }
   }
 
-  const sessionExport = reviewSessionExport({ session: detail.session, messages: detail.messages })
+  const wholeExport = reviewSessionExport({ session: detail.session, messages: detail.messages })
+  const reviewedThrough = reviewsRepo.lastLineRead(detail.messages)
+  // A nightly re-pick reads only what the earlier review has not; anything else reads it all.
+  const earlier =
+    options.newPartOnly === true
+      ? await reviewsRepo.earlierResult(db, sessionId, PROBLEMS_ANALYZER)
+      : null
+  const part = earlier === null ? null : newPartExport(wholeExport, earlier.recordIds)
+  if (earlier !== null && part !== null && part.newCount === 0) {
+    // Only lines the export drops arrived: nothing to read, but they are seen.
+    const row = await reviewsRepo.upsertReview(db, {
+      sessionId,
+      projectId: detail.session.projectId,
+      analyzer: PROBLEMS_ANALYZER,
+      outcome: earlier.outcome,
+      summary: earlier.summary,
+      signals: earlier.signals,
+      reviewedThrough,
+    })
+    milestone("nothing_new")
+    return {
+      kind: "ok",
+      reviewId: row.id,
+      review: { outcome: earlier.outcome, summary: earlier.summary, problems: [] },
+    }
+  }
+  const sessionExport = part?.exported ?? wholeExport
 
   // The review's instructions: ours, or the user's prompt merged into ours first.
   let instructions = BASE_REVIEW_INSTRUCTIONS
@@ -128,6 +161,9 @@ export const runAiReview = async (
     }
     milestone("prompt_merged")
   }
+  // Before the instructions, where readers and reviewer read first; never inside `## Extra fields`.
+  if (earlier !== null && part !== null)
+    instructions = `${alreadyReviewedNote(earlier, part.firstNew)}\n\n${instructions}`
   // Before the review: readers read every piece of the session and find leads. The reviewer
   // below checks each lead against the session and writes up the real ones.
   milestone("readers_started")
@@ -244,13 +280,18 @@ export const runAiReview = async (
     if (result.dropped.length > 0)
       log.info({ sessionId, dropped: result.dropped }, "ai review dropped problems")
     milestone("grounded")
+    // A re-review adds only problems that show in the new part; the rest were already found.
+    const kept =
+      part === null
+        ? { problems: result.review.problems, dropped: [] as ReadonlyArray<string> }
+        : keepNewPart(result.review.problems, part.firstNew)
 
     const finishedAt = now()
     const signals = {
       model,
       harness,
       reviewMd: markdown,
-      dropped: [...result.dropped],
+      dropped: [...result.dropped, ...kept.dropped],
       unaccountedLeads: [...result.unaccountedLeads],
       leadCount: prepared.leadIds.length,
       // Kept apart from the problems: what was looked at, and what the reviewer decided.
@@ -260,17 +301,20 @@ export const runAiReview = async (
       contract: staged.files["CONTRACT.md"],
       prompt: options.prompt === undefined ? "base" : "custom",
       ...(promptChanges === undefined ? {} : { promptChanges }),
+      ...(part === null ? {} : { newPartFrom: messageIdOf(part.firstNew) }),
       run: {
         startedAt: startedAt.toISOString(),
         finishedAt: finishedAt.toISOString(),
         milestones: [...milestones],
         agentLog: capAgentLog(runnerAgentLog ?? stdout),
         ...(reviewerTranscript === null ? {} : { transcript: reviewerTranscript }),
-        recordIds: sessionExport.records.map((record) => record.sourceId ?? null),
+        // Every pass's numbering: old problems' msg-N must keep resolving to their messages.
+        recordIds:
+          part?.recordIds ?? sessionExport.records.map((record) => record.sourceId ?? null),
       },
     }
     // One transaction: a review row whose problems failed to save would read as a
-    // review that found nothing.
+    // review that found nothing. A re-review adds to the problems; a full review replaces them.
     const reviewRow = await db.transaction(async (tx) => {
       const row = await reviewsRepo.upsertReview(tx, {
         sessionId,
@@ -279,18 +323,23 @@ export const runAiReview = async (
         outcome: result.review.outcome,
         summary: result.review.summary,
         signals: signals as unknown as object,
-        reviewedThrough: reviewsRepo.lastLineRead(detail.messages),
+        reviewedThrough,
       })
-      await replaceReviewProblems(tx, {
+      const save = part === null ? replaceReviewProblems : appendReviewProblems
+      await save(tx, {
         reviewId: row.id,
         sessionId,
         projectId: detail.session.projectId,
-        problems: result.review.problems,
+        problems: kept.problems,
       })
       return row
     })
     milestone("persisted")
-    return { kind: "ok", reviewId: reviewRow.id, review: result.review }
+    return {
+      kind: "ok",
+      reviewId: reviewRow.id,
+      review: { ...result.review, problems: kept.problems },
+    }
   } finally {
     if (workspaceDir !== undefined) {
       // A rejection from `finally` replaces the value the try block was about to return, so

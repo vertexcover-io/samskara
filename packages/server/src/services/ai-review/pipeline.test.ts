@@ -8,6 +8,8 @@ import { eq, sql } from "drizzle-orm"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import type { Db } from "../../db/client.js"
 import {
+  learningRuns,
+  learnings,
   messages,
   projects,
   reviewProblems as reviewProblemsTable,
@@ -115,6 +117,8 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
   beforeEach(async () => {
     createdDirs.length = 0
     await db.delete(sessionReviews)
+    await db.delete(learnings)
+    await db.delete(learningRuns)
     await db.delete(tokenUsage)
     await db.delete(messages)
     await db.delete(sessions)
@@ -397,6 +401,221 @@ The agent claimed the build was fixed after the tests failed.
       expect((await savedProblems()).map((row) => row.title)).toEqual([
         "Claimed the build was fixed after the tests failed",
       ])
+    })
+
+    describe("a re-review of a session with new messages", () => {
+      /** Stores messages after the fixture's four, on the main track unless said. */
+      const addMessages = async (
+        rows: ReadonlyArray<{
+          readonly line: number
+          readonly msgType?: "message" | "turnEvent"
+          readonly role?: "user" | "assistant"
+          readonly text?: string
+        }>,
+      ) => {
+        for (const row of rows) {
+          const msgType = row.msgType ?? "message"
+          await db.insert(messages).values({
+            sessionId,
+            lineUuid: crypto.randomUUID(),
+            subIndex: 0,
+            msgType,
+            role: msgType === "message" ? (row.role ?? "assistant") : null,
+            lineNumber: row.line,
+            source: "claude_code",
+            sourceRelativePath: "test.jsonl",
+            trackId: "main",
+            raw: {},
+            sourceSchemaVersion: 1,
+            content: msgType === "message" ? { type: "text", value: row.text ?? "" } : null,
+            details: {},
+          })
+        }
+      }
+
+      const newMessages = [
+        { line: 5, role: "user", text: "now deploy it to staging" },
+        { line: 6, text: "deployed to staging without running the smoke tests" },
+        { line: 7, text: "all done here" },
+      ] as const
+
+      const deployMd = `# Review
+
+- **Outcome:** shipped
+
+## Summary
+
+The agent fixed the build, then deployed it without the smoke tests.
+
+## Problems
+
+### Deployed without running the smoke tests
+
+- **Class:** missed
+- **Severity:** high — a broken deploy would have reached staging
+- **Fix type:** skill
+- **Description:** The agent was expected to run the smoke tests before deploying. It deployed without them.
+- **Evidence:** msg-4 — "deployed to staging without running the smoke tests" — this is wrong: no smoke test ran first.
+- **Learning:** Run the smoke tests and read the result before deploying.
+- **Extra:** stage: coder
+`
+
+      /**
+       * A full review over the fixture's four messages, whose one problem a fix run has
+       * grouped into a learning. Returns the review row and the message ids it numbered.
+       */
+      const earlierPass = async () => {
+        const first = await runAiReview(
+          depsWith(problemsRunner(problemsMd("the build is fixed")).runner),
+          sessionId,
+          {},
+        )
+        if (first.kind !== "ok") throw new Error("the earlier pass failed")
+        const [run] = await db
+          .insert(learningRuns)
+          .values({ projectId, status: "done" })
+          .returning({ id: learningRuns.id })
+        const [learning] = await db
+          .insert(learnings)
+          .values({
+            projectId,
+            updatedByRunId: run?.id as string,
+            title: "Rerun failed tests",
+            cause: "c",
+            problem: "p",
+            priority: "low",
+            priorityReason: "r",
+            fixType: "skill",
+            fix: "f",
+          })
+          .returning({ id: learnings.id })
+        await db
+          .update(reviewProblemsTable)
+          .set({ learningRunId: run?.id as string, learningId: learning?.id as string })
+          .where(eq(reviewProblemsTable.reviewId, first.reviewId))
+        const [oldProblem] = await savedProblems()
+        const recordIds = ((await persistedSignals()).run as { recordIds: string[] }).recordIds
+        return { reviewId: first.reviewId, recordIds, oldProblem }
+      }
+
+      const reviewRow = async () => {
+        const [row] = await db
+          .select()
+          .from(sessionReviews)
+          .where(eq(sessionReviews.sessionId, sessionId))
+        return row
+      }
+
+      const recordsSeen = (session: unknown) =>
+        (session as { records: Array<{ id: string; text?: string }> }).records
+
+      test("SC16: a re-review reads the old records as context plus the new ones, and adds its problem after the old one", async () => {
+        const earlier = await earlierPass()
+        expect(earlier.recordIds).toHaveLength(3)
+        await addMessages(newMessages)
+        const { runner, seen } = problemsRunner(deployMd)
+
+        const result = await runAiReview(depsWith(runner), sessionId, { newPartOnly: true })
+
+        expect(result).toMatchObject({ kind: "ok", reviewId: earlier.reviewId })
+        const reviewer = seen.find((entry) => entry.session !== undefined)
+        expect(recordsSeen(reviewer?.session).map((record) => record.id)).toEqual([
+          "msg-0",
+          "msg-1",
+          "msg-2",
+          "msg-3",
+          "msg-4",
+          "msg-5",
+        ])
+        expect(recordsSeen(reviewer?.session)[4]?.text).toContain("deployed to staging")
+        expect(reviewer?.contract?.startsWith("## Already reviewed")).toBe(true)
+        expect(reviewer?.contract).toContain("Said the build was fixed after the tests failed")
+        expect(reviewer?.contract).toContain(
+          "The agent claimed the build was fixed after the tests failed.",
+        )
+        const problems = (await savedProblems()).sort((a, b) => a.position - b.position)
+        expect(problems).toHaveLength(2)
+        expect(problems[0]).toEqual(earlier.oldProblem)
+        expect(problems[0]?.learningId).not.toBeNull()
+        expect(problems[1]).toMatchObject({
+          position: 1,
+          title: "Deployed without running the smoke tests",
+          reviewId: earlier.reviewId,
+        })
+        expect(await reviewRow()).toMatchObject({
+          reviewedThrough: 7,
+          outcome: "shipped",
+          summary: "The agent fixed the build, then deployed it without the smoke tests.",
+        })
+        const signals = (await persistedSignals()) as {
+          newPartFrom?: string
+          run: { recordIds: Array<string | null> }
+        }
+        expect(signals.run.recordIds.slice(0, 3)).toEqual(earlier.recordIds)
+        expect(signals.run.recordIds).toHaveLength(6)
+        expect(signals.newPartFrom).toBe("msg-3")
+      })
+
+      test("SC17: only a bookkeeping line since the review moves reviewedThrough without running the reviewer", async () => {
+        const earlier = await earlierPass()
+        const before = await reviewRow()
+        await addMessages([{ line: 5, msgType: "turnEvent" }])
+        const { runner, seen } = problemsRunner(deployMd)
+
+        const result = await runAiReview(depsWith(runner), sessionId, { newPartOnly: true })
+
+        expect(result).toMatchObject({ kind: "ok", reviewId: earlier.reviewId })
+        expect(seen).toHaveLength(0)
+        expect(await reviewRow()).toMatchObject({
+          status: "done",
+          reviewedThrough: 5,
+          outcome: before?.outcome,
+          summary: before?.summary,
+        })
+        expect(await savedProblems()).toEqual([earlier.oldProblem])
+      })
+
+      test("SC18: a review marked new-part-only with no earlier result reads the whole session", async () => {
+        await db.insert(sessionReviews).values({
+          sessionId,
+          projectId,
+          analyzer: "ai-problems-v2",
+          status: "running",
+          attempts: 1,
+          newPartOnly: true,
+        })
+        const { runner, seen } = problemsRunner(problemsMd("the build is fixed"))
+
+        const result = await runAiReview(depsWith(runner), sessionId, { newPartOnly: true })
+
+        expect(result).toMatchObject({ kind: "ok" })
+        const reviewer = seen.find((entry) => entry.session !== undefined)
+        expect(recordsSeen(reviewer?.session).map((record) => record.id)).toEqual([
+          "msg-0",
+          "msg-1",
+          "msg-2",
+        ])
+        expect(reviewer?.contract).not.toContain("## Already reviewed")
+        expect(await savedProblems()).toHaveLength(1)
+        expect((await reviewRow())?.reviewedThrough).toBe(4)
+      })
+
+      test("SC19: a redo without the mark reads the whole session and replaces the problems", async () => {
+        await earlierPass()
+        await addMessages(newMessages)
+        const { runner, seen } = problemsRunner(deployMd)
+
+        const result = await runAiReview(depsWith(runner), sessionId, {})
+
+        expect(result).toMatchObject({ kind: "ok" })
+        const reviewer = seen.find((entry) => entry.session !== undefined)
+        expect(recordsSeen(reviewer?.session)[0]?.id).toBe("msg-0")
+        expect(recordsSeen(reviewer?.session)).toHaveLength(6)
+        expect(reviewer?.contract).not.toContain("## Already reviewed")
+        expect((await savedProblems()).map((row) => row.title)).toEqual([
+          "Deployed without running the smoke tests",
+        ])
+      })
     })
 
     test("PR9: no review.md is deliverableMissing, and one past the size cap saves nothing", async () => {

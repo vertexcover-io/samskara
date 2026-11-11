@@ -83,6 +83,8 @@ export type ClaimedReview = {
   readonly harness: string | null
   readonly model: string | null
   readonly prompt: string | null
+  /** Read only what the row's earlier review has not (the nightly re-pick). */
+  readonly newPartOnly: boolean
 }
 
 /**
@@ -97,7 +99,7 @@ export const claimReview = async (db: Querier): Promise<ClaimedReview | null> =>
       order by "updatedAt" asc limit 1
       for update skip locked
     )
-    returning "id", "sessionId", "attempts", "harness", "model", "prompt"`)
+    returning "id", "sessionId", "attempts", "harness", "model", "prompt", "newPartOnly"`)
   return rows[0] ?? null
 }
 
