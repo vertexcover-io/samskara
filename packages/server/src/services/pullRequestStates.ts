@@ -63,11 +63,21 @@ const answerOf = (id: string, pr: GithubPullRequest | null | undefined): PullReq
   return { id, state, closedAt: state === "open" || at === null ? null : new Date(at) }
 }
 
+type BatchResult =
+  | { readonly ok: true; readonly answers: ReadonlyArray<PullRequestAnswer> }
+  | { readonly ok: false; readonly message: string; readonly rateLimited: boolean }
+
+const failed = (message: string, rateLimited = false): BatchResult => ({
+  ok: false,
+  message,
+  rateLimited,
+})
+
 const askBatch = async (
   token: string,
   fetchFn: typeof fetch,
   batch: ReadonlyArray<PullRequestRef>,
-): Promise<ReadonlyArray<PullRequestAnswer>> => {
+): Promise<BatchResult> => {
   const res = await fetchFn(GRAPHQL_URL, {
     method: "POST",
     headers: {
@@ -78,18 +88,27 @@ const askBatch = async (
     body: JSON.stringify(batchRequest(batch)),
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   })
-  if (!res.ok) throw new Error(`github pull request check failed (${res.status})`)
+  // GitHub answers a spent primary or secondary rate limit with 403 or 429.
+  if (!res.ok)
+    return failed(
+      `github pull request check failed (${res.status})`,
+      res.status === 403 || res.status === 429,
+    )
   const body = (await res.json()) as GraphqlBody
   // A rate limit or a bad token comes back as 200 with errors and no data.
   const data = body.data
   if (data === null || data === undefined)
-    throw new Error(`github pull request check failed: ${body.errors?.[0]?.message ?? "no data"}`)
-  return batch.map((pr, i) => answerOf(pr.id, data[`pr${i}`]?.pullRequest))
+    return failed(
+      `github pull request check failed: ${body.errors?.[0]?.message ?? "no data"}`,
+      body.errors?.some((error) => error.type === "RATE_LIMITED") ?? false,
+    )
+  return { ok: true, answers: batch.map((pr, i) => answerOf(pr.id, data[`pr${i}`]?.pullRequest)) }
 }
 
 /**
  * Asks GitHub for each pull request's state, `LOOKUP_BATCH` at a time, one request after
- * another. Never throws: a failed request is reported in `failures` and the rest go on.
+ * another. Never throws: a failed request is reported in `failures` and the rest go on, except
+ * after a rate limit, when the requests not yet sent are reported as failed instead.
  * Undefined without a token, so the caller cannot ask GitHub without one.
  */
 export const createPullRequestLookup = (
@@ -103,11 +122,19 @@ export const createPullRequestLookup = (
     )
     const answers: PullRequestAnswer[] = []
     const failures: string[] = []
-    for (const batch of batches) {
-      try {
-        answers.push(...(await askBatch(token, fetchFn, batch)))
-      } catch (error) {
-        failures.push(error instanceof Error ? error.message : String(error))
+    for (const [i, batch] of batches.entries()) {
+      const result = await askBatch(token, fetchFn, batch).catch((error: unknown) =>
+        failed(error instanceof Error ? error.message : String(error)),
+      )
+      if (result.ok) {
+        answers.push(...result.answers)
+        continue
+      }
+      failures.push(result.message)
+      if (result.rateLimited) {
+        const unsent = batches.length - i - 1
+        failures.push(...Array.from({ length: unsent }, () => "not sent after a rate limit"))
+        break
       }
     }
     return { answers, failures }

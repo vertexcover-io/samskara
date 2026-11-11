@@ -103,15 +103,7 @@ describe("createPullRequestLookup", () => {
   })
 
   test.each([
-    { label: "HTTP 403", fail: async () => json({ message: "Forbidden" }, 403) },
-    {
-      label: "HTTP 200 with no data and a RATE_LIMITED error",
-      fail: async () =>
-        json({
-          data: null,
-          errors: [{ type: "RATE_LIMITED", message: "API rate limit exceeded" }],
-        }),
-    },
+    { label: "HTTP 502", fail: async () => json({ message: "Bad Gateway" }, 502) },
     {
       label: "a rejected fetch",
       fail: async (): Promise<Response> => {
@@ -135,4 +127,34 @@ describe("createPullRequestLookup", () => {
     )
     expect(result?.failures).toHaveLength(1)
   })
+
+  test.each([
+    { label: "HTTP 403", limit: () => json({ message: "API rate limit exceeded" }, 403) },
+    { label: "HTTP 429", limit: () => json({ message: "Too Many Requests" }, 429) },
+    {
+      label: "HTTP 200 with no data and a RATE_LIMITED error",
+      limit: () =>
+        json({
+          data: null,
+          errors: [{ type: "RATE_LIMITED", message: "API rate limit exceeded" }],
+        }),
+    },
+  ])(
+    "a rate limit ($label) sends no further request and fails the ones not sent",
+    async ({ limit }) => {
+      let calls = 0
+      const fakeFetch = vi.fn<typeof fetch>(async (_url, init) => {
+        calls += 1
+        return calls === 2 ? limit() : allOpen(init)
+      })
+      const lookup = createPullRequestLookup("t", fakeFetch)
+      const prs = refs(170)
+
+      const result = await lookup?.(prs)
+
+      expect(fakeFetch).toHaveBeenCalledTimes(2)
+      expect(result?.answers.map((a) => a.id)).toEqual(prs.slice(0, 50).map((pr) => pr.id))
+      expect(result?.failures).toHaveLength(3)
+    },
+  )
 })
