@@ -411,10 +411,12 @@ export const queueNightlyReviews = async (
           join "pullRequests" pr on pr."id" = spr."prId"
           where spr."sessionId" = "sessions"."id" and pr."state" in ('merged', 'closed')
             -- For a re-review, only a pull request that ended after the earlier review counts:
-            -- one that ended before it would skip the quiet rule every night thereafter.
+            -- one that ended before it would skip the quiet rule every night thereafter. A first
+            -- review that failed has no result, so its pull request still counts.
             and not exists (
               select 1 from "sessionReviews" sr
               where sr."sessionId" = "sessions"."id" and sr."analyzer" = ${input.analyzer}
+                and sr."outcome" is not null
                 and coalesce(pr."closedAt" <= sr."updatedAt", true)
             )
         ) as "prEnded",

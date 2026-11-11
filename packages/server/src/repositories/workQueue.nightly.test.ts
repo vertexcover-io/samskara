@@ -652,6 +652,29 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
       })
     })
 
+    test("a busy session whose first review failed after its pull request merged is picked through that pull request once a message is stored after the failure", async () => {
+      const now = ist(11, 2)
+      const on = await project({ autoReview: true })
+      const failedFirst = await busySession(on, now)
+      await linkPullRequest(failedFirst, "merged", "github.com", hoursBefore(now, 5))
+      await message(failedFirst, 1, { createdAt: hoursBefore(now, 6) })
+      await message(failedFirst, 2, { createdAt: hoursBefore(now, 2) })
+      await db.insert(sessionReviews).values({
+        sessionId: failedFirst,
+        projectId: on,
+        analyzer: ANALYZER,
+        status: "failed",
+        attempts: 3,
+        error: "harnessFailed: boom",
+        updatedAt: hoursBefore(now, 3),
+      })
+
+      const result = await queueNightlyReviews(db, { ...DEFAULTS, now })
+
+      expect(result).toEqual({ picked: 1, queued: 1 })
+      expect(await rowOf(failedFirst)).toMatchObject({ status: "waiting", attempts: 0 })
+    })
+
     test("SC5: a never-reviewed session takes the limit before a re-review active longer ago", async () => {
       const now = ist(11, 2)
       const on = await project({ autoReview: true })
