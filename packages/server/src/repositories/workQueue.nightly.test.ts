@@ -1,8 +1,17 @@
-import { eq } from "drizzle-orm"
+import { eq, sql } from "drizzle-orm"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import type { Db } from "../db/client.js"
-import { projects, sessionReviews, sessions, users } from "../db/schema.js"
+import {
+  projects,
+  pullRequests,
+  repos,
+  sessionPullRequests,
+  sessionReviews,
+  sessions,
+  users,
+} from "../db/schema.js"
 import { dockerAvailable, startTestDb } from "../db/testDb.js"
+import { insertOpened } from "./pullRequests.repo.js"
 import { queueNightlyReviews } from "./workQueue.repo.js"
 
 const ANALYZER = "ai-problems-v2"
@@ -76,6 +85,28 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
 
   const quietSession = (projectId: string, now: Date, hours = 8): Promise<string> =>
     session(projectId, { lastMessageAt: hoursBefore(now, hours), updatedAt: hoursBefore(now, 1) })
+
+  /** Links a github.com pull request in `state` to the session, as if the session opened it. */
+  const linkPullRequest = async (sessionId: string, state: "open" | "merged" | "closed") => {
+    counter += 1
+    const [repo] = await db
+      .insert(repos)
+      .values({ host: "github.com", owner: "acme", repoName: `r${counter}`, ownerUserId: userId })
+      .returning({ id: repos.id })
+    const [pr] = await db
+      .insert(pullRequests)
+      .values({ repoId: repo?.id as string, number: counter, state })
+      .returning({ id: pullRequests.id })
+    await db.insert(sessionPullRequests).values({ sessionId, prId: pr?.id as string })
+    return pr?.id as string
+  }
+
+  /** A session whose last message was `hours` ago, so it is not yet quiet for 6 hours. */
+  const busySession = (projectId: string, now: Date, hours = 1): Promise<string> =>
+    session(projectId, {
+      lastMessageAt: hoursBefore(now, hours),
+      updatedAt: hoursBefore(now, hours),
+    })
 
   const reviewRows = () => db.select().from(sessionReviews)
 
@@ -261,5 +292,125 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
     expect(
       await queueNightlyReviews(db, { ...utc, now: new Date(Date.UTC(2026, 10, 11, 1, 0)) }),
     ).toEqual({ picked: 1, queued: 2 })
+  })
+  describe("a session whose pull request is merged or closed", () => {
+    test.each(["merged", "closed"] as const)(
+      "SC1: a session whose pull request is %s is queued before it goes quiet",
+      async (state) => {
+        const now = ist(11, 2)
+        const on = await project({ autoReview: true })
+        const ended = await busySession(on, now)
+        await linkPullRequest(ended, state)
+
+        const result = await queueNightlyReviews(db, { ...DEFAULTS, now })
+
+        expect(result).toEqual({ picked: 1, queued: 1 })
+        const rows = await reviewRows()
+        expect(rows.map((row) => row.sessionId)).toEqual([ended])
+        expect(rows[0]?.status).toBe("waiting")
+      },
+    )
+
+    test("SC2: a session whose pull request is still open waits for the 6-hour rule", async () => {
+      const now = ist(11, 2)
+      const on = await project({ autoReview: true })
+      const openPr = await busySession(on, now)
+      await linkPullRequest(openPr, "open")
+      const quiet = await quietSession(on, now, 8)
+
+      const result = await queueNightlyReviews(db, { ...DEFAULTS, now })
+
+      expect(result).toEqual({ picked: 1, queued: 1 })
+      expect(await reviewedIds()).toEqual([quiet])
+    })
+
+    test("SC3: a reviewed or month-old session is left alone even when its pull request ended", async () => {
+      const now = ist(11, 2)
+      const on = await project({ autoReview: true })
+      const reviewed = await busySession(on, now)
+      await linkPullRequest(reviewed, "merged")
+      const old = await busySession(on, now, 31 * 24)
+      await linkPullRequest(old, "merged")
+      await db.insert(sessionReviews).values({
+        sessionId: reviewed,
+        projectId: on,
+        analyzer: ANALYZER,
+        status: "done",
+        attempts: 1,
+        outcome: "productive",
+        summary: "kept",
+        signals: {},
+        updatedAt: new Date(Date.UTC(2026, 0, 1)),
+      })
+      const before = await reviewRows()
+
+      const result = await queueNightlyReviews(db, { ...DEFAULTS, now })
+
+      expect(result).toEqual({ picked: 1, queued: 0 })
+      expect(await reviewRows()).toEqual(before)
+    })
+
+    test("SC4: the per-project limit counts merged-PR sessions, oldest activity first", async () => {
+      const now = ist(11, 2)
+      const on = await project({ autoReview: true })
+      const quiet: string[] = []
+      for (let hours = 9; hours <= 16; hours += 1) quiet.push(await quietSession(on, now, hours))
+      const merged = new Map<number, string>()
+      for (let hours = 1; hours <= 4; hours += 1) {
+        const id = await busySession(on, now, hours)
+        await linkPullRequest(id, "merged")
+        merged.set(hours, id)
+      }
+
+      const result = await queueNightlyReviews(db, { ...DEFAULTS, now })
+
+      expect(result).toEqual({ picked: 1, queued: 10 })
+      const reviewed = await reviewedIds()
+      for (const id of quiet) expect(reviewed).toContain(id)
+      expect(reviewed).toContain(merged.get(3))
+      expect(reviewed).toContain(merged.get(4))
+      expect(reviewed).not.toContain(merged.get(1))
+      expect(reviewed).not.toContain(merged.get(2))
+    })
+
+    test("SC5: a pull request that ends after the night's pick waits for the next night", async () => {
+      const first = ist(11, 2)
+      const on = await project({ autoReview: true })
+      await quietSession(on, first)
+      await queueNightlyReviews(db, { ...DEFAULTS, now: first })
+
+      const second = ist(11, 23, 59)
+      const late = await busySession(on, second)
+      await linkPullRequest(late, "merged")
+      const result = await queueNightlyReviews(db, { ...DEFAULTS, now: second })
+
+      expect(result).toEqual({ picked: 0, queued: 0 })
+      expect(await reviewedIds()).not.toContain(late)
+    })
+
+    test("SC6: a pull request a session opens is stored as open", async () => {
+      const now = ist(11, 2)
+      const on = await project({ autoReview: true })
+      const opener = await busySession(on, now)
+      const [repo] = await db
+        .insert(repos)
+        .values({ host: "github.com", owner: "acme", repoName: "opened", ownerUserId: userId })
+        .returning({ id: repos.id })
+      await insertOpened(db, [{ repoId: repo?.id as string, number: 7, sessionId: opener }])
+
+      const [row] = await db
+        .select({
+          id: pullRequests.id,
+          state: pullRequests.state,
+          closedAt: pullRequests.closedAt,
+          checkedAt: pullRequests.checkedAt,
+        })
+        .from(pullRequests)
+        .where(eq(pullRequests.repoId, repo?.id as string))
+      expect(row).toMatchObject({ state: "open", closedAt: null, checkedAt: null })
+      await expect(
+        db.execute(sql`update "pullRequests" set "state" = 'draft' where "id" = ${row?.id}`),
+      ).rejects.toThrow(/pullRequests_state_check/)
+    })
   })
 })

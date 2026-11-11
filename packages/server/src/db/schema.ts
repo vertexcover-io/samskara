@@ -353,11 +353,23 @@ export const pullRequests = pgTable(
     title: text("title"),
     baseBranch: text("baseBranch"),
     headBranch: text("headBranch"),
+    /**
+     * Open until the nightly check reads it from GitHub as merged or closed. A session opened
+     * the PR, so a new row is open; only the worker's nightly check writes the three below.
+     */
+    state: text("state").notNull().default("open"),
+    /** When it was merged, or closed without merging; null while open. */
+    closedAt: timestamp("closedAt", { withTimezone: true }),
+    /** When the nightly check last had an answer from GitHub for it; null until then. */
+    checkedAt: timestamp("checkedAt", { withTimezone: true }),
     createdAt,
     updatedAt,
     searchVector: searchVector("pullRequests"),
   },
-  (t) => [unique("pullRequests_repo_number_unique").on(t.repoId, t.number)],
+  (t) => [
+    unique("pullRequests_repo_number_unique").on(t.repoId, t.number),
+    check("pullRequests_state_check", sql`${t.state} in ('open', 'merged', 'closed')`),
+  ],
 )
 
 /** Only PRs the session opened are stored, so a row here means "this session created that PR". */

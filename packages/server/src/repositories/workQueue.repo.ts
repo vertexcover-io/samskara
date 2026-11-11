@@ -299,11 +299,12 @@ export const PICK_WITHIN = "30 days"
 
 /**
  * The nightly rule. Each project with automatic review on, whose pick for today is due and not
- * yet made, is stamped as picked and gets `waiting` reviews for its `limit` sessions that have
- * been quiet longest. "Today" and the time of day are read in `timeZone`, so a worker started
- * after midnight but before `at` makes no pick for the night before. A session with a row for
- * the analyzer, in any state, is left alone. One statement, so a crash cannot stamp a project
- * without queueing its reviews, or queue them without the stamp.
+ * yet made, is stamped as picked and gets `waiting` reviews for its `limit` ready sessions that
+ * were active longest ago. A session is ready once it has been quiet for `QUIET_FOR`, or once a
+ * pull request it opened is merged or closed. "Today" and the time of day are read in
+ * `timeZone`, so a worker started after midnight but before `at` makes no pick for the night
+ * before. A session with a row for the analyzer, in any state, is left alone. One statement, so a
+ * crash cannot stamp a project without queueing its reviews, or queue them without the stamp.
  */
 export const queueNightlyReviews = async (
   db: Querier,
@@ -327,8 +328,15 @@ export const queueNightlyReviews = async (
         ) as "rank"
       from "sessions"
       where "sessions"."projectId" in (select "id" from "picked")
-        and ${sessionActivityAt} <= ${now} - ${QUIET_FOR}::interval
         and ${sessionActivityAt} > ${now} - ${PICK_WITHIN}::interval
+        and (
+          ${sessionActivityAt} <= ${now} - ${QUIET_FOR}::interval
+          or exists (
+            select 1 from "sessionPullRequests" spr
+            join "pullRequests" pr on pr."id" = spr."prId"
+            where spr."sessionId" = "sessions"."id" and pr."state" in ('merged', 'closed')
+          )
+        )
         and not exists (
           select 1 from "sessionReviews" sr
           where sr."sessionId" = "sessions"."id" and sr."analyzer" = ${input.analyzer}
