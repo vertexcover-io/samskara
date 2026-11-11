@@ -122,7 +122,7 @@ const BaseEnvSchema = z.object({
   /** How many sessions each project gets reviewed per night; the rest wait for the next. */
   NIGHTLY_REVIEW_LIMIT: z
     .string()
-    .regex(/^[1-9]\d*$/, "NIGHTLY_REVIEW_LIMIT must be a whole number of at least 1")
+    .regex(/^([1-9]|1\d|2[0-5])$/, "NIGHTLY_REVIEW_LIMIT must be a whole number from 1 to 25")
     .default("10")
     .transform((value) => Number(value)),
 })

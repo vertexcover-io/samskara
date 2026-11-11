@@ -69,6 +69,14 @@ describe("loadEnv", () => {
     )
   })
 
+  test("the nightly limit is at most 25", () => {
+    expect(loadEnv({ ...complete, NIGHTLY_REVIEW_LIMIT: "25" }).nightlyReview?.limit).toBe(25)
+    for (const limit of ["26", "99999999999999999999"])
+      expect(() => loadEnv({ ...complete, NIGHTLY_REVIEW_LIMIT: limit })).toThrow(
+        /Invalid environment configuration: NIGHTLY_REVIEW_LIMIT/,
+      )
+  })
+
   test("an offset zone is refused, since Postgres reads its sign the other way round", () => {
     for (const offset of ["+05:30", "-08:00", "+0530"]) {
       expect(() => loadEnv({ ...complete, NIGHTLY_REVIEW_TIME_ZONE: offset })).toThrow(

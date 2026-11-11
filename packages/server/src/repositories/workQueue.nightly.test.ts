@@ -174,6 +174,19 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
     for (let hours = 9; hours <= 18; hours += 1) expect(reviewed).toContain(byHoursAgo.get(hours))
   })
 
+  test("a session last active more than a month ago is not picked", async () => {
+    const now = ist(11, 2)
+    const on = await project({ autoReview: true })
+    const recent = await quietSession(on, now, 29 * 24)
+    await quietSession(on, now, 31 * 24)
+    await session(on, { updatedAt: hoursBefore(now, 31 * 24) })
+
+    const result = await queueNightlyReviews(db, { ...DEFAULTS, now })
+
+    expect(result).toEqual({ picked: 1, queued: 1 })
+    expect(await reviewedIds()).toEqual([recent])
+  })
+
   test("SC7: a second pick the same day picks nothing", async () => {
     const first = ist(11, 2)
     const on = await project({ autoReview: true })

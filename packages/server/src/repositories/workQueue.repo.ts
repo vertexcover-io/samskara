@@ -292,6 +292,12 @@ export const queueDueFixRuns = async (db: Querier): Promise<number> => {
 export const QUIET_FOR = "6 hours"
 
 /**
+ * Only sessions active this recently are candidates, so the ranking reads a month of a project's
+ * sessions rather than its whole history. Older ones are reviewed by ticking them.
+ */
+export const PICK_WITHIN = "30 days"
+
+/**
  * The nightly rule. Each project with automatic review on, whose pick for today is due and not
  * yet made, is stamped as picked and gets `waiting` reviews for its `limit` sessions that have
  * been quiet longest. "Today" and the time of day are read in `timeZone`, so a worker started
@@ -322,6 +328,7 @@ export const queueNightlyReviews = async (
       from "sessions"
       where "sessions"."projectId" in (select "id" from "picked")
         and ${sessionActivityAt} <= ${now} - ${QUIET_FOR}::interval
+        and ${sessionActivityAt} > ${now} - ${PICK_WITHIN}::interval
         and not exists (
           select 1 from "sessionReviews" sr
           where sr."sessionId" = "sessions"."id" and sr."analyzer" = ${input.analyzer}

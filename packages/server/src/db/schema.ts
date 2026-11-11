@@ -158,7 +158,10 @@ export const projects = pgTable(
     fixRunEveryDays: integer("fixRunEveryDays").notNull().default(7),
     /** The worker queues reviews for this project's quiet sessions once a night. */
     autoReview: boolean("autoReview").notNull().default(false),
-    /** When the worker last made this project's nightly pick; null until the first one. */
+    /**
+     * When the worker last made this project's nightly pick, or when automatic review was last
+     * turned on (which counts as that day's pick); null until either happens.
+     */
     lastNightlyPickAt: timestamp("lastNightlyPickAt", { withTimezone: true }),
     createdAt,
     updatedAt,
