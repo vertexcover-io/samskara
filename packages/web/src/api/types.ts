@@ -114,10 +114,20 @@ export type ProblemsReviewSignals = {
   }
 }
 
-/** A non-terminal analysis job as GET /:id/aireview reports it alongside the review. */
-export type AiReviewJobStatus = {
-  readonly jobId: string
-  readonly status: "running"
-  readonly startedAt: string
-  readonly lastEvent: { readonly name: string; readonly at: string } | null
-}
+/**
+ * The analysis job GET /:id/aireview reports alongside the review: one still waiting or running,
+ * or one that failed all its tries, with its reason.
+ */
+export type AiReviewJobStatus =
+  | {
+      readonly jobId: string
+      readonly status: "running"
+      readonly startedAt: string
+      readonly lastEvent: { readonly name: string; readonly at: string } | null
+    }
+  | {
+      readonly jobId: string
+      readonly status: "failed"
+      readonly code: string
+      readonly detail: unknown
+    }

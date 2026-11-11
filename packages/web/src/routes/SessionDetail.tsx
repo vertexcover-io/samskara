@@ -1187,12 +1187,13 @@ const useAiAnalysis = (
     let active = true
     fetchProblemsReview(sessionId).then((result) => {
       if (!active || !result.ok) return
-      if (result.data.job !== null) {
-        setAnalysis({
-          phase: "running",
-          startedAt: Date.parse(result.data.job.startedAt),
-          jobId: result.data.job.jobId,
-        })
+      const job = result.data.job
+      if (job?.status === "failed") {
+        setAnalysis({ phase: "failed", message: failureMessage(job.code, job.detail) })
+        return
+      }
+      if (job !== null) {
+        setAnalysis({ phase: "running", startedAt: Date.parse(job.startedAt), jobId: job.jobId })
         return
       }
       if (result.data.review !== null) {
@@ -1249,6 +1250,10 @@ const useAiAnalysis = (
       fetchProblemsReview(sessionId).then((result) => {
         if (!active || !result.ok) return
         const { review, job } = result.data
+        if (job?.status === "failed") {
+          setAnalysis({ phase: "failed", message: failureMessage(job.code, job.detail) })
+          return
+        }
         if (job !== null) {
           setAnalysis({ phase: "running", startedAt: Date.parse(job.startedAt), jobId: job.jobId })
           return

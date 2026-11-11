@@ -302,6 +302,47 @@ test("LR7: a run already going when the page opens shows as running", async () =
   expect(screen.getByRole("button", { name: "Run now" })).toBeDisabled()
 })
 
+test("SC47: the fixes page waits on a queued run, and reloads once it is done", async () => {
+  const WAITING = { ...RUNNING, status: "waiting" }
+  let checks = 0
+  vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+    const url = input instanceof Request ? input.url : String(input)
+    const reply = (status: number, body: unknown) =>
+      Promise.resolve(new Response(JSON.stringify(body), { status }))
+    const finished = checks >= 2
+    if (url.includes("/api/learnings/runs/r-2")) {
+      checks += 1
+      // Still queued at the first check, done at the second.
+      return reply(200, { run: checks >= 2 ? { ...RUNNING, status: "done" } : WAITING })
+    }
+    if (url.includes("/api/learnings"))
+      return reply(200, {
+        learnings: finished ? [LEARNING] : [],
+        latestRun: finished ? { ...RUNNING, status: "done" } : WAITING,
+        canEdit: true,
+      })
+    if (url.includes("/api/projects")) return reply(200, projectsBody)
+    return reply(401, { error: "unauthorized" })
+  })
+  // The poll starts as the page loads, so its interval is faked from the start.
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
+  renderPage()
+
+  expect(await screen.findByText(/Running…/)).toBeInTheDocument()
+  expect(screen.getByRole("button", { name: "Run now" })).toBeDisabled()
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(RUN_POLL_MS)
+  })
+  expect(screen.getByRole("button", { name: "Run now" })).toBeDisabled()
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(RUN_POLL_MS)
+  })
+  vi.useRealTimers()
+  expect(await screen.findByText(LEARNING.title)).toBeInTheDocument()
+  expect(screen.getByRole("button", { name: "Run now" })).toBeEnabled()
+})
+
 test("LR8: a refused run says why in plain words", async () => {
   stubFetch([
     { match: "/api/learnings/runs", status: 400, body: { error: "noHarnessPath" } },
