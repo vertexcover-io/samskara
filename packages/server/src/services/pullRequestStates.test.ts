@@ -44,7 +44,7 @@ describe("createPullRequestLookup", () => {
     expect(fakeFetch).not.toHaveBeenCalled()
   })
 
-  test("SC9: GitHub's answers become states and close times", async () => {
+  test("SC9: GitHub's answers become states and close times; an unreadable repo gives no state", async () => {
     const fakeFetch = vi.fn<typeof fetch>(async () =>
       json({
         data: {
@@ -60,11 +60,13 @@ describe("createPullRequestLookup", () => {
           },
           pr2: { pullRequest: { state: "OPEN", mergedAt: null, closedAt: null } },
           pr3: { pullRequest: null },
+          // A repo the token cannot read comes back as a null alias, or none at all (pr5).
+          pr4: null,
         },
       }),
     )
     const lookup = createPullRequestLookup("t", fakeFetch)
-    const prs = refs(4)
+    const prs = refs(6)
 
     const result = await lookup?.(prs)
 
@@ -74,6 +76,8 @@ describe("createPullRequestLookup", () => {
         { id: "pr-1", state: "closed", closedAt: new Date("2026-11-09T12:30:00Z") },
         { id: "pr-2", state: "open", closedAt: null },
         { id: "pr-3", state: null, closedAt: null },
+        { id: "pr-4", state: null, closedAt: null },
+        { id: "pr-5", state: null, closedAt: null },
       ],
       failures: [],
     })
