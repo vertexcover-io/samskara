@@ -1,7 +1,7 @@
 import type { HarnessSource } from "@samskara/core"
 import type pino from "pino"
 import type { Db } from "../db/client.js"
-import type { ReviewHarness } from "../lib/env.js"
+import type { NightlyReview, ReviewHarness } from "../lib/env.js"
 import { finishRun, type RunOutcome } from "../repositories/learnings.repo.js"
 import {
   type ClaimedFixRun,
@@ -11,10 +11,15 @@ import {
   failFixRunAttempt,
   failReviewAttempt,
   queueDueFixRuns,
+  queueNightlyReviews,
   requeueRunningFixRuns,
   requeueRunningReviews,
 } from "../repositories/workQueue.repo.js"
-import type { AiReviewOptions, AiReviewResult } from "../services/ai-review/pipeline.js"
+import {
+  type AiReviewOptions,
+  type AiReviewResult,
+  PROBLEMS_ANALYZER,
+} from "../services/ai-review/pipeline.js"
 
 /** How many reviews this worker runs at once; the machine has room for no more. */
 export const REVIEW_SLOTS = 2
@@ -28,6 +33,10 @@ export type WorkLoopDeps = {
   readonly runFixRun?: (run: ClaimedFixRun) => Promise<RunOutcome>
   /** Queue automatic every-N-days runs; false when the server has no harness of its own. */
   readonly queueDue?: boolean
+  /** When and how many sessions to queue for review each night; undefined queues none. */
+  readonly nightlyReview?: NightlyReview
+  /** The clock the nightly pick reads; tests set it, production leaves it to the real one. */
+  readonly now?: () => Date
   readonly reviewSlots?: number
 }
 
@@ -126,6 +135,23 @@ export const createWorkLoop = (deps: WorkLoopDeps): WorkLoop => {
     inFlight.add(running)
   }
 
+  /** Before the claims, so tonight's picked rows start in this same pass. */
+  const pickNightly = async (): Promise<void> => {
+    const nightly = deps.nightlyReview
+    if (nightly === undefined) return
+    try {
+      const now = (deps.now ?? (() => new Date()))()
+      const { picked, queued } = await queueNightlyReviews(deps.db, {
+        ...nightly,
+        now,
+        analyzer: PROBLEMS_ANALYZER,
+      })
+      if (picked > 0) deps.log.info({ picked, queued }, "nightly reviews queued")
+    } catch (error) {
+      deps.log.error({ err: error }, "nightly pick failed; claiming what is already waiting")
+    }
+  }
+
   const claimWhatFits = async (): Promise<void> => {
     if (stopped) return
     // The advisory lock makes this the only worker, so a running row it is not running is one
@@ -134,6 +160,7 @@ export const createWorkLoop = (deps: WorkLoopDeps): WorkLoop => {
     const requeuedFixRuns = await requeueRunningFixRuns(deps.db, [...runningIds])
     if (requeued + requeuedFixRuns > 0)
       deps.log.warn({ requeued, requeuedFixRuns }, "requeued rows left running")
+    await pickNightly()
     while (!stopped && reviewsRunning < slots) {
       const review = await claimReview(deps.db)
       if (review === null) break

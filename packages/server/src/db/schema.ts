@@ -156,6 +156,10 @@ export const projects = pgTable(
     repoId: uuid("repoId").references(() => repos.id, { onDelete: "set null" }),
     /** Days between automatic fix runs for this project. */
     fixRunEveryDays: integer("fixRunEveryDays").notNull().default(7),
+    /** The worker queues reviews for this project's quiet sessions once a night. */
+    autoReview: boolean("autoReview").notNull().default(false),
+    /** When the worker last made this project's nightly pick; null until the first one. */
+    lastNightlyPickAt: timestamp("lastNightlyPickAt", { withTimezone: true }),
     createdAt,
     updatedAt,
   },

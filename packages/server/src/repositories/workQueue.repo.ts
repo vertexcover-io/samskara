@@ -1,6 +1,7 @@
 import { and, eq, inArray, notInArray, sql } from "drizzle-orm"
 import type { Querier } from "../db/client.js"
-import { learningRuns, sessionReviews } from "../db/schema.js"
+import { learningRuns, sessionActivityAt, sessionReviews } from "../db/schema.js"
+import type { NightlyReview } from "../lib/env.js"
 
 /** A row that fails this many tries becomes `failed` and is not picked again. */
 export const MAX_ATTEMPTS = 3
@@ -285,4 +286,54 @@ export const queueDueFixRuns = async (db: Querier): Promise<number> => {
     on conflict do nothing
     returning "id"`)
   return rows.length
+}
+
+/** A session must go this long without a message before a nightly pick takes it. */
+export const QUIET_FOR = "6 hours"
+
+/**
+ * The nightly rule. Each project with automatic review on, whose pick for today is due and not
+ * yet made, is stamped as picked and gets `waiting` reviews for its `limit` sessions that have
+ * been quiet longest. "Today" and the time of day are read in `timeZone`, so a worker started
+ * after midnight but before `at` makes no pick for the night before. A session with a row for
+ * the analyzer, in any state, is left alone. One statement, so a crash cannot stamp a project
+ * without queueing its reviews, or queue them without the stamp.
+ */
+export const queueNightlyReviews = async (
+  db: Querier,
+  input: NightlyReview & { readonly now: Date; readonly analyzer: string },
+): Promise<{ readonly picked: number; readonly queued: number }> => {
+  // drizzle's postgres-js driver cannot bind a Date in raw sql, so the instant goes as text.
+  const now = sql`${input.now.toISOString()}::timestamptz`
+  const today = sql`date_trunc('day', ${now} at time zone ${input.timeZone})`
+  const dueAt = sql`((${today} + ${input.at}::time) at time zone ${input.timeZone})`
+  const [row] = await db.execute<{ picked: number; queued: number }>(sql`
+    with "picked" as (
+      update "projects" set "lastNightlyPickAt" = ${now}
+      where "autoReview"
+        and ${now} >= ${dueAt}
+        and ("lastNightlyPickAt" is null or "lastNightlyPickAt" < ${dueAt})
+      returning "id"
+    ), "ready" as (
+      select "sessions"."id", "sessions"."projectId",
+        row_number() over (
+          partition by "sessions"."projectId" order by ${sessionActivityAt}, "sessions"."id"
+        ) as "rank"
+      from "sessions"
+      where "sessions"."projectId" in (select "id" from "picked")
+        and ${sessionActivityAt} <= ${now} - ${QUIET_FOR}::interval
+        and not exists (
+          select 1 from "sessionReviews" sr
+          where sr."sessionId" = "sessions"."id" and sr."analyzer" = ${input.analyzer}
+        )
+    ), "queued" as (
+      insert into "sessionReviews" ("sessionId", "projectId", "analyzer", "status", "attempts")
+      select "id", "projectId", ${input.analyzer}, 'waiting', 0 from "ready"
+      where "rank" <= ${input.limit}
+      on conflict do nothing
+      returning "id"
+    )
+    select (select count(*)::int from "picked") as "picked",
+      (select count(*)::int from "queued") as "queued"`)
+  return { picked: row?.picked ?? 0, queued: row?.queued ?? 0 }
 }
