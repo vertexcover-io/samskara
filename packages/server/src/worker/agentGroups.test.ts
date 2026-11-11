@@ -3,7 +3,7 @@ import { mkdtempSync, readdirSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, test } from "vitest"
-import { createAgentGroups } from "./agentGroups.js"
+import { canRecordAgents, createAgentGroups } from "./agentGroups.js"
 
 /** A stand-in agent: the leader of its own process group, as the runner spawns them. */
 const startAgent = (): ChildProcess => {
@@ -69,4 +69,8 @@ describe("agent groups", () => {
     expect(isAlive(other.pid as number)).toBe(true)
     expect(readdirSync(dir)).toEqual([])
   })
+})
+
+test("this machine can read a process's start time, so agents get recorded", () => {
+  expect(canRecordAgents()).toBe(true)
 })

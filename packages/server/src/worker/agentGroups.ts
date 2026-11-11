@@ -25,6 +25,9 @@ const startTime = (pid: number): string | null => {
   }
 }
 
+/** False when `ps` is missing: no agent is recorded, so none can be reaped after a SIGKILL. */
+export const canRecordAgents = (): boolean => startTime(process.pid) !== null
+
 export type AgentGroups = {
   readonly started: (pid: number) => void
   readonly ended: (pid: number) => void

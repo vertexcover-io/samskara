@@ -6,8 +6,9 @@ import { requeueRunningFixRuns, requeueRunningReviews } from "../repositories/wo
 import { runAiReview } from "../services/ai-review/pipeline.js"
 import { defaultAiReviewRunner } from "../services/ai-review/runner.js"
 import { executeLearningRun } from "../services/learnings/run.js"
-import { agentGroupsDir, createAgentGroups } from "./agentGroups.js"
+import { agentGroupsDir, canRecordAgents, createAgentGroups } from "./agentGroups.js"
 import { withAgentSlots } from "./agentSlots.js"
+import { watchLock } from "./lockWatch.js"
 import { createWorkLoop, fixRunner, reviewOptions } from "./loop.js"
 import { ALIVE, NEW_WORK, STOP } from "./messages.js"
 import { createWorkerShutdown } from "./shutdown.js"
@@ -56,11 +57,23 @@ const { db, client } = createDb(databaseUrl)
 // A session-level lock lives on one connection, so that connection is reserved for good.
 const lockConnection = await client.reserve()
 await lockConnection`select pg_advisory_lock(hashtext(${WORKER_LOCK}))`
+// Losing that connection loses the lock, and another worker may take it: stop, and let the
+// supervisor start one that takes the lock again before it touches the queue.
+watchLock({
+  check: () => lockConnection`select 1`,
+  onLost: (error) => {
+    log.error({ err: error }, "worker lock connection lost")
+    stop("lock lost", 1)
+  },
+  everyMs: ALIVE_EVERY_MS,
+})
 
 // Agents a worker killed with SIGKILL left behind: past the lock, so their worker is gone.
 const agentGroups = createAgentGroups(agentGroupsDir(databaseUrl))
 const reapedLeftovers = agentGroups.reapLeftovers()
 watchHarnessGroups(agentGroups)
+if (!canRecordAgents())
+  log.error("`ps` is missing, so agents left by a killed worker cannot be found and reaped")
 
 const requeued = await requeueRunningReviews(db)
 const requeuedFixRuns = await requeueRunningFixRuns(db)
