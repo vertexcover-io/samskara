@@ -12,11 +12,13 @@ import {
   type ProblemReview,
   prepareProblems,
   problemReviewFiles,
+  type ReaderReplyStore,
   readProblemWorkspace,
 } from "@samskara/core"
 import type pino from "pino"
 import type { Db } from "../../db/client.js"
 import type { Env, ReviewHarness } from "../../lib/env.js"
+import { savedReaderReplies, saveReaderReply } from "../../repositories/readerReplies.repo.js"
 import {
   appendReviewProblems,
   replaceReviewProblems,
@@ -41,6 +43,11 @@ export type AiReviewOptions = {
   readonly prompt?: string
   /** Read only what the session's earlier review has not, and add to its problems. */
   readonly newPartOnly?: boolean
+  /**
+   * The `sessionReviews` row this run is a try of. With it, readers keep their replies on the
+   * row and a retry reads only the pieces no earlier try finished; without it, every reader runs.
+   */
+  readonly reviewId?: string
 }
 
 export type AiReviewDeps = {
@@ -81,6 +88,25 @@ export const PROBLEMS_ANALYZER = "ai-problems-v2"
 
 /** Stdout excerpt length carried on a failed result — enough to debug, not to leak. */
 const STDOUT_EXCERPT_CHARS = 400
+
+/**
+ * The readers' replies kept on the review row, so a retry reads only the pieces no earlier try
+ * finished. Never throws: a database hiccup costs a reader rerun, never a lost piece.
+ */
+const readerReplyStore = (db: Db, reviewId: string, log: pino.Logger): ReaderReplyStore => ({
+  load: () =>
+    savedReaderReplies(db, reviewId).catch((error: unknown) => {
+      log.warn(
+        { reviewId, err: error },
+        "saved reader replies could not be read; every reader runs",
+      )
+      return new Map<string, string>()
+    }),
+  save: (pieceHash, reply) =>
+    saveReaderReply(db, { reviewId, pieceHash, reply }).catch((error: unknown) => {
+      log.warn({ reviewId, pieceHash, err: error }, "a reader reply could not be saved")
+    }),
+})
 
 /**
  * One AI review, end to end: readers find leads in every piece of the session, then the
@@ -190,6 +216,8 @@ export const runAiReview = async (
       instructions,
       runner,
       run: { harness, model },
+      replies:
+        options.reviewId === undefined ? undefined : readerReplyStore(db, options.reviewId, log),
     })
   } catch (error) {
     // A reader that fails only leaves its piece unread; anything else failing here fails
@@ -203,6 +231,7 @@ export const runAiReview = async (
     pieces: prepared.found.pieceCount,
     leads: prepared.found.leads.length,
     failed: prepared.found.failedPieces.length,
+    reused: prepared.found.reusedPieces,
   })
   const staged = problemReviewFiles(sessionExport, instructions, prepared.leadsMd)
 

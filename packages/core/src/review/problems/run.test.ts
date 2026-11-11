@@ -429,6 +429,7 @@ describe("readProblemWorkspace", () => {
       dropped: ["main, part 1: msg-9: no such message"],
       failedPieces: ["helper a: timed out"],
       pieceCount: 2,
+      reusedPieces: 0,
     },
     leadsMd: "",
     leadIds: ["L1", "L2"],

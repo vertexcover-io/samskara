@@ -255,6 +255,7 @@ export const storedHarness = (value: string | null): ReviewHarness | undefined =
 export const reviewOptions = (review: ClaimedReview): AiReviewOptions => {
   const harness = storedHarness(review.harness)
   return {
+    reviewId: review.id,
     ...(harness === undefined ? {} : { harness }),
     ...(review.model === null ? {} : { model: review.model }),
     ...(review.prompt === null ? {} : { prompt: review.prompt }),

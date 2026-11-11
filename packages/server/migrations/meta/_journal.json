@@ -330,6 +330,13 @@
       "when": 1794424689016,
       "tag": "0046_striped_colonel_america",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1794431388748,
+      "tag": "0047_pale_deathbird",
+      "breakpoints": true
     }
   ]
 }

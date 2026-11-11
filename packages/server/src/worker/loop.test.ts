@@ -555,8 +555,8 @@ describe("reviewOptions", () => {
     newPartOnly,
   })
 
-  test("SC15: a review the nightly pick marked new-part-only is run with newPartOnly, and an unmarked one without it", () => {
-    expect(reviewOptions(claimed(true))).toEqual({ newPartOnly: true })
-    expect(reviewOptions(claimed(false))).toEqual({})
+  test("SC409: a claimed review runs as a try of its own row, with newPartOnly only when the nightly pick marked it", () => {
+    expect(reviewOptions(claimed(true))).toEqual({ reviewId: "r-1", newPartOnly: true })
+    expect(reviewOptions(claimed(false))).toEqual({ reviewId: "r-1" })
   })
 })

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import type { SessionExport, SessionExportRecord } from "../export.js"
 import type { HarnessRunInput, HarnessRunner } from "../runner.js"
 import { sessionJsonText } from "./contract.js"
@@ -188,7 +189,28 @@ export type FoundLeads = {
   /** Pieces whose reader failed or wrote nothing — read by no one. */
   readonly failedPieces: ReadonlyArray<string>
   readonly pieceCount: number
+  /** Pieces whose reply came from an earlier try of the same review, with no model call. */
+  readonly reusedPieces: number
 }
+
+/**
+ * Reader replies an earlier try of the same review already has, keyed by `pieceHash`. Neither
+ * method may throw: a store that cannot answer costs a reader rerun, never a lost piece.
+ */
+export type ReaderReplyStore = {
+  readonly load: () => Promise<ReadonlyMap<string, string>>
+  readonly save: (pieceHash: string, reply: string) => Promise<void>
+}
+
+/**
+ * The key a reader's reply is kept under: the piece's records exactly as the reader was shown
+ * them. The session's meta header is left out: its `endedAt` moves with every new message,
+ * and would make every piece miss when only one of them changed.
+ */
+export const pieceHash = (piece: Piece): string =>
+  createHash("sha256")
+    .update(piece.records.map((record) => JSON.stringify(record)).join("\n"))
+    .digest("hex")
 
 /** Runs `work` over `items`, at most `limit` at a time, keeping the input order. */
 const inBatches = async <T, R>(
@@ -214,21 +236,30 @@ const inBatches = async <T, R>(
  * by its own reader, side by side. A reader is one model call with the piece in its prompt, not
  * an agent: an agent reads a file in chunks and re-sends everything it has read at every step. A reader that fails leaves its piece unread and is
  * recorded, but does not fail the review — the code leads still cover that piece.
+ * With `replies`, a piece an earlier try already read is not read again, and each new reply is
+ * saved as soon as its reader returns.
  */
 export const findAgentLeads = async (input: {
   readonly exported: SessionExport
   readonly instructions: string
   readonly runner: HarnessRunner
   readonly run?: Pick<HarnessRunInput, "harness" | "model">
+  /** Replies kept from an earlier try of this review; absent, every reader runs. */
+  readonly replies?: ReaderReplyStore
 }): Promise<FoundLeads> => {
   const pieces = splitIntoPieces(input.exported.records.map(shortenForReader))
   // Checked against the full records: a quote from what a reader was shown is in them too.
   // A lead only points the way, so its range and reason are not limited — only its words
   // must really be there.
   const check = quoteChecker(input.exported.records, Number.POSITIVE_INFINITY)
-  const outcomes = await inBatches(pieces, READER_CONCURRENCY, (piece) =>
+  const saved = (await input.replies?.load()) ?? new Map<string, string>()
+  const outcomes = await inBatches(pieces, READER_CONCURRENCY, async (piece) => {
+    const key = pieceHash(piece)
+    const kept = saved.get(key)
+    if (kept !== undefined)
+      return { piece, found: parseFoundLeads(kept).slice(0, MAX_LEADS_PER_PIECE), reused: true }
     // The folder holds nothing: it is only the run's cwd, and its home when sandboxed.
-    withWorkspace("samskara-review-reader-", {}, async (workspaceDir) => {
+    return withWorkspace("samskara-review-reader-", {}, async (workspaceDir) => {
       const prompt = readerPrompt(
         piece.label,
         input.instructions,
@@ -241,26 +272,29 @@ export const findAgentLeads = async (input: {
         oneShot: true,
       })
       if (stdout.trim() === "") return { piece, failed: "replied with nothing" }
-      return { piece, found: parseFoundLeads(stdout).slice(0, MAX_LEADS_PER_PIECE) }
+      await input.replies?.save(key, stdout)
+      return { piece, found: parseFoundLeads(stdout).slice(0, MAX_LEADS_PER_PIECE), reused: false }
     }).catch((error: unknown) => ({
       piece,
       failed: error instanceof Error ? error.message : String(error),
-    })),
-  )
+    }))
+  })
 
   const leads: Array<Evidence & { piece: string }> = []
   const dropped: string[] = []
   const failedPieces: string[] = []
+  let reusedPieces = 0
   for (const outcome of outcomes) {
     if ("failed" in outcome) {
       failedPieces.push(`${outcome.piece.label}: ${outcome.failed}`)
       continue
     }
+    if (outcome.reused) reusedPieces += 1
     for (const lead of outcome.found ?? []) {
       const error = check(lead)
       if (error === undefined) leads.push({ ...lead, piece: outcome.piece.label })
       else dropped.push(`${outcome.piece.label}: ${error}`)
     }
   }
-  return { leads, dropped, failedPieces, pieceCount: pieces.length }
+  return { leads, dropped, failedPieces, pieceCount: pieces.length, reusedPieces }
 }

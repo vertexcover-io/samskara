@@ -1,7 +1,13 @@
 import { describe, expect, test } from "vitest"
 import type { SessionExport, SessionExportRecord } from "../export.js"
 import type { HarnessRunner } from "../runner.js"
-import { findAgentLeads, parseFoundLeads, shortenForReader, splitIntoPieces } from "./finder.js"
+import {
+  findAgentLeads,
+  parseFoundLeads,
+  type ReaderReplyStore,
+  shortenForReader,
+  splitIntoPieces,
+} from "./finder.js"
 
 const rec = (seq: number, fields: Partial<SessionExportRecord> = {}): SessionExportRecord => ({
   seq,
@@ -245,5 +251,111 @@ describe("findAgentLeads", () => {
     expect(shown).not.toContain("m".repeat(9000))
     expect(result.dropped).toEqual([])
     expect(result.leads).toHaveLength(1)
+  })
+
+  describe("with a reply store", () => {
+    const MAIN_REPLY = '- msg-1 — "all tests pass" — nothing was run before this'
+    const HELPER_REPLY = '- msg-2 — "helper did the work" — says done without showing it'
+
+    /** An in-memory store, as the server's table would be for one review row. */
+    const memoryStore = () => {
+      const kept = new Map<string, string>()
+      const replies: ReaderReplyStore = {
+        load: async () => new Map(kept),
+        save: async (key, reply) => {
+          if (!kept.has(key)) kept.set(key, reply)
+        },
+      }
+      return { kept, replies }
+    }
+
+    /** A runner that records which piece each call read, by its `# The piece:` line. */
+    const recording = (reply: (prompt: string) => string) => {
+      const read: string[] = []
+      const runner: HarnessRunner = {
+        run: async ({ prompt }) => {
+          read.push(/# The piece: (.+)/.exec(prompt)?.[1] ?? "?")
+          return { stdout: reply(prompt), firstByteMs: 1 }
+        },
+      }
+      return { runner, read }
+    }
+
+    const mainOnly = (prompt: string): string => {
+      if (prompt.includes("helper did the work")) throw new Error("harness run timed out")
+      return MAIN_REPLY
+    }
+    const both = (prompt: string): string =>
+      prompt.includes("all tests pass") ? MAIN_REPLY : HELPER_REPLY
+
+    test("SC404: a finished reader's reply is saved under its piece; a reader that throws saves nothing", async () => {
+      const { kept, replies } = memoryStore()
+      const { runner } = recording(mainOnly)
+      const result = await findAgentLeads({
+        exported,
+        instructions: "# How to review",
+        runner,
+        replies,
+      })
+      expect([...kept.values()]).toEqual([MAIN_REPLY])
+      expect(result.failedPieces).toEqual(["helper agent:a: harness run timed out"])
+      expect(result.reusedPieces).toBe(0)
+    })
+
+    test("SC404b: a reader that replies with nothing saves nothing, so the next try reads it again", async () => {
+      const { kept, replies } = memoryStore()
+      const { runner } = recording((prompt) =>
+        prompt.includes("all tests pass") ? MAIN_REPLY : "  \n",
+      )
+      await findAgentLeads({ exported, instructions: "# How to review", runner, replies })
+      expect([...kept.values()]).toEqual([MAIN_REPLY])
+    })
+
+    test("SC405: a second run with the same store calls the model only for the piece with no reply, and reuses the other's leads", async () => {
+      const { replies } = memoryStore()
+      await findAgentLeads({
+        exported,
+        instructions: "# How to review",
+        runner: recording(mainOnly).runner,
+        replies,
+      })
+      const { runner, read } = recording(both)
+      const result = await findAgentLeads({
+        exported,
+        instructions: "# How to review",
+        runner,
+        replies,
+      })
+      expect(read).toEqual(["helper agent:a"])
+      expect(result.reusedPieces).toBe(1)
+      expect(result.failedPieces).toEqual([])
+      expect(result.leads.map((lead) => [lead.piece, lead.quote])).toEqual([
+        ["main, part 1", "all tests pass"],
+        ["helper agent:a", "helper did the work"],
+      ])
+    })
+
+    test("SC406: a piece whose records changed is read again; the unchanged piece is reused", async () => {
+      const { replies } = memoryStore()
+      await findAgentLeads({
+        exported,
+        instructions: "# How to review",
+        runner: recording(both).runner,
+        replies,
+      })
+      const grown: SessionExport = {
+        ...exported,
+        records: [...exported.records, rec(3, { track: "agent:a", text: "helper ran the tests" })],
+      }
+      const { runner, read } = recording(both)
+      const result = await findAgentLeads({
+        exported: grown,
+        instructions: "# How to review",
+        runner,
+        replies,
+      })
+      expect(read).toEqual(["helper agent:a"])
+      expect(result.reusedPieces).toBe(1)
+    })
   })
 })
