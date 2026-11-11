@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm"
+import { eq, sql } from "drizzle-orm"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import { createDb, type Db } from "../db/client.js"
 import { projects, reviewReaderReplies, sessionReviews, sessions, users } from "../db/schema.js"
@@ -300,6 +300,27 @@ describe.skipIf(!dockerAvailable())("work queue: reviews", () => {
       expect(await repliesOf(last.id)).toEqual([])
       expect(await rowById(second.id)).toMatchObject({ status: "waiting" })
       expect(await repliesOf(second.id)).toHaveLength(1)
+    })
+
+    test("SC414: when the replies cannot be deleted, a 3rd failed try and a restart both leave the row running rather than failed with its replies behind", async () => {
+      const failing = await seedWithReply("s-failing", { status: "running", attempts: 3 })
+      await db.execute(sql`
+        create function "refuseDelete"() returns trigger language plpgsql
+        as $$ begin raise exception 'delete refused'; end $$`)
+      await db.execute(sql`
+        create trigger "refuseDelete" before delete on "reviewReaderReplies"
+        for each row execute function "refuseDelete"()`)
+      try {
+        await expect(failReviewAttempt(db, failing.id, "harnessFailed: boom")).rejects.toThrow()
+        expect(await rowById(failing.id)).toMatchObject({ status: "running" })
+
+        await expect(requeueRunningReviews(db)).rejects.toThrow()
+        expect(await rowById(failing.id)).toMatchObject({ status: "running" })
+        expect(await repliesOf(failing.id)).toHaveLength(1)
+      } finally {
+        await db.execute(sql`drop trigger "refuseDelete" on "reviewReaderReplies"`)
+        await db.execute(sql`drop function "refuseDelete"()`)
+      }
     })
 
     test("SC413: claiming a newly queued review clears replies an earlier review left; claiming a retry keeps its own", async () => {
