@@ -32,14 +32,21 @@ export const refusalMessage = (error: ApiError): string =>
 
 const sessions = (count: number): string => `${count} session${count === 1 ? "" : "s"}`
 
-/** What pressing Review did, in one line: queued, already reviewed, not yours to review. */
+/**
+ * What pressing Review did, in one line: queued, fix runs to follow, already reviewed, not yours
+ * to review.
+ */
 export const queuedMessage = (counts: {
   readonly queued: number
   readonly skipped: number
   readonly notAllowed: ReadonlyArray<string>
+  readonly fixRunsQueued: number
 }): string =>
   [
     `Queued ${sessions(counts.queued)} for review.`,
+    counts.fixRunsQueued === 0
+      ? null
+      : `Fixes will be found in ${counts.fixRunsQueued} project${counts.fixRunsQueued === 1 ? "" : "s"} once the reviews finish.`,
     counts.skipped === 0 ? null : `${sessions(counts.skipped)} already had a review.`,
     counts.notAllowed.length === 0
       ? null

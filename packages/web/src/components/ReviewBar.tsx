@@ -30,7 +30,7 @@ export const ReviewBar = ({ count, starting, onStart, onClear }: Props) => (
       disabled={count === 0 || starting}
       className="ml-auto h-9 rounded-xs border border-ink bg-ink px-3 font-semibold text-panel-2 disabled:border-rule disabled:bg-panel disabled:text-faded"
     >
-      Review
+      Review and find fixes
     </button>
   </section>
 )
