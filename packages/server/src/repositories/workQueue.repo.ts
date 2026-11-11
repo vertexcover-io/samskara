@@ -298,7 +298,7 @@ export const QUIET_FOR = "6 hours"
  */
 export const PICK_WITHIN = "30 days"
 
-/** How many open pull requests one night's check asks GitHub about, at most. */
+/** How many open pull requests the check before one nightly pick asks GitHub about, at most. */
 export const PR_CHECK_LIMIT = 200
 
 type NightlyInput = NightlyReview & { readonly now: Date; readonly analyzer: string }

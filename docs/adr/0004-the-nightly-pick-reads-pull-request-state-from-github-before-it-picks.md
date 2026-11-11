@@ -13,15 +13,15 @@ The nightly pick queued a session only after 6 quiet hours, and the server had n
 
 ## Considered Options
 
-- The worker asks GitHub's GraphQL API once a night, just before the pick, about the open PRs of that night's candidate sessions: 50 per request, at most 200 a night, least recently checked first; it saves `state`, `closedAt` and `checkedAt` on `pullRequests`
+- The worker asks GitHub's GraphQL API just before each nightly pick, about the open PRs of that pick's candidate sessions: 50 per request, at most 200 per pick, least recently checked first; it saves `state`, `closedAt` and `checkedAt` on `pullRequests`
 - The same check with one REST call per pull request
-- The same check with no cap on how many pull requests a night reads
+- The same check with no cap on how many pull requests a pick reads
 - Reading the state on every claim pass, or when a session's messages are ingested
 
 ## Decision Outcome
 
-Chosen: GraphQL batches just before the pick, because a night costs at most 4 requests, the state is fresh exactly when the pick reads it, and the GitHub calls run outside the pick's single stamp-and-queue statement so that statement stays atomic and short. Without `LEARNINGS_HARNESS_GITHUB_TOKEN`, or when GitHub fails, the pick runs on the 6-hour rule alone.
+Chosen: GraphQL batches just before the pick, because a pick costs at most 4 requests (usually one pick a night; a project switched to automatic review after the nightly time, or a pick that failed and is retried, makes another), the state is fresh exactly when the pick reads it, and the GitHub calls run outside the pick's single stamp-and-queue statement so that statement stays atomic and short. Without `LEARNINGS_HARNESS_GITHUB_TOKEN`, or when GitHub fails, the pick runs on the 6-hour rule alone.
 
 ## Consequences
 
-`pullRequests.state` is refreshed only for the open PRs of candidate sessions not yet quiet for 6 hours (a quieter session is ready whatever its PR says), once a night; any other reader (UI, re-review) must treat it as possibly stale, and `checkedAt` says how stale.
+`pullRequests.state` is refreshed only for the open PRs of candidate sessions not yet quiet for 6 hours (a quieter session is ready whatever its PR says), at each nightly pick; any other reader (UI, re-review) must treat it as possibly stale, and `checkedAt` says how stale.
