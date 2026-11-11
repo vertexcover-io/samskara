@@ -9,7 +9,7 @@ const bar = (count: number, starting = false) =>
 const summary = (): string =>
   screen.getByRole("region", { name: "Selected sessions" }).querySelector("p")?.textContent ?? ""
 
-const startButton = () => screen.getByRole("button", { name: "Review" })
+const startButton = () => screen.getByRole("button", { name: "Review and find fixes" })
 
 test("SC19: with nothing picked the bar reads 0 selected and its button is off", () => {
   bar(0)
@@ -17,7 +17,7 @@ test("SC19: with nothing picked the bar reads 0 selected and its button is off",
   expect(startButton()).toBeDisabled()
 })
 
-test("SC23: the bar shows no time estimate and one Review button", () => {
+test("SC23: the bar shows no time estimate and one Review and find fixes button", () => {
   bar(4)
   expect(summary()).toBe("4 selected")
   expect(screen.queryByText(/about .* min/)).toBeNull()

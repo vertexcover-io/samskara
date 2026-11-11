@@ -60,7 +60,8 @@ const stubFetch = (handlers: Handlers): Calls => {
       const body: unknown = JSON.parse(String(init.body))
       calls.starts.push(body)
       return Promise.resolve(
-        handlers.start?.(body) ?? jsonResponse(202, { queued: 2, skipped: 0, notAllowed: [] }),
+        handlers.start?.(body) ??
+          jsonResponse(202, { queued: 2, skipped: 0, notAllowed: [], fixRunsQueued: 1 }),
       )
     }
     if (path === "/api/sessions" || path.startsWith("/api/sessions?")) {
@@ -181,15 +182,17 @@ test("with 50 picked the bar says 50 is the most, unpicked rows cannot be ticked
 
 test("SC28: pressing Review clears the ticks and shows the note, with no panel", async () => {
   const calls = stubFetch({
-    start: () => jsonResponse(202, { queued: 2, skipped: 0, notAllowed: [] }),
+    start: () => jsonResponse(202, { queued: 2, skipped: 0, notAllowed: [], fixRunsQueued: 1 }),
   })
   renderAt("/sessions")
   await screen.findByRole("link", { name: /first session/i })
 
   await userEvent.click(pageBox())
-  await userEvent.click(screen.getByRole("button", { name: "Review" }))
+  await userEvent.click(screen.getByRole("button", { name: "Review and find fixes" }))
 
-  expect(await screen.findByRole("status")).toHaveTextContent("Queued 2 sessions for review.")
+  expect(await screen.findByRole("status")).toHaveTextContent(
+    "Queued 2 sessions for review. Fixes will be found in 1 project once the reviews finish.",
+  )
   expect(calls.starts).toEqual([{ sessionIds: ["s-1", "s-2"] }])
   expect(summary()).toBe("0 selected")
   expect(screen.queryByRole("region", { name: "Review progress" })).toBeNull()
@@ -202,7 +205,7 @@ test("SC29: a refused start shows a plain reason and keeps the ticks", async () 
   await screen.findByRole("link", { name: /first session/i })
 
   await userEvent.click(pageBox())
-  await userEvent.click(screen.getByRole("button", { name: "Review" }))
+  await userEvent.click(screen.getByRole("button", { name: "Review and find fixes" }))
 
   expect(await screen.findByRole("alert")).toHaveTextContent(
     "The reviewer has no key on this server.",
