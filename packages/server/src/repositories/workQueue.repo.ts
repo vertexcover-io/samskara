@@ -356,9 +356,9 @@ export const pullRequestsToCheck = async (
 
 /**
  * The nightly rule. Each project with automatic review on, whose pick for today is due and not
- * yet made, is stamped as picked and gets `waiting` reviews for its `limit` ready sessions that
- * were active longest ago. A session is ready once it has been quiet for `QUIET_FOR`, or once a
- * pull request it opened is merged or closed. "Today" and the time of day are read in
+ * yet made, is stamped as picked and gets `waiting` reviews for its `limit` ready sessions. A
+ * session is ready once it has been quiet for `QUIET_FOR`, or once a pull request it opened is
+ * merged or closed; those with an ended pull request go first, then the ones active longest ago. "Today" and the time of day are read in
  * `timeZone`, so a worker started after midnight but before `at` makes no pick for the night
  * before. A session with a row for the analyzer, in any state, is left alone. One statement, so a
  * crash cannot stamp a project without queueing its reviews, or queue them without the stamp.
@@ -373,26 +373,29 @@ export const queueNightlyReviews = async (
       update "projects" set "lastNightlyPickAt" = ${now}
       where ${due}
       returning "id"
-    ), "ready" as (
-      select "sessions"."id", "sessions"."projectId",
-        row_number() over (
-          partition by "sessions"."projectId" order by ${sessionActivityAt}, "sessions"."id"
-        ) as "rank"
+    ), "candidates" as (
+      select "sessions"."id", "sessions"."projectId", ${sessionActivityAt} as "activityAt",
+        exists (
+          select 1 from "sessionPullRequests" spr
+          join "pullRequests" pr on pr."id" = spr."prId"
+          where spr."sessionId" = "sessions"."id" and pr."state" in ('merged', 'closed')
+        ) as "prEnded"
       from "sessions"
       where "sessions"."projectId" in (select "id" from "picked")
         and ${sessionActivityAt} > ${now} - ${PICK_WITHIN}::interval
-        and (
-          ${sessionActivityAt} <= ${now} - ${QUIET_FOR}::interval
-          or exists (
-            select 1 from "sessionPullRequests" spr
-            join "pullRequests" pr on pr."id" = spr."prId"
-            where spr."sessionId" = "sessions"."id" and pr."state" in ('merged', 'closed')
-          )
-        )
         and not exists (
           select 1 from "sessionReviews" sr
           where sr."sessionId" = "sessions"."id" and sr."analyzer" = ${input.analyzer}
         )
+    ), "ready" as (
+      -- A session whose pull request ended goes first: it is recent, so oldest-first alone would
+      -- leave it behind every quiet session of a busy project and the trigger would never fire.
+      select "id", "projectId",
+        row_number() over (
+          partition by "projectId" order by "prEnded" desc, "activityAt", "id"
+        ) as "rank"
+      from "candidates"
+      where "prEnded" or "activityAt" <= ${now} - ${QUIET_FOR}::interval
     ), "queued" as (
       insert into "sessionReviews" ("sessionId", "projectId", "analyzer", "status", "attempts")
       select "id", "projectId", ${input.analyzer}, 'waiting', 0 from "ready"

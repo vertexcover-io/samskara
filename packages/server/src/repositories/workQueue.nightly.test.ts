@@ -354,27 +354,39 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
       expect(await reviewRows()).toEqual(before)
     })
 
-    test("SC4: the per-project limit counts merged-PR sessions, oldest activity first", async () => {
+    test("SC4: merged-PR sessions go first within the per-project limit, then the oldest quiet ones", async () => {
       const now = ist(11, 2)
       const on = await project({ autoReview: true })
-      const quiet: string[] = []
-      for (let hours = 9; hours <= 16; hours += 1) quiet.push(await quietSession(on, now, hours))
-      const merged = new Map<number, string>()
+      const quiet = new Map<number, string>()
+      for (let hours = 9; hours <= 16; hours += 1)
+        quiet.set(hours, await quietSession(on, now, hours))
+      const merged: string[] = []
       for (let hours = 1; hours <= 4; hours += 1) {
         const id = await busySession(on, now, hours)
         await linkPullRequest(id, "merged")
-        merged.set(hours, id)
+        merged.push(id)
       }
 
       const result = await queueNightlyReviews(db, { ...DEFAULTS, now })
 
       expect(result).toEqual({ picked: 1, queued: 10 })
       const reviewed = await reviewedIds()
-      for (const id of quiet) expect(reviewed).toContain(id)
-      expect(reviewed).toContain(merged.get(3))
-      expect(reviewed).toContain(merged.get(4))
-      expect(reviewed).not.toContain(merged.get(1))
-      expect(reviewed).not.toContain(merged.get(2))
+      for (const id of merged) expect(reviewed).toContain(id)
+      for (let hours = 11; hours <= 16; hours += 1) expect(reviewed).toContain(quiet.get(hours))
+      expect(reviewed).not.toContain(quiet.get(9))
+      expect(reviewed).not.toContain(quiet.get(10))
+    })
+
+    test("a merged-PR session is picked even when a busy project has more quiet sessions than the limit", async () => {
+      const now = ist(11, 2)
+      const on = await project({ autoReview: true })
+      for (let hours = 7; hours <= 30; hours += 1) await quietSession(on, now, hours)
+      const merged = await busySession(on, now, 1)
+      await linkPullRequest(merged, "merged")
+
+      await queueNightlyReviews(db, { ...DEFAULTS, now })
+
+      expect(await reviewedIds()).toContain(merged)
     })
 
     test("SC5: a pull request that ends after the night's pick waits for the next night", async () => {
