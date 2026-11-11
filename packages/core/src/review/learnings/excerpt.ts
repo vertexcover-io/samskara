@@ -1,4 +1,4 @@
-import type { SessionExportRecord } from "../export.js"
+import { messageNumberOf, type SessionExportRecord } from "../export.js"
 import { shortenForReader } from "../problems/finder.js"
 import { type Evidence, idsLabel } from "../problems/reviewMd.js"
 
@@ -27,8 +27,6 @@ export const recordsInReviewOrder = (
     }
   })
 }
-
-const numberOf = (id: string): number => Number(id.replace(/^msg-/, ""))
 
 /**
  * The real message id behind a review's `msg-N`, or null when it cannot be found: the review
@@ -70,8 +68,8 @@ export const problemExcerpt = (
 ): string =>
   evidence
     .map((item) => {
-      const from = Math.max(0, numberOf(item.from) - EXCERPT_AROUND)
-      const to = Math.min(records.length - 1, numberOf(item.to) + EXCERPT_AROUND)
+      const from = Math.max(0, messageNumberOf(item.from) - EXCERPT_AROUND)
+      const to = Math.min(records.length - 1, messageNumberOf(item.to) + EXCERPT_AROUND)
       return [
         `${idsLabel(item)} — "${item.quote}" — ${item.why}`,
         "",
@@ -134,8 +132,8 @@ export const evidenceMessages = (
   records: ReadonlyArray<SessionExportRecord>,
   item: Evidence,
 ): EvidenceMessage[] => {
-  const first = numberOf(item.from)
-  const last = numberOf(item.to)
+  const first = messageNumberOf(item.from)
+  const last = messageNumberOf(item.to)
   const track = records[first]?.track
   const around = (record: SessionExportRecord) => record.track === track && hasContent(record)
   const before = records.slice(0, first).filter(around).slice(-MESSAGES_AROUND)
@@ -146,7 +144,7 @@ export const evidenceMessages = (
   const cited = records.slice(first, last + 1)
   const shownCited = cited.some(hasContent) ? cited.filter(hasContent) : cited
   return [...before, ...shownCited, ...after].map((record) => {
-    const seq = numberOf(record.id)
+    const seq = messageNumberOf(record.id)
     const isCited = seq >= first && seq <= last
     const readable =
       record.input === undefined ? record : { ...record, input: readableInput(record.input) }

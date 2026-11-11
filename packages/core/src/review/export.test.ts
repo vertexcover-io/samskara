@@ -3,6 +3,8 @@ import type { NormalizedMessage } from "../ingest/types.js"
 import {
   ASSISTANT_TEXT_EXCERPT_CHARS,
   buildSessionExport,
+  messageIdOf,
+  messageNumberOf,
   REASONING_TEXT_EXCERPT_CHARS,
   USER_TEXT_EXCERPT_CHARS,
 } from "./export.js"
@@ -492,5 +494,11 @@ describe("where a message came from, in a full export", () => {
       "systemReminder",
       undefined,
     ])
+  })
+})
+
+describe("messageNumberOf", () => {
+  test("reads 25 back out of msg-25, the id messageIdOf gives position 25", () => {
+    expect(messageNumberOf(messageIdOf(25))).toBe(25)
   })
 })

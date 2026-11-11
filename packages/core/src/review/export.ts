@@ -62,6 +62,9 @@ export type SessionExport = {
  */
 export const messageIdOf = (position: number): string => `msg-${position}`
 
+/** The position back out of an id `messageIdOf` gave. */
+export const messageNumberOf = (id: string): number => Number(id.replace(/^msg-/, ""))
+
 const excerpt = (text: string | undefined, maxChars: number): string | undefined =>
   text === undefined ? undefined : text.slice(0, maxChars)
 

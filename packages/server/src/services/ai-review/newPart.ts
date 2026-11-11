@@ -1,5 +1,6 @@
 import {
   messageIdOf,
+  messageNumberOf,
   type Problem,
   type ProblemReview,
   recordsInReviewOrder,
@@ -91,15 +92,13 @@ export const alreadyReviewedNote = (
     "  Write both again so they cover the earlier part and this one.",
   ].join("\n")
 
-const numberOf = (id: string): number => Number(id.replace(/^msg-/, ""))
-
 /** Keeps the problems with evidence in the new records; each one dropped says why. */
 export const keepNewPart = (
   problems: ProblemReview["problems"],
   firstNew: number,
 ): { readonly problems: ReadonlyArray<Problem>; readonly dropped: ReadonlyArray<string> } => {
   const touchesNew = (problem: Problem): boolean =>
-    problem.evidence.some((item) => numberOf(item.to) >= firstNew)
+    problem.evidence.some((item) => messageNumberOf(item.to) >= firstNew)
   return {
     problems: problems.filter(touchesNew),
     dropped: problems
