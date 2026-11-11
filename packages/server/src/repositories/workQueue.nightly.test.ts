@@ -93,6 +93,7 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
     sessionId: string,
     state: "open" | "merged" | "closed",
     host = "github.com",
+    closedAt: Date | null = null,
   ) => {
     counter += 1
     const [repo] = await db
@@ -101,7 +102,7 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
       .returning({ id: repos.id })
     const [pr] = await db
       .insert(pullRequests)
-      .values({ repoId: repo?.id as string, number: counter, state })
+      .values({ repoId: repo?.id as string, number: counter, state, closedAt })
       .returning({ id: pullRequests.id })
     await db.insert(sessionPullRequests).values({ sessionId, prId: pr?.id as string })
     return pr?.id as string
@@ -592,13 +593,16 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
       expect(await reviewRows()).toEqual(before)
     })
 
-    test("SC3: a re-review waits for the quiet rule unless its pull request ended", async () => {
+    test("SC3: a re-review waits for the quiet rule unless its pull request ended after the review", async () => {
+      // doneReview stamps the review on 2026-01-01.
       const now = ist(11, 2)
       const on = await project({ autoReview: true })
       const busy = await busySession(on, now)
-      const merged = await busySession(on, now)
-      await linkPullRequest(merged, "merged")
-      for (const id of [busy, merged]) {
+      const mergedBefore = await busySession(on, now)
+      await linkPullRequest(mergedBefore, "merged", "github.com", new Date(Date.UTC(2025, 11, 31)))
+      const mergedAfter = await busySession(on, now)
+      await linkPullRequest(mergedAfter, "merged", "github.com", new Date(Date.UTC(2026, 0, 2)))
+      for (const id of [busy, mergedBefore, mergedAfter]) {
         await mainLines(id, 1, 5)
         await doneReview(id, on, 3)
       }
@@ -606,7 +610,8 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
       const result = await queueNightlyReviews(db, { ...DEFAULTS, now })
 
       expect(result).toEqual({ picked: 1, queued: 1 })
-      expect((await rowOf(merged))?.status).toBe("waiting")
+      expect((await rowOf(mergedAfter))?.status).toBe("waiting")
+      expect((await rowOf(mergedBefore))?.status).toBe("done")
       expect((await rowOf(busy))?.status).toBe("done")
     })
 

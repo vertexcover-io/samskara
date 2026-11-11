@@ -385,7 +385,8 @@ export const pullRequestsToCheck = async (
  * yet made, is stamped as picked and gets `waiting` reviews for its `limit` ready sessions. A
  * candidate has no review row, or a done or failed one with messages it has not read
  * (`hasNewMessages`); a waiting or running row is left alone. A candidate is ready once it has
- * been quiet for `QUIET_FOR`, or once a pull request it opened is merged or closed. Sessions
+ * been quiet for `QUIET_FOR`, or once a pull request it opened is merged or closed (for a
+ * re-review, only one that ended after the earlier review). Sessions
  * never reviewed go first, then those with an ended pull request, then the ones active longest
  * ago. A re-review keeps its row and old result, and is marked `newPartOnly`. "Today" and the
  * time of day are read in `timeZone`, so a worker started after midnight but before `at` makes
@@ -408,6 +409,13 @@ export const queueNightlyReviews = async (
           select 1 from "sessionPullRequests" spr
           join "pullRequests" pr on pr."id" = spr."prId"
           where spr."sessionId" = "sessions"."id" and pr."state" in ('merged', 'closed')
+            -- For a re-review, only a pull request that ended after the earlier review counts:
+            -- one that ended before it would skip the quiet rule every night thereafter.
+            and not exists (
+              select 1 from "sessionReviews" sr
+              where sr."sessionId" = "sessions"."id" and sr."analyzer" = ${input.analyzer}
+                and coalesce(pr."closedAt" <= sr."updatedAt", true)
+            )
         ) as "prEnded",
         exists (
           select 1 from "sessionReviews" sr
