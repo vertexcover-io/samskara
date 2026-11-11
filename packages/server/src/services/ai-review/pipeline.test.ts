@@ -616,6 +616,51 @@ The agent fixed the build, then deployed it without the smoke tests.
         expect((await reviewRow())?.reviewedThrough).toBe(5)
       })
 
+      test("a subagent's tool call reviewed before its result arrived is read again once the result is stored, though its line number is below reviewedThrough", async () => {
+        // The first pass reads the call on a subagent track with no result yet.
+        await db.delete(messages).where(eq(messages.msgType, "toolResult"))
+        await db
+          .update(messages)
+          .set({ trackId: "agent:a1", lineNumber: 1 })
+          .where(eq(messages.msgType, "toolCall"))
+        const earlier = await earlierPass()
+        await db.insert(messages).values({
+          sessionId,
+          lineUuid: crypto.randomUUID(),
+          subIndex: 0,
+          msgType: "toolResult",
+          lineNumber: 2,
+          source: "claude_code",
+          sourceRelativePath: "test.jsonl",
+          trackId: "agent:a1",
+          raw: {},
+          sourceSchemaVersion: 1,
+          details: { callId: "call-0", output: "3 tests failed", status: "failure" },
+        })
+        const failedRunMd = deployMd
+          .replace("Deployed without running the smoke tests", "Ignored the failed test run")
+          .replace(
+            'msg-4 — "deployed to staging without running the smoke tests"',
+            'msg-3 — "3 tests failed"',
+          )
+        const { runner, seen } = problemsRunner(failedRunMd)
+
+        const result = await runAiReview(depsWith(runner), sessionId, { newPartOnly: true })
+
+        expect(result).toMatchObject({ kind: "ok", reviewId: earlier.reviewId })
+        const reviewer = seen.find((entry) => entry.session !== undefined)
+        expect(recordsSeen(reviewer?.session).at(-1)).toMatchObject({
+          id: "msg-3",
+          msgType: "toolCall",
+          track: "agent:a1",
+          status: "failure",
+        })
+        expect((await savedProblems()).map((row) => row.title)).toEqual([
+          earlier.oldProblem?.title,
+          "Ignored the failed test run",
+        ])
+      })
+
       test("SC18: a review marked new-part-only with no earlier result reads the whole session", async () => {
         await db.insert(sessionReviews).values({
           sessionId,

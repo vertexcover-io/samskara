@@ -142,6 +142,8 @@ export type EarlierResult = {
   readonly recordIds: ReadonlyArray<string | null>
   /** The last main-track line the earlier passes read. */
   readonly reviewedThrough: number
+  /** The tool calls the earlier passes read with no result yet; null when saved before kept. */
+  readonly pendingCallIds: ReadonlyArray<string> | null
   readonly problemTitles: ReadonlyArray<string>
 }
 
@@ -162,8 +164,11 @@ export const earlierResult = async (
     )
     .limit(1)
   if (row === undefined || row.reviewedThrough === null) return null
-  const recordIds = (row.signals as { run?: { recordIds?: unknown } } | null)?.run?.recordIds
+  const run = (row.signals as { run?: { recordIds?: unknown; pendingCallIds?: unknown } } | null)
+    ?.run
+  const recordIds = run?.recordIds
   if (!Array.isArray(recordIds)) return null
+  const pendingCallIds = run?.pendingCallIds
   const titles = await db
     .select({ title: reviewProblems.title })
     .from(reviewProblems)
@@ -175,6 +180,9 @@ export const earlierResult = async (
     signals: row.signals as object,
     recordIds: recordIds as ReadonlyArray<string | null>,
     reviewedThrough: row.reviewedThrough,
+    pendingCallIds: Array.isArray(pendingCallIds)
+      ? pendingCallIds.filter((id): id is string => typeof id === "string")
+      : null,
     problemTitles: titles.map((problem) => problem.title),
   }
 }

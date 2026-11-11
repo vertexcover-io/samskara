@@ -27,21 +27,21 @@ export type NewPart = {
  * so a new subagent message can sort among old ones; numbering the new records after every old
  * one is what keeps an old problem's `msg-N` pointing at the same message.
  *
- * A tool call and its result are one record, keyed by the call, so a call reviewed before its
- * result arrived is read again when its result is in `storedSince` (the messages stored after
- * the earlier review). It keeps its old number as well, so saved evidence still resolves.
+ * A tool call and its result are one record, keyed by the call, so a call in `readAgain` (read
+ * before its result arrived) is read again once its result is in. It keeps its old number as
+ * well, so saved evidence still resolves.
  */
 export const newPartExport = (
   whole: SessionExport,
   reviewed: ReadonlyArray<string | null>,
-  storedSince: ReadonlySet<string> = new Set(),
+  readAgain: ReadonlySet<string>,
 ): NewPart => {
   const seen = new Set(reviewed.filter((id): id is string => id !== null))
   const old = recordsInReviewOrder(whole.records, reviewed)
   const isNew = (record: SessionExportRecord): boolean =>
     record.sourceId === undefined ||
     !seen.has(record.sourceId) ||
-    (record.resultSourceId !== undefined && storedSince.has(record.resultSourceId))
+    (record.resultSourceId !== undefined && readAgain.has(record.sourceId))
   const fresh = whole.records.filter(isNew).map((record, index) => ({
     ...record,
     seq: reviewed.length + index,
@@ -63,6 +63,39 @@ export const newPartExport = (
     recordIds: [...reviewed, ...fresh.map((record) => record.sourceId ?? null)],
   }
 }
+
+/** The tool calls a review read with no result yet; saved so the next pass reads them again. */
+export const callsAwaitingResult = (records: ReadonlyArray<SessionExportRecord>): string[] =>
+  records.flatMap((record) =>
+    record.msgType === "toolCall" &&
+    record.sourceId !== undefined &&
+    record.resultSourceId === undefined
+      ? [record.sourceId]
+      : [],
+  )
+
+/**
+ * The calls a re-review reads again once their result is in: those the earlier pass saved as
+ * awaiting one. A pass saved before that list was kept has none, so it falls back to the calls
+ * whose result is in `storedSince`, which sees only the main track.
+ */
+export const callsToReadAgain = (
+  records: ReadonlyArray<SessionExportRecord>,
+  earlier: {
+    readonly pendingCallIds: ReadonlyArray<string> | null
+    readonly storedSince: ReadonlySet<string>
+  },
+): ReadonlySet<string> =>
+  new Set(
+    earlier.pendingCallIds ??
+      records.flatMap((record) =>
+        record.sourceId !== undefined &&
+        record.resultSourceId !== undefined &&
+        earlier.storedSince.has(record.resultSourceId)
+          ? [record.sourceId]
+          : [],
+      ),
+  )
 
 /**
  * Put before the review's instructions, so the readers and the reviewer both see it: what was

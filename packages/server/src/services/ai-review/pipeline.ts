@@ -23,7 +23,13 @@ import {
 } from "../../repositories/reviewProblems.repo.js"
 import * as reviewsRepo from "../../repositories/reviews.repo.js"
 import { reviewableSession } from "../../repositories/sessions.repo.js"
-import { alreadyReviewedNote, keepNewPart, newPartExport } from "./newPart.js"
+import {
+  alreadyReviewedNote,
+  callsAwaitingResult,
+  callsToReadAgain,
+  keepNewPart,
+  newPartExport,
+} from "./newPart.js"
 import { reviewSessionExport } from "./sessionExport.js"
 import { transcriptFromClaudeConfigDir, transcriptFromOpencodeDataDir } from "./transcript.js"
 
@@ -130,7 +136,10 @@ export const runAiReview = async (
       : newPartExport(
           wholeExport,
           earlier.recordIds,
-          reviewsRepo.storedSince(detail.messages, earlier.reviewedThrough),
+          callsToReadAgain(wholeExport.records, {
+            pendingCallIds: earlier.pendingCallIds,
+            storedSince: reviewsRepo.storedSince(detail.messages, earlier.reviewedThrough),
+          }),
         )
   if (earlier !== null && part !== null && part.newCount === 0) {
     // Only lines the export drops arrived: nothing to read, but they are seen.
@@ -318,6 +327,8 @@ export const runAiReview = async (
         // Every pass's numbering: old problems' msg-N must keep resolving to their messages.
         recordIds:
           part?.recordIds ?? sessionExport.records.map((record) => record.sourceId ?? null),
+        // Across the whole session, so a call still waiting stays listed for the pass after.
+        pendingCallIds: callsAwaitingResult(wholeExport.records),
       },
     }
     // One transaction: a review row whose problems failed to save would read as a

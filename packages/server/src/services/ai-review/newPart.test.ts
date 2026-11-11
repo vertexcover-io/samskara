@@ -6,7 +6,13 @@ import {
   type SessionExportRecord,
 } from "@samskara/core"
 import { describe, expect, test } from "vitest"
-import { alreadyReviewedNote, CONTEXT_RECORDS, keepNewPart, newPartExport } from "./newPart.js"
+import {
+  alreadyReviewedNote,
+  CONTEXT_RECORDS,
+  callsToReadAgain,
+  keepNewPart,
+  newPartExport,
+} from "./newPart.js"
 
 /** A record for message `m-<n>` on `track`, at `seq` in the whole-session export. */
 const record = (seq: number, n: number, track = "main"): SessionExportRecord => ({
@@ -36,7 +42,7 @@ describe("newPartExport", () => {
     const whole = wholeOf(range(30).map((n) => record(n, n)))
     const reviewed = range(25).map((n) => `m-${n}`)
 
-    const part = newPartExport(whole, reviewed)
+    const part = newPartExport(whole, reviewed, new Set())
 
     expect(CONTEXT_RECORDS).toBe(20)
     expect(part.exported.records.map((r) => r.id)).toEqual(range(25).map((n) => `msg-${n + 5}`))
@@ -58,7 +64,7 @@ describe("newPartExport", () => {
     ])
     const reviewed = ["m-0", "m-1", "m-2", "m-3"]
 
-    const part = newPartExport(whole, reviewed)
+    const part = newPartExport(whole, reviewed, new Set())
 
     expect(part.exported.records.map((r) => [r.id, r.sourceId])).toEqual([
       ["msg-0", "m-0"],
@@ -72,11 +78,11 @@ describe("newPartExport", () => {
     expect(part.recordIds).toEqual(["m-0", "m-1", "m-2", "m-3", "m-9"])
   })
 
-  test("a reviewed tool call whose result was stored after the review is read again as a new record, and keeps its old number too", () => {
+  test("a reviewed tool call listed to read again, now with its result, is read again as a new record, and keeps its old number too", () => {
     const call = { ...record(1, 1), msgType: "toolCall" as const, resultSourceId: "r-1" }
     const whole = wholeOf([record(0, 0), call, record(2, 2)])
 
-    const part = newPartExport(whole, ["m-0", "m-1", "m-2"], new Set(["r-1"]))
+    const part = newPartExport(whole, ["m-0", "m-1", "m-2"], new Set(["m-1"]))
 
     expect(part.exported.records.map((r) => [r.id, r.sourceId])).toEqual([
       ["msg-0", "m-0"],
@@ -89,10 +95,15 @@ describe("newPartExport", () => {
     expect(part.recordIds).toEqual(["m-0", "m-1", "m-2", "m-1"])
   })
 
-  test("a reviewed tool call whose result was already there at the review is not new", () => {
-    const call = { ...record(1, 1), msgType: "toolCall" as const, resultSourceId: "r-1" }
+  test("a reviewed tool call not listed to read again is not new, and one listed but still without a result is not new either", () => {
+    const answered = { ...record(1, 1), msgType: "toolCall" as const, resultSourceId: "r-1" }
+    const waiting = { ...record(2, 2), msgType: "toolCall" as const }
 
-    const part = newPartExport(wholeOf([record(0, 0), call]), ["m-0", "m-1"], new Set(["m-9"]))
+    const part = newPartExport(
+      wholeOf([record(0, 0), answered, waiting]),
+      ["m-0", "m-1", "m-2"],
+      new Set(["m-2"]),
+    )
 
     expect(part.newCount).toBe(0)
   })
@@ -103,11 +114,32 @@ describe("newPartExport", () => {
     const part = newPartExport(
       whole,
       range(6).map((n) => `m-${n}`),
+      new Set(),
     )
 
     expect(part.exported.records.map((r) => r.id)).toEqual(range(8).map((n) => `msg-${n}`))
     expect(part.firstNew).toBe(6)
     expect(part.newCount).toBe(2)
+  })
+})
+
+describe("callsToReadAgain", () => {
+  const answered = { ...record(1, 1), msgType: "toolCall" as const, resultSourceId: "r-1" }
+  const records = [record(0, 0), answered]
+
+  test("the calls the earlier pass saved as awaiting a result, whatever was stored since", () => {
+    expect(
+      callsToReadAgain(records, { pendingCallIds: ["m-7"], storedSince: new Set(["r-1"]) }),
+    ).toEqual(new Set(["m-7"]))
+  })
+
+  test("a pass saved without the list falls back to the calls whose result was stored since", () => {
+    expect(
+      callsToReadAgain(records, { pendingCallIds: null, storedSince: new Set(["r-1"]) }),
+    ).toEqual(new Set(["m-1"]))
+    expect(
+      callsToReadAgain(records, { pendingCallIds: null, storedSince: new Set(["m-0"]) }),
+    ).toEqual(new Set())
   })
 })
 
