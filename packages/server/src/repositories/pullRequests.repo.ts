@@ -3,6 +3,26 @@ import type { PgColumn } from "drizzle-orm/pg-core"
 import type { Querier } from "../db/client.js"
 import { pullRequests, sessionPullRequests } from "../db/schema.js"
 
+export type PullRequestState = "open" | "merged" | "closed"
+
+/** An open pull request the nightly check asks GitHub about. */
+export type PullRequestRef = {
+  readonly id: string
+  readonly owner: string
+  readonly repo: string
+  readonly number: number
+}
+
+/**
+ * GitHub's answer for one pull request. `state` is null when GitHub returned no pull request:
+ * deleted, or in a repo the token cannot read.
+ */
+export type PullRequestAnswer = {
+  readonly id: string
+  readonly state: PullRequestState | null
+  readonly closedAt: Date | null
+}
+
 export type ObservedPullRequest = {
   readonly repoId: string
   readonly number: number
@@ -56,4 +76,29 @@ export const insertOpened = async (
       .values({ sessionId: row.sessionId, prId: pr.id, messageId: row.messageId })
       .onConflictDoNothing()
   }
+}
+
+/**
+ * Saves the nightly check's answers in one statement, stamping each row's `checkedAt`. A null
+ * state keeps the row's state and close time: GitHub said nothing about it. Returns the rows
+ * written.
+ */
+export const savePullRequestStates = async (
+  db: Querier,
+  answers: ReadonlyArray<PullRequestAnswer>,
+  checkedAt: Date,
+): Promise<number> => {
+  if (answers.length === 0) return 0
+  const rows = JSON.stringify(
+    answers.map((a) => ({ id: a.id, state: a.state, closedAt: a.closedAt?.toISOString() ?? null })),
+  )
+  const saved = await db.execute<{ id: string }>(sql`
+    update "pullRequests" pr set
+      "state" = coalesce(x."state", pr."state"),
+      "closedAt" = case when x."state" is null then pr."closedAt" else x."closedAt" end,
+      "checkedAt" = ${checkedAt.toISOString()}::timestamptz
+    from jsonb_to_recordset(${rows}::jsonb) as x("id" uuid, "state" text, "closedAt" timestamptz)
+    where pr."id" = x."id"
+    returning pr."id"`)
+  return saved.length
 }

@@ -6,6 +6,7 @@ import { requeueRunningFixRuns, requeueRunningReviews } from "../repositories/wo
 import { runAiReview } from "../services/ai-review/pipeline.js"
 import { defaultAiReviewRunner } from "../services/ai-review/runner.js"
 import { executeLearningRun } from "../services/learnings/run.js"
+import { createPullRequestLookup } from "../services/pullRequestStates.js"
 import { agentGroupsDir, canRecordAgents, createAgentGroups } from "./agentGroups.js"
 import { withAgentSlots } from "./agentSlots.js"
 import { watchLock } from "./lockWatch.js"
@@ -103,6 +104,8 @@ const loop = createWorkLoop({
   queueDue: env.learningsHarness !== undefined,
   // Reviews run on AI_REVIEW_HARNESS, which the server refuses to boot without.
   nightlyReview: env.nightlyReview,
+  // Unset: no GitHub call, and the nightly pick goes by the 6-hour rule alone.
+  pullRequestLookup: createPullRequestLookup(env.githubReadToken),
 })
 
 stopLoop = () => {

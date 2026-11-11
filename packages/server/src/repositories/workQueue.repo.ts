@@ -2,6 +2,7 @@ import { and, eq, inArray, notInArray, sql } from "drizzle-orm"
 import type { Querier } from "../db/client.js"
 import { learningRuns, sessionActivityAt, sessionReviews } from "../db/schema.js"
 import type { NightlyReview } from "../lib/env.js"
+import type { PullRequestRef } from "./pullRequests.repo.js"
 
 /** A row that fails this many tries becomes `failed` and is not picked again. */
 export const MAX_ATTEMPTS = 3
@@ -297,6 +298,60 @@ export const QUIET_FOR = "6 hours"
  */
 export const PICK_WITHIN = "30 days"
 
+/** How many open pull requests one night's check asks GitHub about, at most. */
+export const PR_CHECK_LIMIT = 200
+
+type NightlyInput = NightlyReview & { readonly now: Date; readonly analyzer: string }
+
+/**
+ * The instant as SQL, and the rule for a project whose pick is due: automatic review on, the
+ * day's time reached in `timeZone`, and no pick made since it. Reads `"projects"` unaliased.
+ */
+const nightlyClock = (input: NightlyInput) => {
+  // drizzle's postgres-js driver cannot bind a Date in raw sql, so the instant goes as text.
+  const now = sql`${input.now.toISOString()}::timestamptz`
+  const today = sql`date_trunc('day', ${now} at time zone ${input.timeZone})`
+  const dueAt = sql`((${today} + ${input.at}::time) at time zone ${input.timeZone})`
+  const due = sql`"projects"."autoReview"
+    and ${now} >= ${dueAt}
+    and ("projects"."lastNightlyPickAt" is null or "projects"."lastNightlyPickAt" < ${dueAt})`
+  return { now, due }
+}
+
+/**
+ * The open github.com pull requests opened by a session tonight's pick could take, for the
+ * check that asks GitHub before the pick: at most `PR_CHECK_LIMIT`, never-checked first, then
+ * the ones checked longest ago. Empty unless some project's pick is due, so the every-minute
+ * claim pass makes no GitHub call. Reads only.
+ */
+export const pullRequestsToCheck = async (
+  db: Querier,
+  input: NightlyInput,
+): Promise<ReadonlyArray<PullRequestRef>> => {
+  const { now, due } = nightlyClock(input)
+  const rows = await db.execute<PullRequestRef>(sql`
+    select pr."id", r."owner", r."repoName" as "repo", pr."number"
+    from "pullRequests" pr
+    join "repos" r on r."id" = pr."repoId"
+    where pr."state" = 'open'
+      and lower(r."host") = 'github.com'
+      and exists (
+        select 1 from "sessionPullRequests" spr
+        join "sessions" on "sessions"."id" = spr."sessionId"
+        join "projects" on "projects"."id" = "sessions"."projectId"
+        where spr."prId" = pr."id"
+          and ${due}
+          and ${sessionActivityAt} > ${now} - ${PICK_WITHIN}::interval
+          and not exists (
+            select 1 from "sessionReviews" sr
+            where sr."sessionId" = "sessions"."id" and sr."analyzer" = ${input.analyzer}
+          )
+      )
+    order by pr."checkedAt" asc nulls first, pr."id"
+    limit ${PR_CHECK_LIMIT}`)
+  return [...rows]
+}
+
 /**
  * The nightly rule. Each project with automatic review on, whose pick for today is due and not
  * yet made, is stamped as picked and gets `waiting` reviews for its `limit` ready sessions that
@@ -308,18 +363,13 @@ export const PICK_WITHIN = "30 days"
  */
 export const queueNightlyReviews = async (
   db: Querier,
-  input: NightlyReview & { readonly now: Date; readonly analyzer: string },
+  input: NightlyInput,
 ): Promise<{ readonly picked: number; readonly queued: number }> => {
-  // drizzle's postgres-js driver cannot bind a Date in raw sql, so the instant goes as text.
-  const now = sql`${input.now.toISOString()}::timestamptz`
-  const today = sql`date_trunc('day', ${now} at time zone ${input.timeZone})`
-  const dueAt = sql`((${today} + ${input.at}::time) at time zone ${input.timeZone})`
+  const { now, due } = nightlyClock(input)
   const [row] = await db.execute<{ picked: number; queued: number }>(sql`
     with "picked" as (
       update "projects" set "lastNightlyPickAt" = ${now}
-      where "autoReview"
-        and ${now} >= ${dueAt}
-        and ("lastNightlyPickAt" is null or "lastNightlyPickAt" < ${dueAt})
+      where ${due}
       returning "id"
     ), "ready" as (
       select "sessions"."id", "sessions"."projectId",

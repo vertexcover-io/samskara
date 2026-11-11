@@ -12,7 +12,7 @@ import {
 } from "../db/schema.js"
 import { dockerAvailable, startTestDb } from "../db/testDb.js"
 import { insertOpened } from "./pullRequests.repo.js"
-import { queueNightlyReviews } from "./workQueue.repo.js"
+import { PR_CHECK_LIMIT, pullRequestsToCheck, queueNightlyReviews } from "./workQueue.repo.js"
 
 const ANALYZER = "ai-problems-v2"
 const HOUR_MS = 60 * 60 * 1000
@@ -86,12 +86,16 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
   const quietSession = (projectId: string, now: Date, hours = 8): Promise<string> =>
     session(projectId, { lastMessageAt: hoursBefore(now, hours), updatedAt: hoursBefore(now, 1) })
 
-  /** Links a github.com pull request in `state` to the session, as if the session opened it. */
-  const linkPullRequest = async (sessionId: string, state: "open" | "merged" | "closed") => {
+  /** Links a pull request in `state` to the session, as if the session opened it. */
+  const linkPullRequest = async (
+    sessionId: string,
+    state: "open" | "merged" | "closed",
+    host = "github.com",
+  ) => {
     counter += 1
     const [repo] = await db
       .insert(repos)
-      .values({ host: "github.com", owner: "acme", repoName: `r${counter}`, ownerUserId: userId })
+      .values({ host, owner: "acme", repoName: `r${counter}`, ownerUserId: userId })
       .returning({ id: repos.id })
     const [pr] = await db
       .insert(pullRequests)
@@ -411,6 +415,76 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
       await expect(
         db.execute(sql`update "pullRequests" set "state" = 'draft' where "id" = ${row?.id}`),
       ).rejects.toThrow(/pullRequests_state_check/)
+    })
+  })
+  describe("the pull requests the nightly check asks GitHub about", () => {
+    test("SC12: only open github.com pull requests of tonight's candidate sessions are listed", async () => {
+      const now = ist(11, 2)
+      const a = await project({ autoReview: true })
+      const candidate = await busySession(a, now)
+      const wanted = await linkPullRequest(candidate, "open")
+      await linkPullRequest(await busySession(a, now), "merged")
+      await linkPullRequest(await busySession(a, now), "open", "gitlab.com")
+      const reviewed = await busySession(a, now)
+      await linkPullRequest(reviewed, "open")
+      await db.insert(sessionReviews).values({
+        sessionId: reviewed,
+        projectId: a,
+        analyzer: ANALYZER,
+        status: "waiting",
+      })
+      await linkPullRequest(await busySession(a, now, 31 * 24), "open")
+      const b = await project()
+      await linkPullRequest(await busySession(b, now), "open")
+      const c = await project({ autoReview: true, lastNightlyPickAt: ist(11, 1, 30) })
+      await linkPullRequest(await busySession(c, now), "open")
+
+      const listed = await pullRequestsToCheck(db, { ...DEFAULTS, now })
+
+      expect(listed).toHaveLength(1)
+      const [repo] = await db
+        .select({ owner: repos.owner, repoName: repos.repoName, number: pullRequests.number })
+        .from(pullRequests)
+        .innerJoin(repos, eq(repos.id, pullRequests.repoId))
+        .where(eq(pullRequests.id, wanted))
+      expect(listed[0]).toEqual({
+        id: wanted,
+        owner: repo?.owner,
+        repo: repo?.repoName,
+        number: repo?.number,
+      })
+    })
+
+    test("SC13: at most 200 are listed, never-checked first", async () => {
+      const now = ist(11, 2)
+      const on = await project({ autoReview: true })
+      const opener = await busySession(on, now)
+      const [repo] = await db
+        .insert(repos)
+        .values({ host: "GitHub.com", owner: "acme", repoName: "busy", ownerUserId: userId })
+        .returning({ id: repos.id })
+      const neverChecked = Array.from({ length: 201 }, (_, i) => ({
+        repoId: repo?.id as string,
+        number: i + 1,
+      }))
+      const checked = [
+        { repoId: repo?.id as string, number: 900, checkedAt: hoursBefore(now, 24) },
+        { repoId: repo?.id as string, number: 901, checkedAt: hoursBefore(now, 7 * 24) },
+      ]
+      const inserted = await db
+        .insert(pullRequests)
+        .values([...neverChecked, ...checked])
+        .returning({ id: pullRequests.id, checkedAt: pullRequests.checkedAt })
+      await db
+        .insert(sessionPullRequests)
+        .values(inserted.map((pr) => ({ sessionId: opener, prId: pr.id })))
+      const checkedIds = inserted.filter((pr) => pr.checkedAt !== null).map((pr) => pr.id)
+
+      const listed = await pullRequestsToCheck(db, { ...DEFAULTS, now })
+
+      expect(PR_CHECK_LIMIT).toBe(200)
+      expect(listed).toHaveLength(200)
+      for (const id of checkedIds) expect(listed.map((pr) => pr.id)).not.toContain(id)
     })
   })
 })

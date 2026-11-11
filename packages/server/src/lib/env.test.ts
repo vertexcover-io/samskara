@@ -155,6 +155,13 @@ describe("loadEnv", () => {
     ).toThrow(/LEARNINGS_HARNESS_REPO/)
   })
 
+  test("SC7: the read-only GitHub token is read on its own, with or without a harness repo", () => {
+    const env = loadEnv({ ...complete, LEARNINGS_HARNESS_GITHUB_TOKEN: "ghp_read" })
+    expect(env.githubReadToken).toBe("ghp_read")
+    expect(env.learningsHarness).toBeUndefined()
+    expect(loadEnv(complete).githubReadToken).toBeUndefined()
+  })
+
   test("a set LOCAL_LOGIN_SECRET makes the GitHub app optional - both keys may be blank", () => {
     const env = loadEnv({
       ...complete,
