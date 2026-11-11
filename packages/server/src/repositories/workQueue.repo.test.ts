@@ -185,6 +185,24 @@ describe.skipIf(!dockerAvailable())("work queue: reviews", () => {
     expect(listed.map((review) => review.summary)).toEqual(["old"])
   })
 
+  test("SC8: the Review button's redo of a row the nightly pick marked new-part-only reads the whole session", async () => {
+    const row = await seedReview("s-8", { ...finished, newPartOnly: true })
+
+    const queued = await queueReview(db, {
+      sessionId: "s-8",
+      projectId,
+      analyzer: ANALYZER,
+      options: {},
+    })
+
+    expect(queued).toEqual({ id: row.id })
+    expect(await rowById(row.id)).toMatchObject({
+      status: "waiting",
+      newPartOnly: false,
+      outcome: "productive",
+    })
+  })
+
   test("SC6: queueing a session with no review creates a waiting row", async () => {
     await seedSession("s-new")
 

@@ -540,6 +540,11 @@ export const sessionReviews = pgTable(
     prompt: text("prompt"),
     /** The main-conversation lineNumber of the last message the review read; null when it read none. */
     reviewedThrough: integer("reviewedThrough"),
+    /**
+     * The queued review reads only what the row's earlier review has not; set by the nightly
+     * re-pick, cleared by every other queue path so a redo reads the whole session.
+     */
+    newPartOnly: boolean("newPartOnly").notNull().default(false),
     createdAt,
     updatedAt,
   },

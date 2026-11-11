@@ -1,7 +1,9 @@
+import { randomUUID } from "node:crypto"
 import { eq, sql } from "drizzle-orm"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import type { Db } from "../db/client.js"
 import {
+  messages,
   projects,
   pullRequests,
   repos,
@@ -499,6 +501,205 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
       expect(PR_CHECK_LIMIT).toBe(200)
       expect(listed).toHaveLength(200)
       for (const id of checkedIds) expect(listed.map((pr) => pr.id)).not.toContain(id)
+    })
+  })
+
+  describe("a reviewed session with new messages", () => {
+    /** Stores a message on `lineNumber` of `trackId`, stored at `createdAt` when given. */
+    const message = (
+      sessionId: string,
+      lineNumber: number,
+      values: { trackId?: string; createdAt?: Date } = {},
+    ) =>
+      db.insert(messages).values({
+        sessionId,
+        lineUuid: randomUUID(),
+        subIndex: 0,
+        lineNumber,
+        trackId: values.trackId ?? "main",
+        msgType: "message",
+        role: "user",
+        source: "claude_code",
+        sourceRelativePath: "test.jsonl",
+        raw: {},
+        sourceSchemaVersion: 1,
+        content: `line ${lineNumber}`,
+        ...(values.createdAt ? { createdAt: values.createdAt } : {}),
+      })
+
+    const mainLines = async (sessionId: string, from: number, to: number) => {
+      for (let line = from; line <= to; line += 1) await message(sessionId, line)
+    }
+
+    const doneReview = (sessionId: string, projectId: string, reviewedThrough: number) =>
+      db
+        .insert(sessionReviews)
+        .values({
+          sessionId,
+          projectId,
+          analyzer: ANALYZER,
+          status: "done",
+          attempts: 1,
+          outcome: "productive",
+          summary: "kept",
+          signals: {},
+          harness: "claude",
+          reviewedThrough,
+          updatedAt: new Date(Date.UTC(2026, 0, 1)),
+        })
+        .returning()
+        .then((rows) => rows[0] as typeof sessionReviews.$inferSelect)
+
+    const rowOf = async (sessionId: string) =>
+      (await reviewRows()).find((row) => row.sessionId === sessionId)
+
+    test("SC1: a session with a main-track message after its review is queued again, keeping its result", async () => {
+      const now = ist(11, 2)
+      const on = await project({ autoReview: true })
+      const reviewed = await quietSession(on, now)
+      await mainLines(reviewed, 1, 5)
+      const before = await doneReview(reviewed, on, 3)
+
+      const result = await queueNightlyReviews(db, { ...DEFAULTS, now })
+
+      expect(result).toEqual({ picked: 1, queued: 1 })
+      expect(await rowOf(reviewed)).toMatchObject({
+        id: before.id,
+        status: "waiting",
+        attempts: 0,
+        error: null,
+        outcome: "productive",
+        summary: "kept",
+        newPartOnly: true,
+        harness: null,
+        model: null,
+        prompt: null,
+      })
+    })
+
+    test("SC2: a session with nothing after its review on the main track is left alone", async () => {
+      const now = ist(11, 2)
+      const on = await project({ autoReview: true })
+      const reviewed = await quietSession(on, now)
+      await mainLines(reviewed, 1, 5)
+      await message(reviewed, 9, { trackId: "agent-a1" })
+      await doneReview(reviewed, on, 5)
+      const before = await reviewRows()
+
+      const result = await queueNightlyReviews(db, { ...DEFAULTS, now })
+
+      expect(result).toEqual({ picked: 1, queued: 0 })
+      expect(await reviewRows()).toEqual(before)
+    })
+
+    test("SC3: a re-review waits for the quiet rule unless its pull request ended", async () => {
+      const now = ist(11, 2)
+      const on = await project({ autoReview: true })
+      const busy = await busySession(on, now)
+      const merged = await busySession(on, now)
+      await linkPullRequest(merged, "merged")
+      for (const id of [busy, merged]) {
+        await mainLines(id, 1, 5)
+        await doneReview(id, on, 3)
+      }
+
+      const result = await queueNightlyReviews(db, { ...DEFAULTS, now })
+
+      expect(result).toEqual({ picked: 1, queued: 1 })
+      expect((await rowOf(merged))?.status).toBe("waiting")
+      expect((await rowOf(busy))?.status).toBe("done")
+    })
+
+    test("SC4: a failed review comes back only once a main-track message is stored after it failed", async () => {
+      const now = ist(11, 2)
+      const on = await project({ autoReview: true })
+      const failedAt = hoursBefore(now, 10)
+      const nothingNew = await quietSession(on, now)
+      const somethingNew = await quietSession(on, now)
+      await message(nothingNew, 1, { createdAt: hoursBefore(now, 12) })
+      await message(somethingNew, 1, { createdAt: hoursBefore(now, 12) })
+      await message(somethingNew, 2, { createdAt: hoursBefore(now, 9) })
+      for (const sessionId of [nothingNew, somethingNew]) {
+        await db.insert(sessionReviews).values({
+          sessionId,
+          projectId: on,
+          analyzer: ANALYZER,
+          status: "failed",
+          attempts: 3,
+          error: "harnessFailed: boom",
+          updatedAt: failedAt,
+        })
+      }
+
+      const result = await queueNightlyReviews(db, { ...DEFAULTS, now })
+
+      expect(result).toEqual({ picked: 1, queued: 1 })
+      expect(await rowOf(somethingNew)).toMatchObject({
+        status: "waiting",
+        attempts: 0,
+        error: null,
+        newPartOnly: true,
+      })
+      expect(await rowOf(nothingNew)).toMatchObject({
+        status: "failed",
+        attempts: 3,
+        error: "harnessFailed: boom",
+      })
+    })
+
+    test("SC5: a never-reviewed session takes the limit before a re-review active longer ago", async () => {
+      const now = ist(11, 2)
+      const on = await project({ autoReview: true })
+      const reviewed = await quietSession(on, now, 30)
+      await mainLines(reviewed, 1, 5)
+      await doneReview(reviewed, on, 3)
+      const fresh = await quietSession(on, now, 8)
+
+      const result = await queueNightlyReviews(db, { ...DEFAULTS, now, limit: 1 })
+
+      expect(result).toEqual({ picked: 1, queued: 1 })
+      expect(await rowOf(fresh)).toMatchObject({ status: "waiting", newPartOnly: false })
+      expect((await rowOf(reviewed))?.status).toBe("done")
+    })
+
+    test("SC6: a waiting or running review is never taken again", async () => {
+      const now = ist(11, 2)
+      const on = await project({ autoReview: true })
+      for (const status of ["waiting", "running"] as const) {
+        const id = await quietSession(on, now)
+        await mainLines(id, 1, 5)
+        await db.insert(sessionReviews).values({
+          sessionId: id,
+          projectId: on,
+          analyzer: ANALYZER,
+          status,
+          attempts: 1,
+          reviewedThrough: 3,
+        })
+      }
+      const before = await reviewRows()
+
+      const result = await queueNightlyReviews(db, { ...DEFAULTS, now })
+
+      expect(result).toEqual({ picked: 1, queued: 0 })
+      expect(await reviewRows()).toEqual(before)
+    })
+
+    test("SC7: the PR check lists a busy reviewed session's open pull request only when it has something new", async () => {
+      const now = ist(11, 2)
+      const on = await project({ autoReview: true })
+      const withNew = await busySession(on, now)
+      const withoutNew = await busySession(on, now)
+      const wanted = await linkPullRequest(withNew, "open")
+      await linkPullRequest(withoutNew, "open")
+      await mainLines(withNew, 1, 5)
+      await mainLines(withoutNew, 1, 3)
+      await doneReview(withNew, on, 3)
+      await doneReview(withoutNew, on, 3)
+
+      const listed = await pullRequestsToCheck(db, { ...DEFAULTS, now })
+
+      expect(listed.map((pr) => pr.id)).toEqual([wanted])
     })
   })
 })

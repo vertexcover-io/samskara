@@ -1,3 +1,4 @@
+import { MAIN_TRACK } from "@samskara/core"
 import { and, eq, inArray, notInArray, sql } from "drizzle-orm"
 import type { Querier } from "../db/client.js"
 import { learningRuns, sessionActivityAt, sessionReviews } from "../db/schema.js"
@@ -34,6 +35,7 @@ export const queueReview = async (
     harness: input.options.harness ?? null,
     model: input.options.model ?? null,
     prompt: input.options.prompt ?? null,
+    newPartOnly: false,
   } as const
   const [row] = await db
     .insert(sessionReviews)
@@ -301,6 +303,31 @@ export const PICK_WITHIN = "30 days"
 /** How many open pull requests the check before one nightly pick asks GitHub about, at most. */
 export const PR_CHECK_LIMIT = 200
 
+/**
+ * Whether the review row `sr` has not read everything in `"sessions"`: a done review with a
+ * main-track message after `reviewedThrough`, or a failed one with a main-track message stored
+ * after it failed. Only main-track line numbers can be compared (`lastLineRead`).
+ */
+const hasNewMessages = sql`(
+  (sr."status" = 'done' and exists (
+    select 1 from "messages" m
+    where m."sessionId" = "sessions"."id" and m."trackId" = ${MAIN_TRACK}
+      and m."lineNumber" > coalesce(sr."reviewedThrough", 0)))
+  or (sr."status" = 'failed' and exists (
+    select 1 from "messages" m
+    where m."sessionId" = "sessions"."id" and m."trackId" = ${MAIN_TRACK}
+      and m."createdAt" > sr."updatedAt")))`
+
+/**
+ * A session the nightly pick may take: no review row for the analyzer, or one with new messages.
+ * A waiting or running row has none by definition, so it is never taken twice.
+ */
+const needsReview = (analyzer: string) => sql`not exists (
+    select 1 from "sessionReviews" sr
+    where sr."sessionId" = "sessions"."id" and sr."analyzer" = ${analyzer}
+      and not ${hasNewMessages}
+  )`
+
 type NightlyInput = NightlyReview & { readonly now: Date; readonly analyzer: string }
 
 /**
@@ -344,10 +371,7 @@ export const pullRequestsToCheck = async (
           and ${due}
           and ${sessionActivityAt} > ${now} - ${PICK_WITHIN}::interval
           and ${sessionActivityAt} > ${now} - ${QUIET_FOR}::interval
-          and not exists (
-            select 1 from "sessionReviews" sr
-            where sr."sessionId" = "sessions"."id" and sr."analyzer" = ${input.analyzer}
-          )
+          and ${needsReview(input.analyzer)}
       )
     order by pr."checkedAt" asc nulls first, pr."id"
     limit ${PR_CHECK_LIMIT}`)
@@ -357,11 +381,14 @@ export const pullRequestsToCheck = async (
 /**
  * The nightly rule. Each project with automatic review on, whose pick for today is due and not
  * yet made, is stamped as picked and gets `waiting` reviews for its `limit` ready sessions. A
- * session is ready once it has been quiet for `QUIET_FOR`, or once a pull request it opened is
- * merged or closed; those with an ended pull request go first, then the ones active longest ago. "Today" and the time of day are read in
- * `timeZone`, so a worker started after midnight but before `at` makes no pick for the night
- * before. A session with a row for the analyzer, in any state, is left alone. One statement, so a
- * crash cannot stamp a project without queueing its reviews, or queue them without the stamp.
+ * candidate has no review row, or a done or failed one with messages it has not read
+ * (`hasNewMessages`); a waiting or running row is left alone. A candidate is ready once it has
+ * been quiet for `QUIET_FOR`, or once a pull request it opened is merged or closed. Sessions
+ * never reviewed go first, then those with an ended pull request, then the ones active longest
+ * ago. A re-review keeps its row and old result, and is marked `newPartOnly`. "Today" and the
+ * time of day are read in `timeZone`, so a worker started after midnight but before `at` makes
+ * no pick for the night before. One statement, so a crash cannot stamp a project without
+ * queueing its reviews, or queue them without the stamp.
  */
 export const queueNightlyReviews = async (
   db: Querier,
@@ -379,28 +406,37 @@ export const queueNightlyReviews = async (
           select 1 from "sessionPullRequests" spr
           join "pullRequests" pr on pr."id" = spr."prId"
           where spr."sessionId" = "sessions"."id" and pr."state" in ('merged', 'closed')
-        ) as "prEnded"
+        ) as "prEnded",
+        exists (
+          select 1 from "sessionReviews" sr
+          where sr."sessionId" = "sessions"."id" and sr."analyzer" = ${input.analyzer}
+        ) as "again"
       from "sessions"
       where "sessions"."projectId" in (select "id" from "picked")
         and ${sessionActivityAt} > ${now} - ${PICK_WITHIN}::interval
-        and not exists (
-          select 1 from "sessionReviews" sr
-          where sr."sessionId" = "sessions"."id" and sr."analyzer" = ${input.analyzer}
-        )
+        and ${needsReview(input.analyzer)}
     ), "ready" as (
       -- A session whose pull request ended goes first: it is recent, so oldest-first alone would
       -- leave it behind every quiet session of a busy project and the trigger would never fire.
-      select "id", "projectId",
+      -- A session never reviewed goes before a re-review, so long-running sessions cannot crowd
+      -- out fresh ones under the limit.
+      select "id", "projectId", "again",
         row_number() over (
-          partition by "projectId" order by "prEnded" desc, "activityAt", "id"
+          partition by "projectId" order by "again", "prEnded" desc, "activityAt", "id"
         ) as "rank"
       from "candidates"
       where "prEnded" or "activityAt" <= ${now} - ${QUIET_FOR}::interval
     ), "queued" as (
-      insert into "sessionReviews" ("sessionId", "projectId", "analyzer", "status", "attempts")
-      select "id", "projectId", ${input.analyzer}, 'waiting', 0 from "ready"
+      insert into "sessionReviews"
+        ("sessionId", "projectId", "analyzer", "status", "attempts", "newPartOnly")
+      select "id", "projectId", ${input.analyzer}, 'waiting', 0, "again" from "ready"
       where "rank" <= ${input.limit}
-      on conflict do nothing
+      -- The guard is not redundant with needsReview: a review the worker claims between the
+      -- read above and this insert must not be reset from running to waiting.
+      on conflict ("sessionId", "analyzer") do update set
+        "status" = 'waiting', "attempts" = 0, "error" = null, "harness" = null,
+        "model" = null, "prompt" = null, "newPartOnly" = true, "updatedAt" = ${now}
+      where "sessionReviews"."status" in ('done', 'failed')
       returning "id"
     )
     select (select count(*)::int from "picked") as "picked",

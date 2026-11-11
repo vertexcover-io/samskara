@@ -1,0 +1,1 @@
+ALTER TABLE "sessionReviews" ADD COLUMN "newPartOnly" boolean DEFAULT false NOT NULL;
