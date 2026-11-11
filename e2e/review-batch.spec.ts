@@ -10,8 +10,8 @@ const SESSIONS = [
 ] as const
 
 /**
- * Two sessions that already have a problems review with no problems, written straight to the
- * table. The batch skips both, and the project's fix run ends at "nothing to do": no agent runs.
+ * Two sessions that already have a problems review, written straight to the table. Review on
+ * ticked sessions skips both, so nothing is queued and no agent runs.
  */
 const seedReviewedSessions = async (): Promise<void> => {
   await seedDatabase({
@@ -31,7 +31,7 @@ const seedReviewedSessions = async (): Promise<void> => {
   }
 }
 
-test("SC26: a person selects 2 sessions, starts a batch, and follows the link to the fixes", async ({
+test("SC28: a person ticks 2 reviewed sessions, presses Review, and is told both already had one", async ({
   authedPage: page,
 }) => {
   await seedReviewedSessions()
@@ -40,14 +40,13 @@ test("SC26: a person selects 2 sessions, starts a batch, and follows the link to
   for (const session of SESSIONS)
     await page.getByRole("checkbox", { name: `Select ${session.title}` }).check()
   const bar = page.getByRole("region", { name: "Selected sessions" })
-  await expect(bar).toContainText("2 selected · about 7 min")
+  await expect(bar).toContainText("2 selected")
 
-  await bar.getByRole("button", { name: "Review and find fixes" }).click()
+  await bar.getByRole("button", { name: "Review", exact: true }).click()
 
-  const panel = page.getByRole("region", { name: "Review progress" })
-  await expect(panel).toContainText("2 skipped (already reviewed)")
-  const fixes = panel.getByRole("link", { name: "See fixes for Batch Project" })
-  await expect(fixes).toBeVisible()
-  await fixes.click()
-  await expect(page).toHaveURL(`/learnings?project=${projectId(PROJECT)}`)
+  await expect(page.getByRole("status")).toHaveText(
+    "Queued 0 sessions for review. 2 sessions already had a review.",
+  )
+  await expect(bar).toContainText("0 selected")
+  await expect(page.getByRole("region", { name: "Review progress" })).toHaveCount(0)
 })

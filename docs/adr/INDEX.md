@@ -1,0 +1,5 @@
+# Architecture Decision Records
+
+- [0001 A review's state lives on its sessionReviews row, and only done rows count as reviews](0001-review-state-lives-on-the-session-review-row.md) · inactive · 2026-11-10 · session-reviews, ai-review · superseded by 0003
+- [0002 AI reviews and fix runs run in one forked worker that claims waiting rows from the database](0002-reviews-and-fix-runs-run-in-one-forked-worker.md) · active · 2026-11-11 · worker, ai-review, session-reviews, learning-runs · the API only queues rows and wakes the worker; no agent runs in the API; one worker at a time
+- [0003 A review's state lives on its sessionReviews row, and any row with a result counts as a review](0003-a-review-row-with-a-result-counts-as-a-review.md) · active · 2026-11-11 · session-reviews, ai-review · readers of sessionReviews filter on outcome is not null; a re-review keeps the old result on the row

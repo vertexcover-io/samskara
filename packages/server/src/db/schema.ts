@@ -154,11 +154,21 @@ export const projects = pgTable(
     ownerUserId: uuid("ownerId").references(() => users.id, { onDelete: "cascade" }),
     ownerOrgId: uuid("ownerOrgId").references(() => orgs.id, { onDelete: "cascade" }),
     repoId: uuid("repoId").references(() => repos.id, { onDelete: "set null" }),
+    /** Days between automatic fix runs for this project. */
+    fixRunEveryDays: integer("fixRunEveryDays").notNull().default(7),
+    /** The worker queues reviews for this project's quiet sessions once a night. */
+    autoReview: boolean("autoReview").notNull().default(false),
+    /**
+     * When the worker last made this project's nightly pick, or when automatic review was last
+     * turned on (which counts as that day's pick); null until either happens.
+     */
+    lastNightlyPickAt: timestamp("lastNightlyPickAt", { withTimezone: true }),
     createdAt,
     updatedAt,
   },
   (t) => [
     check("projects_one_owner_check", sql`(${t.ownerUserId} is null) <> (${t.ownerOrgId} is null)`),
+    check("projects_fixRunEveryDays_check", sql`${t.fixRunEveryDays} >= 1`),
     uniqueIndex("projects_slug_owner_user_unique")
       .on(t.slug, t.ownerUserId)
       .where(sql`${t.ownerOrgId} is null`),
@@ -485,6 +495,10 @@ export const artifact = pgTable(
  * One structured analysis of a session. Unique on (sessionId, analyzer): re-running the same
  * analyzer version replaces its review rather than stacking copies, while a future analyzer
  * version writes its own row alongside — reviews are comparable, not overwritten.
+ *
+ * A row moves waiting -> running -> done | failed. A re-review keeps the previous result on the
+ * row while it waits, runs or fails, so readers show any row that has a result (`outcome` is
+ * set), whatever its status. The worker (`src/worker/`) is the only writer of running and failed.
  */
 export const sessionReviews = pgTable(
   "sessionReviews",
@@ -497,9 +511,23 @@ export const sessionReviews = pgTable(
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
     analyzer: text("analyzer").notNull(),
-    outcome: text("outcome").notNull(),
-    summary: text("summary").notNull(),
-    signals: jsonb("signals").notNull(),
+    /** Null until the review is done. */
+    outcome: text("outcome"),
+    summary: text("summary"),
+    signals: jsonb("signals"),
+    status: text("status").notNull().default("done"),
+    /** How many times this review has been tried. */
+    attempts: integer("attempts").notNull().default(0),
+    /** Why the last try failed. */
+    error: text("error"),
+    /** The reviewer CLI the person chose; null means the server's AI_REVIEW_HARNESS. */
+    harness: text("harness"),
+    /** The model the person chose; null means the server's default for the harness. */
+    model: text("model"),
+    /** The person's own review prompt, merged into the base instructions; null when none. */
+    prompt: text("prompt"),
+    /** The main-conversation lineNumber of the last message the review read; null when it read none. */
+    reviewedThrough: integer("reviewedThrough"),
     createdAt,
     updatedAt,
   },
@@ -509,7 +537,19 @@ export const sessionReviews = pgTable(
       "sessionReviews_outcome_check",
       sql`${t.outcome} in ('shipped', 'productive', 'struggled', 'aborted')`,
     ),
+    check(
+      "sessionReviews_status_check",
+      sql`${t.status} in ('waiting', 'running', 'done', 'failed')`,
+    ),
+    check(
+      "sessionReviews_done_has_result_check",
+      sql`${t.status} <> 'done' or (${t.outcome} is not null and ${t.summary} is not null and ${t.signals} is not null)`,
+    ),
     index("sessionReviews_project_idx").on(t.projectId),
+    // The worker's queue: waiting rows to pick up, running rows to count and reset on start.
+    index("sessionReviews_status_updatedAt_idx")
+      .on(t.status, t.updatedAt)
+      .where(sql`${t.status} in ('waiting', 'running')`),
   ],
 )
 
@@ -525,21 +565,31 @@ export const learningRuns = pgTable(
     projectId: uuid("projectId")
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
-    status: text("status").notNull().default("running"),
+    status: text("status").notNull().default("waiting"),
+    /** How many times this run has been tried. */
+    attempts: integer("attempts").notNull().default(0),
+    /** Not claimed while the project has a review waiting or running, so it reads their problems. */
+    waitForReviews: boolean("waitForReviews").notNull().default(true),
+    /** A harness checkout an admin named on Run now; null means the server's own harness. */
+    harnessPath: text("harnessPath"),
     /** The harness repo and the commit its code was read at, e.g. `yok@3f2c...`. */
     harnessRef: text("harnessRef"),
     /** Why a failed run failed. */
     error: text("error"),
+    /** When it was queued, then when it was last claimed: the every-N-days clock reads this. */
     startedAt: timestamp("startedAt", { withTimezone: true }).notNull().defaultNow(),
     finishedAt: timestamp("finishedAt", { withTimezone: true }),
   },
   (t) => [
-    check("learningRuns_status_check", sql`${t.status} in ('running', 'done', 'failed')`),
+    check(
+      "learningRuns_status_check",
+      sql`${t.status} in ('waiting', 'running', 'done', 'failed')`,
+    ),
     index("learningRuns_projectId_startedAt_idx").on(t.projectId, t.startedAt),
-    // One run at a time per project: a second would read the same unmarked problems.
-    uniqueIndex("learningRuns_one_running_per_project")
+    // One open run per project: a second would read the same unmarked problems.
+    uniqueIndex("learningRuns_one_open_per_project")
       .on(t.projectId)
-      .where(sql`${t.status} = 'running'`),
+      .where(sql`${t.status} in ('waiting', 'running')`),
   ],
 )
 

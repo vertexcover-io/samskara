@@ -6,7 +6,6 @@ import { SessionExpired } from "../auth/SessionExpired.js"
 import { optionFor } from "../components/combobox.js"
 import { FilterBar, inertClass } from "../components/FilterBar.js"
 import { ReviewBar } from "../components/ReviewBar.js"
-import { ReviewBatchPanel } from "../components/ReviewBatchPanel.js"
 import { SessionListSkeleton } from "../components/SessionListSkeleton.js"
 import { SessionRow } from "../components/SessionRow.js"
 import {
@@ -302,8 +301,7 @@ export const Sessions = () => {
     setSearchParams(serializeFilters(effectiveFilters), { replace: true })
   }, [effectiveFilters, filters, setSearchParams])
 
-  if (reviewBatch.expired || (state.phase === "failed" && state.error.kind === "unauthorized"))
-    return <SessionExpired />
+  if (state.phase === "failed" && state.error.kind === "unauthorized") return <SessionExpired />
 
   const answered = state.phase !== "loading" && state.query === effectiveQuery
   const payload = answered && state.phase === "ready" ? state.payload : null
@@ -329,7 +327,6 @@ export const Sessions = () => {
       <ReviewBar
         count={selected.size}
         starting={starting}
-        blocked={reviewBatch.batch?.status === "running"}
         onStart={() => void startReview()}
         onClear={() => setSelected(new Set())}
       />
@@ -338,8 +335,10 @@ export const Sessions = () => {
           {refusalMessage(reviewBatch.error)}
         </p>
       )}
-      {reviewBatch.batch === null ? null : (
-        <ReviewBatchPanel batch={reviewBatch.batch} onDismiss={() => void reviewBatch.dismiss()} />
+      {reviewBatch.note === null ? null : (
+        <p role="status" className="mt-2 text-[0.8125rem] text-ink-soft">
+          {reviewBatch.note}
+        </p>
       )}
       <div className="mt-4" aria-busy={loading}>
         {loading ? <Loading previous={previous} /> : null}

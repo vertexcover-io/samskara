@@ -188,11 +188,12 @@ export const Learnings = () => {
         latestRun: result.data.latestRun,
         canEdit: result.data.canEdit,
       })
-      // A run still going when the page loads (another tab, the weekly schedule) is shown and
-      // waited on, so Run now cannot start a second one.
+      // A run queued or going when the page loads (another tab, the automatic run) is shown
+      // and waited on, so Run now cannot start a second one.
       const latest = result.data.latestRun
+      const open = latest?.status === "running" || latest?.status === "waiting"
       setRun(
-        latest?.status === "running"
+        open && latest !== null
           ? { phase: "running", runId: latest.id, startedAt: latest.startedAt }
           : { phase: "idle" },
       )
@@ -237,7 +238,7 @@ export const Learnings = () => {
         (result) => {
           if (!active || !result.ok) return
           const { status, error } = result.data.run
-          if (status === "running") return
+          if (status === "running" || status === "waiting") return
           setRun(
             status === "failed"
               ? { phase: "failed", message: `The run failed: ${error ?? "no reason given"}` }

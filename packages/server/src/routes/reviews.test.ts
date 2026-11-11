@@ -222,4 +222,68 @@ describe.skipIf(!dockerAvailable())("reviews", () => {
     // Nothing was written on the way to the refusal.
     expect(await db.select().from(sessionReviews)).toHaveLength(0)
   })
+
+  test("SC3: a waiting AI review and a failed static review show no result; the waiting one shows as a job", async () => {
+    await db.insert(sessionReviews).values([
+      { sessionId, projectId, analyzer: "ai-problems-v2", status: "waiting" },
+      { sessionId, projectId, analyzer: "heuristic-v1", status: "failed", error: "boom" },
+    ])
+
+    const listed = await request(`/api/sessions/${sessionId}/review`)
+    expect(listed.status).toBe(200)
+    expect(await listed.json()).toEqual({ reviews: [] })
+
+    const ai = await request(`/api/sessions/${sessionId}/aireview`)
+    expect(ai.status).toBe(200)
+    expect(await ai.json()).toMatchObject({ review: null, job: { status: "running" } })
+  })
+
+  test("a kept AI review whose redo failed lists analyzedAt as its own finish time, not the redo's", async () => {
+    await db.insert(sessionReviews).values({
+      sessionId,
+      projectId,
+      analyzer: "ai-problems-v2",
+      status: "failed",
+      attempts: 3,
+      error: "harnessFailed: harness run exited with code 1",
+      outcome: "productive",
+      summary: "The earlier result.",
+      signals: { run: { finishedAt: "2026-11-11T13:22:28.736Z" } },
+      updatedAt: new Date("2026-11-11T13:32:49.531Z"),
+    })
+
+    const listed = await request(`/api/sessions/${sessionId}/review`)
+
+    const body = (await listed.json()) as { reviews: { analyzedAt: string }[] }
+    expect(body.reviews.map((review) => review.analyzedAt)).toEqual(["2026-11-11T13:22:28.736Z"])
+  })
+
+  test("SC8: a rule-based review is saved done, with no error, through the last line it read (7)", async () => {
+    await seedErrorLoop()
+    const res = await request(`/api/sessions/${sessionId}/review`, { method: "POST" })
+    expect(res.status).toBe(201)
+
+    const [row] = await db.select().from(sessionReviews)
+    expect(row).toMatchObject({ status: "done", error: null, reviewedThrough: 7 })
+  })
+
+  test("SC9: re-reviewing over a failed row keeps its id, makes it done, clears the error and shows it", async () => {
+    await seedErrorLoop()
+    const [failed] = await db
+      .insert(sessionReviews)
+      .values({ sessionId, projectId, analyzer: "heuristic-v1", status: "failed", error: "boom" })
+      .returning()
+
+    const res = await request(`/api/sessions/${sessionId}/review`, { method: "POST" })
+    expect(res.status).toBe(201)
+
+    const [row] = await db.select().from(sessionReviews)
+    expect(row?.id).toBe(failed?.id)
+    expect(row).toMatchObject({ status: "done", error: null, reviewedThrough: 7 })
+    expect(row?.outcome).not.toBeNull()
+
+    const listed = await request(`/api/sessions/${sessionId}/review`)
+    const body = (await listed.json()) as { reviews: { id: string }[] }
+    expect(body.reviews.map((review) => review.id)).toEqual([failed?.id])
+  })
 })

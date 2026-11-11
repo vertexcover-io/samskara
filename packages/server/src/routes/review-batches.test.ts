@@ -1,18 +1,19 @@
-import type { HarnessRunner } from "@samskara/core"
 import pino from "pino"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import { buildApp } from "../app.js"
 import type { Db } from "../db/client.js"
-import { projects, sessionReviews, sessions, userProjectGrant, users } from "../db/schema.js"
+import {
+  learningRuns,
+  projects,
+  sessionReviews,
+  sessions,
+  userProjectGrant,
+  users,
+} from "../db/schema.js"
 import { dockerAvailable, startTestDb } from "../db/testDb.js"
 import type { Env } from "../lib/env.js"
 import { signToken } from "../lib/jwt.js"
-import { type AiReviewJobRegistry, createAiReviewJobRegistry } from "../services/ai-review/jobs.js"
-import { type AiReviewResult, PROBLEMS_ANALYZER } from "../services/ai-review/pipeline.js"
-import {
-  createReviewBatchRegistry,
-  type ReviewBatchRegistry,
-} from "../services/review-batch/batch.js"
+import { PROBLEMS_ANALYZER } from "../services/ai-review/pipeline.js"
 
 const CREDENTIAL_ENV = { OPENCODE_API_KEY: "oc-key", CLAUDE_CODE_OAUTH_TOKEN: "cc-token" }
 
@@ -30,23 +31,10 @@ const env: Env = {
   aiReviewModel: "fake-model",
   aiReviewHarness: "opencode",
   aiReviewTimeoutMs: 600000,
+  learningsHarness: { path: "/harness" },
 }
 
 const silentLog = pino({ level: "silent" })
-
-type BatchBody = {
-  readonly batch: null | {
-    readonly batchId: string
-    readonly status: string
-    readonly sessions: ReadonlyArray<{
-      readonly sessionId: string
-      readonly projectId: string | null
-      readonly title: string | null
-      readonly state: string
-    }>
-    readonly projects: ReadonlyArray<{ readonly projectId: string; readonly name: string }>
-  }
-}
 
 describe.skipIf(!dockerAvailable())("review batch routes", () => {
   let db: Db
@@ -63,13 +51,10 @@ describe.skipIf(!dockerAvailable())("review batch routes", () => {
   })
 
   let userId: string
-  let otherUserId: string
   let projectA: string
   let projectB: string
-  /** Every review job the registry was asked to run, by session id; none ever settles. */
-  let reviewCalls: string[]
-  let jobs: AiReviewJobRegistry
-  let reviewBatches: ReviewBatchRegistry
+  let projectC: string
+  let notified: number
 
   beforeEach(async () => {
     await db.delete(sessionReviews)
@@ -84,20 +69,23 @@ describe.skipIf(!dockerAvailable())("review batch routes", () => {
       ])
       .returning({ id: users.id })
     userId = user?.id as string
-    otherUserId = other?.id as string
-    const [a, b] = await db
+    const otherUserId = other?.id as string
+    const [a, b, c] = await db
       .insert(projects)
       .values([
         { name: "Project A", slug: "a", ownerUserId: userId },
         { name: "Project B", slug: "b", ownerUserId: otherUserId },
+        { name: "Project C", slug: "c", ownerUserId: userId },
       ])
       .returning({ id: projects.id })
     projectA = a?.id as string
     projectB = b?.id as string
+    projectC = c?.id as string
     await db.insert(userProjectGrant).values({ userId, projectId: projectB, scope: "viewer" })
     await db.insert(sessions).values([
       { id: "a-1", source: "claude_code", userId, projectId: projectA, title: "a one" },
       { id: "a-2", source: "claude_code", userId, projectId: projectA, title: "a two" },
+      { id: "a-3", source: "claude_code", userId, projectId: projectA, title: "a three" },
       {
         id: "b-1",
         source: "claude_code",
@@ -105,36 +93,28 @@ describe.skipIf(!dockerAvailable())("review batch routes", () => {
         projectId: projectB,
         title: "b one",
       },
+      { id: "c-1", source: "claude_code", userId, projectId: projectC, title: "c one" },
     ])
-    reviewCalls = []
-    jobs = createAiReviewJobRegistry({
-      run: (_deps, _user, sessionId) => {
-        reviewCalls.push(sessionId)
-        return new Promise<AiReviewResult>(() => {})
-      },
-    })
-    reviewBatches = createReviewBatchRegistry({
-      jobs,
-      aiReview: { db, runner: {} as HarnessRunner, env, log: silentLog },
-      hasReview: async () => false,
-      canWrite: async () => true,
-      startLearningRun: undefined,
-      log: silentLog,
-      sleep: () => new Promise((resolve) => setImmediate(resolve)),
-      pollMs: 1,
-    })
+    notified = 0
   })
 
   const request = async (
     path: string,
-    init: { readonly method?: string; readonly asUserId?: string; readonly body?: unknown } = {},
+    init: {
+      readonly method?: string
+      readonly body?: unknown
+      readonly credentialEnv?: NodeJS.ProcessEnv
+      /** False runs the server with no learnings harness, so no fix run can be queued. */
+      readonly harness?: boolean
+    } = {},
   ): Promise<Response> => {
-    const token = await signToken(env, { sub: init.asUserId ?? userId, aud: "web" })
-    return buildApp(db, env, {
-      aiReviewRunner: {} as HarnessRunner,
-      aiReviewJobs: jobs,
-      reviewBatches,
-      credentialEnv: CREDENTIAL_ENV,
+    const token = await signToken(env, { sub: userId, aud: "web" })
+    const appEnv = init.harness === false ? { ...env, learningsHarness: undefined } : env
+    return buildApp(db, appEnv, {
+      notifyWorker: () => {
+        notified += 1
+      },
+      credentialEnv: init.credentialEnv ?? CREDENTIAL_ENV,
       rootLog: silentLog,
     }).request(path, {
       method: init.method ?? "GET",
@@ -146,163 +126,169 @@ describe.skipIf(!dockerAvailable())("review batch routes", () => {
     })
   }
 
-  const start = (sessionIds: ReadonlyArray<string>, asUserId?: string) =>
+  const start = (
+    sessionIds: ReadonlyArray<string>,
+    credentialEnv?: NodeJS.ProcessEnv,
+    options: { readonly harness?: boolean } = {},
+  ) =>
     request("/api/review-batches", {
       method: "POST",
       body: { sessionIds },
-      ...(asUserId === undefined ? {} : { asUserId }),
+      ...(credentialEnv === undefined ? {} : { credentialEnv }),
+      ...options,
     })
 
-  const current = async (asUserId?: string): Promise<BatchBody> => {
-    const res = await request(
-      "/api/review-batches/current",
-      asUserId === undefined ? {} : { asUserId },
-    )
-    expect(res.status).toBe(200)
-    return (await res.json()) as BatchBody
-  }
+  const rows = () => db.select().from(sessionReviews)
+  const fixRuns = () => db.select().from(learningRuns)
 
-  const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve))
+  test("SC24: pressing Review on ticked sessions queues each one and wakes the worker once", async () => {
+    const res = await start(["a-1", "a-2", "a-3"])
 
-  test("SC12: starting a batch answers 202 and the current-batch endpoint reports it", async () => {
-    const res = await start(["a-1", "a-2"])
     expect(res.status).toBe(202)
-    const body = (await res.json()) as { batchId: string; notAllowed: string[] }
-    expect(body.batchId).toEqual(expect.any(String))
-    expect(body.notAllowed).toEqual([])
-
-    const { batch } = await current()
-    expect(batch?.batchId).toBe(body.batchId)
-    expect(batch?.status).toBe("running")
-    expect(batch?.sessions.map((session) => [session.sessionId, session.title]).sort()).toEqual([
-      ["a-1", "a one"],
-      ["a-2", "a two"],
-    ])
-    expect(batch?.projects).toEqual([
-      { projectId: projectA, name: "Project A", state: "waiting", reason: null },
-    ])
+    expect(await res.json()).toEqual({ queued: 3, skipped: 0, notAllowed: [], fixRunsQueued: 1 })
+    const queued = await rows()
+    expect(queued.map((row) => row.sessionId).sort()).toEqual(["a-1", "a-2", "a-3"])
+    expect(
+      queued.every((row) => row.status === "waiting" && row.analyzer === PROBLEMS_ANALYZER),
+    ).toBe(true)
+    // The API holds no agent runner at all; the worker runs these.
+    expect(notified).toBe(1)
   })
 
-  test("SC13: a session the user may not edit, or cannot see, is listed as not allowed and not reviewed", async () => {
-    const res = await start(["a-1", "b-1", "no-such-session"])
-    expect(res.status).toBe(202)
-    const body = (await res.json()) as { notAllowed: string[] }
-    expect([...body.notAllowed].sort()).toEqual(["b-1", "no-such-session"])
+  test("SC25: sessions that already have a review are skipped, and others' sessions are refused", async () => {
+    await db.insert(sessionReviews).values({
+      sessionId: "a-1",
+      projectId: projectA,
+      analyzer: PROBLEMS_ANALYZER,
+      outcome: "productive",
+      summary: "done before",
+      signals: {},
+    })
 
-    const { batch } = await current()
-    const refused = batch?.sessions.filter((session) => session.state === "notAllowed")
-    expect(refused?.map((session) => [session.sessionId, session.projectId]).sort()).toEqual([
-      ["b-1", null],
-      ["no-such-session", null],
-    ])
-    for (let i = 0; i < 20; i += 1) await tick()
-    expect(reviewCalls).toEqual(["a-1"])
+    const res = await start(["a-1", "a-2", "b-1", "missing"])
+
+    expect(res.status).toBe(202)
+    expect(await res.json()).toEqual({
+      queued: 1,
+      skipped: 1,
+      notAllowed: ["b-1", "missing"],
+      fixRunsQueued: 1,
+    })
+    const byId = new Map((await rows()).map((row) => [row.sessionId, row]))
+    expect(byId.get("a-1")).toMatchObject({ status: "done", summary: "done before" })
+    expect(byId.get("a-2")).toMatchObject({ status: "waiting" })
+    expect(byId.has("b-1")).toBe(false)
   })
 
-  test("SC14: more than 50 sessions is a 400", async () => {
-    const ids = Array.from({ length: 51 }, (_, index) => `session-${index}`)
-    const res = await start(ids)
+  test("SC26: a session already waiting or running counts as queued and is not reset", async () => {
+    await db.insert(sessionReviews).values({
+      sessionId: "a-1",
+      projectId: projectA,
+      analyzer: PROBLEMS_ANALYZER,
+      status: "running",
+      attempts: 2,
+    })
+
+    const res = await start(["a-1"])
+
+    expect(await res.json()).toEqual({ queued: 1, skipped: 0, notAllowed: [], fixRunsQueued: 1 })
+    const [row] = await rows()
+    expect(row).toMatchObject({ status: "running", attempts: 2 })
+  })
+
+  test("SC27: the batch status routes are gone", async () => {
+    expect((await request("/api/review-batches/current")).status).toBe(404)
+    expect((await request("/api/review-batches/current", { method: "DELETE" })).status).toBe(404)
+  })
+
+  test("SC14: more than 50 sessions is a 400, and so is an empty selection", async () => {
+    const tooMany = await start(Array.from({ length: 51 }, (_, i) => `s-${i}`))
+    expect(tooMany.status).toBe(400)
+    expect(await tooMany.json()).toEqual({ error: "tooManySessions" })
+    const empty = await start([])
+    expect(empty.status).toBe(400)
+    expect(await empty.json()).toEqual({ error: "invalidReviewBatch" })
+  })
+
+  test("a server with no reviewer key refuses and queues nothing", async () => {
+    const res = await start(["a-1"], {})
     expect(res.status).toBe(400)
-    expect(await res.json()).toEqual({ error: "tooManySessions" })
-    expect((await current()).batch).toBeNull()
+    expect(await res.json()).toEqual({ error: "harnessUnauthenticated" })
+    expect(await rows()).toEqual([])
+    expect(notified).toBe(0)
   })
 
-  test("SC15: a second start while one runs is a 409", async () => {
-    const first = (await (await start(["a-1"])).json()) as { batchId: string }
-    const second = await start(["a-2"])
-    expect(second.status).toBe(409)
-    expect(await second.json()).toEqual({ error: "reviewBatchAlreadyRunning" })
-    expect((await current()).batch?.batchId).toBe(first.batchId)
-  })
-
-  test("SC16: a user with no batch gets null, and never sees another user's", async () => {
-    expect((await start(["a-1"])).status).toBe(202)
-    expect(await current(otherUserId)).toEqual({ batch: null })
-  })
-
-  test("an empty selection is a 400", async () => {
-    const res = await start([])
-    expect(res.status).toBe(400)
-    expect(await res.json()).toEqual({ error: "invalidReviewBatch" })
-  })
-
-  test("the app's own wiring skips only a session with a problems review, not one with another analyzer's", async () => {
-    await db.insert(sessionReviews).values([
-      {
-        sessionId: "a-1",
-        projectId: projectA,
-        analyzer: "some-other-analyzer",
-        outcome: "shipped",
-        summary: "Other.",
-        signals: {},
-      },
-      {
-        sessionId: "a-2",
-        projectId: projectA,
-        analyzer: PROBLEMS_ANALYZER,
-        outcome: "shipped",
-        summary: "Clean.",
-        signals: {},
-      },
-    ])
-    const token = await signToken(env, { sub: userId, aud: "web" })
-    const app = buildApp(db, env, {
-      aiReviewRunner: {} as HarnessRunner,
-      aiReviewJobs: jobs,
-      credentialEnv: CREDENTIAL_ENV,
-      rootLog: silentLog,
-    })
-    const headers = { cookie: `session=${token}`, "content-type": "application/json" }
-
-    const res = await app.request("/api/review-batches", {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ sessionIds: ["a-1", "a-2"] }),
-    })
-    expect(res.status).toBe(202)
-    const states = async (): Promise<Record<string, string>> => {
-      const body = (await (
-        await app.request("/api/review-batches/current", { headers })
-      ).json()) as BatchBody
-      return Object.fromEntries(
-        (body.batch?.sessions ?? []).map((session) => [session.sessionId, session.state]),
-      )
-    }
-    for (let i = 0; i < 200 && (await states())["a-2"] !== "skipped"; i += 1) await tick()
-
-    expect(await states()).toEqual({ "a-1": "reviewing", "a-2": "skipped" })
-    expect(reviewCalls).toEqual(["a-1"])
-  })
-
-  const dismiss = (asUserId?: string) =>
-    request("/api/review-batches/current", {
-      method: "DELETE",
-      ...(asUserId === undefined ? {} : { asUserId }),
+  test("only a problems review counts as a review; a session with another analyzer's is queued", async () => {
+    await db.insert(sessionReviews).values({
+      sessionId: "a-1",
+      projectId: projectA,
+      analyzer: "heuristic-v1",
+      outcome: "shipped",
+      summary: "static",
+      signals: {},
     })
 
-  test("dismissing a running batch is a 409 and the batch stays", async () => {
-    expect((await start(["a-1"])).status).toBe(202)
+    const res = await start(["a-1"])
 
-    const res = await dismiss()
-    expect(res.status).toBe(409)
-    expect(await res.json()).toEqual({ error: "reviewBatchStillRunning" })
-    expect((await current()).batch?.status).toBe("running")
+    expect(await res.json()).toEqual({ queued: 1, skipped: 0, notAllowed: [], fixRunsQueued: 1 })
   })
 
-  test("dismissing a finished batch forgets it, and dismissing with none is fine too", async () => {
-    // Only a session the user may not edit: nothing to review, so the batch ends at once.
-    expect((await start(["b-1"])).status).toBe(202)
-    for (let i = 0; i < 50 && (await current()).batch?.status !== "done"; i += 1) await tick()
-    expect((await current()).batch?.status).toBe("done")
+  test("one fix run is queued per project with queued reviews, and it waits for them", async () => {
+    const res = await start(["a-1", "a-2", "c-1"])
 
-    expect((await dismiss()).status).toBe(204)
-    expect(await current()).toEqual({ batch: null })
-    expect((await dismiss()).status).toBe(204)
+    expect(await res.json()).toMatchObject({ queued: 3, fixRunsQueued: 2 })
+    const runs = await fixRuns()
+    expect(runs.map((run) => run.projectId).sort()).toEqual([projectA, projectC].sort())
+    expect(
+      runs.every(
+        (run) => run.status === "waiting" && run.waitForReviews && run.harnessPath === null,
+      ),
+    ).toBe(true)
+    expect(notified).toBe(1)
   })
 
-  test("dismissing never touches another user's batch", async () => {
-    expect((await start(["a-1"])).status).toBe(202)
-    expect((await dismiss(otherUserId)).status).toBe(204)
-    expect((await current()).batch?.status).toBe("running")
+  test("a project whose ticked sessions were all skipped or refused gets no fix run", async () => {
+    await db.insert(sessionReviews).values({
+      sessionId: "a-1",
+      projectId: projectA,
+      analyzer: PROBLEMS_ANALYZER,
+      outcome: "productive",
+      summary: "done before",
+      signals: {},
+    })
+
+    const res = await start(["a-1", "b-1", "c-1"])
+
+    expect(await res.json()).toMatchObject({ queued: 1, fixRunsQueued: 1 })
+    expect((await fixRuns()).map((run) => run.projectId)).toEqual([projectC])
+  })
+
+  test("pressing twice reuses the waiting fix run instead of adding a second", async () => {
+    await start(["a-1"])
+    const again = await start(["a-2"])
+
+    expect(await again.json()).toMatchObject({ fixRunsQueued: 1 })
+    const runs = await fixRuns()
+    expect(runs).toHaveLength(1)
+    expect(runs[0]).toMatchObject({ projectId: projectA, status: "waiting" })
+  })
+
+  test("a fix run already running is left alone and not counted", async () => {
+    await db.insert(learningRuns).values({ projectId: projectA, status: "running" })
+
+    const res = await start(["a-1"])
+
+    expect(await res.json()).toEqual({ queued: 1, skipped: 0, notAllowed: [], fixRunsQueued: 0 })
+    const runs = await fixRuns()
+    expect(runs).toHaveLength(1)
+    expect(runs[0]).toMatchObject({ status: "running" })
+  })
+
+  test("a server with no learnings harness queues the reviews but no fix run", async () => {
+    const res = await start(["a-1"], undefined, { harness: false })
+
+    expect(await res.json()).toEqual({ queued: 1, skipped: 0, notAllowed: [], fixRunsQueued: 0 })
+    expect(await rows()).toHaveLength(1)
+    expect(await fixRuns()).toEqual([])
   })
 })

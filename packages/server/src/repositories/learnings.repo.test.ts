@@ -406,27 +406,4 @@ describe.skipIf(!dockerAvailable())("learnings repository", () => {
     })
     expect(await db.select().from(learnings)).toEqual([])
   })
-
-  test("LDB7: runs left running by a stopped server are marked failed", async () => {
-    const run = await learningsRepo.startRun(db, projectId)
-    await learningsRepo.failInterruptedRuns(db)
-    const [row] = await db
-      .select()
-      .from(learningRuns)
-      .where(eq(learningRuns.id, run?.id as string))
-    expect(row).toMatchObject({ status: "failed", error: "the server stopped during the run" })
-  })
-
-  test("LDB8: a project is due when it has unread problems and no run since the cutoff", async () => {
-    await seedSession([problem("A")])
-    const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
-    expect(await learningsRepo.projectsDueForRun(db, weekAgo)).toContain(projectId)
-    const run = await learningsRepo.startRun(db, projectId)
-    await learningsRepo.finishRun(db, run?.id as string, { status: "failed", error: "x" })
-    // A failed run counts: the project waits until the next week.
-    expect(await learningsRepo.projectsDueForRun(db, weekAgo)).not.toContain(projectId)
-    expect(await learningsRepo.projectsDueForRun(db, new Date(Date.now() + 1000))).toContain(
-      projectId,
-    )
-  })
 })

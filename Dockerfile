@@ -35,11 +35,12 @@ ENV WEB_DIST=packages/web/dist
 # so both harnesses are installed into the image. The release workflow resolves the current
 # npm version of each and passes it as a build arg, so this layer's cache key changes exactly
 # when a new CLI version exists; `latest` is only the fallback for a bare `docker build`.
-# git is there because Claude Code probes the workspace for a repository on start.
+# git is there because Claude Code probes the workspace for a repository on start. procps gives
+# the worker `ps`, which records each agent's start time so a later worker can reap it safely.
 ARG CLAUDE_CODE_VERSION=latest
 ARG OPENCODE_VERSION=latest
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git ca-certificates \
+    && apt-get install -y --no-install-recommends git ca-certificates procps \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g --no-fund --no-audit \
         "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \

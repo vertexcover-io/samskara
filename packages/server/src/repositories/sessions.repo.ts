@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, type SQL, sql } from "drizzle-orm"
+import { and, asc, eq, type SQL, sql } from "drizzle-orm"
 import type { PgColumn } from "drizzle-orm/pg-core"
 import type { Querier } from "../db/client.js"
 import {
@@ -103,19 +103,6 @@ export const existsForUser = async (db: Querier, id: string, userId: string): Pr
     .from(sessions)
     .where(and(eq(sessions.id, id), eq(sessions.userId, userId)))
   return row !== undefined
-}
-
-/** Each session's title by id. Callers check access first; an id with no row is left out. */
-export const sessionTitles = async (
-  db: Querier,
-  ids: ReadonlyArray<string>,
-): Promise<ReadonlyMap<string, string | null>> => {
-  if (ids.length === 0) return new Map()
-  const rows = await db
-    .select({ id: sessions.id, title: sessions.title })
-    .from(sessions)
-    .where(inArray(sessions.id, [...ids]))
-  return new Map(rows.map((row) => [row.id, row.title]))
 }
 
 /**
@@ -317,10 +304,11 @@ const durationMs = sql<
   number | null
 >`(extract(epoch from ${sessions.lastMessageAt} - ${sessions.startedAt}) * 1000)::bigint`
 
-/** The badge's definition of "AI analysis ran": a landed AI review row. */
+/** The badge's definition of "AI analysis ran": an AI review row with a result. */
 const aiReviewExists = (sessionId: SQL): SQL => sql`exists (
   select 1 from "sessionReviews" sr
   where sr."sessionId" = ${sessionId} and sr."analyzer" = 'ai-problems-v2'
+    and sr."outcome" is not null
 )`
 
 const dominantRepoId = sql`(
@@ -936,6 +924,45 @@ export const sessionMessages = (db: Querier, sessionId: string) =>
     .from(messages)
     .where(eq(messages.sessionId, sessionId))
     .orderBy(asc(messages.lineNumber), asc(messages.subIndex))
+
+/** What a review reads: the session's own facts and every message, with no viewer check. */
+export type ReviewableSession = {
+  readonly session: {
+    readonly id: string
+    readonly title: string | null
+    readonly source: string
+    readonly projectId: string
+    readonly startedAt: string | null
+    readonly lastActiveAt: string
+  }
+  readonly messages: Awaited<ReturnType<typeof sessionMessages>>
+}
+
+/**
+ * The worker's read of a session. No viewer check: the person was checked when they asked for
+ * the review, and the worker runs as no one. Null when the session is gone.
+ */
+export const reviewableSession = async (
+  db: Querier,
+  sessionId: string,
+): Promise<ReviewableSession | null> => {
+  const [session] = await db
+    .select({
+      id: sessions.id,
+      title: derivedTitle,
+      source: sessions.source,
+      projectId: projects.id,
+      startedAt: sql<string | null>`${sessions.startedAt}`,
+      lastActiveAt: sql<string>`${sessionActivityAt}`,
+    })
+    .from(sessions)
+    // The join is load-bearing: with one table drizzle leaves columns unqualified, and the
+    // title's subquery would then read `"id"` as the message's id.
+    .innerJoin(projects, eq(projects.id, sessions.projectId))
+    .where(eq(sessions.id, sessionId))
+  if (session === undefined) return null
+  return { session, messages: await sessionMessages(db, sessionId) }
+}
 
 export const getDetail = async (
   db: Querier,

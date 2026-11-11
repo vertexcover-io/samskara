@@ -1591,6 +1591,31 @@ test("AI review: a failed job surfaces its reason, re-enables Analyze, and stops
   expect(analyze).toBeEnabled()
 })
 
+test("AI review: a reload after a review failed all its tries shows the failure and its reason, not Analyzing", async () => {
+  renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1?tab=review", {
+    aireview: [
+      {
+        status: 200,
+        body: {
+          review: null,
+          job: {
+            status: "failed",
+            jobId: "job-failed-1",
+            code: "harnessFailed",
+            detail: { message: "the agent ran out of memory" },
+          },
+        },
+      },
+    ],
+  })
+
+  await tabsLoaded()
+  expect(await within(panelOf()).findByText(/the agent ran out of memory/)).toBeInTheDocument()
+  expect(within(panelOf()).getByText(/Analysis failed/i)).toBeInTheDocument()
+  expect(within(panelOf()).queryByText(/Analyzing…/)).not.toBeInTheDocument()
+  expect(within(panelOf()).getByRole("button", { name: /analyze with ai/i })).toBeEnabled()
+})
+
 test("AI review: 409 analysisAlreadyRunning joins the existing run and polls it to the verdict", async () => {
   const user = userEvent.setup()
   renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1", {

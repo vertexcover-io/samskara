@@ -96,6 +96,7 @@ export const seedSession = async (
     outcome: "shipped",
     summary: "s",
     signals: recordIds.length === 0 ? {} : { run: { recordIds } },
+    reviewedThrough: recordIds.length === 0 ? null : recordIds.length,
   })
   await problemsRepo.replaceReviewProblems(db, {
     reviewId: review.id,
