@@ -33,8 +33,74 @@ describe("loadEnv", () => {
       aiReviewHarness: "opencode",
       aiReviewModel: "opencode-go/glm-5.3-flash",
       aiReviewTimeoutMs: 600_000,
+      aiAgentSlots: 4,
       learningsModel: "opencode-go/glm-5.3-flash",
+      nightlyReview: { at: "01:00", timeZone: "Asia/Kolkata", limit: 10 },
     })
+  })
+
+  test("SC1: unset nightly settings take the defaults", () => {
+    expect(loadEnv(complete).nightlyReview).toEqual({
+      at: "01:00",
+      timeZone: "Asia/Kolkata",
+      limit: 10,
+    })
+  })
+
+  test("SC2: set nightly settings are read", () => {
+    const env = loadEnv({
+      ...complete,
+      NIGHTLY_REVIEW_TIME: "03:30",
+      NIGHTLY_REVIEW_TIME_ZONE: "UTC",
+      NIGHTLY_REVIEW_LIMIT: "4",
+    })
+    expect(env.nightlyReview).toEqual({ at: "03:30", timeZone: "UTC", limit: 4 })
+  })
+
+  test("SC3: a bad nightly setting stops the boot, naming the setting", () => {
+    expect(() => loadEnv({ ...complete, NIGHTLY_REVIEW_TIME: "25:00" })).toThrow(
+      /Invalid environment configuration: NIGHTLY_REVIEW_TIME$/,
+    )
+    expect(() => loadEnv({ ...complete, NIGHTLY_REVIEW_TIME_ZONE: "Mars/Base" })).toThrow(
+      /Invalid environment configuration: NIGHTLY_REVIEW_TIME_ZONE/,
+    )
+    expect(() => loadEnv({ ...complete, NIGHTLY_REVIEW_LIMIT: "0" })).toThrow(
+      /Invalid environment configuration: NIGHTLY_REVIEW_LIMIT/,
+    )
+  })
+
+  test("the nightly limit is at most 25", () => {
+    expect(loadEnv({ ...complete, NIGHTLY_REVIEW_LIMIT: "25" }).nightlyReview?.limit).toBe(25)
+    for (const limit of ["26", "99999999999999999999"])
+      expect(() => loadEnv({ ...complete, NIGHTLY_REVIEW_LIMIT: limit })).toThrow(
+        /Invalid environment configuration: NIGHTLY_REVIEW_LIMIT/,
+      )
+  })
+
+  test("an offset zone is refused, since Postgres reads its sign the other way round", () => {
+    for (const offset of ["+05:30", "-08:00", "+0530"]) {
+      expect(() => loadEnv({ ...complete, NIGHTLY_REVIEW_TIME_ZONE: offset })).toThrow(
+        /Invalid environment configuration: NIGHTLY_REVIEW_TIME_ZONE/,
+      )
+    }
+    for (const name of [
+      "UTC",
+      "Asia/Kolkata",
+      "America/Ciudad_Juarez",
+      "Etc/GMT+5",
+      "Etc/GMT-14",
+    ]) {
+      expect(loadEnv({ ...complete, NIGHTLY_REVIEW_TIME_ZONE: name }).nightlyReview?.timeZone).toBe(
+        name,
+      )
+    }
+  })
+
+  test("SC33: AI_AGENT_SLOTS is read with a default of 4", () => {
+    expect(loadEnv(complete).aiAgentSlots).toBe(4)
+    expect(loadEnv({ ...complete, AI_AGENT_SLOTS: "3" }).aiAgentSlots).toBe(3)
+    expect(() => loadEnv({ ...complete, AI_AGENT_SLOTS: "0" })).toThrow(/AI_AGENT_SLOTS/)
+    expect(() => loadEnv({ ...complete, AI_AGENT_SLOTS: "two" })).toThrow(/AI_AGENT_SLOTS/)
   })
 
   test("requires the credential of the configured harness, not of every harness", () => {

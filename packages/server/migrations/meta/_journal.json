@@ -295,6 +295,27 @@
       "when": 1794331152479,
       "tag": "0041_review_state_backfill",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1794398964312,
+      "tag": "0042_goofy_husk",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1794399827123,
+      "tag": "0043_luxuriant_jack_flag",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1794408134451,
+      "tag": "0044_friendly_jack_flag",
+      "breakpoints": true
     }
   ]
 }

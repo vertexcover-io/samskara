@@ -10,6 +10,7 @@ import {
   createMsbWrappedRunner,
   createOpencodeRunner,
   terminateHarnessChildren,
+  watchHarnessGroups,
 } from "./runner.js"
 
 const log = () => createLogger({ service: "samskara-server-test" }, { level: "silent" })
@@ -492,6 +493,33 @@ describe("createMsbWrappedRunner", () => {
     // Nothing left to reap once it has settled.
     expect(terminateHarnessChildren()).toBe(0)
   }, 30_000)
+
+  test("MR11: a watcher hears each agent's process group start, then end with the same pid", async () => {
+    const workspaceDir = mkdtempSync(join(tmpdir(), "samskara-watch-"))
+    const script = join(workspaceDir, "fake-opencode.sh")
+    writeFileSync(script, ["#!/usr/bin/env bash", "echo done"].join("\n"))
+    chmodSync(script, 0o755)
+    const heard: string[] = []
+    watchHarnessGroups({
+      started: (pid) => heard.push(`started ${pid}`),
+      ended: (pid) => heard.push(`ended ${pid}`),
+    })
+
+    try {
+      await createOpencodeRunner({
+        model: "m",
+        timeoutMs: 10_000,
+        log: log(),
+        command: script,
+      }).run({ prompt: "p", workspaceDir })
+    } finally {
+      watchHarnessGroups(undefined)
+    }
+
+    const pid = heard[0]?.split(" ")[1]
+    expect(Number(pid)).toBeGreaterThan(0)
+    expect(heard).toEqual([`started ${pid}`, `ended ${pid}`])
+  })
 })
 
 describe("one-shot runs", () => {

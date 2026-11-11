@@ -1,5 +1,5 @@
 ---
-status: active
+status: inactive
 date: 2026-11-10
 source: yok run review-state (task text)
 tags: [session-reviews, ai-review]

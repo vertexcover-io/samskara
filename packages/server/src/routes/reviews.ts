@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process"
 import { zValidator } from "@hono/zod-validator"
-import { type HarnessRunner, hostCommandFor } from "@samskara/core"
+import { hostCommandFor } from "@samskara/core"
 import { Hono } from "hono"
 import { z } from "zod"
 import type { Db } from "../db/client.js"
@@ -16,8 +16,13 @@ import { type AuthVariables, requireAuth } from "../lib/require-auth.js"
 import { canWrite } from "../repositories/projects.repo.js"
 import { listProblemsForSession } from "../repositories/reviewProblems.repo.js"
 import { listReviewsForSession, visibleSessionProjectId } from "../repositories/reviews.repo.js"
-import type { AiReviewJobRegistry, RunningAiReviewJob } from "../services/ai-review/jobs.js"
-import { PROBLEMS_ANALYZER } from "../services/ai-review/pipeline.js"
+import {
+  activeReview,
+  queueReview,
+  reviewJob,
+  unfinishedReview,
+} from "../repositories/workQueue.repo.js"
+import { type AiReviewErrorCode, PROBLEMS_ANALYZER } from "../services/ai-review/pipeline.js"
 import { reviewAndPersist } from "../services/review.js"
 
 type Deps = {
@@ -25,10 +30,9 @@ type Deps = {
   readonly env: Env
 }
 
-/** The ai-review additions: the harness bridge plus the app-wide job registry. */
+/** The ai-review additions: how to wake the worker once a review is queued. */
 type AiReviewDeps = Deps & {
-  readonly aiReviewRunner: HarnessRunner
-  readonly aiReviewJobs: AiReviewJobRegistry
+  readonly notifyWorker: () => void
   /** Test seam for the reviewer-options availability probe; production shells out to `which`. */
   readonly commandExists?: (command: string) => boolean
   /** Where credentials are read from; production is the real environment. */
@@ -36,16 +40,56 @@ type AiReviewDeps = Deps & {
 }
 
 /**
- * The running-job shape both job-bearing endpoints return. Deliberately re-flattened into a
- * plain object rather than passing the registry's type through: hono infers the client's
- * types from these literals, and the registry's types reach into service modules.
+ * The running-job shape both job-bearing endpoints return, built from the review row. A row
+ * waiting between tries is still running to the person who asked. Plain literals, so the hono
+ * client's inferred types never reach into service modules.
  */
-const serializeRunningJob = (job: RunningAiReviewJob) => ({
-  jobId: job.jobId,
-  status: job.status,
-  startedAt: job.startedAt,
-  lastEvent: job.lastEvent === null ? null : { name: job.lastEvent.name, at: job.lastEvent.at },
+const serializeRunningJob = (row: { readonly id: string; readonly updatedAt: Date }) => ({
+  jobId: row.id,
+  status: "running" as const,
+  startedAt: row.updatedAt.toISOString(),
+  lastEvent: null as { readonly name: string; readonly at: string } | null,
 })
+
+/**
+ * When the result on the row was written. Queueing, claiming and failing a redo all touch
+ * updatedAt while the old result stays, so an AI review's own finish time wins; updatedAt is for
+ * rows that carry none, such as static reviews.
+ */
+const analyzedAt = (row: { readonly signals: unknown; readonly updatedAt: Date }): string =>
+  new Date(
+    (row.signals as { run?: { finishedAt?: string } } | null)?.run?.finishedAt ?? row.updatedAt,
+  ).toISOString()
+
+/** A job that failed all its tries, with its saved reason split into the web's code and message. */
+const serializeFailedJob = (row: { readonly id: string; readonly error: string | null }) => {
+  const failed = splitReviewError(row.error)
+  return {
+    status: "failed" as const,
+    jobId: row.id,
+    code: failed.code,
+    detail: { message: failed.message } as unknown,
+  }
+}
+
+const ERROR_CODES: ReadonlyArray<AiReviewErrorCode> = [
+  "sessionNotFound",
+  "notEditable",
+  "harnessUnauthenticated",
+  "harnessFailed",
+  "deliverableMissing",
+  "unparseable",
+  "promptMergeFailed",
+]
+
+/** A failed row's `error` is `code: message`; the code the web maps to words, and the message. */
+const splitReviewError = (error: string | null): { code: string; message: string } => {
+  const [head = "", ...rest] = (error ?? "").split(": ")
+  const known = (ERROR_CODES as ReadonlyArray<string>).includes(head)
+  return known
+    ? { code: head, message: rest.join(": ") }
+    : { code: "harnessFailed", message: error ?? "" }
+}
 
 /** A user prompt is instructions, not a document: this is room for a long one. */
 const MAX_USER_PROMPT_CHARS = 20_000
@@ -112,13 +156,7 @@ export const reviewerOptionsRoutes = ({
     )
   })
 
-export const reviewRoutes = ({
-  db,
-  env,
-  aiReviewRunner,
-  aiReviewJobs,
-  credentialEnv,
-}: AiReviewDeps) =>
+export const reviewRoutes = ({ db, env, notifyWorker, credentialEnv }: AiReviewDeps) =>
   new Hono<{ Variables: AuthVariables }>()
     /**
      * Reviewing is a write (it persists the review), so `web` and `cli` both may trigger it —
@@ -172,8 +210,7 @@ export const reviewRoutes = ({
               summary: row.summary,
               signals: row.signals,
               createdAt: new Date(row.createdAt).toISOString(),
-              // A redo replaces the row in place — this is when the current verdict was written.
-              analyzedAt: new Date(row.updatedAt).toISOString(),
+              analyzedAt: analyzedAt(row),
             }),
           ),
         },
@@ -181,11 +218,11 @@ export const reviewRoutes = ({
       )
     })
     /**
-     * Start a harness-run AI review. Editor-gated, then refused synchronously when the chosen
-     * harness has no credential. A job already running for this session answers 409
-     * analysisAlreadyRunning (join it via GET /:id/aireview's `job` field rather than spawn a
-     * duplicate); a landed review answers 409 analysisAlreadyExists unless the body
-     * sets `force`, which supersedes the row in place. Otherwise 202, and the caller polls.
+     * Queue a harness-run AI review for the worker. Editor-gated, then refused synchronously
+     * when the chosen harness has no credential. A review already waiting or running for this
+     * session answers 409 analysisAlreadyRunning (join it via GET /:id/aireview's `job` field);
+     * a landed review answers 409 analysisAlreadyExists unless the body sets `force`, which
+     * re-queues the row in place. Otherwise 202 with the row id as `jobId`, and the caller polls.
      */
     .post(
       "/:id/analyze",
@@ -216,79 +253,72 @@ export const reviewRoutes = ({
         const harness = c.req.valid("json")?.harness ?? env.aiReviewHarness
         if (!hasCredential(harness, credentialEnv ?? process.env))
           return c.json({ error: "harnessUnauthenticated" }, 400)
-        if (aiReviewJobs.activeJobForSession(sessionId) !== undefined)
+        if ((await activeReview(db, sessionId, PROBLEMS_ANALYZER)) !== null)
           return c.json({ error: "analysisAlreadyRunning" }, 409)
         const rows = await listReviewsForSession(db, userId, sessionId)
         const body = c.req.valid("json")
         const hasReview = rows.some((review) => review.analyzer === PROBLEMS_ANALYZER)
-        // A landed review blocks a re-run unless the caller asked to redo — the pipeline's
-        // upsert supersedes the old row in place, so a redo replaces rather than duplicates.
+        // A landed review blocks a re-run unless the caller asked to redo — the redo re-queues
+        // the same row, which keeps the old result until the new one replaces it.
         if (hasReview && body?.force !== true)
           return c.json({ error: "analysisAlreadyExists" }, 409)
-        const started = aiReviewJobs.startAiReviewJob(
-          {
-            db,
-            runner: aiReviewRunner,
-            env,
-            log: c.get("log"),
-            ...(credentialEnv === undefined ? {} : { credentialEnv }),
-          },
-          userId,
+        const queued = await queueReview(db, {
           sessionId,
-          c.req.valid("json") ?? {},
-        )
-        // `alreadyRunning` is the registry winning the race the route's own guard above can
-        // only narrow: same 409 the sequential path returns, so a double click is idempotent.
-        if ("error" in started)
-          return started.error === "alreadyRunning"
-            ? c.json({ error: "analysisAlreadyRunning" }, 409)
-            : c.json({ error: "busy" }, 503)
-        return c.json({ jobId: started.jobId }, 202)
+          projectId,
+          analyzer: PROBLEMS_ANALYZER,
+          options: {
+            ...(body?.harness === undefined ? {} : { harness: body.harness }),
+            ...(body?.model === undefined ? {} : { model: body.model }),
+            ...(body?.prompt === undefined ? {} : { prompt: body.prompt }),
+          },
+        })
+        // Null is a second click winning the race the guard above can only narrow: same 409.
+        if (queued === null) return c.json({ error: "analysisAlreadyRunning" }, 409)
+        notifyWorker()
+        return c.json({ jobId: queued.id }, 202)
       },
     )
     /**
-     * Job status: the one way a caller can see why an analysis never landed (v1 registry is
-     * in-memory, so a restart loses it — the persisted row is the durable record on success).
+     * Job status, read from the review row the job id names: the one way a caller can see why
+     * an analysis never landed.
      */
     .get("/:id/analyze/:jobId", requireAuth({ db, env }, ["web", "cli"]), async (c) => {
       const sessionId = c.req.param("id")
-      // Visibility first: the registry is an in-memory map keyed by an id the caller supplies,
-      // so without this a stranger could poll any job. A settled job's `detail` carries harness
-      // stderr, a host workspace path and an excerpt of the reviewer's output.
+      // Visibility first: a failed job's `detail` carries the harness's own error text.
       if ((await visibleSessionProjectId(db, c.get("user").id, sessionId)) === null)
         return c.json({ error: "jobNotFound" }, 404)
-      const job = aiReviewJobs.getAiReviewJob(c.req.param("jobId"))
-      // Only the running variant carries its sessionId; settled jobs are matched by the
-      // unguessable jobId alone. Serialized to plain shapes so the hono client's inferred
-      // types stay portable (the registry's types reach into service modules).
-      if (job === undefined || ("sessionId" in job && job.sessionId !== sessionId))
-        return c.json({ error: "jobNotFound" }, 404)
+      const jobId = c.req.param("jobId")
+      const row = z.string().uuid().safeParse(jobId).success
+        ? await reviewJob(db, sessionId, jobId)
+        : null
+      if (row === null) return c.json({ error: "jobNotFound" }, 404)
+      // Plain literals, so the hono client's inferred types stay portable.
       const body =
-        job.status === "succeeded"
-          ? { status: job.status, jobId: job.jobId, reviewId: job.reviewId }
-          : job.status === "failed"
-            ? { status: job.status, jobId: job.jobId, code: job.code as string, detail: job.detail }
-            : { ...serializeRunningJob(job), sessionId: job.sessionId }
+        row.status === "done"
+          ? { status: "succeeded" as const, jobId: row.id, reviewId: row.id }
+          : row.status === "failed"
+            ? serializeFailedJob(row)
+            : { ...serializeRunningJob(row), sessionId }
       return c.json({ job: body }, 200)
     })
     /**
      * The session's AI review with every problem it saved, visibility-scoped by the same join
-     * as GET /:id/review. While a job for this session is in flight, the response also carries
-     * it as `job` (review: null until the row lands) — that is what lets a reloaded page rejoin
-     * a run it started before the reload, the registry being in-memory and the page stateless.
+     * as GET /:id/review. While a review for this session is waiting or running, the response
+     * also carries it as `job` beside any earlier result (review: null for a first review) —
+     * that is what lets a reloaded page rejoin a run it started before the reload. A review whose
+     * last tries all failed is the `job` too, as failed with its reason, until a try succeeds.
      */
     .get("/:id/aireview", requireAuth({ db, env }, ["web", "cli"]), async (c) => {
       const sessionId = c.req.param("id")
       const userId = c.get("user").id
-      // `listReviewsForSession` carries the visibility join, but the registry lookup below
-      // does not — so the session is gated explicitly before either is consulted. Otherwise
-      // an in-flight job answered 200 with its jobId for a session the caller cannot see.
+      // `listReviewsForSession` carries the visibility join, but the job lookup below does not
+      // — so the session is gated explicitly before either is consulted.
       if ((await visibleSessionProjectId(db, userId, sessionId)) === null)
         return c.json({ error: "noAiReview" }, 404)
       const rows = await listReviewsForSession(db, userId, sessionId)
       const row = rows.find((review) => review.analyzer === PROBLEMS_ANALYZER)
-      const job = aiReviewJobs.activeJobForSession(sessionId)
-      if (row === undefined && job === undefined) return c.json({ error: "noAiReview" }, 404)
+      const job = await unfinishedReview(db, sessionId, PROBLEMS_ANALYZER)
+      if (row === undefined && job === null) return c.json({ error: "noAiReview" }, 404)
       const problems =
         row === undefined ? [] : await listProblemsForSession(db, userId, sessionId, row.id)
       return c.json(
@@ -299,9 +329,7 @@ export const reviewRoutes = ({
               : {
                   id: row.id,
                   createdAt: new Date(row.createdAt).toISOString(),
-                  // A redo replaces the row in place, so createdAt stays the original's —
-                  // updatedAt is when the current review was actually written.
-                  analyzedAt: new Date(row.updatedAt).toISOString(),
+                  analyzedAt: analyzedAt(row),
                   outcome: row.outcome,
                   summary: row.summary,
                   signals: row.signals,
@@ -318,7 +346,11 @@ export const reviewRoutes = ({
                     extra: problem.extra,
                   })),
                 },
-          ...(job === undefined ? {} : { job: serializeRunningJob(job) }),
+          ...(job === null
+            ? {}
+            : {
+                job: job.status === "failed" ? serializeFailedJob(job) : serializeRunningJob(job),
+              }),
         },
         200,
       )

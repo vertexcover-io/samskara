@@ -4,21 +4,19 @@ import { z } from "zod"
 import type { Db } from "../db/client.js"
 import { type Env, hasCredential } from "../lib/env.js"
 import { type AuthVariables, requireAuth } from "../lib/require-auth.js"
-import { canWrite, projectNames } from "../repositories/projects.repo.js"
-import { visibleSessionProjectId } from "../repositories/reviews.repo.js"
-import { sessionTitles } from "../repositories/sessions.repo.js"
-import {
-  type BatchProjectState,
-  type BatchSessionState,
-  MAX_REVIEW_BATCH_SESSIONS,
-  type ReviewBatch,
-  type ReviewBatchRegistry,
-} from "../services/review-batch/batch.js"
+import { canWrite } from "../repositories/projects.repo.js"
+import { hasReviewFrom, visibleSessionProjectId } from "../repositories/reviews.repo.js"
+import { queueFixRun, queueReview } from "../repositories/workQueue.repo.js"
+import { PROBLEMS_ANALYZER } from "../services/ai-review/pipeline.js"
+
+/** The most sessions one press of Review takes. */
+export const MAX_REVIEW_BATCH_SESSIONS = 50
 
 type Deps = {
   readonly db: Db
   readonly env: Env
-  readonly reviewBatches: ReviewBatchRegistry
+  /** Wakes the worker once the reviews are queued. */
+  readonly notifyWorker: () => void
   /** Where the reviewer credential is read from; production is the real environment. */
   readonly credentialEnv?: NodeJS.ProcessEnv
 }
@@ -27,117 +25,78 @@ const startBodySchema = z
   .object({ sessionIds: z.array(z.string().min(1)).min(1).max(MAX_REVIEW_BATCH_SESSIONS) })
   .strict()
 
-/*
- * Plain objects with the state unions written out, so the hono client's inferred types never
- * name the service module's aliases: the web package cannot import them, and its typecheck
- * fails with TS2742 when they leak.
- */
-const sessionState = (
-  state: BatchSessionState,
-): "waiting" | "reviewing" | "reviewed" | "skipped" | "failed" | "notAllowed" => state
-
-const projectState = (state: BatchProjectState): "waiting" | "running" | "done" | "failed" => state
-
-const batchStatus = (status: ReviewBatch["status"]): "running" | "done" => status
-
-const serializeBatch = (batch: ReviewBatch) => ({
-  batchId: batch.batchId,
-  status: batchStatus(batch.status),
-  startedAt: batch.startedAt,
-  sessions: batch.sessions.map((session) => ({
-    sessionId: session.sessionId,
-    projectId: session.projectId,
-    title: session.title,
-    state: sessionState(session.state),
-    reason: session.reason,
-  })),
-  projects: batch.projects.map((project) => ({
-    projectId: project.projectId,
-    name: project.name,
-    state: projectState(project.state),
-    reason: project.reason,
-  })),
-})
-
 /**
- * Review selected sessions, then find fixes for their projects. Its own base: a static GET under
- * /api/sessions would be read as a session id by the `/:id` detail route.
+ * Review ticked sessions: each one the caller may edit and that has no review yet is queued
+ * for the worker, and each project that got a review queued gets a fix run that waits for its
+ * reviews to finish. Its own base: a static path under /api/sessions would be read as a session id.
  */
-export const reviewBatchRoutes = ({ db, env, reviewBatches, credentialEnv }: Deps) =>
-  new Hono<{ Variables: AuthVariables }>()
-    .post(
-      "/",
-      requireAuth({ db, env }, ["web"]),
-      zValidator("json", startBodySchema, (result, c) => {
-        if (result.success) return
-        const tooMany = result.error.issues.some((issue) => issue.code === "too_big")
-        return c.json({ error: tooMany ? "tooManySessions" : "invalidReviewBatch" }, 400)
-      }),
-      async (c) => {
-        const userId = c.get("user").id
-        if (reviewBatches.current(userId)?.status === "running")
-          return c.json({ error: "reviewBatchAlreadyRunning" }, 409)
-        if (!hasCredential(env.aiReviewHarness, credentialEnv ?? process.env))
-          return c.json({ error: "harnessUnauthenticated" }, 400)
-        const sessionIds = [...new Set(c.req.valid("json").sessionIds)]
-        // The same gate as Analyze: the session is visible, and its project editable. Edit
-        // rights are asked once per project, since 50 sessions usually share one or two.
-        const visible = await Promise.all(
-          sessionIds.map(async (sessionId) => ({
-            sessionId,
-            projectId: await visibleSessionProjectId(db, userId, sessionId),
-          })),
-        )
-        const projectIds = [
-          ...new Set(
-            visible.flatMap((entry) => (entry.projectId === null ? [] : [entry.projectId])),
-          ),
-        ]
-        const editable = new Set(
-          (
-            await Promise.all(
-              projectIds.map(async (projectId) =>
-                (await canWrite(db, userId, projectId)) ? [projectId] : [],
-              ),
-            )
-          ).flat(),
-        )
-        const checked = visible.map((entry) => ({
-          sessionId: entry.sessionId,
-          projectId:
-            entry.projectId !== null && editable.has(entry.projectId) ? entry.projectId : null,
-        }))
-        const allowed = checked.flatMap((entry) =>
-          entry.projectId === null
-            ? []
-            : [{ sessionId: entry.sessionId, projectId: entry.projectId }],
-        )
-        const titles = await sessionTitles(
-          db,
-          allowed.map((entry) => entry.sessionId),
-        )
-        const sessions = allowed.map((entry) => ({
-          ...entry,
-          title: titles.get(entry.sessionId) ?? null,
-        }))
-        const notAllowed = checked
-          .filter((entry) => entry.projectId === null)
-          .map((entry) => entry.sessionId)
-        const names = await projectNames(db, [
-          ...new Set(sessions.map((session) => session.projectId)),
-        ])
-        const started = reviewBatches.start({ userId, sessions, notAllowed, projectNames: names })
-        if ("error" in started) return c.json({ error: "reviewBatchAlreadyRunning" }, 409)
-        return c.json({ batchId: started.batchId, notAllowed }, 202)
-      },
-    )
-    .get("/current", requireAuth({ db, env }, ["web"]), (c) => {
-      const batch = reviewBatches.current(c.get("user").id)
-      return c.json({ batch: batch === undefined ? null : serializeBatch(batch) }, 200)
-    })
-    /** Hides the user's finished batch. Having none is fine; a running one is a 409. */
-    .delete("/current", requireAuth({ db, env }, ["web"]), (c) => {
-      if (reviewBatches.dismiss(c.get("user").id) === "running")
-        return c.json({ error: "reviewBatchStillRunning" }, 409)
-      return c.body(null, 204)
-    })
+export const reviewBatchRoutes = ({ db, env, notifyWorker, credentialEnv }: Deps) =>
+  new Hono<{ Variables: AuthVariables }>().post(
+    "/",
+    requireAuth({ db, env }, ["web"]),
+    zValidator("json", startBodySchema, (result, c) => {
+      if (result.success) return
+      const tooMany = result.error.issues.some((issue) => issue.code === "too_big")
+      return c.json({ error: tooMany ? "tooManySessions" : "invalidReviewBatch" }, 400)
+    }),
+    async (c) => {
+      const userId = c.get("user").id
+      if (!hasCredential(env.aiReviewHarness, credentialEnv ?? process.env))
+        return c.json({ error: "harnessUnauthenticated" }, 400)
+      const sessionIds = [...new Set(c.req.valid("json").sessionIds)]
+      // The same gate as Analyze: the session is visible, and its project editable. Edit
+      // rights are asked once per project, since 50 sessions usually share one or two.
+      const visible = await Promise.all(
+        sessionIds.map(async (sessionId) => ({
+          sessionId,
+          projectId: await visibleSessionProjectId(db, userId, sessionId),
+        })),
+      )
+      const projectIds = [
+        ...new Set(visible.flatMap((entry) => (entry.projectId === null ? [] : [entry.projectId]))),
+      ]
+      const editable = new Set(
+        (
+          await Promise.all(
+            projectIds.map(async (projectId) =>
+              (await canWrite(db, userId, projectId)) ? [projectId] : [],
+            ),
+          )
+        ).flat(),
+      )
+      const notAllowed: string[] = []
+      let queued = 0
+      let skipped = 0
+      const reviewedProjects = new Set<string>()
+      for (const { sessionId, projectId } of visible) {
+        if (projectId === null || !editable.has(projectId)) {
+          notAllowed.push(sessionId)
+          continue
+        }
+        // Without this skip, Review on a page of reviewed sessions would quietly redo each one.
+        if (await hasReviewFrom(db, { userId, sessionId, analyzer: PROBLEMS_ANALYZER })) {
+          skipped += 1
+          continue
+        }
+        // Null means the review is already waiting or running: it will be done all the same.
+        await queueReview(db, { sessionId, projectId, analyzer: PROBLEMS_ANALYZER, options: {} })
+        queued += 1
+        reviewedProjects.add(projectId)
+      }
+      // As Run now does, with no harness path of the caller's; a server with no learnings
+      // harness would only fail the run, so it queues none.
+      const fixRunsQueued =
+        env.learningsHarness === undefined
+          ? 0
+          : (
+              await Promise.all(
+                [...reviewedProjects].map((projectId) =>
+                  // Null means a run is already running for the project; it is left alone.
+                  queueFixRun(db, { projectId, waitForReviews: true, harnessPath: null }),
+                ),
+              )
+            ).filter((run) => run !== null).length
+      if (queued > 0) notifyWorker()
+      return c.json({ queued, skipped, notAllowed, fixRunsQueued }, 202)
+    },
+  )

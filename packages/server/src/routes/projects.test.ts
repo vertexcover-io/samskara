@@ -1103,3 +1103,188 @@ describe.skipIf(!dockerAvailable())("DELETE /api/projects/:id", () => {
     expect(await db.select({ id: projects.id }).from(projects)).toEqual([{ id: projectId }])
   })
 })
+
+describe.skipIf(!dockerAvailable())("PATCH /api/projects/:id", () => {
+  let teardown: () => Promise<void>
+  let db: Db
+
+  beforeAll(async () => {
+    const started = await startTestDb()
+    db = started.db
+    teardown = started.teardown
+  }, 120_000)
+
+  afterAll(async () => {
+    await teardown?.()
+  })
+
+  beforeEach(async () => {
+    await db.delete(sessions)
+    await db.delete(userProjectGrant)
+    await db.delete(projects)
+    await db.delete(userOrgs)
+    await db.delete(orgs)
+    await db.delete(users)
+  })
+
+  const patchAs = async (
+    userId: string,
+    projectId: string,
+    body: unknown,
+    aud: "web" | "cli" = "web",
+  ): Promise<{ status: number; body: unknown }> => {
+    const token = await signToken(env, { sub: userId, aud })
+    const auth: Record<string, string> =
+      aud === "web" ? { cookie: `session=${token}` } : { authorization: `Bearer ${token}` }
+    const res = await buildApp(db, env).request(`/api/projects/${projectId}`, {
+      method: "PATCH",
+      headers: { ...auth, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    })
+    return { status: res.status, body: await res.json() }
+  }
+
+  const getAs = async (userId: string, projectId: string): Promise<unknown> => {
+    const token = await signToken(env, { sub: userId, aud: "web" })
+    const res = await buildApp(db, env).request(`/api/projects/${projectId}`, {
+      headers: { cookie: `session=${token}` },
+    })
+    expect(res.status).toBe(200)
+    return res.json()
+  }
+
+  const autoReviewOf = async (projectId: string): Promise<boolean | undefined> => {
+    const [row] = await db
+      .select({ autoReview: projects.autoReview })
+      .from(projects)
+      .where(eq(projects.id, projectId))
+    return row?.autoReview
+  }
+
+  const orgProject = async (slug: string): Promise<{ orgId: string; projectId: string }> => {
+    const [org] = await db
+      .insert(orgs)
+      .values({ githubSlug: slug, name: slug })
+      .returning({ id: orgs.id })
+    if (!org) throw new Error("seed org failed")
+    const { id } = await projectsRepo.upsertOwned(db, {
+      identity: { name: `${slug}-project`, slug: `${slug}-project` },
+      owner: { kind: "org", orgId: org.id },
+    })
+    return { orgId: org.id, projectId: id }
+  }
+
+  test("SC15: the owner turns automatic review on and off, and GET shows it", async () => {
+    const owner = await seedUser(db, 1200, "sc15-auto-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Auto", slug: "auto" },
+      ownerId: owner,
+    })
+
+    expect(await patchAs(owner, projectId, { autoReview: true })).toEqual({
+      status: 200,
+      body: { autoReview: true },
+    })
+    expect(await getAs(owner, projectId)).toMatchObject({ project: { autoReview: true } })
+
+    expect(await patchAs(owner, projectId, { autoReview: false }, "cli")).toEqual({
+      status: 200,
+      body: { autoReview: false },
+    })
+    expect(await getAs(owner, projectId)).toMatchObject({ project: { autoReview: false } })
+  })
+
+  test("turning it on counts as today's pick, so the first pick waits for the next night", async () => {
+    const owner = await seedUser(db, 1210, "auto-stamp-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Stamp", slug: "stamp" },
+      ownerId: owner,
+    })
+    const lastPick = async (): Promise<Date | null> => {
+      const [row] = await db
+        .select({ at: projects.lastNightlyPickAt })
+        .from(projects)
+        .where(eq(projects.id, projectId))
+      return row?.at ?? null
+    }
+
+    const before = Date.now()
+    await patchAs(owner, projectId, { autoReview: true })
+    const stamped = await lastPick()
+    expect(stamped?.getTime()).toBeGreaterThanOrEqual(before - 1000)
+    expect(stamped?.getTime()).toBeLessThanOrEqual(Date.now() + 1000)
+
+    const earlier = new Date(Date.UTC(2026, 0, 1))
+    await db.update(projects).set({ lastNightlyPickAt: earlier }).where(eq(projects.id, projectId))
+    await patchAs(owner, projectId, { autoReview: true })
+    expect(await lastPick()).toEqual(earlier)
+
+    await patchAs(owner, projectId, { autoReview: false })
+    expect(await lastPick()).toEqual(earlier)
+  })
+
+  test("SC16: a user with an admin grant on an org project can turn it on", async () => {
+    const admin = await seedUser(db, 1201, "sc16-auto-admin")
+    const { orgId, projectId } = await orgProject("sc16-auto-org")
+    await db.insert(userOrgs).values({ userId: admin, orgId })
+    await projectsRepo.grant(db, admin, projectId, "admin")
+
+    const { status } = await patchAs(admin, projectId, { autoReview: true })
+
+    expect(status).toBe(200)
+    expect(await autoReviewOf(projectId)).toBe(true)
+  })
+
+  test.each([
+    { label: "an org member (editor)", scope: null },
+    { label: "a user with a viewer grant", scope: "viewer" as const },
+  ])("SC17: $label cannot change it", async ({ scope }) => {
+    const caller = await seedUser(db, 1202, "sc17-auto-caller")
+    const { orgId, projectId } = await orgProject("sc17-auto-org")
+    if (scope === null) await db.insert(userOrgs).values({ userId: caller, orgId })
+    else await projectsRepo.grant(db, caller, projectId, scope)
+
+    const { status, body } = await patchAs(caller, projectId, { autoReview: true })
+
+    expect(status).toBe(403)
+    expect(body).toEqual({ error: "forbidden" })
+    expect(await autoReviewOf(projectId)).toBe(false)
+  })
+
+  test.each([
+    { label: "a project the caller cannot see", id: "real" },
+    { label: "a malformed project id", id: "malformed" },
+  ])("SC18: $label is reported as missing", async ({ id }) => {
+    const owner = await seedUser(db, 1203, "sc18-auto-owner")
+    const outsider = await seedUser(db, 1204, "sc18-auto-outsider")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Hidden auto", slug: "hidden-auto" },
+      ownerId: owner,
+    })
+
+    const { status, body } = await patchAs(outsider, id === "real" ? projectId : "not-a-uuid", {
+      autoReview: true,
+    })
+
+    expect(status).toBe(404)
+    expect(body).toEqual({ error: "projectNotFound" })
+    expect(await autoReviewOf(projectId)).toBe(false)
+  })
+
+  test.each([
+    { label: "an empty body", body: {} },
+    { label: "a non-boolean value", body: { autoReview: "yes" } },
+    { label: "an unknown field", body: { autoReview: true, name: "x" } },
+  ])("SC19: $label is refused", async ({ body }) => {
+    const owner = await seedUser(db, 1205, "sc19-auto-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Strict", slug: "strict" },
+      ownerId: owner,
+    })
+
+    const { status } = await patchAs(owner, projectId, body)
+
+    expect(status).toBe(400)
+    expect(await autoReviewOf(projectId)).toBe(false)
+  })
+})

@@ -1,5 +1,5 @@
 import { MAIN_TRACK } from "@samskara/core"
-import { and, desc, eq } from "drizzle-orm"
+import { and, desc, eq, isNotNull } from "drizzle-orm"
 import type { Querier } from "../db/client.js"
 import { projects, sessionReviews, sessions } from "../db/schema.js"
 import { visibleToUser } from "./projects.repo.js"
@@ -7,17 +7,16 @@ import { visibleToUser } from "./projects.repo.js"
 export type ReviewRow = typeof sessionReviews.$inferSelect
 
 /**
- * A finished review. The database refuses a done row without its result
- * (`sessionReviews_done_has_result_check`), so a row read with `isDone` always has one.
+ * A review with a result. A done row always has one (`sessionReviews_done_has_result_check`);
+ * a waiting, running or failed row has one when it is a re-review of a finished review.
  */
 export type DoneReviewRow = ReviewRow & {
-  readonly status: "done"
   readonly outcome: string
   readonly summary: string
 }
 
-/** Only a done row is a review; waiting, running and failed rows have no result to show. */
-const isDone = eq(sessionReviews.status, "done")
+/** A row is a review once it has a result; a re-review keeps the old one until the new one lands. */
+const isDone = isNotNull(sessionReviews.outcome)
 
 const asDone = (row: ReviewRow): DoneReviewRow => row as DoneReviewRow
 
@@ -40,8 +39,9 @@ export const listReviewsForSession = async (
     .then((rows) => rows.map((row) => asDone(row.sessionReviews)))
 
 /**
- * Whether the session has a done review from `analyzer` the viewer may read, without loading
- * it. A failed review does not count, so the batch tries that session again.
+ * Whether the session has a review with a result from `analyzer` the viewer may read, without
+ * loading it. A failed first review does not count, so Review on ticked sessions tries that
+ * session again.
  */
 export const hasReviewFrom = async (
   db: Querier,

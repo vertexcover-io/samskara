@@ -18,10 +18,6 @@ export type SessionListPayload = Ok<Client["api"]["sessions"]["$get"]>
 export type ReviewerOptions = Ok<Client["api"]["reviewer-options"]["$get"]>
 export type ReviewerHarnessOptions = ReviewerOptions["harnesses"][number]
 export type SessionSummary = SessionListPayload["sessions"][number]
-export type ReviewBatchView = NonNullable<
-  Ok<Client["api"]["review-batches"]["current"]["$get"]>["batch"]
->
-export type ReviewBatchProject = ReviewBatchView["projects"][number]
 export type SessionFilterOptions = Ok<Client["api"]["sessions"]["filters"]["$get"]>
 export type FilterOption = SessionFilterOptions["projects"][number]
 type SessionSearchMatch = NonNullable<SessionSummary["match"]>
@@ -118,10 +114,20 @@ export type ProblemsReviewSignals = {
   }
 }
 
-/** A non-terminal analysis job as GET /:id/aireview reports it alongside the review. */
-export type AiReviewJobStatus = {
-  readonly jobId: string
-  readonly status: "running"
-  readonly startedAt: string
-  readonly lastEvent: { readonly name: string; readonly at: string } | null
-}
+/**
+ * The analysis job GET /:id/aireview reports alongside the review: one still waiting or running,
+ * or one that failed all its tries, with its reason.
+ */
+export type AiReviewJobStatus =
+  | {
+      readonly jobId: string
+      readonly status: "running"
+      readonly startedAt: string
+      readonly lastEvent: { readonly name: string; readonly at: string } | null
+    }
+  | {
+      readonly jobId: string
+      readonly status: "failed"
+      readonly code: string
+      readonly detail: unknown
+    }

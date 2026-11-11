@@ -1,6 +1,7 @@
 import { writeFile } from "node:fs/promises"
 import { join } from "node:path"
-import type { HarnessRunner, NormalizedMessage } from "@samskara/core"
+import { createLogger, type HarnessRunner, type NormalizedMessage } from "@samskara/core"
+import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import { buildApp } from "../app.js"
 import type { Db } from "../db/client.js"
@@ -15,8 +16,8 @@ import {
 import { dockerAvailable, startTestDb } from "../db/testDb.js"
 import type { Env } from "../lib/env.js"
 import { signToken } from "../lib/jwt.js"
-import { createAiReviewJobRegistry } from "../services/ai-review/jobs.js"
-import type { AiReviewResult } from "../services/ai-review/pipeline.js"
+import { runAiReview } from "../services/ai-review/pipeline.js"
+import { createWorkLoop, reviewOptions } from "../worker/loop.js"
 
 /** The reviewer credential every lane now reads from the environment. */
 const CREDENTIAL_ENV = { OPENCODE_API_KEY: "oc-key", CLAUDE_CODE_OAUTH_TOKEN: "cc-token" }
@@ -107,7 +108,7 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
 
   let userId: string
   let projectId: string
-  let registry: ReturnType<typeof createAiReviewJobRegistry>
+  let notified: number
 
   beforeEach(async () => {
     await db.delete(sessionReviews)
@@ -149,19 +150,23 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
         details: {},
       })
     }
-    registry = createAiReviewJobRegistry()
+    notified = 0
   })
+
+  const app = (credentialEnv: NodeJS.ProcessEnv = CREDENTIAL_ENV) =>
+    buildApp(db, env, {
+      credentialEnv,
+      notifyWorker: () => {
+        notified += 1
+      },
+    })
 
   const request = async (
     path: string,
     init: { readonly method?: string; readonly asUserId?: string; readonly body?: unknown } = {},
   ): Promise<Response> => {
     const token = await signToken(env, { sub: init.asUserId ?? userId, aud: "web" })
-    return buildApp(db, env, {
-      aiReviewRunner: fakeRunner,
-      aiReviewJobs: registry,
-      credentialEnv: CREDENTIAL_ENV,
-    }).request(path, {
+    return app().request(path, {
       method: init.method ?? "GET",
       headers: {
         cookie: `session=${token}`,
@@ -171,29 +176,117 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
     })
   }
 
-  const waitForJob = async (jobId: string) => {
-    for (let i = 0; i < 200; i += 1) {
-      const job = registry.getAiReviewJob(jobId)
-      if (job !== undefined && job.status !== "running") return job
-      await new Promise((resolve) => setTimeout(resolve, 5))
-    }
-    throw new Error("job never left running")
+  /** Runs what is queued the way the worker does, with a fake agent, until nothing is left. */
+  const drainQueue = async (runner: HarnessRunner = fakeRunner): Promise<void> => {
+    const log = createLogger({ service: "ai-review-test", level: "silent" })
+    const loop = createWorkLoop({
+      db,
+      log,
+      runReview: (review) =>
+        runAiReview(
+          { db, runner, env, log, credentialEnv: CREDENTIAL_ENV },
+          review.sessionId,
+          reviewOptions(review),
+        ),
+    })
+    await loop.tick()
+    await loop.idle()
   }
 
-  test("A1: POST /:id/analyze returns 202 with a jobId that lands the review and its problems", async () => {
-    const res = await request(`/api/sessions/${sessionId}/analyze`, { method: "POST" })
-    expect(res.status).toBe(202)
-    const job = await waitForJob(((await res.json()) as { jobId: string }).jobId)
-    expect(job).toMatchObject({ status: "succeeded" })
+  const reviewRow = async () => {
+    const [row] = await db
+      .select()
+      .from(sessionReviews)
+      .where(eq(sessionReviews.analyzer, "ai-problems-v2"))
+    return row
+  }
 
-    const reviews = await db.select().from(sessionReviews)
-    expect(reviews.map((row) => row.analyzer)).toEqual(["ai-problems-v2"])
+  const analyze = async (body?: unknown): Promise<string> => {
+    const res = await request(`/api/sessions/${sessionId}/analyze`, {
+      method: "POST",
+      ...(body === undefined ? {} : { body }),
+    })
+    expect(res.status).toBe(202)
+    return ((await res.json()) as { jobId: string }).jobId
+  }
+
+  const jobStatus = async (jobId: string, asUserId?: string) =>
+    request(
+      `/api/sessions/${sessionId}/analyze/${jobId}`,
+      asUserId === undefined ? {} : { asUserId },
+    )
+
+  const doneReview = {
+    sessionId: "",
+    analyzer: "ai-problems-v2",
+    outcome: "productive",
+    summary: "the old verdict",
+    signals: {},
+  } as const
+
+  test("SC15: analyze queues the review and wakes the worker", async () => {
+    const res = await buildApp(db, env, {
+      credentialEnv: CREDENTIAL_ENV,
+      notifyWorker: () => {
+        notified += 1
+      },
+    }).request(`/api/sessions/${sessionId}/analyze`, {
+      method: "POST",
+      headers: {
+        cookie: `session=${await signToken(env, { sub: userId, aud: "web" })}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ harness: "claude", model: "opus", prompt: "look for loops" }),
+    })
+
+    expect(res.status).toBe(202)
+    const { jobId } = (await res.json()) as { jobId: string }
+    expect(await reviewRow()).toMatchObject({
+      id: jobId,
+      status: "waiting",
+      harness: "claude",
+      model: "opus",
+      prompt: "look for loops",
+    })
+    // The API holds no agent runner at all, so nothing ran: the row is still waiting.
+    expect(notified).toBe(1)
+  })
+
+  test("SC15: the worker runs a queued review with the harness and model saved on it", async () => {
+    const jobId = await analyze({ harness: "claude", model: "opus" })
+    const seen: Array<{ harness?: string; model?: string }> = []
+    await drainQueue({
+      run: async (input) => {
+        seen.push({ harness: input.harness, model: input.model })
+        return fakeRunner.run(input)
+      },
+    })
+
+    expect(seen).toContainEqual({ harness: "claude", model: "opus" })
+    const ai = await request(`/api/sessions/${sessionId}/aireview`)
+    const aiBody = (await ai.json()) as {
+      review: { id: string; signals: { model?: string; harness?: string } }
+      job?: unknown
+    }
+    expect(aiBody.review.id).toBe(jobId)
+    expect(aiBody.review.signals).toMatchObject({ model: "opus", harness: "claude" })
+    expect(aiBody.job).toBeUndefined()
+  })
+
+  test("SC15: a queued review lands with its problems once the worker runs it", async () => {
+    const jobId = await analyze()
+    await drainQueue()
+
+    const job = await jobStatus(jobId)
+    expect(await job.json()).toEqual({
+      job: { status: "succeeded", jobId, reviewId: jobId },
+    })
     const ai = await request(`/api/sessions/${sessionId}/aireview`)
     expect(ai.status).toBe(200)
     const body = (await ai.json()) as { review: Record<string, unknown>; job?: unknown }
     expect(body.job).toBeUndefined()
     expect(body.review).toMatchObject({
-      id: job.status === "succeeded" ? job.reviewId : undefined,
+      id: jobId,
       outcome: "productive",
       summary: "Clean two-message session.",
       problems: [
@@ -208,7 +301,31 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
     })
   })
 
-  test("A2: a viewer without edit rights gets 403 notEditable", async () => {
+  test("SC16: analyze refuses a second review while one is queued", async () => {
+    await analyze()
+    notified = 0
+
+    const second = await request(`/api/sessions/${sessionId}/analyze`, {
+      method: "POST",
+      body: { force: true },
+    })
+
+    expect(second.status).toBe(409)
+    expect(await second.json()).toEqual({ error: "analysisAlreadyRunning" })
+    expect(notified).toBe(0)
+  })
+
+  test("SC16: two analyze requests at once queue exactly one review", async () => {
+    const [first, second] = await Promise.all([
+      request(`/api/sessions/${sessionId}/analyze`, { method: "POST" }),
+      request(`/api/sessions/${sessionId}/analyze`, { method: "POST" }),
+    ])
+    expect([first.status, second.status].sort()).toEqual([202, 409])
+    expect(await db.select().from(sessionReviews)).toHaveLength(1)
+    expect(notified).toBe(1)
+  })
+
+  test("SC17: analyze still refuses a viewer", async () => {
     const [viewer] = await db
       .insert(users)
       .values({ githubId: 2, githubLogin: "viewer" })
@@ -224,6 +341,89 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
     })
     expect(res.status).toBe(403)
     expect(await res.json()).toEqual({ error: "notEditable" })
+    expect(await db.select().from(sessionReviews)).toHaveLength(0)
+    expect(notified).toBe(0)
+  })
+
+  test("SC18: job status follows the row", async () => {
+    const jobId = await analyze()
+    const running = { job: { status: "running", jobId, sessionId, lastEvent: null } }
+
+    expect(await (await jobStatus(jobId)).json()).toMatchObject(running)
+
+    await db.update(sessionReviews).set({ status: "running", attempts: 1 })
+    expect(await (await jobStatus(jobId)).json()).toMatchObject(running)
+
+    await db
+      .update(sessionReviews)
+      .set({ status: "failed", attempts: 3, error: "harnessFailed: boom" })
+    expect(await (await jobStatus(jobId)).json()).toEqual({
+      job: { status: "failed", jobId, code: "harnessFailed", detail: { message: "boom" } },
+    })
+
+    const again = await analyze({ force: true })
+    expect(again).toBe(jobId)
+    await drainQueue()
+    expect(await (await jobStatus(jobId)).json()).toEqual({
+      job: { status: "succeeded", jobId, reviewId: jobId },
+    })
+  })
+
+  test("SC18: a failed reason the web does not know reads as harnessFailed", async () => {
+    const jobId = await analyze()
+    await db.update(sessionReviews).set({ status: "failed", error: "something odd" })
+    expect(await (await jobStatus(jobId)).json()).toEqual({
+      job: {
+        status: "failed",
+        jobId,
+        code: "harnessFailed",
+        detail: { message: "something odd" },
+      },
+    })
+  })
+
+  test("SC19: a reloaded session page sees the review in progress beside the old one", async () => {
+    await db.insert(sessionReviews).values({ ...doneReview, sessionId, projectId })
+    await analyze({ force: true })
+
+    const res = await request(`/api/sessions/${sessionId}/aireview`)
+
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      review: { summary: string; problems: unknown[] }
+      job: { status: string; lastEvent: unknown }
+    }
+    expect(body.review).toMatchObject({ summary: "the old verdict", problems: [] })
+    expect(body.job).toMatchObject({ status: "running", lastEvent: null })
+  })
+
+  test("SC19: a first review in progress shows no result yet, only the job", async () => {
+    const jobId = await analyze()
+    const res = await request(`/api/sessions/${sessionId}/aireview`)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      review: null,
+      job: { jobId, status: "running", startedAt: expect.any(String), lastEvent: null },
+    })
+  })
+
+  test("SC20: a job id from another session is not found", async () => {
+    const other = "ai-review-other-session"
+    await db.insert(sessions).values({
+      id: other,
+      source: "claude_code",
+      userId,
+      projectId,
+      title: "other",
+    })
+    const jobId = await analyze()
+
+    const res = await request(`/api/sessions/${other}/analyze/${jobId}`)
+
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: "jobNotFound" })
+    const notAnId = await request(`/api/sessions/${sessionId}/analyze/not-a-uuid`)
+    expect(notAnId.status).toBe(404)
   })
 
   test("A3: analyzing a missing or invisible session returns 404 sessionNotFound", async () => {
@@ -247,111 +447,15 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
   })
 
   test("A5: analyze requires auth", async () => {
-    const res = await buildApp(db, env, {
-      credentialEnv: CREDENTIAL_ENV,
-      aiReviewRunner: fakeRunner,
-      aiReviewJobs: registry,
-    }).request(`/api/sessions/${sessionId}/analyze`, { method: "POST" })
+    const res = await app().request(`/api/sessions/${sessionId}/analyze`, { method: "POST" })
     expect(res.status).toBe(401)
   })
 
-  test("A6: a second analyze while the session's job is running returns 409 analysisAlreadyRunning", async () => {
-    // A run that never settles, so the first job stays non-terminal through the test.
-    registry = createAiReviewJobRegistry({
-      run: () => new Promise<AiReviewResult>(() => {}),
-    })
-    const first = await request(`/api/sessions/${sessionId}/analyze`, { method: "POST" })
-    expect(first.status).toBe(202)
-
-    const second = await request(`/api/sessions/${sessionId}/analyze`, { method: "POST" })
-    expect(second.status).toBe(409)
-    expect(await second.json()).toEqual({ error: "analysisAlreadyRunning" })
-  })
-
   test("A7: analyze on a session that already holds a review returns 409 analysisAlreadyExists", async () => {
-    await db.insert(sessionReviews).values({
-      sessionId,
-      projectId,
-      analyzer: "ai-problems-v2",
-      outcome: "productive",
-      summary: "already reviewed",
-      signals: {},
-    })
-    const res = await request(`/api/sessions/${sessionId}/analyze`, {
-      method: "POST",
-    })
+    await db.insert(sessionReviews).values({ ...doneReview, sessionId, projectId })
+    const res = await request(`/api/sessions/${sessionId}/analyze`, { method: "POST" })
     expect(res.status).toBe(409)
     expect(await res.json()).toEqual({ error: "analysisAlreadyExists" })
-  })
-
-  test("A8: GET /:id/aireview carries the running job, and omits the field when none is running", async () => {
-    registry = createAiReviewJobRegistry({
-      run: () => new Promise<AiReviewResult>(() => {}),
-      now: () => new Date("2026-08-26T20:00:00Z"),
-    })
-    await request(`/api/sessions/${sessionId}/analyze`, {
-      method: "POST",
-    })
-
-    const res = await request(`/api/sessions/${sessionId}/aireview`)
-    expect(res.status).toBe(200)
-    await expect(res.json()).resolves.toEqual({
-      review: null,
-      job: {
-        jobId: expect.any(String),
-        status: "running",
-        startedAt: "2026-08-26T20:00:00.000Z",
-        lastEvent: null,
-      },
-    })
-
-    // With a settled registry and a landed review, the job field is gone — the shape
-    // the web's backward-compat path relies on.
-    await db.insert(sessionReviews).values({
-      sessionId,
-      projectId,
-      analyzer: "ai-problems-v2",
-      outcome: "productive",
-      summary: "already reviewed",
-      signals: {},
-    })
-    registry = createAiReviewJobRegistry()
-    const settled = await request(`/api/sessions/${sessionId}/aireview`)
-    expect(settled.status).toBe(200)
-    const body = (await settled.json()) as { review: unknown; job?: unknown }
-    expect(body.job).toBeUndefined()
-    expect(body.review).toMatchObject({ outcome: "productive" })
-  })
-
-  test("A9: analyze accepts a per-run harness and model in the body, and the run uses them", async () => {
-    const seen: Array<{ harness?: string; model?: string }> = []
-    const capturing: HarnessRunner = {
-      run: async (input) => {
-        seen.push({ harness: input.harness, model: input.model })
-        return fakeRunner.run(input)
-      },
-    }
-    registry = createAiReviewJobRegistry()
-    const token = await signToken(env, { sub: userId, aud: "web" })
-    const res = await buildApp(db, env, {
-      credentialEnv: CREDENTIAL_ENV,
-      aiReviewRunner: capturing,
-      aiReviewJobs: registry,
-    }).request(`/api/sessions/${sessionId}/analyze`, {
-      method: "POST",
-      headers: { cookie: `session=${token}`, "content-type": "application/json" },
-      body: JSON.stringify({ harness: "claude", model: "opus" }),
-    })
-    expect(res.status).toBe(202)
-    const body = (await res.json()) as { jobId: string }
-    await waitForJob(body.jobId)
-
-    expect(seen).toContainEqual({ harness: "claude", model: "opus" })
-    const ai = await request(`/api/sessions/${sessionId}/aireview`)
-    const aiBody = (await ai.json()) as {
-      review: { signals: { model?: string; harness?: string } }
-    }
-    expect(aiBody.review.signals).toMatchObject({ model: "opus", harness: "claude" })
   })
 
   test("A10: an unrecognized harness or a blank model in the body is 400, not a silent env fallback", async () => {
@@ -370,56 +474,38 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
     expect(await badModel.json()).toEqual({ error: "invalidModel" })
   })
 
-  test("A12: force=true on a session that already holds a review redoes it instead of 409", async () => {
-    await db.insert(sessionReviews).values({
-      sessionId,
-      projectId,
-      analyzer: "ai-problems-v2",
-      outcome: "productive",
-      summary: "the old verdict",
-      signals: {},
-    })
-    const res = await request(`/api/sessions/${sessionId}/analyze`, {
-      method: "POST",
-      body: { force: true },
-    })
-    expect(res.status).toBe(202)
-    const body = (await res.json()) as { jobId: string }
-    const job = await waitForJob(body.jobId)
-    expect(job).toMatchObject({ status: "succeeded" })
+  test("A12: force=true redoes a finished review in place once the worker runs it", async () => {
+    await db.insert(sessionReviews).values({ ...doneReview, sessionId, projectId })
+    await analyze({ force: true })
+    await drainQueue()
 
-    // The redo replaced the old row in place — still exactly one review.
     const rows = (await db.select().from(sessionReviews)).filter(
       (row) => row.sessionId === sessionId,
     )
     expect(rows).toHaveLength(1)
-    expect(rows[0]?.summary).toBe("Clean two-message session.")
+    expect(rows[0]).toMatchObject({ status: "done", summary: "Clean two-message session." })
   })
 
-  test("A14: analyze refuses an unauthenticated harness synchronously, spending no job slot", async () => {
+  test("A14: analyze refuses an unauthenticated harness synchronously, queueing nothing", async () => {
     const token = await signToken(env, { sub: userId, aud: "web" })
-    const app = buildApp(db, env, {
-      aiReviewRunner: fakeRunner,
-      aiReviewJobs: registry,
-      credentialEnv: { OPENCODE_API_KEY: "oc-key" },
-    })
-    const res = await app.request(`/api/sessions/${sessionId}/analyze`, {
-      method: "POST",
-      headers: { cookie: `session=${token}`, "content-type": "application/json" },
-      body: JSON.stringify({ harness: "claude" }),
-    })
+    const res = await app({ OPENCODE_API_KEY: "oc-key" }).request(
+      `/api/sessions/${sessionId}/analyze`,
+      {
+        method: "POST",
+        headers: { cookie: `session=${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ harness: "claude" }),
+      },
+    )
     expect(res.status).toBe(400)
     expect(await res.json()).toEqual({ error: "harnessUnauthenticated" })
-    // No 202, so no jobId was handed out and the session is still free to analyze.
-    expect(registry.activeJobForSession(sessionId)).toBeUndefined()
+    expect(await db.select().from(sessionReviews)).toHaveLength(0)
+    expect(notified).toBe(0)
   })
 
   test("A15: with AI_REVIEW_HARDEN=0 the probe asks for opencode itself, not msb", async () => {
     const token = await signToken(env, { sub: userId, aud: "web" })
     const asked: string[] = []
     const res = await buildApp(db, env, {
-      aiReviewRunner: fakeRunner,
-      aiReviewJobs: registry,
       commandExists: (cmd) => {
         asked.push(cmd)
         return true
@@ -431,29 +517,9 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
     expect(asked).not.toContain("msb")
   })
 
-  test("A16: a full registry answers 503 busy rather than queueing", async () => {
-    const token = await signToken(env, { sub: userId, aud: "web" })
-    const full = createAiReviewJobRegistry({
-      maxConcurrent: 0,
-      run: async () => ({ kind: "ok", reviewId: "r", review: {} as never }) as AiReviewResult,
-    })
-    const res = await buildApp(db, env, {
-      aiReviewRunner: fakeRunner,
-      aiReviewJobs: full,
-      credentialEnv: CREDENTIAL_ENV,
-    }).request(`/api/sessions/${sessionId}/analyze`, {
-      method: "POST",
-      headers: { cookie: `session=${token}` },
-    })
-    expect(res.status).toBe(503)
-    expect(await res.json()).toEqual({ error: "busy" })
-  })
-
   test("A13: an installed harness with no credential is not offered as available", async () => {
     const token = await signToken(env, { sub: userId, aud: "web" })
     const res = await buildApp(db, env, {
-      aiReviewRunner: fakeRunner,
-      aiReviewJobs: registry,
       commandExists: () => true,
       credentialEnv: { OPENCODE_API_KEY: "oc-key" },
     }).request("/api/reviewer-options", { headers: { cookie: `session=${token}` } })
@@ -469,8 +535,6 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
   test("A11: GET /api/sessions/reviewer-options lists each harness with its default model and availability", async () => {
     const token = await signToken(env, { sub: userId, aud: "web" })
     const res = await buildApp(db, env, {
-      aiReviewRunner: fakeRunner,
-      aiReviewJobs: registry,
       // In the hardened lane the host binary is msb; opencode is installed inside the VM.
       commandExists: (cmd) => cmd === "msb",
       credentialEnv: CREDENTIAL_ENV,
@@ -504,18 +568,10 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
     ])
   })
 
-  test("A17: a stranger cannot see an in-flight job through /aireview or poll it by jobId", async () => {
-    // The registry is an in-memory map keyed by a client-supplied session id, so neither
-    // lookup carries the visibility join the review list does. Unguarded, /aireview answered
-    // 200 with the jobId for a foreign session, and the job body then hands out harness
-    // stderr, a host workspace path and an excerpt of the reviewer's output.
-    registry = createAiReviewJobRegistry({
-      run: () => new Promise<AiReviewResult>(() => {}),
-    })
-    const started = await request(`/api/sessions/${sessionId}/analyze`, {
-      method: "POST",
-    })
-    const { jobId } = (await started.json()) as { jobId: string }
+  test("A17: a stranger cannot see a queued review through /aireview or poll it by jobId", async () => {
+    const jobId = await analyze()
+    await db.update(sessionReviews).set({ status: "failed", error: "harnessFailed: /tmp/ws" })
+    await analyze({ force: true })
 
     const [stranger] = await db
       .insert(users)
@@ -527,47 +583,23 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
     expect(peek.status).toBe(404)
     await expect(peek.json()).resolves.toEqual({ error: "noAiReview" })
 
-    const poll = await request(`/api/sessions/${sessionId}/analyze/${jobId}`, asStranger)
+    const poll = await jobStatus(jobId, asStranger.asUserId)
     expect(poll.status).toBe(404)
     await expect(poll.json()).resolves.toEqual({ error: "jobNotFound" })
 
     // The owner still sees both.
     expect((await request(`/api/sessions/${sessionId}/aireview`)).status).toBe(200)
-    expect((await request(`/api/sessions/${sessionId}/analyze/${jobId}`)).status).toBe(200)
-  })
-
-  test("A18: two concurrent analyze requests start exactly one run", async () => {
-    // The route's own guard is a separate turn of the event loop from the start call, so
-    // both requests could pass it. The registry refuses the second one.
-    let starts = 0
-    registry = createAiReviewJobRegistry({
-      run: () => {
-        starts += 1
-        return new Promise<AiReviewResult>(() => {})
-      },
-    })
-    const [first, second] = await Promise.all([
-      request(`/api/sessions/${sessionId}/analyze`, { method: "POST" }),
-      request(`/api/sessions/${sessionId}/analyze`, { method: "POST" }),
-    ])
-    const statuses = [first.status, second.status].sort()
-    expect(statuses).toEqual([202, 409])
-    expect(starts).toBe(1)
+    expect((await jobStatus(jobId)).status).toBe(200)
   })
 
   test("A21: a review already there blocks a second one unless forced", async () => {
-    const first = await request(`/api/sessions/${sessionId}/analyze`, { method: "POST" })
-    expect(first.status).toBe(202)
-    await waitForJob(((await first.json()) as { jobId: string }).jobId)
+    await analyze()
+    await drainQueue()
 
     const again = await request(`/api/sessions/${sessionId}/analyze`, { method: "POST" })
     expect(again.status).toBe(409)
     expect(await again.json()).toEqual({ error: "analysisAlreadyExists" })
-    const forced = await request(`/api/sessions/${sessionId}/analyze`, {
-      method: "POST",
-      body: { force: true },
-    })
-    expect(forced.status).toBe(202)
+    await analyze({ force: true })
   })
 
   test("A22: an unknown field or an empty prompt is 400", async () => {
@@ -599,14 +631,31 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
     expect(await none.json()).toEqual({ error: "noAiReview" })
   })
 
-  test("A24: aireview carries a running job before the review lands", async () => {
-    registry = createAiReviewJobRegistry({
-      run: () => new Promise<AiReviewResult>(() => {}),
-      now: () => new Date("2026-08-26T20:00:00Z"),
-    })
-    await request(`/api/sessions/${sessionId}/analyze`, { method: "POST" })
+  test("A25: a first review that failed all its tries shows no result and the failed job with its reason", async () => {
+    const jobId = await analyze()
+    await db.update(sessionReviews).set({ status: "failed", error: "harnessFailed: boom" })
     const res = await request(`/api/sessions/${sessionId}/aireview`)
     expect(res.status).toBe(200)
-    expect(await res.json()).toMatchObject({ review: null, job: { status: "running" } })
+    expect(await res.json()).toEqual({
+      review: null,
+      job: { jobId, status: "failed", code: "harnessFailed", detail: { message: "boom" } },
+    })
+  })
+
+  test("a redo that failed all its tries keeps the old result beside the failed job", async () => {
+    await db.insert(sessionReviews).values({ ...doneReview, sessionId, projectId })
+    const jobId = await analyze({ force: true })
+    await db.update(sessionReviews).set({ status: "failed", error: "unparseable: bad file" })
+    const body = (await (await request(`/api/sessions/${sessionId}/aireview`)).json()) as {
+      review: { summary: string }
+      job: unknown
+    }
+    expect(body.review).toMatchObject({ summary: "the old verdict" })
+    expect(body.job).toEqual({
+      jobId,
+      status: "failed",
+      code: "unparseable",
+      detail: { message: "bad file" },
+    })
   })
 })

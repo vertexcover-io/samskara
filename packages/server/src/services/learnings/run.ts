@@ -62,64 +62,40 @@ type PriorityCount = { high: number; medium: number }
  */
 const learningsModelOf = (env: Env): string => env.learningsModel ?? env.aiReviewModel
 
-export type StartedLearningRun =
-  | { readonly status: "busy" }
-  | {
-      readonly status: "started"
-      readonly runId: string
-      readonly finished: Promise<"done" | "failed">
-    }
-
 /**
- * Starts a learning run for the project and returns as soon as its row exists; `finished`
- * settles when it ends and never rejects. Busy when the project already has one running.
+ * One try of a run whose row exists, start to end, with its run log. It never throws and never
+ * saves the run's status: the caller saves `done`, or counts the failed try.
  */
-export const startLearningRun = async (
+export const executeLearningRun = async (
   deps: LearningRunDeps,
+  runId: string,
   projectId: string,
   options: LearningRunOptions,
-): Promise<StartedLearningRun> => {
-  const run = await learningsRepo.startRun(deps.db, projectId)
-  if (run === null) return { status: "busy" }
-  const log = deps.log.child({ learningRunId: run.id, projectId })
-  const finished = (async (): Promise<"done" | "failed"> => {
-    const runLog = await openRunLog(
-      deps.logDir ?? join(process.cwd(), LEARNING_RUNS_DIR),
-      run.id,
-      log,
-    )
-    runLog.event("run.start", {
-      projectId,
-      // The source without its token: a run log is for reading.
-      harnessSource: "path" in options.harness ? options.harness.path : options.harness.github,
-      harness: deps.env.aiReviewHarness,
-      model: learningsModelOf(deps.env),
-    })
-    let outcome: learningsRepo.RunOutcome
-    try {
-      await work(deps, log, runLog, run.id, projectId, options)
-      outcome = { status: "done" }
-    } catch (error) {
-      log.warn({ err: error }, "learning run failed")
-      outcome = { status: "failed", error: error instanceof Error ? error.message : String(error) }
-    }
-    runLog.event("run.end", outcome)
-    await runLog.close()
-    try {
-      await learningsRepo.finishRun(deps.db, run.id, outcome)
-    } catch (error) {
-      // The row stays `running` and blocks the project until the next restart fails it
-      // (`failInterruptedRuns`); say so rather than reject a promise nobody may await.
-      log.error({ err: error }, "learning run could not be marked finished")
-      return "failed"
-    }
-    if (outcome.status === "done") log.info("learning run done")
-    return outcome.status
-  })()
-  return { status: "started", runId: run.id, finished }
+): Promise<learningsRepo.RunOutcome> => {
+  const log = deps.log.child({ learningRunId: runId, projectId })
+  const runLog = await openRunLog(deps.logDir ?? join(process.cwd(), LEARNING_RUNS_DIR), runId, log)
+  runLog.event("run.start", {
+    projectId,
+    // The source without its token: a run log is for reading.
+    harnessSource: "path" in options.harness ? options.harness.path : options.harness.github,
+    harness: deps.env.aiReviewHarness,
+    model: learningsModelOf(deps.env),
+  })
+  let outcome: learningsRepo.RunOutcome
+  try {
+    await work(deps, log, runLog, runId, projectId, options)
+    outcome = { status: "done" }
+  } catch (error) {
+    log.warn({ err: error }, "learning run failed")
+    outcome = { status: "failed", error: error instanceof Error ? error.message : String(error) }
+  }
+  runLog.event("run.end", outcome)
+  await runLog.close()
+  if (outcome.status === "done") log.info("learning run done")
+  return outcome
 }
 
-/** A whole run, start to end, awaited: for scripts and tests. The routes and the schedule start one. */
+/** A whole run, start to end, awaited, outside the worker: for scripts and tests. */
 export const runLearnings = async (
   deps: LearningRunDeps,
   projectId: string,
@@ -127,9 +103,11 @@ export const runLearnings = async (
 ): Promise<
   { readonly status: "busy" } | { readonly status: "done" | "failed"; readonly runId: string }
 > => {
-  const started = await startLearningRun(deps, projectId, options)
-  if (started.status === "busy") return started
-  return { status: await started.finished, runId: started.runId }
+  const run = await learningsRepo.startRun(deps.db, projectId)
+  if (run === null) return { status: "busy" }
+  const outcome = await executeLearningRun(deps, run.id, projectId, options)
+  await learningsRepo.finishRun(deps.db, run.id, outcome)
+  return { status: outcome.status, runId: run.id }
 }
 
 /**

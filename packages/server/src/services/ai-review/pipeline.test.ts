@@ -14,7 +14,6 @@ import {
   sessionReviews,
   sessions,
   tokenUsage,
-  userProjectGrant,
   users,
 } from "../../db/schema.js"
 import { dockerAvailable, startTestDb } from "../../db/testDb.js"
@@ -261,7 +260,7 @@ The agent claimed the build was fixed after the tests failed.
 
     test("PR1: the review reads the full session and saves the review row and each problem", async () => {
       const { runner, seen } = problemsRunner(problemsMd("the build is fixed"))
-      const result = await runAiReview(depsWith(runner), userId, sessionId, {})
+      const result = await runAiReview(depsWith(runner), sessionId, {})
 
       expect(result).toMatchObject({ kind: "ok" })
       expect(seen[0]?.files).toEqual(["session.json", "leads.md", "CONTRACT.md"])
@@ -288,7 +287,7 @@ The agent claimed the build was fixed after the tests failed.
 
     test("SC10: an AI review is saved done, with no error, through the highest line seeded", async () => {
       const { runner } = problemsRunner(problemsMd("the build is fixed"))
-      const result = await runAiReview(depsWith(runner), userId, sessionId, {})
+      const result = await runAiReview(depsWith(runner), sessionId, {})
 
       expect(result).toMatchObject({ kind: "ok" })
       const lastSeeded = Math.max(...normalizedFixtures.map((message) => message.subIndex + 1))
@@ -301,7 +300,7 @@ The agent claimed the build was fixed after the tests failed.
 
     test("PR2: a problem quoting what is not in the session is dropped, and the drop is recorded", async () => {
       const { runner } = problemsRunner(problemsMd("tests are all green"))
-      const result = await runAiReview(depsWith(runner), userId, sessionId, {})
+      const result = await runAiReview(depsWith(runner), sessionId, {})
 
       expect(result).toMatchObject({ kind: "ok" })
       expect(await savedProblems()).toEqual([])
@@ -314,7 +313,7 @@ The agent claimed the build was fixed after the tests failed.
 
     test("PR3: a custom prompt is merged first, and the reviewer's contract is the merge plus the fixed output", async () => {
       const { runner, seen } = problemsRunner(problemsMd("the build is fixed"))
-      const result = await runAiReview(depsWith(runner), userId, sessionId, {
+      const result = await runAiReview(depsWith(runner), sessionId, {
         prompt: "After plan approval every human message is a problem.",
       })
 
@@ -327,7 +326,7 @@ The agent claimed the build was fixed after the tests failed.
 
     test("PR4: a merge that writes nothing stops the run before any review", async () => {
       const { runner, seen } = problemsRunner(problemsMd("the build is fixed"), "")
-      const result = await runAiReview(depsWith(runner), userId, sessionId, {
+      const result = await runAiReview(depsWith(runner), sessionId, {
         prompt: "anything",
       })
 
@@ -338,7 +337,7 @@ The agent claimed the build was fixed after the tests failed.
 
     test("PR5: a review.md that is not a review saves nothing", async () => {
       const { runner } = problemsRunner("not a review")
-      const result = await runAiReview(depsWith(runner), userId, sessionId, {})
+      const result = await runAiReview(depsWith(runner), sessionId, {})
 
       expect(result).toMatchObject({ kind: "error", code: "unparseable" })
       expect(await db.select().from(sessionReviews)).toEqual([])
@@ -347,7 +346,7 @@ The agent claimed the build was fixed after the tests failed.
     test("PR6: an extra field the merged prompt asks for is required on every problem", async () => {
       const merged = "# How to review\n\n## Extra fields\n\n- topic: what the person asked about\n"
       const { runner } = problemsRunner(problemsMd("the build is fixed"), merged)
-      const result = await runAiReview(depsWith(runner), userId, sessionId, {
+      const result = await runAiReview(depsWith(runner), sessionId, {
         prompt: "Add a topic field.",
       })
 
@@ -369,7 +368,7 @@ The agent claimed the build was fixed after the tests failed.
       )
       try {
         const { runner } = problemsRunner(problemsMd("the build is fixed"))
-        await expect(runAiReview(depsWith(runner), userId, sessionId, {})).rejects.toThrow()
+        await expect(runAiReview(depsWith(runner), sessionId, {})).rejects.toThrow()
       } finally {
         await db.execute(sql`drop trigger if exists fail_problem_trigger on "reviewProblems"`)
       }
@@ -379,7 +378,6 @@ The agent claimed the build was fixed after the tests failed.
     test("PR8: a redo keeps the review's id and replaces its problems", async () => {
       const first = await runAiReview(
         depsWith(problemsRunner(problemsMd("the build is fixed")).runner),
-        userId,
         sessionId,
         {},
       )
@@ -389,7 +387,6 @@ The agent claimed the build was fixed after the tests failed.
             problemsMd("the build is fixed").replace("Said the build", "Claimed the build"),
           ).runner,
         ),
-        userId,
         sessionId,
         {},
       )
@@ -404,14 +401,14 @@ The agent claimed the build was fixed after the tests failed.
 
     test("PR9: no review.md is deliverableMissing, and one past the size cap saves nothing", async () => {
       const missing: HarnessRunner = { run: async () => ({ stdout: "", firstByteMs: null }) }
-      expect(await runAiReview(depsWith(missing), userId, sessionId, {})).toMatchObject({
+      expect(await runAiReview(depsWith(missing), sessionId, {})).toMatchObject({
         kind: "error",
         code: "deliverableMissing",
       })
 
       const huge = problemsMd("the build is fixed") + "x".repeat(MAX_REVIEW_MD_BYTES)
       const { runner } = problemsRunner(huge)
-      expect(await runAiReview(depsWith(runner), userId, sessionId, {})).toMatchObject({
+      expect(await runAiReview(depsWith(runner), sessionId, {})).toMatchObject({
         kind: "error",
         code: "unparseable",
       })
@@ -425,7 +422,7 @@ The agent claimed the build was fixed after the tests failed.
         undefined,
         "- L1: dropped (no kind) — the opening request\n",
       )
-      await runAiReview(depsWith(runner), userId, sessionId, {})
+      await runAiReview(depsWith(runner), sessionId, {})
       const signals = (await persistedSignals()) as {
         unaccountedLeads: string[]
         leadCount: number
@@ -441,7 +438,7 @@ The agent claimed the build was fixed after the tests failed.
         undefined,
         '- msg-2 — "the build is fixed" — said after the only test run failed',
       )
-      await runAiReview(depsWith(runner), userId, sessionId, {})
+      await runAiReview(depsWith(runner), sessionId, {})
       const signals = (await persistedSignals()) as {
         readers: { pieces: number; leads: number; failedPieces: string[] }
         unaccountedLeads: string[]
@@ -460,14 +457,14 @@ The agent claimed the build was fixed after the tests failed.
           throw new Error("claude exited with code 1")
         },
       }
-      const result = await runAiReview(depsWith(runner), userId, sessionId, {})
+      const result = await runAiReview(depsWith(runner), sessionId, {})
       expect(result).toMatchObject({ kind: "error", code: "harnessFailed" })
       expect(await db.select().from(sessionReviews)).toEqual([])
     })
 
     test("PR14: the reviewer sees only the session's alias, and the workspace is removed after", async () => {
       const { runner, seen } = problemsRunner(problemsMd("the build is fixed"))
-      const result = await runAiReview(depsWith(runner), userId, sessionId, {})
+      const result = await runAiReview(depsWith(runner), sessionId, {})
 
       expect(result).toMatchObject({ kind: "ok" })
       expect(seen[0]?.prompt).not.toContain(sessionId)
@@ -508,7 +505,6 @@ The agent claimed the build was fixed after the tests failed.
       )
       const result = await runAiReview(
         depsWith(runner, { env: { ...env, aiReviewHarness: "claude", aiReviewModel: "sonnet" } }),
-        userId,
         sessionId,
         {},
       )
@@ -562,7 +558,7 @@ The agent claimed the build was fixed after the tests failed.
           store.close()
         },
       )
-      const result = await runAiReview(depsWith(runner), userId, sessionId, {})
+      const result = await runAiReview(depsWith(runner), sessionId, {})
       expect(result).toMatchObject({ kind: "ok" })
       const run = (await persistedSignals()).run as { transcript?: unknown }
       expect(run.transcript).toEqual([{ role: "user", text: "review the export" }])
@@ -573,7 +569,6 @@ The agent claimed the build was fixed after the tests failed.
       const result = await runAiReview(
         // Configured for opencode, asked for claude, and only opencode has a key.
         depsWith(runner, { credentialEnv: { OPENCODE_API_KEY: "oc-key" } }),
-        userId,
         sessionId,
         { harness: "claude" },
       )
@@ -587,7 +582,6 @@ The agent claimed the build was fixed after the tests failed.
       const { runner } = problemsRunner(problemsMd("the build is fixed"))
       const result = await runAiReview(
         depsWith(runner, { onMilestone: (name) => names.push(name) }),
-        userId,
         sessionId,
         {},
       )
@@ -599,24 +593,11 @@ The agent claimed the build was fixed after the tests failed.
       expect(names.at(-1)).toBe("persisted")
     })
 
-    test("PR19: an unknown session, or a viewer who cannot edit, is refused before any agent runs", async () => {
+    test("PR19: an unknown session is refused before any agent runs", async () => {
       const { runner, seen } = problemsRunner(problemsMd("the build is fixed"))
-      expect(await runAiReview(depsWith(runner), userId, "does-not-exist", {})).toEqual({
+      expect(await runAiReview(depsWith(runner), "does-not-exist", {})).toEqual({
         kind: "error",
         code: "sessionNotFound",
-      })
-      const [viewer] = await db
-        .insert(users)
-        .values({ githubId: 2, githubLogin: "viewer" })
-        .returning({ id: users.id })
-      await db.insert(userProjectGrant).values({
-        userId: viewer?.id as string,
-        projectId,
-        scope: "viewer",
-      })
-      expect(await runAiReview(depsWith(runner), viewer?.id as string, sessionId, {})).toEqual({
-        kind: "error",
-        code: "notEditable",
       })
       expect(seen).toHaveLength(0)
     })

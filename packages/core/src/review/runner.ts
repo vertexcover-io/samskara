@@ -73,6 +73,21 @@ export const terminateHarnessChildren = (): number => {
   return count
 }
 
+export type HarnessGroupWatcher = {
+  readonly started: (pid: number) => void
+  readonly ended: (pid: number) => void
+}
+
+let groupWatcher: HarnessGroupWatcher | undefined
+
+/**
+ * Hears each child's process group as it starts and ends. A process killed with SIGKILL never
+ * reaps its detached children, so this is how a later process can find and reap them.
+ */
+export const watchHarnessGroups = (watcher: HarnessGroupWatcher | undefined): void => {
+  groupWatcher = watcher
+}
+
 export class HarnessRunnerError extends Error {
   readonly stderr: string | undefined
   readonly timedOut: boolean
@@ -143,6 +158,7 @@ const spawnCollect = (opts: {
       detached: true,
     })
     liveChildren.add(child)
+    if (child.pid !== undefined) groupWatcher?.started(child.pid)
     // Closed at once when there is nothing to send, which reads as /dev/null would. A child
     // that exits without reading all of it breaks the pipe; its exit code says why.
     child.stdin.on("error", () => {})
@@ -205,6 +221,7 @@ const spawnCollect = (opts: {
       if (settled) return
       settled = true
       liveChildren.delete(child)
+      if (child.pid !== undefined) groupWatcher?.ended(child.pid)
       clearTimeout(timeoutTimer)
       if (killTimer !== undefined) clearTimeout(killTimer)
       fn()

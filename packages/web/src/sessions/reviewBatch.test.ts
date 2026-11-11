@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest"
 import {
-  estimateMinutes,
   MAX_BATCH_SESSIONS,
+  queuedMessage,
   refusalMessage,
   toggled,
   withPage,
@@ -11,8 +11,13 @@ const ids = (count: number, prefix = "s"): ReadonlyArray<string> =>
   Array.from({ length: count }, (_, index) => `${prefix}-${index}`)
 
 describe("review batch selection", () => {
-  test("SC17: the estimate is about 3 minutes per session over 3 lanes, plus 5 for fixes", () => {
-    expect([0, 1, 2, 10, 50].map(estimateMinutes)).toEqual([0, 6, 7, 15, 55])
+  test("SC22: the queued note names what happened", () => {
+    expect(queuedMessage({ queued: 3, skipped: 1, notAllowed: ["a", "b"], fixRunsQueued: 2 })).toBe(
+      "Queued 3 sessions for review. Fixes will be found in 2 projects once the reviews finish. 1 session already had a review. 2 sessions you cannot edit.",
+    )
+    expect(queuedMessage({ queued: 1, skipped: 0, notAllowed: [], fixRunsQueued: 0 })).toBe(
+      "Queued 1 session for review.",
+    )
   })
 
   test("SC18: selecting never goes past 50, and toggling a selected id removes it", () => {
@@ -31,9 +36,9 @@ describe("review batch selection", () => {
   })
 
   test("a refusal reads in plain words, and an unknown one falls back to the server's message", () => {
-    expect(
-      refusalMessage({ kind: "server", code: "reviewBatchAlreadyRunning", message: "409" }),
-    ).toBe("A review is already running. Wait for it to finish.")
+    expect(refusalMessage({ kind: "server", code: "harnessUnauthenticated", message: "400" })).toBe(
+      "The reviewer has no key on this server.",
+    )
     expect(
       refusalMessage({ kind: "network", code: null, message: "The server is unreachable." }),
     ).toBe("The server is unreachable.")

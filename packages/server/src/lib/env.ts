@@ -22,6 +22,32 @@ export {
 } from "@samskara/core"
 
 export const DEFAULT_LOCAL_LOGIN = "samskara-dev"
+export const DEFAULT_AI_AGENT_SLOTS = 4
+
+/** When the worker makes each night's pick, and how many sessions it takes per project. */
+export type NightlyReview = {
+  /** Wall-clock time of day as HH:MM, read in `timeZone`. */
+  readonly at: string
+  /** An IANA zone name, e.g. Asia/Kolkata. */
+  readonly timeZone: string
+  readonly limit: number
+}
+
+/**
+ * An IANA name, which Postgres and Intl read alike; one Intl can't build Postgres rejects too.
+ * A bare offset such as +05:30 is refused: Intl reads it as east of Greenwich, Postgres as a
+ * POSIX zone with the sign reversed, so the pick would run about 11 hours off. `Etc/GMT+5` is
+ * fine, since both read that name's reversed sign the same way.
+ */
+const isTimeZone = (value: string): boolean => {
+  if (/^[+-]/.test(value)) return false
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value })
+    return true
+  } catch {
+    return false
+  }
+}
 
 const BaseEnvSchema = z.object({
   GITHUB_CLIENT_ID: z.string().default(""),
@@ -54,6 +80,12 @@ const BaseEnvSchema = z.object({
     .regex(/^\d+$/, "AI_REVIEW_TIMEOUT_MS must be digits (milliseconds)")
     .default("600000")
     .transform((value) => Number(value)),
+  /** How many claude/opencode processes the worker runs at once; each opencode sandbox takes 2 GB. */
+  AI_AGENT_SLOTS: z
+    .string()
+    .regex(/^[1-9]\d*$/, "AI_AGENT_SLOTS must be a whole number of at least 1")
+    .default(String(DEFAULT_AI_AGENT_SLOTS))
+    .transform((value) => Number(value)),
   /**
    * The agent harness the sessions ran (yok, for us), whose code the learning run checks each
    * learning against: a GitHub repo as `owner/name`, cloned fresh for every run, or a local
@@ -74,6 +106,25 @@ const BaseEnvSchema = z.object({
    * has no model by that name, the reviewer's own model.
    */
   LEARNINGS_MODEL: z.string().min(1).regex(REVIEW_MODEL_PATTERN).optional(),
+  /** The time of day the worker queues the night's automatic reviews, as HH:MM. */
+  NIGHTLY_REVIEW_TIME: z
+    .string()
+    .regex(/^([01]\d|2[0-3]):[0-5]\d$/, "NIGHTLY_REVIEW_TIME must be HH:MM, e.g. 01:00")
+    .default("01:00"),
+  /** The zone NIGHTLY_REVIEW_TIME is read in, and whose calendar day a pick belongs to. */
+  NIGHTLY_REVIEW_TIME_ZONE: z
+    .string()
+    .refine(
+      isTimeZone,
+      "NIGHTLY_REVIEW_TIME_ZONE must be an IANA zone name, e.g. Asia/Kolkata; an offset such as +05:30 is refused",
+    )
+    .default("Asia/Kolkata"),
+  /** How many sessions each project gets reviewed per night; the rest wait for the next. */
+  NIGHTLY_REVIEW_LIMIT: z
+    .string()
+    .regex(/^([1-9]|1\d|2[0-5])$/, "NIGHTLY_REVIEW_LIMIT must be a whole number from 1 to 25")
+    .default("10")
+    .transform((value) => Number(value)),
 })
 
 /** A repo and a local checkout both set would leave which one the run reads to chance. */
@@ -143,9 +194,13 @@ export type Env = {
   readonly aiReviewHarness: ReviewHarness
   readonly aiReviewModel: string
   readonly aiReviewTimeoutMs: number
+  /** Set by `loadEnv`; an Env built by hand (in tests) may leave it out for the default. */
+  readonly aiAgentSlots?: number
   readonly learningsHarness?: HarnessSource | undefined
   /** Set by `loadEnv`; an Env built by hand (in tests) may leave it out for the review model. */
   readonly learningsModel?: string | undefined
+  /** Set by `loadEnv`; an Env built by hand (in tests) may leave it out to queue no nightly reviews. */
+  readonly nightlyReview?: NightlyReview
 }
 
 type Source = Record<string, string | undefined>
@@ -179,9 +234,15 @@ export const loadEnv = (source: Source = process.env): Env => {
     aiReviewHarness: parsed.data.AI_REVIEW_HARNESS,
     aiReviewModel,
     aiReviewTimeoutMs: parsed.data.AI_REVIEW_TIMEOUT_MS,
+    aiAgentSlots: parsed.data.AI_AGENT_SLOTS,
     learningsHarness: learningsHarnessOf(parsed.data),
     learningsModel:
       parsed.data.LEARNINGS_MODEL ??
       (parsed.data.AI_REVIEW_HARNESS === "claude" ? "opus" : aiReviewModel),
+    nightlyReview: {
+      at: parsed.data.NIGHTLY_REVIEW_TIME,
+      timeZone: parsed.data.NIGHTLY_REVIEW_TIME_ZONE,
+      limit: parsed.data.NIGHTLY_REVIEW_LIMIT,
+    },
   }
 }

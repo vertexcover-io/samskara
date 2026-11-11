@@ -87,7 +87,7 @@ describe.skipIf(!dockerAvailable())("review state on sessionReviews", () => {
       "signals" in values ? { ...values, signals: JSON.stringify(values.signals) } : values,
     )} returning *`
 
-  test("SC1: a review saved with only its result reads back done, with no attempts, error, heartbeat or reviewedThrough", async () => {
+  test("SC1: a review saved with only its result reads back done, with no attempts, error or reviewedThrough", async () => {
     const { sessionId, projectId } = await seedSession()
     const [row] = await db
       .insert(sessionReviews)
@@ -98,7 +98,6 @@ describe.skipIf(!dockerAvailable())("review state on sessionReviews", () => {
       status: "done",
       attempts: 0,
       error: null,
-      heartbeatAt: null,
       reviewedThrough: null,
     })
   })
