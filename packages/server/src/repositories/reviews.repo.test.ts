@@ -21,10 +21,10 @@ describe.skipIf(!dockerAvailable())("reviews repository", () => {
     await teardown?.()
   })
 
-  const seedSession = async (sessionId: string) => {
+  const seedSession = async (sessionId: string, githubId = 5100) => {
     const [user] = await db
       .insert(users)
-      .values({ githubId: 5100, githubLogin: "reviews-repo-user" })
+      .values({ githubId, githubLogin: `reviews-repo-user-${githubId}` })
       .returning()
     if (!user) throw new Error("seed user failed")
     const projectId = await projectsRepo.upsert(db, {
@@ -67,6 +67,32 @@ describe.skipIf(!dockerAvailable())("reviews repository", () => {
 
     expect(await reviewsRepo.hasReviewFrom(db, query)).toBe(true)
     expect(await reviewsRepo.getReview(db, failed.id)).toMatchObject({ status: "done" })
+  })
+
+  test("saving a review of a session moved to another project moves its review row there too", async () => {
+    const sessionId = "moved-session"
+    const { userId, projectId } = await seedSession(sessionId, 5101)
+    const [row] = await db
+      .insert(sessionReviews)
+      .values({ sessionId, projectId, analyzer: "ai-problems-v2", status: "running" })
+      .returning()
+    const moved = await projectsRepo.upsert(db, {
+      identity: { name: "moved", slug: "slug-moved" },
+      ownerId: userId,
+    })
+
+    const saved = await reviewsRepo.upsertReview(db, {
+      sessionId,
+      projectId: moved,
+      analyzer: "ai-problems-v2",
+      outcome: "shipped",
+      summary: "s",
+      signals: {},
+      reviewedThrough: 4,
+    })
+
+    expect(saved.id).toBe(row?.id)
+    expect(saved.projectId).toBe(moved)
   })
 })
 

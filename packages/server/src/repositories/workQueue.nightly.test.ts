@@ -692,6 +692,19 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
       expect((await rowOf(reviewed))?.status).toBe("done")
     })
 
+    test("a re-review of a session moved to another project moves its review row there too", async () => {
+      const now = ist(11, 2)
+      const before = await project()
+      const on = await project({ autoReview: true })
+      const moved = await quietSession(on, now)
+      await mainLines(moved, 1, 5)
+      await doneReview(moved, before, 3)
+
+      await queueNightlyReviews(db, { ...DEFAULTS, now })
+
+      expect(await rowOf(moved)).toMatchObject({ status: "waiting", projectId: on })
+    })
+
     test("SC6: a waiting or running review is never taken again", async () => {
       const now = ist(11, 2)
       const on = await project({ autoReview: true })

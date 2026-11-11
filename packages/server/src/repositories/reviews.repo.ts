@@ -184,7 +184,9 @@ export const earlierResult = async (
  * same analysis, not a new fact. A saved review is done, whatever state the row was in.
  */
 export const upsertReview = async (db: Querier, values: ReviewWrite): Promise<DoneReviewRow> => {
+  // projectId is in the conflict update too: a session moved to another project takes its row.
   const result = {
+    projectId: values.projectId,
     outcome: values.outcome,
     summary: values.summary,
     signals: values.signals,
@@ -196,7 +198,6 @@ export const upsertReview = async (db: Querier, values: ReviewWrite): Promise<Do
     .insert(sessionReviews)
     .values({
       sessionId: values.sessionId,
-      projectId: values.projectId,
       analyzer: values.analyzer,
       ...result,
     })

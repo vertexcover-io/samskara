@@ -28,7 +28,9 @@ export const queueReview = async (
     readonly options: QueuedReviewOptions
   },
 ): Promise<{ readonly id: string } | null> => {
+  // projectId is in the conflict update too: a session moved to another project takes its row.
   const queued = {
+    projectId: input.projectId,
     status: "waiting",
     attempts: 0,
     error: null,
@@ -41,7 +43,6 @@ export const queueReview = async (
     .insert(sessionReviews)
     .values({
       sessionId: input.sessionId,
-      projectId: input.projectId,
       analyzer: input.analyzer,
       ...queued,
     })
@@ -447,7 +448,8 @@ export const queueNightlyReviews = async (
       -- read above and this insert must not be reset from running to waiting.
       on conflict ("sessionId", "analyzer") do update set
         "status" = 'waiting', "attempts" = 0, "error" = null, "harness" = null,
-        "model" = null, "prompt" = null, "newPartOnly" = true, "updatedAt" = ${now}
+        "model" = null, "prompt" = null, "newPartOnly" = true, "updatedAt" = ${now},
+        "projectId" = excluded."projectId"
       where "sessionReviews"."status" in ('done', 'failed')
       returning "id"
     )

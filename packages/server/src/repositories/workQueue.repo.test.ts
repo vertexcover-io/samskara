@@ -209,6 +209,27 @@ describe.skipIf(!dockerAvailable())("work queue: reviews", () => {
     })
   })
 
+  test("the Review button's redo of a session moved to another project moves its review row there too", async () => {
+    const row = await seedReview("s-moved", finished)
+    const [other] = await db
+      .insert(projects)
+      .values({ name: "R", slug: "r", ownerUserId: userId })
+      .returning({ id: projects.id })
+    await db
+      .update(sessions)
+      .set({ projectId: other?.id as string })
+      .where(eq(sessions.id, "s-moved"))
+
+    await queueReview(db, {
+      sessionId: "s-moved",
+      projectId: other?.id as string,
+      analyzer: ANALYZER,
+      options: {},
+    })
+
+    expect((await rowById(row.id))?.projectId).toBe(other?.id)
+  })
+
   test("SC6: queueing a session with no review creates a waiting row", async () => {
     await seedSession("s-new")
 
