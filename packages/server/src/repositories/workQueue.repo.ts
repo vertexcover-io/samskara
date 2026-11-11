@@ -4,6 +4,7 @@ import type { Querier } from "../db/client.js"
 import { learningRuns, sessionActivityAt, sessionReviews } from "../db/schema.js"
 import type { NightlyReview } from "../lib/env.js"
 import type { PullRequestRef } from "./pullRequests.repo.js"
+import { deleteReaderReplies } from "./readerReplies.repo.js"
 
 /** A row that fails this many tries becomes `failed` and is not picked again. */
 export const MAX_ATTEMPTS = 3
@@ -73,7 +74,12 @@ export const requeueRunningReviews = async (
       updatedAt: new Date(),
     })
     .where(and(eq(sessionReviews.status, "running"), notInArray(sessionReviews.id, [...except])))
-    .returning({ id: sessionReviews.id })
+    .returning({ id: sessionReviews.id, status: sessionReviews.status })
+  // A review failed for good is never tried again, so its readers' replies are no use any more.
+  await deleteReaderReplies(
+    db,
+    rows.filter((row) => row.status === "failed").map((row) => row.id),
+  )
   return rows.length
 }
 
@@ -91,16 +97,24 @@ export type ClaimedReview = {
 /**
  * Takes the oldest waiting review: one statement moves it to `running` and counts the try.
  * `skip locked` lets a second claimer pass over a row the first is taking, so no row runs twice.
+ * A first try starts a new review, so the same statement drops replies an earlier review on
+ * the row left behind; a retry keeps the replies its earlier tries saved.
  */
 export const claimReview = async (db: Querier): Promise<ClaimedReview | null> => {
   const rows = await db.execute<ClaimedReview>(sql`
-    update "sessionReviews" set "status" = 'running', "attempts" = "attempts" + 1, "updatedAt" = now()
-    where "id" = (
-      select "id" from "sessionReviews" where "status" = 'waiting'
-      order by "updatedAt" asc limit 1
-      for update skip locked
+    with "claimed" as (
+      update "sessionReviews" set "status" = 'running', "attempts" = "attempts" + 1, "updatedAt" = now()
+      where "id" = (
+        select "id" from "sessionReviews" where "status" = 'waiting'
+        order by "updatedAt" asc limit 1
+        for update skip locked
+      )
+      returning "id", "sessionId", "attempts", "harness", "model", "prompt", "newPartOnly"
+    ), "cleared" as (
+      delete from "reviewReaderReplies"
+      where "reviewId" in (select "id" from "claimed" where "attempts" = 1)
     )
-    returning "id", "sessionId", "attempts", "harness", "model", "prompt", "newPartOnly"`)
+    select * from "claimed"`)
   return rows[0] ?? null
 }
 
@@ -119,7 +133,10 @@ export const failReviewAttempt = async (
     })
     .where(and(eq(sessionReviews.id, id), eq(sessionReviews.status, "running")))
     .returning({ status: sessionReviews.status })
-  return row?.status === "failed" ? "failed" : "waiting"
+  if (row?.status !== "failed") return "waiting"
+  // A review failed for good is never tried again, so its readers' replies are no use any more.
+  await deleteReaderReplies(db, [id])
+  return "failed"
 }
 
 /** The row behind a review job id, scoped to its session; null when it is not that session's. */

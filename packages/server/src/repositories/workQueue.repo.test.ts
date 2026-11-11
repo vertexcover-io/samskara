@@ -1,8 +1,9 @@
 import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import { createDb, type Db } from "../db/client.js"
-import { projects, sessionReviews, sessions, users } from "../db/schema.js"
+import { projects, reviewReaderReplies, sessionReviews, sessions, users } from "../db/schema.js"
 import { dockerAvailable, startTestDb } from "../db/testDb.js"
+import { saveReaderReply } from "./readerReplies.repo.js"
 import { listReviewsForSession } from "./reviews.repo.js"
 import {
   claimReview,
@@ -262,5 +263,62 @@ describe.skipIf(!dockerAvailable())("work queue: reviews", () => {
 
     expect(queued).toBeNull()
     expect(await rowById(row.id)).toMatchObject({ status: "running", attempts: 1, model: "first" })
+  })
+
+  describe("saved reader replies", () => {
+    /** A review row holding one saved reader reply, as a try that read one piece leaves it. */
+    const seedWithReply = async (
+      sessionId: string,
+      values: Partial<typeof sessionReviews.$inferInsert>,
+    ) => {
+      const row = await seedReview(sessionId, values)
+      await saveReaderReply(db, { reviewId: row.id, pieceHash: "piece-1", reply: "Nothing found." })
+      return row
+    }
+
+    const repliesOf = async (reviewId: string) =>
+      db.select().from(reviewReaderReplies).where(eq(reviewReaderReplies.reviewId, reviewId))
+
+    test("SC411: the 3rd failed try removes the review's replies; an earlier failed try keeps them", async () => {
+      const last = await seedWithReply("s-last", { status: "running", attempts: 3 })
+      const early = await seedWithReply("s-early", { status: "running", attempts: 1 })
+
+      expect(await failReviewAttempt(db, last.id, "harnessFailed: boom")).toBe("failed")
+      expect(await failReviewAttempt(db, early.id, "harnessFailed: boom")).toBe("waiting")
+
+      expect(await repliesOf(last.id)).toEqual([])
+      expect(await repliesOf(early.id)).toHaveLength(1)
+    })
+
+    test("SC412: a worker start that fails a review on its 3rd try removes its replies; one going back to waiting keeps them", async () => {
+      const last = await seedWithReply("s-last", { status: "running", attempts: 3 })
+      const second = await seedWithReply("s-second", { status: "running", attempts: 2 })
+
+      expect(await requeueRunningReviews(db)).toBe(2)
+
+      expect(await rowById(last.id)).toMatchObject({ status: "failed" })
+      expect(await repliesOf(last.id)).toEqual([])
+      expect(await rowById(second.id)).toMatchObject({ status: "waiting" })
+      expect(await repliesOf(second.id)).toHaveLength(1)
+    })
+
+    test("SC413: claiming a newly queued review clears replies an earlier review left; claiming a retry keeps its own", async () => {
+      const retry = await seedWithReply("s-retry", {
+        status: "waiting",
+        attempts: 1,
+        updatedAt: new Date("2026-01-01T00:00:00Z"),
+      })
+      const fresh = await seedWithReply("s-fresh", {
+        status: "waiting",
+        attempts: 0,
+        updatedAt: new Date("2026-01-02T00:00:00Z"),
+      })
+
+      expect(await claimReview(db)).toMatchObject({ id: retry.id, attempts: 2 })
+      expect(await repliesOf(retry.id)).toHaveLength(1)
+
+      expect(await claimReview(db)).toMatchObject({ id: fresh.id, attempts: 1 })
+      expect(await repliesOf(fresh.id)).toEqual([])
+    })
   })
 })

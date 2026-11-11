@@ -3,6 +3,7 @@ import { and, asc, desc, eq, isNotNull } from "drizzle-orm"
 import type { Querier } from "../db/client.js"
 import { projects, reviewProblems, sessionReviews, sessions } from "../db/schema.js"
 import { visibleToUser } from "./projects.repo.js"
+import { deleteReaderReplies } from "./readerReplies.repo.js"
 
 export type ReviewRow = typeof sessionReviews.$inferSelect
 
@@ -190,6 +191,8 @@ export const earlierResult = async (
 /**
  * Replaces the same (sessionId, analyzer) pair's review — a re-review is a correction of the
  * same analysis, not a new fact. A saved review is done, whatever state the row was in.
+ * A done review is not tried again, so the replies its readers kept for a retry are dropped,
+ * in the caller's transaction.
  */
 export const upsertReview = async (db: Querier, values: ReviewWrite): Promise<DoneReviewRow> => {
   // projectId is in the conflict update too: a session moved to another project takes its row.
@@ -215,6 +218,7 @@ export const upsertReview = async (db: Querier, values: ReviewWrite): Promise<Do
     })
     .returning()
   if (row === undefined) throw new Error("upsertReview returned no row")
+  await deleteReaderReplies(db, [row.id])
   return asDone(row)
 }
 

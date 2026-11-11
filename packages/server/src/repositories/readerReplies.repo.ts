@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm"
+import { eq, inArray } from "drizzle-orm"
 import type { Querier } from "../db/client.js"
 import { reviewReaderReplies } from "../db/schema.js"
 
@@ -20,4 +20,13 @@ export const saveReaderReply = async (
   input: { readonly reviewId: string; readonly pieceHash: string; readonly reply: string },
 ): Promise<void> => {
   await db.insert(reviewReaderReplies).values(input).onConflictDoNothing()
+}
+
+/** Drops every reply saved for these reviews: each one ended, or a new review starts on its row. */
+export const deleteReaderReplies = async (
+  db: Querier,
+  reviewIds: ReadonlyArray<string>,
+): Promise<void> => {
+  if (reviewIds.length === 0) return
+  await db.delete(reviewReaderReplies).where(inArray(reviewReaderReplies.reviewId, [...reviewIds]))
 }

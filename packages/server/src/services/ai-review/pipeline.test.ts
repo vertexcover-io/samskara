@@ -13,6 +13,7 @@ import {
   messages,
   projects,
   reviewProblems as reviewProblemsTable,
+  reviewReaderReplies,
   sessionReviews,
   sessions,
   tokenUsage,
@@ -1073,6 +1074,24 @@ The agent fixed the build, then deployed it without the smoke tests.
           kind: "ok",
         })
         expect(second.readers).toEqual(["helper agent:a"])
+      })
+
+      test("SC410: a review saved done leaves no saved replies on its row", async () => {
+        const reviewId = await threePieceReview()
+        const repliesOnRow = async () =>
+          db.select().from(reviewReaderReplies).where(eq(reviewReaderReplies.reviewId, reviewId))
+        await runAiReview(depsWith(tryRunner({ reviewerFails: true }).runner), sessionId, {
+          reviewId,
+        })
+        expect(await repliesOnRow()).toHaveLength(3)
+
+        const second = tryRunner({})
+        expect(await runAiReview(depsWith(second.runner), sessionId, { reviewId })).toMatchObject({
+          kind: "ok",
+        })
+        const [row] = await db.select().from(sessionReviews).where(eq(sessionReviews.id, reviewId))
+        expect(row?.status).toBe("done")
+        expect(await repliesOnRow()).toEqual([])
       })
 
       test("SC408: a reply that cannot be saved is logged, and the review still uses the reader's leads", async () => {
