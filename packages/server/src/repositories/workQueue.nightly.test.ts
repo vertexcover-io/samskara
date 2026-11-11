@@ -418,7 +418,7 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
     })
   })
   describe("the pull requests the nightly check asks GitHub about", () => {
-    test("SC12: only open github.com pull requests of tonight's candidate sessions are listed", async () => {
+    test("SC12: only open github.com pull requests of tonight's not-yet-quiet candidate sessions are listed", async () => {
       const now = ist(11, 2)
       const a = await project({ autoReview: true })
       const candidate = await busySession(a, now)
@@ -434,6 +434,8 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
         status: "waiting",
       })
       await linkPullRequest(await busySession(a, now, 31 * 24), "open")
+      // Quiet for 6 hours already, so the pick takes it whatever GitHub says.
+      await linkPullRequest(await quietSession(a, now), "open")
       const b = await project()
       await linkPullRequest(await busySession(b, now), "open")
       const c = await project({ autoReview: true, lastNightlyPickAt: ist(11, 1, 30) })

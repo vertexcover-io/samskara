@@ -24,4 +24,4 @@ Chosen: GraphQL batches just before the pick, because a night costs at most 4 re
 
 ## Consequences
 
-`pullRequests.state` is refreshed only for candidate sessions' open PRs, once a night; any other reader (UI, re-review) must treat it as possibly stale, and `checkedAt` says how stale.
+`pullRequests.state` is refreshed only for the open PRs of candidate sessions not yet quiet for 6 hours (a quieter session is ready whatever its PR says), once a night; any other reader (UI, re-review) must treat it as possibly stale, and `checkedAt` says how stale.

@@ -319,8 +319,9 @@ const nightlyClock = (input: NightlyInput) => {
 }
 
 /**
- * The open github.com pull requests opened by a session tonight's pick could take, for the
- * check that asks GitHub before the pick: at most `PR_CHECK_LIMIT`, never-checked first, then
+ * The open github.com pull requests opened by a session tonight's pick could take only through
+ * its pull request (one not yet quiet for `QUIET_FOR`), for the check that asks GitHub before
+ * the pick: at most `PR_CHECK_LIMIT`, never-checked first, then
  * the ones checked longest ago. Empty unless some project's pick is due, so the every-minute
  * claim pass makes no GitHub call. Reads only.
  */
@@ -342,6 +343,7 @@ export const pullRequestsToCheck = async (
         where spr."prId" = pr."id"
           and ${due}
           and ${sessionActivityAt} > ${now} - ${PICK_WITHIN}::interval
+          and ${sessionActivityAt} > ${now} - ${QUIET_FOR}::interval
           and not exists (
             select 1 from "sessionReviews" sr
             where sr."sessionId" = "sessions"."id" and sr."analyzer" = ${input.analyzer}
