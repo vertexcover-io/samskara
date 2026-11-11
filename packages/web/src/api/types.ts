@@ -18,10 +18,6 @@ export type SessionListPayload = Ok<Client["api"]["sessions"]["$get"]>
 export type ReviewerOptions = Ok<Client["api"]["reviewer-options"]["$get"]>
 export type ReviewerHarnessOptions = ReviewerOptions["harnesses"][number]
 export type SessionSummary = SessionListPayload["sessions"][number]
-export type ReviewBatchView = NonNullable<
-  Ok<Client["api"]["review-batches"]["current"]["$get"]>["batch"]
->
-export type ReviewBatchProject = ReviewBatchView["projects"][number]
 export type SessionFilterOptions = Ok<Client["api"]["sessions"]["filters"]["$get"]>
 export type FilterOption = SessionFilterOptions["projects"][number]
 type SessionSearchMatch = NonNullable<SessionSummary["match"]>

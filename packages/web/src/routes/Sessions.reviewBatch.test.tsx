@@ -1,8 +1,8 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react"
+import { render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, test, vi } from "vitest"
 import { AppRoutes } from "../App.js"
-import type { CurrentUser, ReviewBatchView, SessionSummary } from "../api/types.js"
+import type { CurrentUser, SessionSummary } from "../api/types.js"
 import { TestRouter } from "../tests/test-router.js"
 
 const user: CurrentUser = {
@@ -35,39 +35,12 @@ const second = row("s-2", "Second session")
 const jsonResponse = (status: number, body: unknown): Response =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
 
-const runningBatch: ReviewBatchView = {
-  batchId: "b-1",
-  status: "running",
-  startedAt: "2026-11-02T10:00:00.000Z",
-  sessions: [
-    {
-      sessionId: "s-1",
-      projectId: "p-a",
-      title: "First session",
-      state: "reviewing",
-      reason: null,
-    },
-    { sessionId: "s-2", projectId: "p-a", title: "Second session", state: "waiting", reason: null },
-  ],
-  projects: [{ projectId: "p-a", name: "A", state: "waiting", reason: null }],
-}
-
-const doneBatch: ReviewBatchView = {
-  ...runningBatch,
-  status: "done",
-  sessions: runningBatch.sessions.map((session) => ({ ...session, state: "reviewed" })),
-  projects: [{ projectId: "p-a", name: "A", state: "done", reason: null }],
-}
-
 type Handlers = {
   readonly list?: (url: URL) => unknown
-  /** A Response is sent as it is, such as a 401. */
-  readonly current?: () => ReviewBatchView | null | Response
   readonly start?: (body: unknown) => Response
-  readonly dismiss?: () => Response
 }
 
-type Calls = { list: string[]; current: number; starts: unknown[]; dismisses: number }
+type Calls = { list: string[]; starts: unknown[]; other: string[] }
 
 const listOf = (rows: ReadonlyArray<SessionSummary>, total = rows.length) => ({
   sessions: rows,
@@ -75,7 +48,7 @@ const listOf = (rows: ReadonlyArray<SessionSummary>, total = rows.length) => ({
 })
 
 const stubFetch = (handlers: Handlers): Calls => {
-  const calls: Calls = { list: [], current: 0, starts: [], dismisses: 0 }
+  const calls: Calls = { list: [], starts: [], other: [] }
   vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
     const path = typeof input === "string" ? input : input.toString()
     if (path.endsWith("/api/auth/me")) return Promise.resolve(jsonResponse(200, user))
@@ -83,22 +56,11 @@ const stubFetch = (handlers: Handlers): Calls => {
       return Promise.resolve(
         jsonResponse(200, { projects: [], authors: [], repositories: [], branches: [], tags: [] }),
       )
-    if (path === "/api/review-batches/current" && init?.method === "DELETE") {
-      calls.dismisses += 1
-      return Promise.resolve(handlers.dismiss?.() ?? new Response(null, { status: 204 }))
-    }
-    if (path === "/api/review-batches/current") {
-      calls.current += 1
-      const answer = handlers.current?.() ?? null
-      return Promise.resolve(
-        answer instanceof Response ? answer : jsonResponse(200, { batch: answer }),
-      )
-    }
     if (path === "/api/review-batches" && init?.method === "POST") {
       const body: unknown = JSON.parse(String(init.body))
       calls.starts.push(body)
       return Promise.resolve(
-        handlers.start?.(body) ?? jsonResponse(202, { batchId: "b-1", notAllowed: [] }),
+        handlers.start?.(body) ?? jsonResponse(202, { queued: 2, skipped: 0, notAllowed: [] }),
       )
     }
     if (path === "/api/sessions" || path.startsWith("/api/sessions?")) {
@@ -106,6 +68,7 @@ const stubFetch = (handlers: Handlers): Calls => {
       const url = new URL(path, "http://localhost")
       return Promise.resolve(jsonResponse(200, handlers.list?.(url) ?? listOf([first, second])))
     }
+    calls.other.push(path)
     return Promise.reject(new Error(`unstubbed fetch: ${path}`))
   })
   return calls
@@ -125,7 +88,6 @@ const rowBox = (title: string) => screen.getByRole("checkbox", { name: `Select $
 const pageBox = () => screen.getByRole("checkbox", { name: "Select this page" })
 
 afterEach(() => {
-  vi.useRealTimers()
   vi.unstubAllGlobals()
 })
 
@@ -135,11 +97,11 @@ test("SC21: row checkboxes and Select this page pick sessions and update the bar
   await screen.findByRole("link", { name: /first session/i })
 
   await userEvent.click(rowBox("First session"))
-  expect(summary()).toBe("1 selected · about 6 min")
+  expect(summary()).toBe("1 selected")
   expect(screen.getByTestId("location").textContent).toBe("/sessions")
 
   await userEvent.click(pageBox())
-  expect(summary()).toBe("2 selected · about 7 min")
+  expect(summary()).toBe("2 selected")
   expect(rowBox("First session")).toBeChecked()
   expect(rowBox("Second session")).toBeChecked()
 
@@ -159,7 +121,7 @@ test("a tap on the padded area around a row's checkbox ticks it and does not ope
   if (tapArea !== null) await userEvent.click(tapArea)
 
   expect(rowBox("First session")).toBeChecked()
-  expect(summary()).toBe("1 selected · about 6 min")
+  expect(summary()).toBe("1 selected")
   expect(screen.getByTestId("location").textContent).toBe("/sessions")
 })
 
@@ -174,7 +136,7 @@ test("SC22: Select all N matching picks the first 50 matching sessions across pa
 
   await userEvent.click(screen.getByRole("button", { name: "Select the first 50 of 51 matching" }))
 
-  await waitFor(() => expect(summary()).toBe("50 selected · about 55 min"))
+  await waitFor(() => expect(summary()).toBe("50 selected"))
   const selectAll = new URL(calls.list.at(-1) ?? "", "http://localhost")
   expect(selectAll.searchParams.get("tags")).toBe("yok")
   expect(selectAll.searchParams.get("page")).toBe("1")
@@ -193,7 +155,7 @@ test("Select all N matching keeps sessions picked earlier, up to 50 in total", a
 
   await userEvent.click(screen.getByRole("button", { name: "Add up to 49 more of 51 matching" }))
 
-  await waitFor(() => expect(summary()).toBe("50 selected · about 55 min"))
+  await waitFor(() => expect(summary()).toBe("50 selected"))
   expect(screen.getByRole("checkbox", { name: "Select First session" })).toBeChecked()
 })
 
@@ -208,7 +170,7 @@ test("with 50 picked the bar says 50 is the most, unpicked rows cannot be ticked
 
   await userEvent.click(screen.getByRole("button", { name: "Select the first 50 of 51 matching" }))
 
-  await waitFor(() => expect(summary()).toBe("50 selected · about 55 min"))
+  await waitFor(() => expect(summary()).toBe("50 selected"))
   expect(screen.getByRole("region", { name: "Selected sessions" })).toHaveTextContent(
     "50 is the most in one batch.",
   )
@@ -217,112 +179,34 @@ test("with 50 picked the bar says 50 is the most, unpicked rows cannot be ticked
   expect(screen.queryByRole("button", { name: /matching/ })).toBeNull()
 })
 
-test("SC23: starting sends the picked ids, clears the selection and shows the panel", async () => {
-  let started = false
+test("SC28: pressing Review clears the ticks and shows the note, with no panel", async () => {
   const calls = stubFetch({
-    current: () => (started ? runningBatch : null),
-    start: () => {
-      started = true
-      return jsonResponse(202, { batchId: "b-1", notAllowed: [] })
-    },
+    start: () => jsonResponse(202, { queued: 2, skipped: 0, notAllowed: [] }),
   })
   renderAt("/sessions")
   await screen.findByRole("link", { name: /first session/i })
-  expect(screen.queryByRole("region", { name: "Review progress" })).toBeNull()
 
   await userEvent.click(pageBox())
-  await userEvent.click(screen.getByRole("button", { name: "Review and find fixes" }))
+  await userEvent.click(screen.getByRole("button", { name: "Review" }))
 
-  const panel = await screen.findByRole("region", { name: "Review progress" })
-  expect(within(panel).getByText("Reviewing and finding fixes")).toBeInTheDocument()
+  expect(await screen.findByRole("status")).toHaveTextContent("Queued 2 sessions for review.")
   expect(calls.starts).toEqual([{ sessionIds: ["s-1", "s-2"] }])
   expect(summary()).toBe("0 selected")
+  expect(screen.queryByRole("region", { name: "Review progress" })).toBeNull()
+  expect(calls.other.filter((path) => path.includes("review-batches"))).toEqual([])
 })
 
-test("SC24: a refused start shows a plain reason and keeps the selection", async () => {
-  stubFetch({ start: () => jsonResponse(409, { error: "reviewBatchAlreadyRunning" }) })
+test("SC29: a refused start shows a plain reason and keeps the ticks", async () => {
+  stubFetch({ start: () => jsonResponse(400, { error: "harnessUnauthenticated" }) })
   renderAt("/sessions")
   await screen.findByRole("link", { name: /first session/i })
 
   await userEvent.click(pageBox())
-  await userEvent.click(screen.getByRole("button", { name: "Review and find fixes" }))
+  await userEvent.click(screen.getByRole("button", { name: "Review" }))
 
   expect(await screen.findByRole("alert")).toHaveTextContent(
-    "A review is already running. Wait for it to finish.",
+    "The reviewer has no key on this server.",
   )
-  expect(summary()).toBe("2 selected · about 7 min")
-})
-
-test("SC25: the panel comes back after a refresh and keeps checking until the batch is done", async () => {
-  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
-  const answers: ReviewBatchView[] = [runningBatch, doneBatch]
-  const calls = stubFetch({ current: () => answers.shift() ?? doneBatch })
-  renderAt("/sessions")
-
-  const panel = await screen.findByRole("region", { name: "Review progress" })
-  expect(within(panel).getByText("Reviewing and finding fixes")).toBeInTheDocument()
-  expect(summary()).toBe("0 selected")
-
-  await act(async () => {
-    vi.advanceTimersByTime(3_000)
-  })
-  expect(await screen.findByText("Review finished")).toBeInTheDocument()
-  expect(screen.getByRole("link", { name: "See fixes for A" })).toHaveAttribute(
-    "href",
-    "/learnings?project=p-a",
-  )
-
-  const checksWhenDone = calls.current
-  await act(async () => {
-    vi.advanceTimersByTime(10_000)
-  })
-  expect(calls.current).toBe(checksWhenDone)
-})
-
-test("a check that answers 401 while a batch runs stops the checks and sends the person to sign in", async () => {
-  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
-  const answers: Array<ReviewBatchView | Response> = [runningBatch]
-  const calls = stubFetch({
-    current: () => answers.shift() ?? jsonResponse(401, { error: "unauthorized" }),
-  })
-  renderAt("/sessions")
-  await screen.findByRole("region", { name: "Review progress" })
-
-  await act(async () => {
-    vi.advanceTimersByTime(3_000)
-  })
-  // waitFor polls on setInterval, which is faked here, so flush the pending fetch by hand.
-  for (let i = 0; i < 5; i += 1) await act(async () => {})
-  expect(screen.getByTestId("location").textContent).toBe("/login")
-
-  const checksAfterExpiry = calls.current
-  await act(async () => {
-    vi.advanceTimersByTime(10_000)
-  })
-  expect(calls.current).toBe(checksAfterExpiry)
-})
-
-test("the dismiss button on a finished batch tells the server and hides the panel", async () => {
-  const calls = stubFetch({ current: () => doneBatch })
-  renderAt("/sessions")
-
-  const panel = await screen.findByRole("region", { name: "Review progress" })
-  await userEvent.click(within(panel).getByRole("button", { name: "Dismiss review progress" }))
-
-  await waitFor(() => expect(screen.queryByRole("region", { name: "Review progress" })).toBeNull())
-  expect(calls.dismisses).toBe(1)
-})
-
-test("a dismiss the server refuses keeps the panel and says why", async () => {
-  stubFetch({
-    current: () => doneBatch,
-    dismiss: () => jsonResponse(409, { error: "reviewBatchStillRunning" }),
-  })
-  renderAt("/sessions")
-
-  const panel = await screen.findByRole("region", { name: "Review progress" })
-  await userEvent.click(within(panel).getByRole("button", { name: "Dismiss review progress" }))
-
-  expect(await screen.findByRole("alert")).toHaveTextContent("The review is still running.")
-  expect(screen.getByRole("region", { name: "Review progress" })).toBeInTheDocument()
+  expect(summary()).toBe("2 selected")
+  expect(screen.queryByRole("status")).toBeNull()
 })
