@@ -54,6 +54,12 @@ const BaseEnvSchema = z.object({
     .regex(/^\d+$/, "AI_REVIEW_TIMEOUT_MS must be digits (milliseconds)")
     .default("600000")
     .transform((value) => Number(value)),
+  /** How many claude/opencode processes the worker runs at once; each opencode sandbox takes 2 GB. */
+  AI_AGENT_SLOTS: z
+    .string()
+    .regex(/^[1-9]\d*$/, "AI_AGENT_SLOTS must be a whole number of at least 1")
+    .default("2")
+    .transform((value) => Number(value)),
   /**
    * The agent harness the sessions ran (yok, for us), whose code the learning run checks each
    * learning against: a GitHub repo as `owner/name`, cloned fresh for every run, or a local
@@ -143,6 +149,8 @@ export type Env = {
   readonly aiReviewHarness: ReviewHarness
   readonly aiReviewModel: string
   readonly aiReviewTimeoutMs: number
+  /** Set by `loadEnv`; an Env built by hand (in tests) may leave it out for the default of 2. */
+  readonly aiAgentSlots?: number
   readonly learningsHarness?: HarnessSource | undefined
   /** Set by `loadEnv`; an Env built by hand (in tests) may leave it out for the review model. */
   readonly learningsModel?: string | undefined
@@ -179,6 +187,7 @@ export const loadEnv = (source: Source = process.env): Env => {
     aiReviewHarness: parsed.data.AI_REVIEW_HARNESS,
     aiReviewModel,
     aiReviewTimeoutMs: parsed.data.AI_REVIEW_TIMEOUT_MS,
+    aiAgentSlots: parsed.data.AI_AGENT_SLOTS,
     learningsHarness: learningsHarnessOf(parsed.data),
     learningsModel:
       parsed.data.LEARNINGS_MODEL ??

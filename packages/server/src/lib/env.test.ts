@@ -33,8 +33,16 @@ describe("loadEnv", () => {
       aiReviewHarness: "opencode",
       aiReviewModel: "opencode-go/glm-5.3-flash",
       aiReviewTimeoutMs: 600_000,
+      aiAgentSlots: 2,
       learningsModel: "opencode-go/glm-5.3-flash",
     })
+  })
+
+  test("SC33: AI_AGENT_SLOTS is read with a default of 2", () => {
+    expect(loadEnv(complete).aiAgentSlots).toBe(2)
+    expect(loadEnv({ ...complete, AI_AGENT_SLOTS: "3" }).aiAgentSlots).toBe(3)
+    expect(() => loadEnv({ ...complete, AI_AGENT_SLOTS: "0" })).toThrow(/AI_AGENT_SLOTS/)
+    expect(() => loadEnv({ ...complete, AI_AGENT_SLOTS: "two" })).toThrow(/AI_AGENT_SLOTS/)
   })
 
   test("requires the credential of the configured harness, not of every harness", () => {
