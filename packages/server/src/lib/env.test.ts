@@ -33,13 +33,13 @@ describe("loadEnv", () => {
       aiReviewHarness: "opencode",
       aiReviewModel: "opencode-go/glm-5.3-flash",
       aiReviewTimeoutMs: 600_000,
-      aiAgentSlots: 2,
+      aiAgentSlots: 4,
       learningsModel: "opencode-go/glm-5.3-flash",
     })
   })
 
-  test("SC33: AI_AGENT_SLOTS is read with a default of 2", () => {
-    expect(loadEnv(complete).aiAgentSlots).toBe(2)
+  test("SC33: AI_AGENT_SLOTS is read with a default of 4", () => {
+    expect(loadEnv(complete).aiAgentSlots).toBe(4)
     expect(loadEnv({ ...complete, AI_AGENT_SLOTS: "3" }).aiAgentSlots).toBe(3)
     expect(() => loadEnv({ ...complete, AI_AGENT_SLOTS: "0" })).toThrow(/AI_AGENT_SLOTS/)
     expect(() => loadEnv({ ...complete, AI_AGENT_SLOTS: "two" })).toThrow(/AI_AGENT_SLOTS/)

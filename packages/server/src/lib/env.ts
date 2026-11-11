@@ -22,6 +22,7 @@ export {
 } from "@samskara/core"
 
 export const DEFAULT_LOCAL_LOGIN = "samskara-dev"
+export const DEFAULT_AI_AGENT_SLOTS = 4
 
 const BaseEnvSchema = z.object({
   GITHUB_CLIENT_ID: z.string().default(""),
@@ -58,7 +59,7 @@ const BaseEnvSchema = z.object({
   AI_AGENT_SLOTS: z
     .string()
     .regex(/^[1-9]\d*$/, "AI_AGENT_SLOTS must be a whole number of at least 1")
-    .default("2")
+    .default(String(DEFAULT_AI_AGENT_SLOTS))
     .transform((value) => Number(value)),
   /**
    * The agent harness the sessions ran (yok, for us), whose code the learning run checks each
@@ -149,7 +150,7 @@ export type Env = {
   readonly aiReviewHarness: ReviewHarness
   readonly aiReviewModel: string
   readonly aiReviewTimeoutMs: number
-  /** Set by `loadEnv`; an Env built by hand (in tests) may leave it out for the default of 2. */
+  /** Set by `loadEnv`; an Env built by hand (in tests) may leave it out for the default. */
   readonly aiAgentSlots?: number
   readonly learningsHarness?: HarnessSource | undefined
   /** Set by `loadEnv`; an Env built by hand (in tests) may leave it out for the review model. */

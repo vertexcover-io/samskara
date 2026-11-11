@@ -1,7 +1,7 @@
 import { createLogger, terminateHarnessChildren, watchHarnessGroups } from "@samskara/core"
 import { createDb } from "../db/client.js"
 import { installCrashHandlers } from "../lib/crash-handlers.js"
-import { loadEnv } from "../lib/env.js"
+import { DEFAULT_AI_AGENT_SLOTS, loadEnv } from "../lib/env.js"
 import { requeueRunningFixRuns, requeueRunningReviews } from "../repositories/workQueue.repo.js"
 import { runAiReview } from "../services/ai-review/pipeline.js"
 import { defaultAiReviewRunner } from "../services/ai-review/runner.js"
@@ -68,7 +68,7 @@ log.info({ pid: process.pid, requeued, requeuedFixRuns, reapedLeftovers }, "work
 
 // Every agent call in this process goes through these slots: prompt merge, readers, reviewer and
 // fix runs. Wrapped here once: a wrapper per review would give each review its own slots.
-const agentSlots = env.aiAgentSlots ?? 2
+const agentSlots = env.aiAgentSlots ?? DEFAULT_AI_AGENT_SLOTS
 const runner = withAgentSlots(defaultAiReviewRunner(env, log), agentSlots)
 log.info({ agentSlots }, "agent slots")
 const loop = createWorkLoop({
