@@ -17,6 +17,9 @@ export type SessionExportRecord = {
   /** The captured message's own id, when the input carried one — the permalink bridge back
    * to the conversation tab, which resolves real message ids, not these export aliases. */
   readonly sourceId?: string
+  /** A tool call's record: the id of the result folded into it, which can arrive later than
+   * the call, so a re-review can tell the record changed after it was read. */
+  readonly resultSourceId?: string
   readonly role?: string
   readonly msgType: NormalizedMessage["msgType"]
   readonly toolName?: string
@@ -216,6 +219,8 @@ export const buildSessionExport = (input: {
         // First result wins: a duplicate result for the same call is absorbed, not recorded.
         if (call.status === undefined) {
           call.status = message.details.status
+          const resultSourceId = sourceIdOf(message)
+          if (resultSourceId !== undefined) call.resultSourceId = resultSourceId
           if (full) call.output = asText(message.details.output)
         }
       } else {

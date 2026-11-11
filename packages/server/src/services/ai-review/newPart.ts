@@ -25,20 +25,27 @@ export type NewPart = {
  * `recordIds`. Messages sort by lineNumber across tracks and a subagent's lines restart at 1,
  * so a new subagent message can sort among old ones; numbering the new records after every old
  * one is what keeps an old problem's `msg-N` pointing at the same message.
+ *
+ * A tool call and its result are one record, keyed by the call, so a call reviewed before its
+ * result arrived is read again when its result is in `storedSince` (the messages stored after
+ * the earlier review). It keeps its old number as well, so saved evidence still resolves.
  */
 export const newPartExport = (
   whole: SessionExport,
   reviewed: ReadonlyArray<string | null>,
+  storedSince: ReadonlySet<string> = new Set(),
 ): NewPart => {
   const seen = new Set(reviewed.filter((id): id is string => id !== null))
   const old = recordsInReviewOrder(whole.records, reviewed)
-  const fresh = whole.records
-    .filter((record) => record.sourceId === undefined || !seen.has(record.sourceId))
-    .map((record, index) => ({
-      ...record,
-      seq: reviewed.length + index,
-      id: messageIdOf(reviewed.length + index),
-    }))
+  const isNew = (record: SessionExportRecord): boolean =>
+    record.sourceId === undefined ||
+    !seen.has(record.sourceId) ||
+    (record.resultSourceId !== undefined && storedSince.has(record.resultSourceId))
+  const fresh = whole.records.filter(isNew).map((record, index) => ({
+    ...record,
+    seq: reviewed.length + index,
+    id: messageIdOf(reviewed.length + index),
+  }))
   const records: SessionExportRecord[] = [...old.slice(-CONTEXT_RECORDS), ...fresh]
   return {
     exported: {

@@ -81,6 +81,23 @@ describe("buildSessionExport", () => {
     ])
   })
 
+  test("a tool call's record keeps its own id as sourceId and its first result's id as resultSourceId", () => {
+    const { records } = buildSessionExport({
+      sessionId: "s1",
+      title: "t",
+      source: "claude_code",
+      messages: [
+        toolCall("t1", "Bash", { id: "call-row" }),
+        toolResult("t1", "success", { id: "result-row" }),
+        toolResult("t1", "failure", { id: "duplicate-row" }),
+      ],
+    })
+
+    expect(records.map((record) => [record.sourceId, record.resultSourceId])).toEqual([
+      ["call-row", "result-row"],
+    ])
+  })
+
   test("E11: every record carries ts (epoch ms) from its message timestamp", () => {
     const messages = [
       message({ subIndex: 0, timestamp: "2026-08-25T09:00:00Z" }),

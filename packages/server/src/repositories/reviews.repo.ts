@@ -115,6 +115,24 @@ export const lastLineRead = (
       null,
     )
 
+/**
+ * The ids of the main-track messages after line `reviewedThrough`: what was stored after a
+ * review read the session. Subagent lines restart at 1, so only the main track can tell.
+ */
+export const storedSince = (
+  messages: ReadonlyArray<{
+    readonly id: string
+    readonly lineNumber: number
+    readonly trackId: string
+  }>,
+  reviewedThrough: number,
+): ReadonlySet<string> =>
+  new Set(
+    messages
+      .filter((message) => message.trackId === MAIN_TRACK && message.lineNumber > reviewedThrough)
+      .map((message) => message.id),
+  )
+
 /** What a re-review builds on: the earlier result, and the problems it already found. */
 export type EarlierResult = {
   readonly outcome: ReviewOutcome
@@ -122,6 +140,8 @@ export type EarlierResult = {
   readonly signals: object
   /** The message id behind each msg-N the earlier passes numbered. */
   readonly recordIds: ReadonlyArray<string | null>
+  /** The last main-track line the earlier passes read. */
+  readonly reviewedThrough: number
   readonly problemTitles: ReadonlyArray<string>
 }
 
@@ -154,6 +174,7 @@ export const earlierResult = async (
     summary: row.summary as string,
     signals: row.signals as object,
     recordIds: recordIds as ReadonlyArray<string | null>,
+    reviewedThrough: row.reviewedThrough,
     problemTitles: titles.map((problem) => problem.title),
   }
 }

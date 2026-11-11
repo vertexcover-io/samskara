@@ -575,6 +575,47 @@ The agent fixed the build, then deployed it without the smoke tests.
         expect(await savedProblems()).toEqual([earlier.oldProblem])
       })
 
+      test("a tool result stored after the review is read: its call comes back as a new record and its problem is kept", async () => {
+        // The first pass runs while the test run (msg-1) has no result yet.
+        await db.delete(messages).where(eq(messages.msgType, "toolResult"))
+        const earlier = await earlierPass()
+        await db.insert(messages).values({
+          sessionId,
+          lineUuid: crypto.randomUUID(),
+          subIndex: 0,
+          msgType: "toolResult",
+          lineNumber: 5,
+          source: "claude_code",
+          sourceRelativePath: "test.jsonl",
+          trackId: "main",
+          raw: {},
+          sourceSchemaVersion: 1,
+          details: { callId: "call-0", output: "3 tests failed", status: "failure" },
+        })
+        const failedRunMd = deployMd
+          .replace("Deployed without running the smoke tests", "Ignored the failed test run")
+          .replace(
+            'msg-4 — "deployed to staging without running the smoke tests"',
+            'msg-3 — "3 tests failed"',
+          )
+        const { runner, seen } = problemsRunner(failedRunMd)
+
+        const result = await runAiReview(depsWith(runner), sessionId, { newPartOnly: true })
+
+        expect(result).toMatchObject({ kind: "ok", reviewId: earlier.reviewId })
+        const reviewer = seen.find((entry) => entry.session !== undefined)
+        expect(recordsSeen(reviewer?.session).at(-1)).toMatchObject({
+          id: "msg-3",
+          msgType: "toolCall",
+          status: "failure",
+        })
+        expect((await savedProblems()).map((row) => row.title)).toEqual([
+          earlier.oldProblem?.title,
+          "Ignored the failed test run",
+        ])
+        expect((await reviewRow())?.reviewedThrough).toBe(5)
+      })
+
       test("SC18: a review marked new-part-only with no earlier result reads the whole session", async () => {
         await db.insert(sessionReviews).values({
           sessionId,

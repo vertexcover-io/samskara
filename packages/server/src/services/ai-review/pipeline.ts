@@ -124,7 +124,14 @@ export const runAiReview = async (
     options.newPartOnly === true
       ? await reviewsRepo.earlierResult(db, sessionId, PROBLEMS_ANALYZER)
       : null
-  const part = earlier === null ? null : newPartExport(wholeExport, earlier.recordIds)
+  const part =
+    earlier === null
+      ? null
+      : newPartExport(
+          wholeExport,
+          earlier.recordIds,
+          reviewsRepo.storedSince(detail.messages, earlier.reviewedThrough),
+        )
   if (earlier !== null && part !== null && part.newCount === 0) {
     // Only lines the export drops arrived: nothing to read, but they are seen.
     const row = await reviewsRepo.upsertReview(db, {

@@ -66,6 +66,31 @@ describe("newPartExport", () => {
     expect(part.recordIds).toEqual(["m-0", "m-1", "m-2", "m-3", "m-9"])
   })
 
+  test("a reviewed tool call whose result was stored after the review is read again as a new record, and keeps its old number too", () => {
+    const call = { ...record(1, 1), msgType: "toolCall" as const, resultSourceId: "r-1" }
+    const whole = wholeOf([record(0, 0), call, record(2, 2)])
+
+    const part = newPartExport(whole, ["m-0", "m-1", "m-2"], new Set(["r-1"]))
+
+    expect(part.exported.records.map((r) => [r.id, r.sourceId])).toEqual([
+      ["msg-0", "m-0"],
+      ["msg-1", "m-1"],
+      ["msg-2", "m-2"],
+      ["msg-3", "m-1"],
+    ])
+    expect(part.firstNew).toBe(3)
+    expect(part.newCount).toBe(1)
+    expect(part.recordIds).toEqual(["m-0", "m-1", "m-2", "m-1"])
+  })
+
+  test("a reviewed tool call whose result was already there at the review is not new", () => {
+    const call = { ...record(1, 1), msgType: "toolCall" as const, resultSourceId: "r-1" }
+
+    const part = newPartExport(wholeOf([record(0, 0), call]), ["m-0", "m-1"], new Set(["m-9"]))
+
+    expect(part.newCount).toBe(0)
+  })
+
   test("SC13: a session reviewed over fewer than 20 records shows all of them as context", () => {
     const whole = wholeOf(range(8).map((n) => record(n, n)))
 
