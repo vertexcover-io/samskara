@@ -311,6 +311,15 @@ describe("findAgentLeads", () => {
       expect([...kept.values()]).toEqual([MAIN_REPLY])
     })
 
+    test("SC404c: a 'Nothing found.' reply is saved, but a reply with no lead and no 'Nothing found.' is not, so the next try reads that piece again", async () => {
+      const { kept, replies } = memoryStore()
+      const { runner } = recording((prompt) =>
+        prompt.includes("all tests pass") ? "Nothing found." : "I cannot help with that request.",
+      )
+      await findAgentLeads({ exported, instructions: "# How to review", runner, replies })
+      expect([...kept.values()]).toEqual(["Nothing found."])
+    })
+
     test("SC405: a second run with the same store calls the model only for the piece with no reply, and reuses the other's leads", async () => {
       const { replies } = memoryStore()
       await findAgentLeads({

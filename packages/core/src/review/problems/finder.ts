@@ -272,8 +272,12 @@ export const findAgentLeads = async (input: {
         oneShot: true,
       })
       if (stdout.trim() === "") return { piece, failed: "replied with nothing" }
-      await input.replies?.save(key, stdout)
-      return { piece, found: parseFoundLeads(stdout).slice(0, MAX_LEADS_PER_PIECE), reused: false }
+      const found = parseFoundLeads(stdout).slice(0, MAX_LEADS_PER_PIECE)
+      // A reply with no lead and no "Nothing found" (a refusal, a cut-off answer) is not kept,
+      // so a later try reads the piece again instead of reusing a non-answer.
+      if (found.length > 0 || stdout.includes("Nothing found"))
+        await input.replies?.save(key, stdout)
+      return { piece, found, reused: false }
     }).catch((error: unknown) => ({
       piece,
       failed: error instanceof Error ? error.message : String(error),
