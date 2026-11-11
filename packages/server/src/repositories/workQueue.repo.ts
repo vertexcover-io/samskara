@@ -417,9 +417,11 @@ export const queueNightlyReviews = async (
                 and coalesce(pr."closedAt" <= sr."updatedAt", true)
             )
         ) as "prEnded",
+        -- A first review that failed has no result, so it still ranks as never reviewed.
         exists (
           select 1 from "sessionReviews" sr
           where sr."sessionId" = "sessions"."id" and sr."analyzer" = ${input.analyzer}
+            and sr."outcome" is not null
         ) as "again"
       from "sessions"
       where "sessions"."projectId" in (select "id" from "picked")

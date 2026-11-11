@@ -667,6 +667,31 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
       expect((await rowOf(reviewed))?.status).toBe("done")
     })
 
+    test("a session whose first review failed takes the limit before a re-review active longer ago", async () => {
+      const now = ist(11, 2)
+      const on = await project({ autoReview: true })
+      const reviewed = await quietSession(on, now, 40)
+      await mainLines(reviewed, 1, 5)
+      await doneReview(reviewed, on, 3)
+      const failedFirst = await quietSession(on, now, 30)
+      await message(failedFirst, 1, { createdAt: hoursBefore(now, 31) })
+      await db.insert(sessionReviews).values({
+        sessionId: failedFirst,
+        projectId: on,
+        analyzer: ANALYZER,
+        status: "failed",
+        attempts: 3,
+        error: "harnessFailed: boom",
+        updatedAt: hoursBefore(now, 35),
+      })
+
+      const result = await queueNightlyReviews(db, { ...DEFAULTS, now, limit: 1 })
+
+      expect(result).toEqual({ picked: 1, queued: 1 })
+      expect((await rowOf(failedFirst))?.status).toBe("waiting")
+      expect((await rowOf(reviewed))?.status).toBe("done")
+    })
+
     test("SC6: a waiting or running review is never taken again", async () => {
       const now = ist(11, 2)
       const on = await project({ autoReview: true })
