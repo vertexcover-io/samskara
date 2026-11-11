@@ -88,6 +88,8 @@ const loop = createWorkLoop({
   }),
   // Tied to the server's own harness: without one, every due project would fail 3 times.
   queueDue: env.learningsHarness !== undefined,
+  // Reviews run on AI_REVIEW_HARNESS, which the server refuses to boot without.
+  nightlyReview: env.nightlyReview,
 })
 
 stopLoop = () => {

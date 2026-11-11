@@ -2,7 +2,14 @@ import pino from "pino"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import { buildApp } from "../app.js"
 import type { Db } from "../db/client.js"
-import { projects, sessionReviews, sessions, userProjectGrant, users } from "../db/schema.js"
+import {
+  learningRuns,
+  projects,
+  sessionReviews,
+  sessions,
+  userProjectGrant,
+  users,
+} from "../db/schema.js"
 import { dockerAvailable, startTestDb } from "../db/testDb.js"
 import type { Env } from "../lib/env.js"
 import { signToken } from "../lib/jwt.js"
@@ -24,6 +31,7 @@ const env: Env = {
   aiReviewModel: "fake-model",
   aiReviewHarness: "opencode",
   aiReviewTimeoutMs: 600000,
+  learningsHarness: { path: "/harness" },
 }
 
 const silentLog = pino({ level: "silent" })
@@ -45,6 +53,7 @@ describe.skipIf(!dockerAvailable())("review batch routes", () => {
   let userId: string
   let projectA: string
   let projectB: string
+  let projectC: string
   let notified: number
 
   beforeEach(async () => {
@@ -61,15 +70,17 @@ describe.skipIf(!dockerAvailable())("review batch routes", () => {
       .returning({ id: users.id })
     userId = user?.id as string
     const otherUserId = other?.id as string
-    const [a, b] = await db
+    const [a, b, c] = await db
       .insert(projects)
       .values([
         { name: "Project A", slug: "a", ownerUserId: userId },
         { name: "Project B", slug: "b", ownerUserId: otherUserId },
+        { name: "Project C", slug: "c", ownerUserId: userId },
       ])
       .returning({ id: projects.id })
     projectA = a?.id as string
     projectB = b?.id as string
+    projectC = c?.id as string
     await db.insert(userProjectGrant).values({ userId, projectId: projectB, scope: "viewer" })
     await db.insert(sessions).values([
       { id: "a-1", source: "claude_code", userId, projectId: projectA, title: "a one" },
@@ -82,6 +93,7 @@ describe.skipIf(!dockerAvailable())("review batch routes", () => {
         projectId: projectB,
         title: "b one",
       },
+      { id: "c-1", source: "claude_code", userId, projectId: projectC, title: "c one" },
     ])
     notified = 0
   })
@@ -92,10 +104,13 @@ describe.skipIf(!dockerAvailable())("review batch routes", () => {
       readonly method?: string
       readonly body?: unknown
       readonly credentialEnv?: NodeJS.ProcessEnv
+      /** False runs the server with no learnings harness, so no fix run can be queued. */
+      readonly harness?: boolean
     } = {},
   ): Promise<Response> => {
     const token = await signToken(env, { sub: userId, aud: "web" })
-    return buildApp(db, env, {
+    const appEnv = init.harness === false ? { ...env, learningsHarness: undefined } : env
+    return buildApp(db, appEnv, {
       notifyWorker: () => {
         notified += 1
       },
@@ -111,20 +126,26 @@ describe.skipIf(!dockerAvailable())("review batch routes", () => {
     })
   }
 
-  const start = (sessionIds: ReadonlyArray<string>, credentialEnv?: NodeJS.ProcessEnv) =>
+  const start = (
+    sessionIds: ReadonlyArray<string>,
+    credentialEnv?: NodeJS.ProcessEnv,
+    options: { readonly harness?: boolean } = {},
+  ) =>
     request("/api/review-batches", {
       method: "POST",
       body: { sessionIds },
       ...(credentialEnv === undefined ? {} : { credentialEnv }),
+      ...options,
     })
 
   const rows = () => db.select().from(sessionReviews)
+  const fixRuns = () => db.select().from(learningRuns)
 
   test("SC24: pressing Review on ticked sessions queues each one and wakes the worker once", async () => {
     const res = await start(["a-1", "a-2", "a-3"])
 
     expect(res.status).toBe(202)
-    expect(await res.json()).toEqual({ queued: 3, skipped: 0, notAllowed: [] })
+    expect(await res.json()).toEqual({ queued: 3, skipped: 0, notAllowed: [], fixRunsQueued: 1 })
     const queued = await rows()
     expect(queued.map((row) => row.sessionId).sort()).toEqual(["a-1", "a-2", "a-3"])
     expect(
@@ -147,7 +168,12 @@ describe.skipIf(!dockerAvailable())("review batch routes", () => {
     const res = await start(["a-1", "a-2", "b-1", "missing"])
 
     expect(res.status).toBe(202)
-    expect(await res.json()).toEqual({ queued: 1, skipped: 1, notAllowed: ["b-1", "missing"] })
+    expect(await res.json()).toEqual({
+      queued: 1,
+      skipped: 1,
+      notAllowed: ["b-1", "missing"],
+      fixRunsQueued: 1,
+    })
     const byId = new Map((await rows()).map((row) => [row.sessionId, row]))
     expect(byId.get("a-1")).toMatchObject({ status: "done", summary: "done before" })
     expect(byId.get("a-2")).toMatchObject({ status: "waiting" })
@@ -165,7 +191,7 @@ describe.skipIf(!dockerAvailable())("review batch routes", () => {
 
     const res = await start(["a-1"])
 
-    expect(await res.json()).toEqual({ queued: 1, skipped: 0, notAllowed: [] })
+    expect(await res.json()).toEqual({ queued: 1, skipped: 0, notAllowed: [], fixRunsQueued: 1 })
     const [row] = await rows()
     expect(row).toMatchObject({ status: "running", attempts: 2 })
   })
@@ -204,6 +230,65 @@ describe.skipIf(!dockerAvailable())("review batch routes", () => {
 
     const res = await start(["a-1"])
 
-    expect(await res.json()).toEqual({ queued: 1, skipped: 0, notAllowed: [] })
+    expect(await res.json()).toEqual({ queued: 1, skipped: 0, notAllowed: [], fixRunsQueued: 1 })
+  })
+
+  test("one fix run is queued per project with queued reviews, and it waits for them", async () => {
+    const res = await start(["a-1", "a-2", "c-1"])
+
+    expect(await res.json()).toMatchObject({ queued: 3, fixRunsQueued: 2 })
+    const runs = await fixRuns()
+    expect(runs.map((run) => run.projectId).sort()).toEqual([projectA, projectC].sort())
+    expect(
+      runs.every(
+        (run) => run.status === "waiting" && run.waitForReviews && run.harnessPath === null,
+      ),
+    ).toBe(true)
+    expect(notified).toBe(1)
+  })
+
+  test("a project whose ticked sessions were all skipped or refused gets no fix run", async () => {
+    await db.insert(sessionReviews).values({
+      sessionId: "a-1",
+      projectId: projectA,
+      analyzer: PROBLEMS_ANALYZER,
+      outcome: "productive",
+      summary: "done before",
+      signals: {},
+    })
+
+    const res = await start(["a-1", "b-1", "c-1"])
+
+    expect(await res.json()).toMatchObject({ queued: 1, fixRunsQueued: 1 })
+    expect((await fixRuns()).map((run) => run.projectId)).toEqual([projectC])
+  })
+
+  test("pressing twice reuses the waiting fix run instead of adding a second", async () => {
+    await start(["a-1"])
+    const again = await start(["a-2"])
+
+    expect(await again.json()).toMatchObject({ fixRunsQueued: 1 })
+    const runs = await fixRuns()
+    expect(runs).toHaveLength(1)
+    expect(runs[0]).toMatchObject({ projectId: projectA, status: "waiting" })
+  })
+
+  test("a fix run already running is left alone and not counted", async () => {
+    await db.insert(learningRuns).values({ projectId: projectA, status: "running" })
+
+    const res = await start(["a-1"])
+
+    expect(await res.json()).toEqual({ queued: 1, skipped: 0, notAllowed: [], fixRunsQueued: 0 })
+    const runs = await fixRuns()
+    expect(runs).toHaveLength(1)
+    expect(runs[0]).toMatchObject({ status: "running" })
+  })
+
+  test("a server with no learnings harness queues the reviews but no fix run", async () => {
+    const res = await start(["a-1"], undefined, { harness: false })
+
+    expect(await res.json()).toEqual({ queued: 1, skipped: 0, notAllowed: [], fixRunsQueued: 0 })
+    expect(await rows()).toHaveLength(1)
+    expect(await fixRuns()).toEqual([])
   })
 })

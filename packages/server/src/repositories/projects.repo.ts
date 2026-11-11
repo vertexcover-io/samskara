@@ -193,6 +193,7 @@ export type ProjectSummaryRow = {
   readonly repoHost: string | null
   readonly repoOwner: string | null
   readonly repoName: string | null
+  readonly autoReview: boolean
 }
 
 const ownSessions = sql`"sessions" where "sessions"."projectId" = "projects"."id"`
@@ -214,6 +215,7 @@ const summaryColumns = {
   repoHost: repos.host,
   repoOwner: repos.owner,
   repoName: repos.repoName,
+  autoReview: projects.autoReview,
 }
 
 export const listAccessibleSummaries = (
@@ -242,6 +244,26 @@ export const findVisibleSummaryById = async (
     .leftJoin(repos, eq(repos.id, projects.repoId))
     .where(and(eq(projects.id, projectId), visibleToUser(db, userId)))
   return row ?? null
+}
+
+/**
+ * Turning automatic review on counts as today's pick, so a project switched on at 14:00 waits for
+ * the next night instead of queueing its reviews within a minute; one switched on at 00:30 still
+ * picks at 01:00. Turning it on when it is already on, or off, leaves the stamp alone.
+ */
+export const setAutoReview = async (
+  db: Querier,
+  projectId: string,
+  autoReview: boolean,
+): Promise<void> => {
+  const now = new Date()
+  const lastNightlyPickAt = autoReview
+    ? sql`case when ${projects.autoReview} then ${projects.lastNightlyPickAt} else ${now.toISOString()}::timestamptz end`
+    : projects.lastNightlyPickAt
+  await db
+    .update(projects)
+    .set({ autoReview, lastNightlyPickAt, updatedAt: now })
+    .where(eq(projects.id, projectId))
 }
 
 export const canDelete = async (

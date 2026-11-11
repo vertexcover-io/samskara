@@ -6,7 +6,7 @@ import { type Env, hasCredential } from "../lib/env.js"
 import { type AuthVariables, requireAuth } from "../lib/require-auth.js"
 import { canWrite } from "../repositories/projects.repo.js"
 import { hasReviewFrom, visibleSessionProjectId } from "../repositories/reviews.repo.js"
-import { queueReview } from "../repositories/workQueue.repo.js"
+import { queueFixRun, queueReview } from "../repositories/workQueue.repo.js"
 import { PROBLEMS_ANALYZER } from "../services/ai-review/pipeline.js"
 
 /** The most sessions one press of Review takes. */
@@ -27,7 +27,8 @@ const startBodySchema = z
 
 /**
  * Review ticked sessions: each one the caller may edit and that has no review yet is queued
- * for the worker. Its own base: a static path under /api/sessions would be read as a session id.
+ * for the worker, and each project that got a review queued gets a fix run that waits for its
+ * reviews to finish. Its own base: a static path under /api/sessions would be read as a session id.
  */
 export const reviewBatchRoutes = ({ db, env, notifyWorker, credentialEnv }: Deps) =>
   new Hono<{ Variables: AuthVariables }>().post(
@@ -66,6 +67,7 @@ export const reviewBatchRoutes = ({ db, env, notifyWorker, credentialEnv }: Deps
       const notAllowed: string[] = []
       let queued = 0
       let skipped = 0
+      const reviewedProjects = new Set<string>()
       for (const { sessionId, projectId } of visible) {
         if (projectId === null || !editable.has(projectId)) {
           notAllowed.push(sessionId)
@@ -79,8 +81,22 @@ export const reviewBatchRoutes = ({ db, env, notifyWorker, credentialEnv }: Deps
         // Null means the review is already waiting or running: it will be done all the same.
         await queueReview(db, { sessionId, projectId, analyzer: PROBLEMS_ANALYZER, options: {} })
         queued += 1
+        reviewedProjects.add(projectId)
       }
+      // As Run now does, with no harness path of the caller's; a server with no learnings
+      // harness would only fail the run, so it queues none.
+      const fixRunsQueued =
+        env.learningsHarness === undefined
+          ? 0
+          : (
+              await Promise.all(
+                [...reviewedProjects].map((projectId) =>
+                  // Null means a run is already running for the project; it is left alone.
+                  queueFixRun(db, { projectId, waitForReviews: true, harnessPath: null }),
+                ),
+              )
+            ).filter((run) => run !== null).length
       if (queued > 0) notifyWorker()
-      return c.json({ queued, skipped, notAllowed }, 202)
+      return c.json({ queued, skipped, notAllowed, fixRunsQueued }, 202)
     },
   )
