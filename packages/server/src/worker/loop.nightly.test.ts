@@ -345,6 +345,28 @@ describe.skipIf(!dockerAvailable())("work loop: the nightly pick", () => {
       expect(captured.at("warn").length).toBeGreaterThan(0)
     })
 
+    test("SC18: a request that fails does not cost the answers the other requests got", async () => {
+      const now = ist(2)
+      const merged = await busySession(now)
+      const prId = await openPullRequest(merged)
+      const mergedAt = new Date(now.getTime() - 30 * 60 * 1000)
+      const lookup: PullRequestLookup = async (prs) => ({
+        answers: prs.map((pr) => ({ id: pr.id, state: "merged" as const, closedAt: mergedAt })),
+        failures: ["github pull request check failed (502)"],
+      })
+      const captured = captureLogger()
+      const loop = loopAt(now, { log: captured.log, pullRequestLookup: lookup })
+
+      await loop.tick()
+      await loop.idle()
+
+      expect(await prRow(prId)).toMatchObject({ state: "merged", closedAt: mergedAt })
+      const all = await rows()
+      expect(all.map((row) => row.sessionId)).toEqual([merged])
+      expect(all[0]?.status).toBe("done")
+      expect(captured.at("warn").length).toBeGreaterThan(0)
+    })
+
     test("SC19: no GitHub call outside the due minute", async () => {
       await db
         .update(projects)
