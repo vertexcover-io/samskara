@@ -13,6 +13,7 @@ const PROJECT: ProjectDetailPayload = {
   sessionCount: 12,
   lastActiveAt: "2026-02-01T09:30:00.000Z",
   repo: null,
+  autoReview: false,
 }
 
 const renderDetail = (

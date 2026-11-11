@@ -1,15 +1,21 @@
-import { createProjectRequestSchema, reassignSessionsRequestSchema } from "@samskara/core"
+import {
+  createProjectRequestSchema,
+  reassignSessionsRequestSchema,
+  updateProjectRequestSchema,
+} from "@samskara/core"
 import { Hono } from "hono"
 import type { Db } from "../db/client.js"
 import type { Env } from "../lib/env.js"
 import { type AuthVariables, requireAuth } from "../lib/require-auth.js"
 import { validate } from "../lib/validate.js"
 import {
+  authorityFor,
   canDelete,
   findVisibleSummaryById,
   listAccessibleSummaries,
   type ProjectSummaryRow,
   remove,
+  setAutoReview,
 } from "../repositories/projects.repo.js"
 import { findOrCreateProject, reassignSessions } from "../services/projects.js"
 
@@ -48,8 +54,28 @@ export const projectsRoutes = ({ db, env }: Deps) =>
         canDelete(db, userId, projectId),
       ])
       if (row === null) return c.json({ error: "projectNotFound" }, 404)
-      return c.json({ project: serialize(row), viewerCanDelete: deletable }, 200)
+      return c.json(
+        { project: { ...serialize(row), autoReview: row.autoReview }, viewerCanDelete: deletable },
+        200,
+      )
     })
+    .patch(
+      "/:id",
+      requireAuth({ db, env }, ["web", "cli"]),
+      validate("json", updateProjectRequestSchema),
+      async (c) => {
+        const projectId = c.req.param("id")
+        const userId = c.get("user").id
+        if (!UUID.test(projectId) || (await findVisibleSummaryById(db, userId, projectId)) === null)
+          return c.json({ error: "projectNotFound" }, 404)
+        if ((await authorityFor(db, userId, projectId)) !== "admin")
+          return c.json({ error: "forbidden" }, 403)
+        const { autoReview } = c.req.valid("json")
+        await setAutoReview(db, projectId, autoReview)
+        c.get("log")?.info({ projectId, autoReview }, "automatic review set")
+        return c.json({ autoReview }, 200)
+      },
+    )
     .delete("/:id", requireAuth({ db, env }, ["web"]), async (c) => {
       const projectId = c.req.param("id")
       const userId = c.get("user").id

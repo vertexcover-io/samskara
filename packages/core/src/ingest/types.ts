@@ -435,6 +435,9 @@ export const reassignSessionsRequestSchema = z
 
 export const reassignSessionsResponseSchema = z.object({ moved: nonnegativeInteger }).strict()
 
+/** The settings a project admin can change; today only automatic review. */
+export const updateProjectRequestSchema = z.object({ autoReview: z.boolean() }).strict()
+
 export const updateOrgRequestSchema = z
   .object({
     autoAddMembers: z.boolean().optional(),
@@ -681,6 +684,7 @@ export type CreateProjectResponse = z.infer<typeof createProjectResponseSchema>
 export type ReassignSessionsRequest = z.infer<typeof reassignSessionsRequestSchema>
 export type ReassignSessionsResponse = z.infer<typeof reassignSessionsResponseSchema>
 
+export type UpdateProjectRequest = z.infer<typeof updateProjectRequestSchema>
 export type UpdateOrgRequest = z.infer<typeof updateOrgRequestSchema>
 export type UpdateSessionRequest = z.infer<typeof updateSessionRequestSchema>
 export type UpdateSessionTagsRequest = z.infer<typeof updateSessionTagsRequestSchema>
