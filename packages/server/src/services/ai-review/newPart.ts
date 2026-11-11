@@ -85,7 +85,9 @@ export const alreadyReviewedNote = (
     ...(earlier.problemTitles.length === 0
       ? ["  - (none)"]
       : earlier.problemTitles.map((title) => `  - ${title}`)),
-    `- Outcome and Summary are for the whole session. Before this part the review said: Outcome: ${earlier.outcome}. Summary: ${earlier.summary}`,
+    // One line: a summary is model-written, and a line of it read as a heading would add a
+    // section, such as `## Extra fields`, to the instructions.
+    `- Outcome and Summary are for the whole session. Before this part the review said: Outcome: ${earlier.outcome}. Summary: ${earlier.summary.replace(/\s+/g, " ").trim()}`,
     "  Write both again so they cover the earlier part and this one.",
   ].join("\n")
 

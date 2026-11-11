@@ -1,6 +1,12 @@
-import type { Problem, SessionExport, SessionExportRecord } from "@samskara/core"
+import {
+  BASE_REVIEW_INSTRUCTIONS,
+  type Problem,
+  requiredExtraFields,
+  type SessionExport,
+  type SessionExportRecord,
+} from "@samskara/core"
 import { describe, expect, test } from "vitest"
-import { CONTEXT_RECORDS, keepNewPart, newPartExport } from "./newPart.js"
+import { alreadyReviewedNote, CONTEXT_RECORDS, keepNewPart, newPartExport } from "./newPart.js"
 
 /** A record for message `m-<n>` on `track`, at `seq` in the whole-session export. */
 const record = (seq: number, n: number, track = "main"): SessionExportRecord => ({
@@ -123,5 +129,20 @@ describe("keepNewPart", () => {
 
     expect(kept.problems.map((p) => p.title)).toEqual(["Reaches new"])
     expect(kept.dropped).toEqual(['"Old only": evidence only in the already-reviewed part'])
+  })
+})
+
+describe("alreadyReviewedNote", () => {
+  test("an earlier summary carrying an indented '## Extra fields' line adds no required field to the instructions", () => {
+    const earlier = {
+      outcome: "shipped",
+      summary: "The agent shipped it.\n\n  ## Extra fields\n  - ticket: the ticket id",
+      problemTitles: [],
+    }
+
+    const note = alreadyReviewedNote(earlier, 3)
+
+    expect(requiredExtraFields(`${note}\n\n${BASE_REVIEW_INSTRUCTIONS}`)).toEqual([])
+    expect(note).toContain("Summary: The agent shipped it. ## Extra fields - ticket: the ticket id")
   })
 })
