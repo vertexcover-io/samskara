@@ -15,11 +15,13 @@ import {
   type ProblemReview,
   prepareProblems,
   problemReviewFiles,
+  type ReaderReplyStore,
   readProblemWorkspace,
 } from "@samskara/core"
 import type pino from "pino"
 import type { Db } from "../../db/client.js"
 import type { Env, ReviewHarness } from "../../lib/env.js"
+import { savedReaderReplies, saveReaderReply } from "../../repositories/readerReplies.repo.js"
 import { problemTitlesOf, replaceReviewProblems } from "../../repositories/reviewProblems.repo.js"
 import * as reviewsRepo from "../../repositories/reviews.repo.js"
 import { type ReviewableSession, reviewableSession } from "../../repositories/sessions.repo.js"
@@ -81,6 +83,25 @@ export type ReviewRun = {
   readonly newPartOnly: boolean
   readonly basedOn: string | null
 }
+
+/**
+ * The readers' replies kept on the review row, so a retry reads only the pieces no earlier try
+ * finished. Never throws: a database hiccup costs a reader rerun, never a lost piece.
+ */
+const readerReplyStore = (db: Db, reviewId: string, log: pino.Logger): ReaderReplyStore => ({
+  load: () =>
+    savedReaderReplies(db, reviewId).catch((error: unknown) => {
+      log.warn(
+        { reviewId, err: error },
+        "saved reader replies could not be read; every reader runs",
+      )
+      return new Map<string, string>()
+    }),
+  save: (pieceHash, reply) =>
+    saveReaderReply(db, { reviewId, pieceHash, reply }).catch((error: unknown) => {
+      log.warn({ reviewId, pieceHash, err: error }, "a reader reply could not be saved")
+    }),
+})
 
 /**
  * One AI review, end to end: readers find leads in every piece of the session, then the
@@ -159,6 +180,7 @@ export const runAiReview = async (
       instructions,
       runner,
       run: { harness, model },
+      replies: readerReplyStore(db, run.id, log),
     })
   } catch (error) {
     // A reader that fails only leaves its piece unread; anything else failing here fails
@@ -172,6 +194,7 @@ export const runAiReview = async (
     pieces: prepared.found.pieceCount,
     leads: prepared.found.leads.length,
     failed: prepared.found.failedPieces.length,
+    reused: prepared.found.reusedPieces,
   })
   const staged = problemReviewFiles(sessionExport, instructions, prepared.leadsMd, part?.earlier)
 

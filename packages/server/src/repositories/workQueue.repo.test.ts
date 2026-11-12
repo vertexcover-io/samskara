@@ -1,8 +1,9 @@
-import { eq } from "drizzle-orm"
+import { eq, sql } from "drizzle-orm"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import { createDb, type Db } from "../db/client.js"
-import { projects, sessionReviews, sessions, users } from "../db/schema.js"
+import { projects, reviewReaderReplies, sessionReviews, sessions, users } from "../db/schema.js"
 import { dockerAvailable, startTestDb } from "../db/testDb.js"
+import { saveReaderReply } from "./readerReplies.repo.js"
 import { listReviewsForSession } from "./reviews.repo.js"
 import {
   claimReview,
@@ -283,5 +284,71 @@ describe.skipIf(!dockerAvailable())("work queue: reviews", () => {
 
     expect(queued).toBeNull()
     expect(await rowById(row.id)).toMatchObject({ status: "running", attempts: 1, model: "first" })
+  })
+
+  describe("saved reader replies", () => {
+    /** A review row holding one saved reader reply, as a try that read one piece leaves it. */
+    const seedWithReply = async (
+      sessionId: string,
+      values: Partial<typeof sessionReviews.$inferInsert>,
+    ) => {
+      const row = await seedReview(sessionId, values)
+      await saveReaderReply(db, { reviewId: row.id, pieceHash: "piece-1", reply: "Nothing found." })
+      return row
+    }
+
+    const repliesOf = async (reviewId: string) =>
+      db.select().from(reviewReaderReplies).where(eq(reviewReaderReplies.reviewId, reviewId))
+
+    test("SC411: the 3rd failed try removes the review's replies; an earlier failed try keeps them", async () => {
+      const last = await seedWithReply("s-last", { status: "running", attempts: 3 })
+      const early = await seedWithReply("s-early", { status: "running", attempts: 1 })
+
+      expect(await failReviewAttempt(db, last.id, "harnessFailed: boom")).toBe("failed")
+      expect(await failReviewAttempt(db, early.id, "harnessFailed: boom")).toBe("waiting")
+
+      expect(await repliesOf(last.id)).toEqual([])
+      expect(await repliesOf(early.id)).toHaveLength(1)
+    })
+
+    test("SC412: a worker start that fails a review on its 3rd try removes its replies; one going back to waiting keeps them", async () => {
+      const last = await seedWithReply("s-last", { status: "running", attempts: 3 })
+      const second = await seedWithReply("s-second", { status: "running", attempts: 2 })
+
+      expect(await requeueRunningReviews(db)).toBe(2)
+
+      expect(await rowById(last.id)).toMatchObject({ status: "failed" })
+      expect(await repliesOf(last.id)).toEqual([])
+      expect(await rowById(second.id)).toMatchObject({ status: "waiting" })
+      expect(await repliesOf(second.id)).toHaveLength(1)
+    })
+
+    test("SC414: when the replies cannot be deleted, a 3rd failed try and a restart both leave the row running rather than failed with its replies behind", async () => {
+      const failing = await seedWithReply("s-failing", { status: "running", attempts: 3 })
+      await db.execute(sql`
+        create function "refuseDelete"() returns trigger language plpgsql
+        as $$ begin raise exception 'delete refused'; end $$`)
+      await db.execute(sql`
+        create trigger "refuseDelete" before delete on "reviewReaderReplies"
+        for each row execute function "refuseDelete"()`)
+      try {
+        await expect(failReviewAttempt(db, failing.id, "harnessFailed: boom")).rejects.toThrow()
+        expect(await rowById(failing.id)).toMatchObject({ status: "running" })
+
+        await expect(requeueRunningReviews(db)).rejects.toThrow()
+        expect(await rowById(failing.id)).toMatchObject({ status: "running" })
+        expect(await repliesOf(failing.id)).toHaveLength(1)
+      } finally {
+        await db.execute(sql`drop trigger "refuseDelete" on "reviewReaderReplies"`)
+        await db.execute(sql`drop function "refuseDelete"()`)
+      }
+    })
+
+    test("SC413: claiming a retry keeps the replies its earlier tries saved", async () => {
+      const retry = await seedWithReply("s-retry", { status: "waiting", attempts: 1 })
+
+      expect(await claimReview(db)).toMatchObject({ id: retry.id, attempts: 2 })
+      expect(await repliesOf(retry.id)).toHaveLength(1)
+    })
   })
 })

@@ -10,7 +10,7 @@ import {
   reviewMdSkeleton,
   sessionJsonText,
 } from "./contract.js"
-import { type FoundLeads, findAgentLeads } from "./finder.js"
+import { type FoundLeads, findAgentLeads, type ReaderReplyStore } from "./finder.js"
 import { findLeads, HUMAN_SECTION, type Leads } from "./leads.js"
 import {
   checkEvidence,
@@ -173,6 +173,8 @@ export const prepareProblems = async (input: {
   readonly instructions: string
   readonly runner: HarnessRunner
   readonly run?: Pick<HarnessRunInput, "harness" | "model">
+  /** Replies kept from an earlier try of this review; absent, every reader runs. */
+  readonly replies?: ReaderReplyStore
 }): Promise<PreparedProblems> => {
   const found = await findAgentLeads(input)
   const leads = findLeads(input.exported.records, found.leads)

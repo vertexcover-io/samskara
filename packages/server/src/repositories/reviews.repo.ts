@@ -3,6 +3,7 @@ import { and, desc, eq, type SQL, sql } from "drizzle-orm"
 import type { Querier } from "../db/client.js"
 import { projects, sessionReviews, sessions } from "../db/schema.js"
 import { visibleToUser } from "./projects.repo.js"
+import { deleteReaderReplies } from "./readerReplies.repo.js"
 
 export type ReviewRow = typeof sessionReviews.$inferSelect
 
@@ -213,7 +214,8 @@ export const lastMessageRead = (
 
 /**
  * Writes a run's result onto its own row and marks it done. Only that row changes: an earlier
- * run of the same session is history and is never overwritten.
+ * run of the same session is history and is never overwritten. A done run is not tried again,
+ * so the replies its readers kept for a retry are dropped, in the caller's transaction.
  */
 export const finishReview = async (
   db: Querier,
@@ -226,6 +228,7 @@ export const finishReview = async (
     .where(eq(sessionReviews.id, id))
     .returning()
   if (row === undefined) throw new Error(`finishReview: no review ${id}`)
+  await deleteReaderReplies(db, [row.id])
   return asDone(row)
 }
 

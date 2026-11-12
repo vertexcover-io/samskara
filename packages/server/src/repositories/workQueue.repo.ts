@@ -3,6 +3,7 @@ import type { Querier } from "../db/client.js"
 import { learningRuns, sessionActivityAt, sessionReviews } from "../db/schema.js"
 import type { NightlyReview } from "../lib/env.js"
 import type { PullRequestRef } from "./pullRequests.repo.js"
+import { deleteReaderReplies } from "./readerReplies.repo.js"
 import { newUserMessagesAfter, SILENT_TYPES, shownRun } from "./reviews.repo.js"
 
 /** A row that fails this many tries becomes `failed` and is not picked again. */
@@ -59,16 +60,24 @@ export const requeueRunningReviews = async (
   except: ReadonlyArray<string> = [],
 ): Promise<number> => {
   const last = sql`${sessionReviews.attempts} >= ${MAX_ATTEMPTS}`
-  const rows = await db
-    .update(sessionReviews)
-    .set({
-      status: sql`case when ${last} then 'failed' else 'waiting' end`,
-      error: sql`case when ${last} then 'harnessFailed: the worker stopped during the last try' else ${sessionReviews.error} end`,
-      updatedAt: new Date(),
-    })
-    .where(and(eq(sessionReviews.status, "running"), notInArray(sessionReviews.id, [...except])))
-    .returning({ id: sessionReviews.id })
-  return rows.length
+  // One transaction: a failed delete must not leave a row failed for good with its replies kept.
+  return db.transaction(async (tx) => {
+    const rows = await tx
+      .update(sessionReviews)
+      .set({
+        status: sql`case when ${last} then 'failed' else 'waiting' end`,
+        error: sql`case when ${last} then 'harnessFailed: the worker stopped during the last try' else ${sessionReviews.error} end`,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(sessionReviews.status, "running"), notInArray(sessionReviews.id, [...except])))
+      .returning({ id: sessionReviews.id, status: sessionReviews.status })
+    // A review failed for good is never tried again, so its readers' replies are no use any more.
+    await deleteReaderReplies(
+      tx,
+      rows.filter((row) => row.status === "failed").map((row) => row.id),
+    )
+    return rows.length
+  })
 }
 
 export type ClaimedReview = {
@@ -104,18 +113,23 @@ export const failReviewAttempt = async (
   db: Querier,
   id: string,
   error: string,
-): Promise<"waiting" | "failed"> => {
-  const [row] = await db
-    .update(sessionReviews)
-    .set({
-      status: sql`case when ${sessionReviews.attempts} >= ${MAX_ATTEMPTS} then 'failed' else 'waiting' end`,
-      error,
-      updatedAt: new Date(),
-    })
-    .where(and(eq(sessionReviews.id, id), eq(sessionReviews.status, "running")))
-    .returning({ status: sessionReviews.status })
-  return row?.status === "failed" ? "failed" : "waiting"
-}
+): Promise<"waiting" | "failed"> =>
+  // One transaction: if the delete fails, the row stays running instead of failed with replies kept.
+  db.transaction(async (tx) => {
+    const [row] = await tx
+      .update(sessionReviews)
+      .set({
+        status: sql`case when ${sessionReviews.attempts} >= ${MAX_ATTEMPTS} then 'failed' else 'waiting' end`,
+        error,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(sessionReviews.id, id), eq(sessionReviews.status, "running")))
+      .returning({ status: sessionReviews.status })
+    if (row?.status !== "failed") return "waiting"
+    // A review failed for good is never tried again, so its readers' replies are no use any more.
+    await deleteReaderReplies(tx, [id])
+    return "failed"
+  })
 
 /** The row behind a review job id, scoped to its session; null when it is not that session's. */
 export const reviewJob = async (db: Querier, sessionId: string, id: string) => {
