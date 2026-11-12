@@ -36,7 +36,7 @@ export const shownRun = (alias: SQL): SQL => sql`(${alias}."status" = 'done' and
  * Message types that carry no conversation: never "new" on their own, so a session that only
  * gained token reports or turn markers has nothing to review.
  */
-const SILENT_TYPES = sql`('turnEvent', 'custom', 'usage')`
+export const SILENT_TYPES = sql`('turnEvent', 'custom', 'usage')`
 
 /**
  * True when session `sessionId` has a message newer than run `run` read: a later `timestamp`

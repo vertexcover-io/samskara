@@ -3,7 +3,7 @@ import type { Querier } from "../db/client.js"
 import { learningRuns, sessionActivityAt, sessionReviews } from "../db/schema.js"
 import type { NightlyReview } from "../lib/env.js"
 import type { PullRequestRef } from "./pullRequests.repo.js"
-import { newMessagesAfter, shownRun } from "./reviews.repo.js"
+import { newMessagesAfter, SILENT_TYPES, shownRun } from "./reviews.repo.js"
 
 /** A row that fails this many tries becomes `failed` and is not picked again. */
 export const MAX_ATTEMPTS = 3
@@ -344,8 +344,9 @@ const lastRun = (analyzer: string): SQL => sql`(
 /**
  * Whether tonight's pick may take `"sessions"`, given its newest run `last` (null when never
  * reviewed). Never reviewed: yes. Newest run done: when the session has messages that run did
- * not read (`newMessagesAfter`). Newest run failed: once a message was stored after it failed,
- * so a failure is not retried every night on the same messages; a failed run has no
+ * not read (`newMessagesAfter`). Newest run failed: once a message other than a silent one
+ * (`SILENT_TYPES`) was stored after it failed, so a failure is not retried every night on the
+ * same messages; a failed run has no
  * `lastMessageId`, so the new-messages rule would call every message new. Waiting or running: no.
  */
 const pickableSession = sql`(
@@ -354,6 +355,7 @@ const pickableSession = sql`(
   or ("last"."status" = 'failed' and exists (
     select 1 from "messages" fm
     where fm."sessionId" = "sessions"."id" and fm."createdAt" > "last"."updatedAt"
+      and fm."msgType" not in ${SILENT_TYPES}
   ))
 )`
 
