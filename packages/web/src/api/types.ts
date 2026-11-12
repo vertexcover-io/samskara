@@ -97,6 +97,9 @@ export type ProblemsReview = {
   readonly problems: ReadonlyArray<ReviewProblem>
 }
 
+/** One run of the shown chain, as GET /:id/aireview returns it, with its own problems. */
+export type ProblemsReviewRun = ProblemsReview & { readonly kind: "full" | "newPart" }
+
 /** The part of an AI review's signals the card reads. */
 export type ProblemsReviewSignals = {
   readonly model: string

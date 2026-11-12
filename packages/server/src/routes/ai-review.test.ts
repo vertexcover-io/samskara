@@ -408,6 +408,7 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
     expect(await res.json()).toEqual({
       review: null,
       runs: [],
+      newMessages: false,
       job: { jobId, status: "running", startedAt: expect.any(String), lastEvent: null },
     })
   })
@@ -648,6 +649,7 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
     expect(await res.json()).toEqual({
       review: null,
       runs: [],
+      newMessages: false,
       job: { jobId, status: "failed", code: "harnessFailed", detail: { message: "boom" } },
     })
   })
@@ -744,5 +746,35 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
     const jobId = await analyze({ mode: "newMessages" })
     const [row] = await db.select().from(sessionReviews).where(eq(sessionReviews.id, jobId))
     expect(row).toMatchObject({ status: "waiting", newPartOnly: true, basedOn: base?.id })
+  })
+  test("SC24: GET aireview says newMessages false right after a done run and true once a later message arrives, with runs newest first", async () => {
+    await db.update(messages).set({ timestamp: new Date("2026-01-01T10:00:00Z") })
+    await analyze()
+    await drainQueue()
+
+    const before = (await (await request(`/api/sessions/${sessionId}/aireview`)).json()) as {
+      newMessages: boolean
+      runs: Array<{ id: string; problems: unknown[] }>
+    }
+    expect(before.newMessages).toBe(false)
+    expect(before.runs).toHaveLength(1)
+    expect(before.runs[0]?.problems).toHaveLength(1)
+
+    await db.insert(messages).values({
+      sessionId,
+      lineUuid: crypto.randomUUID(),
+      subIndex: 0,
+      msgType: "message",
+      role: "user",
+      lineNumber: 9,
+      raw: {},
+      sourceSchemaVersion: 1,
+      content: { type: "text", value: "one more thing" },
+      timestamp: new Date("2026-01-01T11:00:00Z"),
+    })
+    const after = (await (await request(`/api/sessions/${sessionId}/aireview`)).json()) as {
+      newMessages: boolean
+    }
+    expect(after.newMessages).toBe(true)
   })
 })

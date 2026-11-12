@@ -2,6 +2,7 @@ import { type ApiResult, client, request } from "./client.js"
 import type {
   AiReviewJobStatus,
   ProblemsReview,
+  ProblemsReviewRun,
   ReviewerOptions,
   SessionReviewSummary,
 } from "./types.js"
@@ -73,6 +74,10 @@ export const fetchAiReviewJob = async (
 export type ProblemsReviewProbe = {
   readonly review: ProblemsReview | null
   readonly job: AiReviewJobStatus | null
+  /** The shown chain, newest first; empty before the first review is done. */
+  readonly runs: ReadonlyArray<ProblemsReviewRun>
+  /** Messages exist that the newest done run did not read. */
+  readonly newMessages: boolean
 }
 
 export const fetchProblemsReview = async (
@@ -85,15 +90,23 @@ export const fetchProblemsReview = async (
     // Signals and evidence are stored as opaque JSON, so the row arrives as JSONValue; the
     // local types are the web's readonly view of that shape. The `job` field only exists
     // while a run is in flight.
-    const body = result.data as { review?: unknown; job?: unknown }
+    const body = result.data as {
+      review?: unknown
+      job?: unknown
+      runs?: unknown
+      newMessages?: unknown
+    }
     return {
       ok: true,
       data: {
         review: (body.review ?? null) as ProblemsReview | null,
         job: (body.job ?? null) as AiReviewJobStatus | null,
+        runs: (body.runs ?? []) as ReadonlyArray<ProblemsReviewRun>,
+        newMessages: body.newMessages === true,
       },
     }
   }
-  if (result.error.kind === "notFound") return { ok: true, data: { review: null, job: null } }
+  if (result.error.kind === "notFound")
+    return { ok: true, data: { review: null, job: null, runs: [], newMessages: false } }
   return result
 }

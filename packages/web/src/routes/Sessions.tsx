@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { useSearchParams } from "react-router-dom"
 import { type ApiError, client, request } from "../api/client.js"
+import type { BatchReviewMode } from "../api/reviewBatch.js"
 import type { FilterOption, SessionFilterOptions, SessionListPayload } from "../api/types.js"
 import { SessionExpired } from "../auth/SessionExpired.js"
 import { optionFor } from "../components/combobox.js"
@@ -262,9 +263,9 @@ export const Sessions = () => {
       )
   }
 
-  const startReview = async (): Promise<void> => {
+  const startReview = async (mode: BatchReviewMode): Promise<void> => {
     setStarting(true)
-    const started = await reviewBatch.start([...selected])
+    const started = await reviewBatch.start([...selected], mode)
     setStarting(false)
     if (started) setSelected(new Set())
   }
@@ -327,7 +328,7 @@ export const Sessions = () => {
       <ReviewBar
         count={selected.size}
         starting={starting}
-        onStart={() => void startReview()}
+        onStart={(mode) => void startReview(mode)}
         onClear={() => setSelected(new Set())}
       />
       {reviewBatch.error === null ? null : (
