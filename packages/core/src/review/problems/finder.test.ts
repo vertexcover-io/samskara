@@ -196,6 +196,26 @@ describe("findAgentLeads", () => {
     expect(result.failedPieces).toEqual(["helper agent:a: harness run timed out"])
   })
 
+  test("readers run side by side up to readerConcurrency, and no further", async () => {
+    const mostAtOnce = async (readerConcurrency?: number) => {
+      let running = 0
+      let most = 0
+      const runner: HarnessRunner = {
+        run: async () => {
+          running += 1
+          most = Math.max(most, running)
+          await new Promise((resolve) => setTimeout(resolve, 10))
+          running -= 1
+          return { stdout: "Nothing found.", firstByteMs: 1 }
+        },
+      }
+      await findAgentLeads({ exported, instructions: "# How to review", runner, readerConcurrency })
+      return most
+    }
+    expect(await mostAtOnce()).toBe(2)
+    expect(await mostAtOnce(1)).toBe(1)
+  })
+
   test("FA3: readers get the review's instructions, so a user's own rules shape what they look for", async () => {
     let instructions = ""
     const { runner } = reader((prompt) => {

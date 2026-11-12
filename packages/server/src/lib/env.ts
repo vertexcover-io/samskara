@@ -1,5 +1,6 @@
 import {
   CREDENTIAL_ENV,
+  DEFAULT_READER_CONCURRENCY,
   DEFAULT_REVIEW_MODEL,
   type HarnessSource,
   hasCredential,
@@ -23,6 +24,20 @@ export {
 
 export const DEFAULT_LOCAL_LOGIN = "samskara-dev"
 export const DEFAULT_AI_AGENT_SLOTS = 4
+/** Tries a review or fix run gets before it is `failed` and not picked again. */
+export const DEFAULT_MAX_ATTEMPTS = 3
+/** A session must go this many hours without a message before a nightly pick takes it. */
+export const DEFAULT_QUIET_HOURS = 6
+/**
+ * Only sessions active within this many days are candidates, so the ranking reads two weeks of
+ * a project's sessions rather than its whole history. Older ones are reviewed by ticking them.
+ */
+export const DEFAULT_PICK_WITHIN_DAYS = 14
+/**
+ * A reviewed session is picked again only once the person typed this many messages after its
+ * newest run: one or two ("ok", "push") are not worth a review. Review by hand has no minimum.
+ */
+export const DEFAULT_MIN_NEW_USER_MESSAGES = 3
 
 /** When the worker makes each night's pick, and how many sessions it takes per project. */
 export type NightlyReview = {
@@ -31,7 +46,23 @@ export type NightlyReview = {
   /** An IANA zone name, e.g. Asia/Kolkata. */
   readonly timeZone: string
   readonly limit: number
+  /** Unset (an Env built by hand, in tests): `DEFAULT_QUIET_HOURS`; likewise the two below. */
+  readonly quietHours?: number
+  readonly pickWithinDays?: number
+  readonly minNewUserMessages?: number
 }
+
+/** A whole number from `min` to `max`, read from text, with `fallback` when unset. */
+const wholeNumber = (key: string, fallback: number, min: number, max?: number) =>
+  z
+    .string()
+    .regex(/^\d+$/, `${key} must be a whole number`)
+    .default(String(fallback))
+    .transform((value) => Number(value))
+    .refine(
+      (value) => value >= min && (max === undefined || value <= max),
+      max === undefined ? `${key} must be at least ${min}` : `${key} must be from ${min} to ${max}`,
+    )
 
 /**
  * An IANA name, which Postgres and Intl read alike; one Intl can't build Postgres rejects too.
@@ -86,6 +117,10 @@ const BaseEnvSchema = z.object({
     .regex(/^[1-9]\d*$/, "AI_AGENT_SLOTS must be a whole number of at least 1")
     .default(String(DEFAULT_AI_AGENT_SLOTS))
     .transform((value) => Number(value)),
+  /** How many readers one review runs at once; they share AI_AGENT_SLOTS with everything else. */
+  AI_READER_CONCURRENCY: wholeNumber("AI_READER_CONCURRENCY", DEFAULT_READER_CONCURRENCY, 1),
+  /** Tries a review or fix run gets before it is failed for good. */
+  WORK_MAX_ATTEMPTS: wholeNumber("WORK_MAX_ATTEMPTS", DEFAULT_MAX_ATTEMPTS, 1, 10),
   /**
    * The agent harness the sessions ran (yok, for us), whose code the learning run checks each
    * learning against: a GitHub repo as `owner/name`, cloned fresh for every run, or a local
@@ -128,6 +163,22 @@ const BaseEnvSchema = z.object({
     .regex(/^([1-9]|1\d|2[0-5])$/, "NIGHTLY_REVIEW_LIMIT must be a whole number from 1 to 25")
     .default("10")
     .transform((value) => Number(value)),
+  /** Hours without a message before the nightly pick takes a session. */
+  NIGHTLY_QUIET_HOURS: wholeNumber("NIGHTLY_QUIET_HOURS", DEFAULT_QUIET_HOURS, 1, 168),
+  /** Only sessions active within this many days are candidates for the nightly pick. */
+  NIGHTLY_PICK_WITHIN_DAYS: wholeNumber(
+    "NIGHTLY_PICK_WITHIN_DAYS",
+    DEFAULT_PICK_WITHIN_DAYS,
+    1,
+    365,
+  ),
+  /** New messages the person must type before a reviewed session is picked again. */
+  NIGHTLY_MIN_NEW_USER_MESSAGES: wholeNumber(
+    "NIGHTLY_MIN_NEW_USER_MESSAGES",
+    DEFAULT_MIN_NEW_USER_MESSAGES,
+    1,
+    100,
+  ),
 })
 
 /** A repo and a local checkout both set would leave which one the run reads to chance. */
@@ -199,6 +250,10 @@ export type Env = {
   readonly aiReviewTimeoutMs: number
   /** Set by `loadEnv`; an Env built by hand (in tests) may leave it out for the default. */
   readonly aiAgentSlots?: number
+  /** Set by `loadEnv`; an Env built by hand (in tests) may leave it out for the default. */
+  readonly maxAttempts?: number
+  /** Set by `loadEnv`; an Env built by hand (in tests) may leave it out for the default. */
+  readonly readerConcurrency?: number
   readonly learningsHarness?: HarnessSource | undefined
   /** LEARNINGS_HARNESS_GITHUB_TOKEN, read alone: the nightly pick asks GitHub for PR states. */
   readonly githubReadToken?: string | undefined
@@ -240,6 +295,8 @@ export const loadEnv = (source: Source = process.env): Env => {
     aiReviewModel,
     aiReviewTimeoutMs: parsed.data.AI_REVIEW_TIMEOUT_MS,
     aiAgentSlots: parsed.data.AI_AGENT_SLOTS,
+    maxAttempts: parsed.data.WORK_MAX_ATTEMPTS,
+    readerConcurrency: parsed.data.AI_READER_CONCURRENCY,
     learningsHarness: learningsHarnessOf(parsed.data),
     githubReadToken: parsed.data.LEARNINGS_HARNESS_GITHUB_TOKEN,
     learningsModel:
@@ -249,6 +306,9 @@ export const loadEnv = (source: Source = process.env): Env => {
       at: parsed.data.NIGHTLY_REVIEW_TIME,
       timeZone: parsed.data.NIGHTLY_REVIEW_TIME_ZONE,
       limit: parsed.data.NIGHTLY_REVIEW_LIMIT,
+      quietHours: parsed.data.NIGHTLY_QUIET_HOURS,
+      pickWithinDays: parsed.data.NIGHTLY_PICK_WITHIN_DAYS,
+      minNewUserMessages: parsed.data.NIGHTLY_MIN_NEW_USER_MESSAGES,
     },
   }
 }

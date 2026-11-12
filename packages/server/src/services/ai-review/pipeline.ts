@@ -181,6 +181,7 @@ export const runAiReview = async (
       runner,
       run: { harness, model },
       replies: readerReplyStore(db, run.id, log),
+      readerConcurrency: env.readerConcurrency,
     })
   } catch (error) {
     // A reader that fails only leaves its piece unread; anything else failing here fails

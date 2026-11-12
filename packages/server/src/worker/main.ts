@@ -76,8 +76,8 @@ watchHarnessGroups(agentGroups)
 if (!canRecordAgents())
   log.error("`ps` is missing, so agents left by a killed worker cannot be found and reaped")
 
-const requeued = await requeueRunningReviews(db)
-const requeuedFixRuns = await requeueRunningFixRuns(db)
+const requeued = await requeueRunningReviews(db, [], env.maxAttempts)
+const requeuedFixRuns = await requeueRunningFixRuns(db, [], env.maxAttempts)
 log.info({ pid: process.pid, requeued, requeuedFixRuns, reapedLeftovers }, "worker started")
 
 // Every agent call in this process goes through these slots: prompt merge, readers, reviewer and
@@ -103,6 +103,7 @@ const loop = createWorkLoop({
   queueDue: env.learningsHarness !== undefined,
   // Reviews run on AI_REVIEW_HARNESS, which the server refuses to boot without.
   nightlyReview: env.nightlyReview,
+  maxAttempts: env.maxAttempts,
   // Unset: no GitHub call, and the nightly pick goes by the 6-hour rule alone.
   pullRequestLookup: createPullRequestLookup(env.githubReadToken),
 })

@@ -159,6 +159,12 @@ Every other variable in the environment is treated as application configuration 
 `AI_REVIEW_HARNESS` is changed after provisioning: add or edit it in the `production`
 environment and re-run Deploy with the current tag.
 
+The worker's tuning works the same way: `AI_AGENT_SLOTS`, `AI_READER_CONCURRENCY`,
+`WORK_MAX_ATTEMPTS`, and the nightly pick's `NIGHTLY_REVIEW_TIME`, `NIGHTLY_REVIEW_TIME_ZONE`,
+`NIGHTLY_REVIEW_LIMIT`, `NIGHTLY_QUIET_HOURS`, `NIGHTLY_PICK_WITHIN_DAYS` and
+`NIGHTLY_MIN_NEW_USER_MESSAGES`. `.env.example` says what each one does, its default and its
+range; a value out of range stops the server at boot, naming the variable.
+
 The equivalent from the command line, in a checkout of the repository and with `DEPLOY_HOST` and
 `DOMAIN` still exported from provisioning:
 

@@ -34,8 +34,17 @@ describe("loadEnv", () => {
       aiReviewModel: "opencode-go/glm-5.3-flash",
       aiReviewTimeoutMs: 600_000,
       aiAgentSlots: 4,
+      maxAttempts: 3,
+      readerConcurrency: 4,
       learningsModel: "opencode-go/glm-5.3-flash",
-      nightlyReview: { at: "01:00", timeZone: "Asia/Kolkata", limit: 10 },
+      nightlyReview: {
+        at: "01:00",
+        timeZone: "Asia/Kolkata",
+        limit: 10,
+        quietHours: 6,
+        pickWithinDays: 14,
+        minNewUserMessages: 3,
+      },
     })
   })
 
@@ -44,6 +53,9 @@ describe("loadEnv", () => {
       at: "01:00",
       timeZone: "Asia/Kolkata",
       limit: 10,
+      quietHours: 6,
+      pickWithinDays: 14,
+      minNewUserMessages: 3,
     })
   })
 
@@ -53,8 +65,18 @@ describe("loadEnv", () => {
       NIGHTLY_REVIEW_TIME: "03:30",
       NIGHTLY_REVIEW_TIME_ZONE: "UTC",
       NIGHTLY_REVIEW_LIMIT: "4",
+      NIGHTLY_QUIET_HOURS: "2",
+      NIGHTLY_PICK_WITHIN_DAYS: "30",
+      NIGHTLY_MIN_NEW_USER_MESSAGES: "5",
     })
-    expect(env.nightlyReview).toEqual({ at: "03:30", timeZone: "UTC", limit: 4 })
+    expect(env.nightlyReview).toEqual({
+      at: "03:30",
+      timeZone: "UTC",
+      limit: 4,
+      quietHours: 2,
+      pickWithinDays: 30,
+      minNewUserMessages: 5,
+    })
   })
 
   test("SC3: a bad nightly setting stops the boot, naming the setting", () => {
@@ -101,6 +123,48 @@ describe("loadEnv", () => {
     expect(loadEnv({ ...complete, AI_AGENT_SLOTS: "3" }).aiAgentSlots).toBe(3)
     expect(() => loadEnv({ ...complete, AI_AGENT_SLOTS: "0" })).toThrow(/AI_AGENT_SLOTS/)
     expect(() => loadEnv({ ...complete, AI_AGENT_SLOTS: "two" })).toThrow(/AI_AGENT_SLOTS/)
+  })
+
+  test("WORK_MAX_ATTEMPTS and AI_READER_CONCURRENCY are read with defaults of 3 and 4", () => {
+    const env = loadEnv({ ...complete, WORK_MAX_ATTEMPTS: "5", AI_READER_CONCURRENCY: "2" })
+    expect(env.maxAttempts).toBe(5)
+    expect(env.readerConcurrency).toBe(2)
+  })
+
+  test("a bad nightly window or retry setting stops the boot, naming the setting", () => {
+    const bad: ReadonlyArray<readonly [string, string]> = [
+      ["NIGHTLY_QUIET_HOURS", "0"],
+      ["NIGHTLY_QUIET_HOURS", "169"],
+      ["NIGHTLY_QUIET_HOURS", "1.5"],
+      ["NIGHTLY_PICK_WITHIN_DAYS", "0"],
+      ["NIGHTLY_PICK_WITHIN_DAYS", "366"],
+      ["NIGHTLY_MIN_NEW_USER_MESSAGES", "0"],
+      ["NIGHTLY_MIN_NEW_USER_MESSAGES", "101"],
+      ["WORK_MAX_ATTEMPTS", "0"],
+      ["WORK_MAX_ATTEMPTS", "11"],
+      ["AI_READER_CONCURRENCY", "0"],
+      ["AI_READER_CONCURRENCY", "four"],
+    ]
+    for (const [key, value] of bad)
+      expect(() => loadEnv({ ...complete, [key]: value }), `${key}=${value}`).toThrow(
+        new RegExp(`Invalid environment configuration: ${key}$`),
+      )
+  })
+
+  test("the top of each range is accepted", () => {
+    const env = loadEnv({
+      ...complete,
+      NIGHTLY_QUIET_HOURS: "168",
+      NIGHTLY_PICK_WITHIN_DAYS: "365",
+      NIGHTLY_MIN_NEW_USER_MESSAGES: "100",
+      WORK_MAX_ATTEMPTS: "10",
+    })
+    expect(env.nightlyReview).toMatchObject({
+      quietHours: 168,
+      pickWithinDays: 365,
+      minNewUserMessages: 100,
+    })
+    expect(env.maxAttempts).toBe(10)
   })
 
   test("requires the credential of the configured harness, not of every harness", () => {

@@ -46,6 +46,8 @@ export type WorkLoopDeps = {
   /** The clock the nightly pick reads; tests set it, production leaves it to the real one. */
   readonly now?: () => Date
   readonly reviewSlots?: number
+  /** Tries a review or fix run gets before it is failed for good; unset, the default 3. */
+  readonly maxAttempts?: number
 }
 
 export type WorkLoop = {
@@ -82,12 +84,17 @@ export const createWorkLoop = (deps: WorkLoopDeps): WorkLoop => {
       const result = await deps.runReview(review)
       if (result.kind === "ok") return log.info({ attempts: review.attempts }, "review done")
       if (stopped) return log.info("review try ended while stopping; left for the next worker")
-      const now = await failReviewAttempt(deps.db, review.id, reviewError(result))
+      const now = await failReviewAttempt(deps.db, review.id, reviewError(result), deps.maxAttempts)
       log.warn({ attempts: review.attempts, code: result.code, now }, "review try failed")
     } catch (error) {
       if (stopped) return log.info("review try ended while stopping; left for the next worker")
       const message = error instanceof Error ? error.message : String(error)
-      const now = await failReviewAttempt(deps.db, review.id, `harnessFailed: ${message}`)
+      const now = await failReviewAttempt(
+        deps.db,
+        review.id,
+        `harnessFailed: ${message}`,
+        deps.maxAttempts,
+      )
       log.error({ err: error, attempts: review.attempts, now }, "review try crashed")
     }
   }
@@ -115,12 +122,12 @@ export const createWorkLoop = (deps: WorkLoopDeps): WorkLoop => {
       const outcome = await runFixRun(run)
       if (outcome.status === "done") return await finishRun(deps.db, run.id, outcome)
       if (stopped) return log.info("fix run try ended while stopping; left for the next worker")
-      const now = await failFixRunAttempt(deps.db, run.id, outcome.error)
+      const now = await failFixRunAttempt(deps.db, run.id, outcome.error, deps.maxAttempts)
       log.warn({ attempts: run.attempts, now }, "fix run try failed")
     } catch (error) {
       if (stopped) return log.info("fix run try ended while stopping; left for the next worker")
       const message = error instanceof Error ? error.message : String(error)
-      const now = await failFixRunAttempt(deps.db, run.id, message)
+      const now = await failFixRunAttempt(deps.db, run.id, message, deps.maxAttempts)
       log.error({ err: error, attempts: run.attempts, now }, "fix run try crashed")
     }
   }
@@ -202,8 +209,8 @@ export const createWorkLoop = (deps: WorkLoopDeps): WorkLoop => {
     if (stopped) return
     // The advisory lock makes this the only worker, so a running row it is not running is one
     // whose result failed to save; left alone it would show running until the next restart.
-    const requeued = await requeueRunningReviews(deps.db, [...runningIds])
-    const requeuedFixRuns = await requeueRunningFixRuns(deps.db, [...runningIds])
+    const requeued = await requeueRunningReviews(deps.db, [...runningIds], deps.maxAttempts)
+    const requeuedFixRuns = await requeueRunningFixRuns(deps.db, [...runningIds], deps.maxAttempts)
     if (requeued + requeuedFixRuns > 0)
       deps.log.warn({ requeued, requeuedFixRuns }, "requeued rows left running")
     await pickNightly()

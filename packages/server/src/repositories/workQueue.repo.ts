@@ -1,13 +1,16 @@
 import { and, desc, eq, inArray, notInArray, type SQL, sql } from "drizzle-orm"
 import type { Querier } from "../db/client.js"
 import { learningRuns, sessionActivityAt, sessionReviews } from "../db/schema.js"
-import type { NightlyReview } from "../lib/env.js"
+import {
+  DEFAULT_MAX_ATTEMPTS,
+  DEFAULT_MIN_NEW_USER_MESSAGES,
+  DEFAULT_PICK_WITHIN_DAYS,
+  DEFAULT_QUIET_HOURS,
+  type NightlyReview,
+} from "../lib/env.js"
 import type { PullRequestRef } from "./pullRequests.repo.js"
 import { deleteReaderReplies } from "./readerReplies.repo.js"
 import { newUserMessagesAfter, SILENT_TYPES, shownRun } from "./reviews.repo.js"
-
-/** A row that fails this many tries becomes `failed` and is not picked again. */
-export const MAX_ATTEMPTS = 3
 
 export type QueuedReviewOptions = {
   readonly harness?: string
@@ -52,14 +55,15 @@ export const queueReview = async (
 
 /**
  * Every review left `running` by a worker that is gone goes back to `waiting`, unless that was
- * its 3rd try: a review that crashes the worker would otherwise be retried for ever. `except`
- * names the rows the calling worker is still running.
+ * its last try (`maxAttempts`): a review that crashes the worker would otherwise be retried for
+ * ever. `except` names the rows the calling worker is still running.
  */
 export const requeueRunningReviews = async (
   db: Querier,
   except: ReadonlyArray<string> = [],
+  maxAttempts = DEFAULT_MAX_ATTEMPTS,
 ): Promise<number> => {
-  const last = sql`${sessionReviews.attempts} >= ${MAX_ATTEMPTS}`
+  const last = sql`${sessionReviews.attempts} >= ${maxAttempts}`
   // One transaction: a failed delete must not leave a row failed for good with its replies kept.
   return db.transaction(async (tx) => {
     const rows = await tx
@@ -108,18 +112,19 @@ export const claimReview = async (db: Querier): Promise<ClaimedReview | null> =>
   return rows[0] ?? null
 }
 
-/** A failed try: back to `waiting` with the reason, or `failed` once it was the 3rd. */
+/** A failed try: back to `waiting` with the reason, or `failed` once it was the last. */
 export const failReviewAttempt = async (
   db: Querier,
   id: string,
   error: string,
+  maxAttempts = DEFAULT_MAX_ATTEMPTS,
 ): Promise<"waiting" | "failed"> =>
   // One transaction: if the delete fails, the row stays running instead of failed with replies kept.
   db.transaction(async (tx) => {
     const [row] = await tx
       .update(sessionReviews)
       .set({
-        status: sql`case when ${sessionReviews.attempts} >= ${MAX_ATTEMPTS} then 'failed' else 'waiting' end`,
+        status: sql`case when ${sessionReviews.attempts} >= ${maxAttempts} then 'failed' else 'waiting' end`,
         error,
         updatedAt: new Date(),
       })
@@ -227,8 +232,9 @@ export const queueFixRun = async (
 export const requeueRunningFixRuns = async (
   db: Querier,
   except: ReadonlyArray<string> = [],
+  maxAttempts = DEFAULT_MAX_ATTEMPTS,
 ): Promise<number> => {
-  const last = sql`${learningRuns.attempts} >= ${MAX_ATTEMPTS}`
+  const last = sql`${learningRuns.attempts} >= ${maxAttempts}`
   const rows = await db
     .update(learningRuns)
     .set({
@@ -270,13 +276,14 @@ export const claimFixRun = async (db: Querier): Promise<ClaimedFixRun | null> =>
   return rows[0] ?? null
 }
 
-/** A failed try: back to `waiting` with the reason, or `failed` and finished once it was the 3rd. */
+/** A failed try: back to `waiting` with the reason, or `failed` and finished once it was the last. */
 export const failFixRunAttempt = async (
   db: Querier,
   id: string,
   error: string,
+  maxAttempts = DEFAULT_MAX_ATTEMPTS,
 ): Promise<"waiting" | "failed"> => {
-  const last = sql`${learningRuns.attempts} >= ${MAX_ATTEMPTS}`
+  const last = sql`${learningRuns.attempts} >= ${maxAttempts}`
   const [row] = await db
     .update(learningRuns)
     .set({
@@ -315,29 +322,16 @@ export const queueDueFixRuns = async (db: Querier): Promise<number> => {
   return rows.length
 }
 
-/** A session must go this long without a message before a nightly pick takes it. */
-export const QUIET_FOR = "6 hours"
-
-/**
- * Only sessions active this recently are candidates, so the ranking reads two weeks of a
- * project's sessions rather than its whole history. Older ones are reviewed by ticking them.
- */
-export const PICK_WITHIN = "14 days"
-
-/**
- * A reviewed session is picked again only once the person typed this many messages after its
- * newest run: one or two ("ok", "push") are not worth a review. Review by hand has no minimum.
- */
-export const MIN_NEW_USER_MESSAGES = 3
-
 /** How many open pull requests the check before one nightly pick asks GitHub about, at most. */
 export const PR_CHECK_LIMIT = 200
 
 type NightlyInput = NightlyReview & { readonly now: Date; readonly analyzer: string }
 
 /**
- * The instant as SQL, and the rule for a project whose pick is due: automatic review on, the
- * day's time reached in `timeZone`, and no pick made since it. Reads `"projects"` unaliased.
+ * The instant as SQL, the rule for a project whose pick is due (automatic review on, the day's
+ * time reached in `timeZone`, and no pick made since it; reads `"projects"` unaliased), and the
+ * two instants a session's activity is held against: before `quietSince` it is quiet, after
+ * `activeSince` it is recent enough to pick.
  */
 const nightlyClock = (input: NightlyInput) => {
   // drizzle's postgres-js driver cannot bind a Date in raw sql, so the instant goes as text.
@@ -347,7 +341,11 @@ const nightlyClock = (input: NightlyInput) => {
   const due = sql`"projects"."autoReview"
     and ${now} >= ${dueAt}
     and ("projects"."lastNightlyPickAt" is null or "projects"."lastNightlyPickAt" < ${dueAt})`
-  return { now, due }
+  const quietHours = input.quietHours ?? DEFAULT_QUIET_HOURS
+  const pickWithinDays = input.pickWithinDays ?? DEFAULT_PICK_WITHIN_DAYS
+  const quietSince = sql`${now} - make_interval(hours => ${quietHours}::int)`
+  const activeSince = sql`${now} - make_interval(days => ${pickWithinDays}::int)`
+  return { now, due, quietSince, activeSince }
 }
 
 /**
@@ -364,15 +362,15 @@ const lastRun = (analyzer: string): SQL => sql`(
 /**
  * Whether tonight's pick may take `"sessions"`, given its newest run `last` (null when never
  * reviewed). Never reviewed: yes. Newest run done: when the person typed at least
- * `MIN_NEW_USER_MESSAGES` messages that run did not read (`newUserMessagesAfter`). Newest run failed: once a message other than a silent one
+ * `minNewUserMessages` messages that run did not read (`newUserMessagesAfter`). Newest run failed: once a message other than a silent one
  * (`SILENT_TYPES`) was stored after it failed, so a failure is not retried every night on the
  * same messages; a failed run has no
  * `lastMessageId`, so the new-messages rule would call every message new. Waiting or running: no.
  */
-const pickableSession = sql`(
+const pickableSession = (input: NightlyInput): SQL => sql`(
   "last"."id" is null
   or ("last"."status" = 'done'
-    and ${newUserMessagesAfter(sql`"sessions"."id"`, sql`"last"`, MIN_NEW_USER_MESSAGES)})
+    and ${newUserMessagesAfter(sql`"sessions"."id"`, sql`"last"`, input.minNewUserMessages ?? DEFAULT_MIN_NEW_USER_MESSAGES)})
   or ("last"."status" = 'failed' and exists (
     select 1 from "messages" fm
     where fm."sessionId" = "sessions"."id" and fm."createdAt" > "last"."updatedAt"
@@ -382,7 +380,7 @@ const pickableSession = sql`(
 
 /**
  * The open github.com pull requests opened by a session tonight's pick could take only through
- * its pull request (one not yet quiet for `QUIET_FOR`), for the check that asks GitHub before
+ * its pull request (one not yet quiet for `quietHours`), for the check that asks GitHub before
  * the pick: at most `PR_CHECK_LIMIT`, never-checked first, then
  * the ones checked longest ago. Empty unless some project's pick is due, so the every-minute
  * claim pass makes no GitHub call. Reads only.
@@ -391,7 +389,7 @@ export const pullRequestsToCheck = async (
   db: Querier,
   input: NightlyInput,
 ): Promise<ReadonlyArray<PullRequestRef>> => {
-  const { now, due } = nightlyClock(input)
+  const { due, quietSince, activeSince } = nightlyClock(input)
   const rows = await db.execute<PullRequestRef>(sql`
     select pr."id", r."owner", r."repoName" as "repo", pr."number"
     from "pullRequests" pr
@@ -405,9 +403,9 @@ export const pullRequestsToCheck = async (
         left join lateral ${lastRun(input.analyzer)} "last" on true
         where spr."prId" = pr."id"
           and ${due}
-          and ${sessionActivityAt} > ${now} - ${PICK_WITHIN}::interval
-          and ${sessionActivityAt} > ${now} - ${QUIET_FOR}::interval
-          and ${pickableSession}
+          and ${sessionActivityAt} > ${activeSince}
+          and ${sessionActivityAt} > ${quietSince}
+          and ${pickableSession(input)}
       )
     order by pr."checkedAt" asc nulls first, pr."id"
     limit ${PR_CHECK_LIMIT}`)
@@ -418,7 +416,7 @@ export const pullRequestsToCheck = async (
  * The nightly rule. Each project with automatic review on, whose pick for today is due and not
  * yet made, is stamped as picked and gets `waiting` reviews for its `limit` ready sessions. A
  * session is a candidate when `pickableSession` holds: never reviewed, reviewed with at least
- * `MIN_NEW_USER_MESSAGES` new user messages, or failed with messages since. It is ready once quiet for `QUIET_FOR`, or once a pull
+ * `minNewUserMessages` new user messages, or failed with messages since. It is ready once quiet for `quietHours`, or once a pull
  * request it opened is merged or closed (for a reviewed session, after its last run). Never
  * reviewed go first, then an ended pull request, then the ones active longest ago. A session
  * with a done run gets a new-part run based on its newest one; others get a full run. "Today"
@@ -430,7 +428,7 @@ export const queueNightlyReviews = async (
   db: Querier,
   input: NightlyInput,
 ): Promise<{ readonly picked: number; readonly queued: number }> => {
-  const { now, due } = nightlyClock(input)
+  const { now, due, quietSince, activeSince } = nightlyClock(input)
   const [row] = await db.execute<{ picked: number; queued: number }>(sql`
     with "picked" as (
       update "projects" set "lastNightlyPickAt" = ${now}
@@ -455,8 +453,8 @@ export const queueNightlyReviews = async (
       from "sessions"
       left join lateral ${lastRun(input.analyzer)} "last" on true
       where "sessions"."projectId" in (select "id" from "picked")
-        and ${sessionActivityAt} > ${now} - ${PICK_WITHIN}::interval
-        and ${pickableSession}
+        and ${sessionActivityAt} > ${activeSince}
+        and ${pickableSession(input)}
     ), "ready" as (
       -- Never reviewed first; then an ended pull request, which is recent, so oldest-first alone
       -- would leave it behind every quiet session of a busy project; then the oldest.
@@ -466,7 +464,7 @@ export const queueNightlyReviews = async (
           order by "neverReviewed" desc, "prEnded" desc, "activityAt", "id"
         ) as "rank"
       from "candidates"
-      where "prEnded" or "activityAt" <= ${now} - ${QUIET_FOR}::interval
+      where "prEnded" or "activityAt" <= ${quietSince}
     ), "queued" as (
       -- The one-active-run index makes "on conflict" a race guard: pickableSession already
       -- leaves out a session with a run waiting or running.
