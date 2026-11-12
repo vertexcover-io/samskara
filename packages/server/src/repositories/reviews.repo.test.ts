@@ -45,7 +45,7 @@ describe.skipIf(!dockerAvailable())("reviews repository", () => {
 
   const seedMessage = async (
     sessionId: string,
-    values: { msgType?: string; timestamp: Date | null; lineNumber: number },
+    values: { msgType?: string; timestamp: Date | null; lineNumber: number; createdAt?: Date },
   ) => {
     const [row] = await db
       .insert(messages)
@@ -59,6 +59,7 @@ describe.skipIf(!dockerAvailable())("reviews repository", () => {
         raw: {},
         sourceSchemaVersion: 1,
         timestamp: values.timestamp,
+        ...(values.createdAt === undefined ? {} : { createdAt: values.createdAt }),
       })
       .returning({ id: messages.id })
     if (!row) throw new Error("seed message failed")
@@ -97,6 +98,72 @@ describe.skipIf(!dockerAvailable())("reviews repository", () => {
 
     await seedMessage(sessionId, { timestamp: later, lineNumber: 4 })
     expect(await reviewsRepo.hasNewMessagesSince(db, sessionId, run.id)).toBe(true)
+  })
+
+  const doneRun = async (
+    sessionId: string,
+    projectId: string,
+    values: { lastMessageId: string | null; updatedAt: Date },
+  ) => {
+    const [run] = await db
+      .insert(sessionReviews)
+      .values({
+        sessionId,
+        projectId,
+        analyzer: "ai-problems-v2",
+        status: "done",
+        outcome: "shipped",
+        summary: "s",
+        signals: {},
+        ...values,
+      })
+      .returning()
+    if (!run) throw new Error("seed run failed")
+    return run.id
+  }
+
+  test("an untimed message stored before the run finished is not new; one stored after it is", async () => {
+    const sessionId = "untimed-new-messages"
+    const { projectId } = await seedSession(sessionId)
+    const last = await seedMessage(sessionId, {
+      timestamp: new Date("2026-01-01T10:00:00Z"),
+      lineNumber: 1,
+    })
+    const runId = await doneRun(sessionId, projectId, {
+      lastMessageId: last,
+      updatedAt: new Date("2026-01-01T12:00:00Z"),
+    })
+    await seedMessage(sessionId, {
+      timestamp: null,
+      lineNumber: 2,
+      createdAt: new Date("2026-01-01T11:00:00Z"),
+    })
+    expect(await reviewsRepo.hasNewMessagesSince(db, sessionId, runId)).toBe(false)
+
+    await seedMessage(sessionId, {
+      timestamp: null,
+      lineNumber: 3,
+      createdAt: new Date("2026-01-01T13:00:00Z"),
+    })
+    expect(await reviewsRepo.hasNewMessagesSince(db, sessionId, runId)).toBe(true)
+  })
+
+  test("a run that read nothing (no lastMessageId) makes any timed message new, however early", async () => {
+    const sessionId = "read-nothing"
+    const { projectId } = await seedSession(sessionId)
+    const runId = await doneRun(sessionId, projectId, {
+      lastMessageId: null,
+      updatedAt: new Date("2026-01-01T12:00:00Z"),
+    })
+    await seedMessage(sessionId, {
+      msgType: "usage",
+      timestamp: new Date("2000-01-01T00:00:00Z"),
+      lineNumber: 1,
+    })
+    expect(await reviewsRepo.hasNewMessagesSince(db, sessionId, runId)).toBe(false)
+
+    await seedMessage(sessionId, { timestamp: new Date("2000-01-01T00:00:00Z"), lineNumber: 2 })
+    expect(await reviewsRepo.hasNewMessagesSince(db, sessionId, runId)).toBe(true)
   })
 
   test("SC5: the page shows the latest done full run and the done new-part runs after it; failed and waiting runs never show", async () => {
