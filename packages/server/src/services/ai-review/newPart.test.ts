@@ -55,9 +55,10 @@ describe("splitNewPart", () => {
   })
 
   test.each(["usage", "turnEvent", "custom"])(
-    "a %s message after 10:00 is never fresh, the same rule the new-messages check uses",
+    "a %s message after 10:00 is neither fresh, the same rule the new-messages check uses, nor earlier",
     (msgType) => {
       const messages = [
+        at("silent-before", "2026-01-01T09:59:00.000Z", { msgType }),
         at("silent", "2026-01-01T10:05:00.000Z", { msgType }),
         at("untimed-silent", null, { msgType, createdAt: "2026-01-01T10:31:00.000Z" }),
         at("real", "2026-01-01T10:06:00.000Z"),
@@ -66,9 +67,28 @@ describe("splitNewPart", () => {
       const { earlier, fresh } = splitNewPart(messages, boundary)
 
       expect(ids(fresh)).toEqual(["real"])
-      expect(ids(earlier)).toEqual(["silent", "untimed-silent"])
+      expect(ids(earlier)).toEqual(["silent-before"])
     },
   )
+
+  test("21 token reports after 10:00 leave earlier as the reviewed conversation, so they cannot fill the 20 context records", () => {
+    const reports = Array.from({ length: 21 }, (_, n) =>
+      at(`usage-${n}`, `2026-01-01T10:${String(n + 1).padStart(2, "0")}:00.000Z`, {
+        msgType: "usage",
+      }),
+    )
+    const messages = [
+      at("ask", "2026-01-01T09:50:00.000Z"),
+      at("answer", "2026-01-01T09:55:00.000Z"),
+      ...reports,
+      at("follow-up", "2026-01-01T10:30:00.000Z"),
+    ]
+
+    const { earlier, fresh } = splitNewPart(messages, boundary)
+
+    expect(ids(earlier)).toEqual(["ask", "answer"])
+    expect(ids(fresh)).toEqual(["follow-up"])
+  })
 
   test("a base run that read nothing makes every timed message fresh", () => {
     const { earlier, fresh } = splitNewPart([at("a", "2026-01-01T08:00:00.000Z")], {
