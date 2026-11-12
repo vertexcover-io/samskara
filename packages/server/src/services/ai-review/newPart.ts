@@ -1,3 +1,5 @@
+import { SILENT_MESSAGE_TYPES } from "../../repositories/reviews.repo.js"
+
 /** The fields of a stored message this split reads. */
 type SplitMessage = {
   readonly id: string
@@ -15,20 +17,22 @@ const callIdOf = (message: SplitMessage): string | undefined => {
 const msOf = (time: string): number => new Date(time).getTime()
 
 /**
- * The session's messages split at what the base run read. `fresh` holds every message with a
- * later `timestamp` than `after`, or no timestamp and stored after `finishedAt`, plus each tool
- * call from the earlier part whose result is fresh: it is read again with its result. `earlier`
- * holds the rest. Both keep the input's order, which is the order the reviewer reads.
+ * The session's messages split at what the base run read. `fresh` holds every message other
+ * than a silent one (`SILENT_MESSAGE_TYPES`) with a later `timestamp` than `after`, or no
+ * timestamp and stored after `finishedAt`, plus each tool call from the earlier part whose
+ * result is fresh: it is read again with its result. `earlier` holds the rest. Both keep the input's order, which is the order the reviewer reads.
  */
 export const splitNewPart = <M extends SplitMessage>(
   messages: ReadonlyArray<M>,
   boundary: { readonly after: string | null; readonly finishedAt: Date },
 ): { readonly earlier: M[]; readonly fresh: M[] } => {
   const after = boundary.after === null ? Number.NEGATIVE_INFINITY : msOf(boundary.after)
-  const isNew = (message: M): boolean =>
-    message.timestamp === null
+  const isNew = (message: M): boolean => {
+    if (SILENT_MESSAGE_TYPES.includes(message.msgType)) return false
+    return message.timestamp === null
       ? msOf(message.createdAt) > boundary.finishedAt.getTime()
       : msOf(message.timestamp) > after
+  }
   const freshResults = new Set(
     messages
       .filter((message) => message.msgType === "toolResult" && isNew(message))

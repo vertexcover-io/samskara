@@ -34,9 +34,16 @@ export const shownRun = (alias: SQL): SQL => sql`(${alias}."status" = 'done' and
 
 /**
  * Message types that carry no conversation: never "new" on their own, so a session that only
- * gained token reports or turn markers has nothing to review.
+ * gained token reports or turn markers has nothing to review. `splitNewPart` applies the same
+ * list, so what counts as new here is what a new-part run reads as new.
  */
-export const SILENT_TYPES = sql`('turnEvent', 'custom', 'usage')`
+export const SILENT_MESSAGE_TYPES: ReadonlyArray<string> = ["turnEvent", "custom", "usage"]
+
+/** `SILENT_MESSAGE_TYPES` as a SQL list, for `not in`. */
+export const SILENT_TYPES = sql`(${sql.join(
+  SILENT_MESSAGE_TYPES.map((type) => sql`${type}`),
+  sql`, `,
+)})`
 
 /**
  * True when session `sessionId` has a message newer than run `run` read: a later `timestamp`
