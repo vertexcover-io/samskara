@@ -30,12 +30,15 @@ const list = (runs: ReadonlyArray<ListedRun>, reviewsWaiting = 0, canEdit = true
 
 type Call = { readonly method: string; readonly url: string; readonly body: unknown }
 
+/** A list read the server refuses with this status. */
+type Failed = { readonly failStatus: number }
+
 /**
  * The runs list answers each read with the next of `lists` (the last one repeats), and a Run now
  * POST answers `post`. Records every call with its method, URL and JSON body.
  */
 const stubServer = (
-  lists: ReadonlyArray<ListBody>,
+  lists: ReadonlyArray<ListBody | Failed>,
   post: { readonly status: number; readonly body: unknown } = {
     status: 202,
     body: { runId: "r-new" },
@@ -51,9 +54,11 @@ const stubServer = (
     if (method === "POST") return new Response(JSON.stringify(post.body), { status: post.status })
     if (!url.includes("/api/learnings/runs"))
       return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 })
-    const body = lists[Math.min(reads, lists.length - 1)]
+    const answer = lists[Math.min(reads, lists.length - 1)]
     reads += 1
-    return new Response(JSON.stringify(body), { status: 200 })
+    return answer !== undefined && "failStatus" in answer
+      ? new Response(JSON.stringify({ error: "unavailable" }), { status: answer.failStatus })
+      : new Response(JSON.stringify(answer), { status: 200 })
   })
   return calls
 }
@@ -216,6 +221,29 @@ test("SC740: an open run is followed until it ends, and then the polling stops",
     await vi.advanceTimersByTimeAsync(RUN_POLL_MS * 2)
   })
   expect(listReads(calls)).toHaveLength(readsWhenDone)
+})
+
+test("one failed read while a run is open keeps the list on screen and keeps following the run", async () => {
+  const calls = stubServer([
+    list([run("r-2", { status: "running", finishedAt: null })]),
+    { failStatus: 503 },
+    list([run("r-2", { fixesCreated: 1 })]),
+  ])
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
+  renderTab()
+
+  expect(await screen.findByText(/running… · 0 new fixes, 0 updated/)).toBeInTheDocument()
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(RUN_POLL_MS)
+  })
+  await waitFor(() => expect(listReads(calls)).toHaveLength(2))
+  expect(screen.queryByText("Retrieval failed")).toBeNull()
+  expect(screen.getByText(/running… · 0 new fixes, 0 updated/)).toBeInTheDocument()
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(RUN_POLL_MS)
+  })
+  expect(await screen.findByText(/finished .* · 1 new fix, 0 updated/)).toBeInTheDocument()
 })
 
 test("SC741: a viewer is offered no Run now", async () => {

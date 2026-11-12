@@ -80,9 +80,14 @@ export const RunsTab = ({
     request(() => client.api.learnings.runs.$get({ query: { project: projectId } })).then(
       (result) => {
         if (!active) return
-        setState(
-          result.ok
-            ? { phase: "ready", runs: result.data.runs, canEdit: result.data.canEdit }
+        if (result.ok) {
+          setState({ phase: "ready", runs: result.data.runs, canEdit: result.data.canEdit })
+          return
+        }
+        // A failed poll keeps the list it already has, and the next poll tries again.
+        setState((previous) =>
+          previous.phase === "ready" && result.error.kind !== "unauthorized"
+            ? previous
             : { phase: "failed", error: result.error },
         )
       },
