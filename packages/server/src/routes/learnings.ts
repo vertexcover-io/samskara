@@ -9,6 +9,7 @@ import {
   parseStory,
   REJECT_REASON_MAX,
   recordsInReviewOrder,
+  returnsAtSessions,
 } from "@samskara/core"
 import { Hono } from "hono"
 import { z } from "zod"
@@ -77,6 +78,8 @@ const serializeLearning = (row: learningsRepo.LearningRow) => ({
   rejectReason: row.rejectReason,
   skipCount: row.skipCount,
   sessionsAtSkip: row.sessionsAtSkip,
+  // The session count at which a skipped fix comes back; null when it is not skipped.
+  returnsAtSessions: returnsAtSessions(row as Parameters<typeof returnsAtSessions>[0]),
   // `samskara learn` from before decisions lists only fixes whose skippedAt is null; a rejected
   // fix must stay off that list too. Nothing in this repo reads it any more.
   skippedAt:

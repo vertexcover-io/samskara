@@ -7,10 +7,11 @@ import {
   nextDecision,
   type ProblemInput,
   parseStory,
+  returnsAtSessions,
   type WrittenLearning,
 } from "@samskara/core"
 import { and, asc, desc, eq, inArray, isNull, type SQL, sql } from "drizzle-orm"
-import type { Db, Querier } from "../db/client.js"
+import type { Db, Querier, Tx } from "../db/client.js"
 import { learningRuns, learnings, reviewProblems, sessionReviews, sessions } from "../db/schema.js"
 import { shownRun } from "./reviews.repo.js"
 
@@ -283,6 +284,31 @@ export type SavedOutcome = {
 }
 
 /**
+ * Reopens a skipped fix once it has been seen in enough more sessions since its last skip
+ * (`returnsAtSessions`): 10 after the first skip, 20 after the second. Nobody decided it, so
+ * `decidedBy` is cleared; the skip count stays. Counted after the batch's problems are linked,
+ * so they count.
+ */
+const returnIfSeenEnough = async (tx: Tx, learningId: string): Promise<void> => {
+  const [row] = await tx
+    .select({
+      decision: learnings.decision,
+      skipCount: learnings.skipCount,
+      sessionsAtSkip: learnings.sessionsAtSkip,
+    })
+    .from(learnings)
+    .where(eq(learnings.id, learningId))
+    .for("update")
+  const at =
+    row === undefined ? null : returnsAtSessions(row as Parameters<typeof returnsAtSessions>[0])
+  if (at === null || (await sessionCountOf(tx, learningId)) < at) return
+  await tx
+    .update(learnings)
+    .set({ decision: "open", decidedAt: new Date(), decidedBy: null })
+    .where(eq(learnings.id, learningId))
+}
+
+/**
  * One batch's result, all at once: new learnings created, joined ones rewritten, and every
  * problem the batch read marked with the run, linked to its learning when it has one. A
  * dropped group makes no learning; its problems are marked and nothing else.
@@ -344,6 +370,8 @@ export const saveBatch = async (
         .update(reviewProblems)
         .set({ learningRunId: input.runId, learningId })
         .where(inArray(reviewProblems.id, problemIds))
+      // A joined fix may be a skipped one this batch has now seen in enough more sessions.
+      if (learningId !== null && group.learningId !== null) await returnIfSeenEnough(tx, learningId)
       outcomes.push({
         action:
           group.answer.verdict === "drop"

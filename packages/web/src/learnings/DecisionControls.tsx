@@ -30,14 +30,21 @@ const ACTIONS: ReadonlyArray<{ readonly decision: Decision; readonly label: stri
 const buttonClass =
   "h-8 rounded-xs border border-rule px-3 text-[0.78rem] font-semibold transition-colors hover:border-ink disabled:opacity-60"
 
-/** What was decided and when, with the reason on a rejected fix; nothing on an open one. */
+/**
+ * What was decided and when, with the reason on a rejected fix; nothing on an open one. With
+ * the card's session count, a skipped fix also says how many more sessions until it returns.
+ */
 export const DecisionNote = ({
   learning,
+  sessionCount,
 }: {
-  readonly learning: Pick<Learning, "decision" | "decidedAt" | "rejectReason">
+  readonly learning: Pick<Learning, "decision" | "decidedAt" | "rejectReason" | "returnsAtSessions">
+  readonly sessionCount?: number
 }) => {
   if (learning.decision === "open" || learning.decidedAt === null) return null
   const word = { accepted: "Accepted", skipped: "Skipped", rejected: "Rejected" }[learning.decision]
+  const at = learning.returnsAtSessions
+  const left = at === null || sessionCount === undefined ? null : Math.max(0, at - sessionCount)
   return (
     <p className="font-mono text-[0.72rem] text-ink-soft">
       {word}{" "}
@@ -45,6 +52,7 @@ export const DecisionNote = ({
         {relativeTime(learning.decidedAt)}
       </time>
       {learning.rejectReason === null ? null : `: ${learning.rejectReason}`}
+      {left === null ? null : ` · back after ${left} more ${left === 1 ? "session" : "sessions"}`}
     </p>
   )
 }

@@ -54,7 +54,7 @@ export const LearningCard = ({
         </p>
       )}
       <div className="mt-1.5">
-        <DecisionNote learning={row} />
+        <DecisionNote learning={row} sessionCount={row.sessionCount} />
       </div>
       <p className="mt-1.5 text-ink-soft">{row.problem}</p>
       {row.impactReason === null ? null : (

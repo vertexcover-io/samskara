@@ -27,6 +27,7 @@ const LEARNING = {
   rejectReason: null,
   skipCount: 0,
   sessionsAtSkip: null,
+  returnsAtSessions: null,
   skippedAt: null,
   updatedByRunId: "r-1",
   createdAt: "2026-10-20T10:00:00.000Z",

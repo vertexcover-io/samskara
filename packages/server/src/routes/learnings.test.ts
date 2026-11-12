@@ -610,6 +610,7 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
       rejectReason: string | null
       skippedAt: string | null
       skipCount: number
+      returnsAtSessions: number | null
     }
   }
   const decide = (id: string, body: unknown, as?: string) =>
@@ -625,10 +626,16 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
     const id = await seedFix("Decide me", [{ at: daysAgo(1) }])
     const [before] = await db.select().from(learnings).where(eq(learnings.id, id))
     const steps = [
-      { body: { decision: "accepted" }, skipped: false, reason: null },
-      { body: { decision: "skipped" }, skipped: true, reason: null },
-      { body: { decision: "rejected", reason: "not ours" }, skipped: true, reason: "not ours" },
-      { body: { decision: "open" }, skipped: false, reason: null },
+      { body: { decision: "accepted" }, skipped: false, reason: null, returnsAt: null },
+      // One session behind the fix at the skip, so it comes back at 11.
+      { body: { decision: "skipped" }, skipped: true, reason: null, returnsAt: 11 },
+      {
+        body: { decision: "rejected", reason: "not ours" },
+        skipped: true,
+        reason: "not ours",
+        returnsAt: null,
+      },
+      { body: { decision: "open" }, skipped: false, reason: null, returnsAt: null },
     ]
     for (const step of steps) {
       const res = await decide(id, step.body)
@@ -638,6 +645,7 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
         id,
         decision: step.body.decision,
         rejectReason: step.reason,
+        returnsAtSessions: step.returnsAt,
         title: "Decide me",
         fix: "f",
       })

@@ -24,6 +24,7 @@ const LEARNING = {
   rejectReason: null,
   skipCount: 0,
   sessionsAtSkip: null,
+  returnsAtSessions: null,
   skippedAt: null,
   updatedByRunId: "r-1",
   createdAt: "2026-10-20T10:00:00.000Z",
@@ -251,6 +252,7 @@ const SKIPPED = {
   skippedAt: decidedAt,
   skipCount: 1,
   sessionsAtSkip: 4,
+  returnsAtSessions: 14,
 }
 const REJECTED = {
   ...LEARNING,
@@ -302,6 +304,26 @@ test("SC810: the Status filter lists each decision, Open showing accepted ones m
       name: "Skipped",
     }),
   ).toBeNull()
+})
+
+test("SC825: a skipped card says how many more sessions until it returns", async () => {
+  stubFetch([
+    {
+      match: "/api/learnings",
+      status: 200,
+      body: {
+        learnings: [{ ...SKIPPED, sessionCount: 7 }, ACCEPTED],
+        latestRun: RUN,
+        canEdit: true,
+      },
+    },
+  ])
+  renderPage("/projects/p-1/fixes?status=all")
+
+  const skipped = (await screen.findByText(SKIPPED.title)).closest("article") as HTMLElement
+  expect(within(skipped).getByText(/^Skipped/)).toHaveTextContent(/· back after 7 more sessions$/)
+  const accepted = screen.getByText(ACCEPTED.title).closest("article") as HTMLElement
+  expect(within(accepted).getByText(/^Accepted/)).not.toHaveTextContent(/back after/)
 })
 
 test("SC811: Reject asks for a reason before it sends anything", async () => {

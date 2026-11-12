@@ -14,6 +14,9 @@ export const SKIPPED_TOO_OFTEN = "Skipped 3 times"
 /** The longest reason a person may give for rejecting a fix: one short line. */
 export const REJECT_REASON_MAX = 200
 
+/** How many more sessions a skipped fix must be seen in to come back: after skip 1, skip 2. */
+export const SKIP_RETURNS_AFTER = [10, 20] as const
+
 /** A fix's decision as `learnings` stores it. */
 export type DecisionState = {
   readonly decision: FixDecision
@@ -65,4 +68,16 @@ export const nextDecision = (
     skipCount: current.skipCount,
     sessionsAtSkip: current.sessionsAtSkip,
   }
+}
+
+/**
+ * The session count at which a skipped fix comes back to open, or null when it is not
+ * skipped. The count is the one the Fixes card shows (`sessionCountOf` on the server).
+ */
+export const returnsAtSessions = (
+  fix: Pick<DecisionState, "decision" | "skipCount" | "sessionsAtSkip">,
+): number | null => {
+  if (fix.decision !== "skipped" || fix.sessionsAtSkip === null) return null
+  const after = SKIP_RETURNS_AFTER[fix.skipCount - 1]
+  return after === undefined ? null : fix.sessionsAtSkip + after
 }

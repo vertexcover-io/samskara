@@ -329,7 +329,7 @@ describe.skipIf(!dockerAvailable())("learnings repository", () => {
     return row
   }
 
-  test("SC27: a later run joining a skipped learning rewrites its text but keeps it skipped", async () => {
+  test("SC824: below its return point a skipped fix is rewritten by a run but stays skipped", async () => {
     const before = await savedLearning()
     const skipped = await learningsRepo.setDecision(db, before.id, { decision: "skipped" }, userId)
     await seedSession([problem("B")])
@@ -357,6 +357,87 @@ describe.skipIf(!dockerAvailable())("learnings repository", () => {
     })
     const [full] = await learningsRepo.learningsWithProblems(db, [before.id])
     expect(full?.problems.map((row) => row.title).sort()).toEqual(["A", "B"])
+  })
+
+  /** A fix run that links one problem from each of `sessions` new sessions to `fixId`. */
+  const joinRun = async (
+    fixId: string,
+    sessionCount: number,
+    answer: typeof written | Record<string, unknown> = written,
+  ) => {
+    for (let index = 0; index < sessionCount; index += 1)
+      await seedSession([problem(`Joined ${counter}-${index}`)])
+    const run = await learningsRepo.startRun(db, projectId)
+    const picked = await learningsRepo.unmarkedProblems(db, projectId, 100)
+    await learningsRepo.saveBatch(db, {
+      runId: run?.id as string,
+      projectId,
+      groups: [
+        {
+          cause: "x",
+          learningId: fixId,
+          problemIds: picked.map((row) => row.id),
+          answer: answer as typeof written,
+        },
+      ],
+    })
+    await learningsRepo.finishRun(db, run?.id as string, { status: "done" })
+    const [row] = await db.select().from(learnings).where(eq(learnings.id, fixId))
+    if (row === undefined) throw new Error("the fix is gone")
+    return row
+  }
+
+  test("SC821: a run reopens a fix skipped once when it reaches 10 more sessions, and not at 9", async () => {
+    const before = await savedLearning()
+    const skipped = await learningsRepo.setDecision(db, before.id, { decision: "skipped" }, userId)
+    expect(skipped).toMatchObject({ sessionsAtSkip: 1, skipCount: 1 })
+
+    const afterNine = await joinRun(before.id, 9)
+    expect(afterNine).toMatchObject({ decision: "skipped", decidedBy: userId })
+
+    const afterTen = await joinRun(before.id, 1)
+    expect(afterTen).toMatchObject({ decision: "open", decidedBy: null, skipCount: 1 })
+    expect(afterTen.decidedAt).toBeInstanceOf(Date)
+    expect(afterTen.decidedAt?.getTime()).toBeGreaterThan(skipped?.decidedAt?.getTime() ?? 0)
+  })
+
+  test("SC822: after a second skip the fix waits 20 more sessions", async () => {
+    const before = await savedLearning()
+    await db
+      .update(learnings)
+      .set({
+        decision: "skipped",
+        decidedAt: new Date(),
+        decidedBy: userId,
+        skipCount: 2,
+        sessionsAtSkip: 3,
+      })
+      .where(eq(learnings.id, before.id))
+
+    expect(await joinRun(before.id, 21)).toMatchObject({ decision: "skipped" })
+    expect(await joinRun(before.id, 1)).toMatchObject({ decision: "open", skipCount: 2 })
+  })
+
+  test("SC823: a run that rewrites an accepted fix leaves it accepted", async () => {
+    const before = await savedLearning()
+    const accepted = await learningsRepo.setDecision(
+      db,
+      before.id,
+      { decision: "accepted" },
+      userId,
+    )
+    const after = await joinRun(before.id, 1, {
+      ...written,
+      title: "Rewritten by the second run",
+      priority: "low",
+    })
+    expect(after).toMatchObject({
+      title: "Rewritten by the second run",
+      priority: "low",
+      decision: "accepted",
+      decidedBy: userId,
+      decidedAt: accepted?.decidedAt,
+    })
   })
 
   test("SC28: the grouper is still shown a skipped learning, so its cause joins it", async () => {

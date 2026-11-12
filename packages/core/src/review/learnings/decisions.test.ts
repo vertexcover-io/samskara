@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest"
-import { type DecisionState, nextDecision } from "./decisions.js"
+import { type DecisionState, nextDecision, returnsAtSessions } from "./decisions.js"
 
 const T = new Date("2026-11-01T10:00:00Z")
 const T2 = new Date("2026-11-02T10:00:00Z")
@@ -78,5 +78,13 @@ describe("nextDecision", () => {
       skipCount: 1,
       decidedBy: "U",
     })
+  })
+})
+
+describe("returnsAtSessions", () => {
+  test("SC820: a skipped fix comes back 10 more sessions after the first skip and 20 after the second", () => {
+    expect(returnsAtSessions({ decision: "skipped", skipCount: 1, sessionsAtSkip: 4 })).toBe(14)
+    expect(returnsAtSessions({ decision: "skipped", skipCount: 2, sessionsAtSkip: 4 })).toBe(24)
+    expect(returnsAtSessions({ decision: "accepted", skipCount: 1, sessionsAtSkip: 4 })).toBeNull()
   })
 })
