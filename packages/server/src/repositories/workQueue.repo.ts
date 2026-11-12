@@ -1,9 +1,9 @@
-import { and, desc, eq, inArray, notInArray, sql } from "drizzle-orm"
+import { and, desc, eq, inArray, notInArray, type SQL, sql } from "drizzle-orm"
 import type { Querier } from "../db/client.js"
 import { learningRuns, sessionActivityAt, sessionReviews } from "../db/schema.js"
 import type { NightlyReview } from "../lib/env.js"
 import type { PullRequestRef } from "./pullRequests.repo.js"
-import { shownRun } from "./reviews.repo.js"
+import { newMessagesAfter, shownRun } from "./reviews.repo.js"
 
 /** A row that fails this many tries becomes `failed` and is not picked again. */
 export const MAX_ATTEMPTS = 3
@@ -331,6 +331,33 @@ const nightlyClock = (input: NightlyInput) => {
 }
 
 /**
+ * The newest review run of `"sessions"` for `analyzer`, any status, as a lateral row named
+ * `last`; the caller joins it with `left join lateral … on true`.
+ */
+const lastRun = (analyzer: string): SQL => sql`(
+  select r."id", r."status", r."lastMessageId", r."updatedAt"
+  from "sessionReviews" r
+  where r."sessionId" = "sessions"."id" and r."analyzer" = ${analyzer}
+  order by r."createdAt" desc limit 1
+)`
+
+/**
+ * Whether tonight's pick may take `"sessions"`, given its newest run `last` (null when never
+ * reviewed). Never reviewed: yes. Newest run done: when the session has messages that run did
+ * not read (`newMessagesAfter`). Newest run failed: once a message was stored after it failed,
+ * so a failure is not retried every night on the same messages; a failed run has no
+ * `lastMessageId`, so the new-messages rule would call every message new. Waiting or running: no.
+ */
+const pickableSession = sql`(
+  "last"."id" is null
+  or ("last"."status" = 'done' and ${newMessagesAfter(sql`"sessions"."id"`, sql`"last"`)})
+  or ("last"."status" = 'failed' and exists (
+    select 1 from "messages" fm
+    where fm."sessionId" = "sessions"."id" and fm."createdAt" > "last"."updatedAt"
+  ))
+)`
+
+/**
  * The open github.com pull requests opened by a session tonight's pick could take only through
  * its pull request (one not yet quiet for `QUIET_FOR`), for the check that asks GitHub before
  * the pick: at most `PR_CHECK_LIMIT`, never-checked first, then
@@ -352,14 +379,12 @@ export const pullRequestsToCheck = async (
         select 1 from "sessionPullRequests" spr
         join "sessions" on "sessions"."id" = spr."sessionId"
         join "projects" on "projects"."id" = "sessions"."projectId"
+        left join lateral ${lastRun(input.analyzer)} "last" on true
         where spr."prId" = pr."id"
           and ${due}
           and ${sessionActivityAt} > ${now} - ${PICK_WITHIN}::interval
           and ${sessionActivityAt} > ${now} - ${QUIET_FOR}::interval
-          and not exists (
-            select 1 from "sessionReviews" sr
-            where sr."sessionId" = "sessions"."id" and sr."analyzer" = ${input.analyzer}
-          )
+          and ${pickableSession}
       )
     order by pr."checkedAt" asc nulls first, pr."id"
     limit ${PR_CHECK_LIMIT}`)
@@ -369,11 +394,14 @@ export const pullRequestsToCheck = async (
 /**
  * The nightly rule. Each project with automatic review on, whose pick for today is due and not
  * yet made, is stamped as picked and gets `waiting` reviews for its `limit` ready sessions. A
- * session is ready once it has been quiet for `QUIET_FOR`, or once a pull request it opened is
- * merged or closed; those with an ended pull request go first, then the ones active longest ago. "Today" and the time of day are read in
- * `timeZone`, so a worker started after midnight but before `at` makes no pick for the night
- * before. A session with a row for the analyzer, in any state, is left alone. One statement, so a
- * crash cannot stamp a project without queueing its reviews, or queue them without the stamp.
+ * session is a candidate when `pickableSession` holds: never reviewed, reviewed with new
+ * messages, or failed with messages since. It is ready once quiet for `QUIET_FOR`, or once a pull
+ * request it opened is merged or closed (for a reviewed session, after its last run). Never
+ * reviewed go first, then an ended pull request, then the ones active longest ago. A session
+ * with a done run gets a new-part run based on its newest one; others get a full run. "Today"
+ * and the time of day are read in `timeZone`, so a worker started after midnight but before
+ * `at` makes no pick for the night before. One statement, so a crash cannot stamp a project
+ * without queueing its reviews, or queue them without the stamp.
  */
 export const queueNightlyReviews = async (
   db: Querier,
@@ -387,30 +415,42 @@ export const queueNightlyReviews = async (
       returning "id"
     ), "candidates" as (
       select "sessions"."id", "sessions"."projectId", ${sessionActivityAt} as "activityAt",
+        "last"."id" is null as "neverReviewed",
+        (
+          select d."id" from "sessionReviews" d
+          where d."sessionId" = "sessions"."id" and d."analyzer" = ${input.analyzer}
+            and d."status" = 'done'
+          order by d."createdAt" desc limit 1
+        ) as "basedOn",
         exists (
           select 1 from "sessionPullRequests" spr
           join "pullRequests" pr on pr."id" = spr."prId"
           where spr."sessionId" = "sessions"."id" and pr."state" in ('merged', 'closed')
+            -- A reviewed session counts only a pull request that ended after its last run.
+            and ("last"."id" is null or pr."closedAt" > "last"."updatedAt")
         ) as "prEnded"
       from "sessions"
+      left join lateral ${lastRun(input.analyzer)} "last" on true
       where "sessions"."projectId" in (select "id" from "picked")
         and ${sessionActivityAt} > ${now} - ${PICK_WITHIN}::interval
-        and not exists (
-          select 1 from "sessionReviews" sr
-          where sr."sessionId" = "sessions"."id" and sr."analyzer" = ${input.analyzer}
-        )
+        and ${pickableSession}
     ), "ready" as (
-      -- A session whose pull request ended goes first: it is recent, so oldest-first alone would
-      -- leave it behind every quiet session of a busy project and the trigger would never fire.
-      select "id", "projectId",
+      -- Never reviewed first; then an ended pull request, which is recent, so oldest-first alone
+      -- would leave it behind every quiet session of a busy project; then the oldest.
+      select "id", "projectId", "basedOn",
         row_number() over (
-          partition by "projectId" order by "prEnded" desc, "activityAt", "id"
+          partition by "projectId"
+          order by "neverReviewed" desc, "prEnded" desc, "activityAt", "id"
         ) as "rank"
       from "candidates"
       where "prEnded" or "activityAt" <= ${now} - ${QUIET_FOR}::interval
     ), "queued" as (
-      insert into "sessionReviews" ("sessionId", "projectId", "analyzer", "status", "attempts")
-      select "id", "projectId", ${input.analyzer}, 'waiting', 0 from "ready"
+      -- The one-active-run index makes "on conflict" a race guard: pickableSession already
+      -- leaves out a session with a run waiting or running.
+      insert into "sessionReviews"
+        ("sessionId", "projectId", "analyzer", "status", "attempts", "newPartOnly", "basedOn")
+      select "id", "projectId", ${input.analyzer}, 'waiting', 0, "basedOn" is not null, "basedOn"
+      from "ready"
       where "rank" <= ${input.limit}
       on conflict do nothing
       returning "id"
