@@ -54,6 +54,22 @@ describe("splitNewPart", () => {
     expect(ids(earlier)).toEqual(["other-call"])
   })
 
+  test.each(["usage", "turnEvent", "custom"])(
+    "a %s message after 10:00 is never fresh, the same rule the new-messages check uses",
+    (msgType) => {
+      const messages = [
+        at("silent", "2026-01-01T10:05:00.000Z", { msgType }),
+        at("untimed-silent", null, { msgType, createdAt: "2026-01-01T10:31:00.000Z" }),
+        at("real", "2026-01-01T10:06:00.000Z"),
+      ]
+
+      const { earlier, fresh } = splitNewPart(messages, boundary)
+
+      expect(ids(fresh)).toEqual(["real"])
+      expect(ids(earlier)).toEqual(["silent", "untimed-silent"])
+    },
+  )
+
   test("a base run that read nothing makes every timed message fresh", () => {
     const { earlier, fresh } = splitNewPart([at("a", "2026-01-01T08:00:00.000Z")], {
       after: null,
