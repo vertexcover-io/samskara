@@ -7,6 +7,10 @@ import { plural, runStatusClass, runWork } from "../learnings/labels.js"
 import { LoadingShell } from "../shell/LoadingShell.js"
 import { absoluteTime } from "../time.js"
 import { tabPath } from "./ProjectTabs.js"
+import { RunNow } from "./RunNow.js"
+
+/** How often an open run is checked. A run is two agents per batch, so minutes, not seconds. */
+export const RUN_POLL_MS = 5_000
 
 type State =
   | { readonly phase: "loading" }
@@ -66,10 +70,13 @@ export const RunsTab = ({
   readonly fixRunEveryDays: number
 }) => {
   const [state, setState] = useState<State>({ phase: "loading" })
+  // Bumped to read the list again: after Run now, and while a run is open.
+  const [reloadCount, setReloadCount] = useState(0)
 
+  // The list is not blanked to loading here: the poll reads it every few seconds.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reloadCount is never read, only bumped — a change is the reload.
   useEffect(() => {
     let active = true
-    setState({ phase: "loading" })
     request(() => client.api.learnings.runs.$get({ query: { project: projectId } })).then(
       (result) => {
         if (!active) return
@@ -83,7 +90,16 @@ export const RunsTab = ({
     return () => {
       active = false
     }
-  }, [projectId])
+  }, [projectId, reloadCount])
+
+  const anyOpen =
+    state.phase === "ready" &&
+    state.runs.some((run) => run.status === "waiting" || run.status === "running")
+  useEffect(() => {
+    if (!anyOpen) return
+    const timer = setInterval(() => setReloadCount((count) => count + 1), RUN_POLL_MS)
+    return () => clearInterval(timer)
+  }, [anyOpen])
 
   if (state.phase === "loading") return <LoadingShell label="Retrieving fix runs" />
   if (state.phase === "failed")
@@ -111,6 +127,9 @@ export const RunsTab = ({
               ? "No fix run yet"
               : `Last run ${absoluteTime(latest.startedAt)} · ${latest.status}`}
           </p>
+          {state.canEdit ? (
+            <RunNow projectId={projectId} onStarted={() => setReloadCount((count) => count + 1)} />
+          ) : null}
         </div>
       </div>
       {state.runs.length === 0 ? (

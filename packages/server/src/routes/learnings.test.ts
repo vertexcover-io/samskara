@@ -9,6 +9,7 @@ import {
   learnings,
   messages,
   reviewProblems,
+  sessionReviews,
   sessions,
   userOrgs,
   users,
@@ -799,15 +800,18 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
     expect(rows[0]).toMatchObject({ status: "waiting", waitForReviews: false })
   })
 
-  test("SC45: Run now is refused while a run is running", async () => {
-    await learningsRepo.startRun(db, projectId)
+  test("SC45/SC733: Run now refused while a run is running names that run", async () => {
+    const running = await learningsRepo.startRun(db, projectId)
     const res = await request("/api/learnings/runs", {
       method: "POST",
       body: { project: projectId },
       serverHarness: true,
     })
     expect(res.status).toBe(409)
-    expect(await res.json()).toEqual({ error: "learningRunAlreadyRunning" })
+    expect(await res.json()).toEqual({
+      error: "learningRunAlreadyRunning",
+      runId: running?.id,
+    })
     expect(notified).toBe(0)
   })
 
@@ -1025,5 +1029,28 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
       ["L2", null],
     ])
     expect((await request(`/api/learnings?project=${projectId}&run=not-a-uuid`)).status).toBe(400)
+  })
+
+  test("SC732: the runs list says how many of the project's reviews are waiting or running", async () => {
+    /** A session in `project` whose one review has `status`. */
+    const reviewWith = async (status: string, project = projectId) => {
+      counter += 1
+      const sessionId = `route-pending-${counter}`
+      await seedSession(db, { sessionId, projectId: project, userId, problems: [] })
+      await db
+        .update(sessionReviews)
+        .set({ status, outcome: status === "done" ? "shipped" : null })
+        .where(eq(sessionReviews.sessionId, sessionId))
+    }
+    for (const status of ["waiting", "running", "done", "failed"]) await reviewWith(status)
+    const other = await seedProject(
+      db,
+      await seedOrg(db, `pending-org-${counter}`),
+      `pending-${counter}`,
+    )
+    await reviewWith("waiting", other)
+
+    const res = await request(`/api/learnings/runs?project=${projectId}`)
+    expect(((await res.json()) as { reviewsWaiting: number }).reviewsWaiting).toBe(2)
   })
 })

@@ -120,6 +120,35 @@ export const listRuns = async (db: Querier, projectId: string): Promise<ListedRu
   }))
 }
 
+/** How many of the project's session reviews are waiting or running: what a waiting fix run waits on. */
+export const reviewsWaiting = async (db: Querier, projectId: string): Promise<number> => {
+  const [row] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(sessionReviews)
+    .where(
+      and(
+        eq(sessionReviews.projectId, projectId),
+        inArray(sessionReviews.status, ["waiting", "running"]),
+      ),
+    )
+  return row?.count ?? 0
+}
+
+/** The project's fix run that is waiting or running; at most one exists. */
+export const openRun = async (db: Querier, projectId: string): Promise<LearningRunRow | null> => {
+  const [row] = await db
+    .select()
+    .from(learningRuns)
+    .where(
+      and(
+        eq(learningRuns.projectId, projectId),
+        inArray(learningRuns.status, ["waiting", "running"]),
+      ),
+    )
+    .limit(1)
+  return row ?? null
+}
+
 const problemColumns = {
   id: reviewProblems.id,
   reviewId: reviewProblems.reviewId,

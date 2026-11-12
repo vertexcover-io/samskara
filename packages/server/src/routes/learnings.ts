@@ -152,17 +152,27 @@ export const learningsRoutes = ({ db, env, notifyWorker }: Deps) => {
             waitForReviews: body.waitForReviews ?? true,
             harnessPath: body.harnessPath ?? null,
           })
-          if (queued === null) return c.json({ error: "learningRunAlreadyRunning" }, 409)
+          if (queued === null) {
+            // The run it collided with, so the caller can point at it instead of only refusing.
+            const open = await learningsRepo.openRun(db, body.project)
+            return c.json({ error: "learningRunAlreadyRunning", runId: open?.id ?? null }, 409)
+          }
           notifyWorker()
           return c.json({ runId: queued.id }, 202)
         },
       )
-      /** The project's runs, newest first, with how many fixes each created and updated. */
+      /**
+       * The project's runs, newest first, with how many fixes each created and updated, and how
+       * many of its reviews are waiting or running, so Run now can ask before running over them.
+       */
       .get("/runs", requireAuth({ db, env }, ["web", "cli"]), async (c) => {
         const projectId = c.req.query("project") ?? ""
         const scope = await scopeIn(c.get("user").id, projectId)
         if (scope === null) return c.json({ error: "projectNotFound" }, 404)
-        const runs = await learningsRepo.listRuns(db, projectId)
+        const [runs, reviewsWaiting] = await Promise.all([
+          learningsRepo.listRuns(db, projectId),
+          learningsRepo.reviewsWaiting(db, projectId),
+        ])
         return c.json(
           {
             runs: runs.map((run) => ({
@@ -170,6 +180,7 @@ export const learningsRoutes = ({ db, env, notifyWorker }: Deps) => {
               fixesCreated: run.fixesCreated,
               fixesUpdated: run.fixesUpdated,
             })),
+            reviewsWaiting,
             canEdit: scope !== "viewer",
           },
           200,
