@@ -22,14 +22,24 @@ from "carriedRedos";
 --> statement-breakpoint
 drop table "carriedRedos";
 --> statement-breakpoint
--- reviewedThrough was a main-conversation line; the link is that line's last message.
+-- reviewedThrough was a main-conversation line. New messages are found by time, so the link is
+-- the latest timed main message at or before it: a transcript often ends on an untimed cost line,
+-- and linking to that would make every message new. A session with no timed message keeps the
+-- line's last message.
 update "sessionReviews" sr
-set "lastMessageId" = (
-  select m."id" from "messages" m
-  where m."sessionId" = sr."sessionId"
-    and m."trackId" = 'main'
-    and m."lineNumber" = sr."reviewedThrough"
-  order by m."subIndex" desc
-  limit 1
+set "lastMessageId" = coalesce(
+  (select m."id" from "messages" m
+    where m."sessionId" = sr."sessionId"
+      and m."trackId" = 'main'
+      and m."lineNumber" <= sr."reviewedThrough"
+      and m."timestamp" is not null
+    order by m."timestamp" desc, m."lineNumber" desc, m."subIndex" desc
+    limit 1),
+  (select m."id" from "messages" m
+    where m."sessionId" = sr."sessionId"
+      and m."trackId" = 'main'
+      and m."lineNumber" = sr."reviewedThrough"
+    order by m."subIndex" desc
+    limit 1)
 )
 where sr."reviewedThrough" is not null and sr."lastMessageId" is null;
