@@ -12,6 +12,9 @@ const RUN_REFUSED: Readonly<Record<string, string>> = {
   noHarnessPath:
     "The server has no harness to check learnings against. Set LEARNINGS_HARNESS_REPO (or LEARNINGS_HARNESS_PATH) on the server.",
   projectNotFound: "This project could not be found.",
+  // Reached only when the run the server named is no longer open by the time the list is read.
+  learningRunAlreadyRunning:
+    "Another fix run was already going, and it may have just finished. Reload the page to see it.",
 }
 
 type Prompt =

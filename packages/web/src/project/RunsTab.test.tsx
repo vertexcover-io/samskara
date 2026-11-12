@@ -188,6 +188,23 @@ test("SC738: a 409 from the server turns into the same pointer at the open run",
   expect(screen.queryByText(/The server responded with 409/)).toBeNull()
 })
 
+test("SC738: a 409 whose open run has already finished says so in plain words, not the status code", async () => {
+  stubServer([list([run("r-0")])], {
+    status: 409,
+    body: { error: "learningRunAlreadyRunning", runId: "r-9" },
+  })
+  renderTab()
+  const user = userEvent.setup()
+  await screen.findByText(/^Last run /)
+
+  await user.click(screen.getByRole("button", { name: "Run now" }))
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Another fix run was already going, and it may have just finished.",
+  )
+  expect(screen.queryByText(/409/)).toBeNull()
+})
+
 test("SC739: a refused run says why in plain words", async () => {
   stubServer([list([run("r-0")])], { status: 400, body: { error: "noHarnessPath" } })
   renderTab()
