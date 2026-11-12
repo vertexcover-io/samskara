@@ -98,13 +98,14 @@ export const reviewBatchRoutes = ({ db, env, notifyWorker, credentialEnv }: Deps
           options: {},
           ...(base === null ? {} : { basedOn: base.id }),
         })
-        // Null: a run is already waiting or running, and it will finish all the same.
+        // Either way the project gets a fix run that waits for the review. Null: a run is
+        // already waiting or running; it is not queued twice, and it will finish all the same.
+        reviewedProjects.add(projectId)
         if (queuedRun === null) {
           skipped += 1
           continue
         }
         queued += 1
-        reviewedProjects.add(projectId)
       }
       // As Run now does, with no harness path of the caller's; a server with no learnings
       // harness would only fail the run, so it queues none.

@@ -247,7 +247,7 @@ describe.skipIf(!dockerAvailable())("review batch routes", () => {
       body: { sessionIds: ["a-1", "a-2", "a-3", "c-1"], mode: "newMessages" },
     })
 
-    expect(await res.json()).toEqual({ queued: 2, skipped: 2, notAllowed: [], fixRunsQueued: 1 })
+    expect(await res.json()).toEqual({ queued: 2, skipped: 2, notAllowed: [], fixRunsQueued: 2 })
     expect(await waitingRows()).toEqual([
       ["a-1", false, null],
       ["a-2", true, grown],
@@ -263,7 +263,7 @@ describe.skipIf(!dockerAvailable())("review batch routes", () => {
       body: { sessionIds: ["a-1", "a-2", "a-3", "c-1"], mode: "full" },
     })
 
-    expect(await res.json()).toEqual({ queued: 3, skipped: 1, notAllowed: [], fixRunsQueued: 1 })
+    expect(await res.json()).toEqual({ queued: 3, skipped: 1, notAllowed: [], fixRunsQueued: 2 })
     expect(await waitingRows()).toEqual([
       ["a-1", false, null],
       ["a-2", false, null],
@@ -336,6 +336,24 @@ describe.skipIf(!dockerAvailable())("review batch routes", () => {
 
     expect(await res.json()).toMatchObject({ queued: 1, fixRunsQueued: 1 })
     expect((await fixRuns()).map((run) => run.projectId)).toEqual([projectC])
+  })
+
+  test("a session whose review is already running is skipped, but its project still gets a fix run that waits for it", async () => {
+    await db.insert(sessionReviews).values({
+      sessionId: "c-1",
+      projectId: projectC,
+      analyzer: PROBLEMS_ANALYZER,
+      status: "running",
+      attempts: 1,
+    })
+
+    const res = await start(["c-1"])
+
+    expect(await res.json()).toEqual({ queued: 0, skipped: 1, notAllowed: [], fixRunsQueued: 1 })
+    expect((await rows()).filter((row) => row.sessionId === "c-1")).toHaveLength(1)
+    expect(await fixRuns()).toEqual([
+      expect.objectContaining({ projectId: projectC, status: "waiting", waitForReviews: true }),
+    ])
   })
 
   test("pressing twice reuses the waiting fix run instead of adding a second", async () => {
