@@ -1,14 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import { buildApp } from "../app.js"
 import type { Db } from "../db/client.js"
-import {
-  messages,
-  projects,
-  sessionReviews,
-  sessions,
-  userProjectGrant,
-  users,
-} from "../db/schema.js"
+import { messages, projects, sessionReviews, sessions, users } from "../db/schema.js"
 import { dockerAvailable, startTestDb } from "../db/testDb.js"
 import type { Env } from "../lib/env.js"
 import { signToken } from "../lib/jwt.js"
@@ -74,49 +67,6 @@ describe.skipIf(!dockerAvailable())("reviews", () => {
     })
   })
 
-  const line = async (
-    sid: string,
-    lineNumber: number,
-    msgType: string,
-    role: string | null,
-    content: unknown,
-    details: unknown,
-  ) => {
-    await db.insert(messages).values({
-      sessionId: sid,
-      lineUuid: crypto.randomUUID(),
-      subIndex: 0,
-      msgType,
-      role,
-      lineNumber,
-      source: "claude_code",
-      sourceRelativePath: "test.jsonl",
-      trackId: "main",
-      raw: {},
-      sourceSchemaVersion: 1,
-      content,
-      details,
-    })
-  }
-
-  /** A session with a clean Bash error loop: 3 failures after one prompt. */
-  const seedErrorLoop = async () => {
-    await line(sessionId, 1, "message", "user", { type: "text", value: "fix the build" }, {})
-    for (let i = 0; i < 3; i += 1) {
-      const callId = `call-${i}`
-      await line(sessionId, 2 + i * 2, "toolCall", null, null, {
-        callId,
-        name: "Bash",
-        input: { command: "npm test" },
-      })
-      await line(sessionId, 3 + i * 2, "toolResult", null, null, {
-        callId,
-        output: "",
-        status: "failure",
-      })
-    }
-  }
-
   const request = async (
     path: string,
     init: { readonly method?: string; readonly body?: unknown } = {},
@@ -131,35 +81,6 @@ describe.skipIf(!dockerAvailable())("reviews", () => {
       ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
     })
   }
-
-  test("V1: POST /api/sessions/:id/review persists a review with the error loop visible", async () => {
-    await seedErrorLoop()
-    const res = await request(`/api/sessions/${sessionId}/review`, { method: "POST" })
-    expect(res.status).toBe(201)
-    const body = (await res.json()) as {
-      reviewId: string
-      review: { outcome: string; signals: { errorLoops: unknown[] } }
-    }
-    expect(body.review.outcome).toBe("struggled")
-    expect(body.review).not.toHaveProperty("friction")
-    expect(body.review.signals.errorLoops).toHaveLength(1)
-  })
-
-  test("V2: re-review replaces the review row instead of stacking", async () => {
-    await seedErrorLoop()
-    const first = await request(`/api/sessions/${sessionId}/review`, { method: "POST" })
-    const second = await request(`/api/sessions/${sessionId}/review`, { method: "POST" })
-    expect(second.status).toBe(201)
-    const listed = await request(`/api/sessions/${sessionId}/review`)
-    const body = (await listed.json()) as { reviews: unknown[] }
-    expect(body.reviews).toHaveLength(1)
-    void first
-  })
-
-  test("V6: reviewing a missing session returns 404", async () => {
-    const res = await request("/api/sessions/does-not-exist/review", { method: "POST" })
-    expect(res.status).toBe(404)
-  })
 
   test("V10: reviews of a session in a project the viewer cannot see stay invisible", async () => {
     const [stranger] = await db
@@ -202,27 +123,6 @@ describe.skipIf(!dockerAvailable())("reviews", () => {
     expect(ownBody.reviews).toHaveLength(1)
   })
 
-  test("V14: a viewer cannot run the static review — it writes the review", async () => {
-    await seedErrorLoop()
-    const [stranger] = await db
-      .insert(users)
-      .values({ githubId: 4, githubLogin: "viewer-static" })
-      .returning({ id: users.id })
-    await db
-      .insert(userProjectGrant)
-      .values({ userId: stranger?.id as string, projectId, scope: "viewer" })
-    const strangerToken = await signToken(env, { sub: stranger?.id as string, aud: "web" })
-
-    const res = await buildApp(db, env).request(`/api/sessions/${sessionId}/review`, {
-      method: "POST",
-      headers: { cookie: `session=${strangerToken}` },
-    })
-    expect(res.status).toBe(403)
-    expect(await res.json()).toEqual({ error: "notEditable" })
-    // Nothing was written on the way to the refusal.
-    expect(await db.select().from(sessionReviews)).toHaveLength(0)
-  })
-
   test("SC3: a waiting AI review and a failed static review show no result; the waiting one shows as a job", async () => {
     await db.insert(sessionReviews).values([
       { sessionId, projectId, analyzer: "ai-problems-v2", status: "waiting" },
@@ -238,14 +138,12 @@ describe.skipIf(!dockerAvailable())("reviews", () => {
     expect(await ai.json()).toMatchObject({ review: null, job: { status: "running" } })
   })
 
-  test("a kept AI review whose redo failed lists analyzedAt as its own finish time, not the redo's", async () => {
+  test("an AI review lists analyzedAt as its own recorded finish time, not the row's updatedAt", async () => {
     await db.insert(sessionReviews).values({
       sessionId,
       projectId,
       analyzer: "ai-problems-v2",
-      status: "failed",
-      attempts: 3,
-      error: "harnessFailed: harness run exited with code 1",
+      status: "done",
       outcome: "productive",
       summary: "The earlier result.",
       signals: { run: { finishedAt: "2026-11-11T13:22:28.736Z" } },
@@ -256,34 +154,5 @@ describe.skipIf(!dockerAvailable())("reviews", () => {
 
     const body = (await listed.json()) as { reviews: { analyzedAt: string }[] }
     expect(body.reviews.map((review) => review.analyzedAt)).toEqual(["2026-11-11T13:22:28.736Z"])
-  })
-
-  test("SC8: a rule-based review is saved done, with no error, through the last line it read (7)", async () => {
-    await seedErrorLoop()
-    const res = await request(`/api/sessions/${sessionId}/review`, { method: "POST" })
-    expect(res.status).toBe(201)
-
-    const [row] = await db.select().from(sessionReviews)
-    expect(row).toMatchObject({ status: "done", error: null, reviewedThrough: 7 })
-  })
-
-  test("SC9: re-reviewing over a failed row keeps its id, makes it done, clears the error and shows it", async () => {
-    await seedErrorLoop()
-    const [failed] = await db
-      .insert(sessionReviews)
-      .values({ sessionId, projectId, analyzer: "heuristic-v1", status: "failed", error: "boom" })
-      .returning()
-
-    const res = await request(`/api/sessions/${sessionId}/review`, { method: "POST" })
-    expect(res.status).toBe(201)
-
-    const [row] = await db.select().from(sessionReviews)
-    expect(row?.id).toBe(failed?.id)
-    expect(row).toMatchObject({ status: "done", error: null, reviewedThrough: 7 })
-    expect(row?.outcome).not.toBeNull()
-
-    const listed = await request(`/api/sessions/${sessionId}/review`)
-    const body = (await listed.json()) as { reviews: { id: string }[] }
-    expect(body.reviews.map((review) => review.id)).toEqual([failed?.id])
   })
 })

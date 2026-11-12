@@ -14,7 +14,7 @@ import {
 import { dockerAvailable, startTestDb } from "../db/testDb.js"
 import type { NightlyReview } from "../lib/env.js"
 import { captureLogger } from "../lib/test-logger.js"
-import { upsertReview } from "../repositories/reviews.repo.js"
+import { finishReview } from "../repositories/reviews.repo.js"
 import type { ClaimedReview } from "../repositories/workQueue.repo.js"
 import type { AiReviewResult } from "../services/ai-review/pipeline.js"
 import type { PullRequestLookup } from "../services/pullRequestStates.js"
@@ -91,14 +91,11 @@ describe.skipIf(!dockerAvailable())("work loop: the nightly pick", () => {
 
   /** What runAiReview's success does to the row: saves the result as done. */
   const succeed = async (review: ClaimedReview): Promise<AiReviewResult> => {
-    const saved = await upsertReview(db, {
-      sessionId: review.sessionId,
-      projectId,
-      analyzer: ANALYZER,
+    const saved = await finishReview(db, review.id, {
       outcome: "productive",
       summary: "ok",
       signals: {},
-      reviewedThrough: null,
+      lastMessageId: null,
     })
     return { kind: "ok", reviewId: saved.id, review: {} as never }
   }

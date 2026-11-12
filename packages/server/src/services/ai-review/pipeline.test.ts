@@ -19,7 +19,8 @@ import {
 import { dockerAvailable, startTestDb } from "../../db/testDb.js"
 import type { Env } from "../../lib/env.js"
 import { captureLogger } from "../../lib/test-logger.js"
-import { type AiReviewDeps, runAiReview } from "./pipeline.js"
+import { queueReview } from "../../repositories/workQueue.repo.js"
+import { type AiReviewDeps, type ReviewRun, runAiReview } from "./pipeline.js"
 
 const env: Env = {
   githubClientId: "id",
@@ -178,6 +179,26 @@ describe.skipIf(!dockerAvailable())("runAiReview", () => {
     ...overrides,
   })
 
+  /** A run as the worker hands it over: a row queued for the session, then claimed. */
+  const queuedRun = async (): Promise<ReviewRun> => {
+    const queued = await queueReview(db, {
+      sessionId,
+      projectId,
+      analyzer: "ai-problems-v2",
+      options: {},
+    })
+    // A run already waiting is one an earlier call left unfinished: running it again is its retry.
+    const [waiting] =
+      queued === null
+        ? await db.select().from(sessionReviews).where(eq(sessionReviews.status, "waiting"))
+        : [queued]
+    if (waiting === undefined) throw new Error("no run to review")
+    return { id: waiting.id, sessionId, newPartOnly: false, basedOn: null }
+  }
+
+  /** Runs saved with a result: a refused or failed run leaves none. */
+  const doneRuns = () => db.select().from(sessionReviews).where(eq(sessionReviews.status, "done"))
+
   /** The signals jsonb of the single persisted review row. */
   const persistedSignals = async (): Promise<Record<string, unknown>> => {
     const rows = await db
@@ -260,7 +281,7 @@ The agent claimed the build was fixed after the tests failed.
 
     test("PR1: the review reads the full session and saves the review row and each problem", async () => {
       const { runner, seen } = problemsRunner(problemsMd("the build is fixed"))
-      const result = await runAiReview(depsWith(runner), sessionId, {})
+      const result = await runAiReview(depsWith(runner), await queuedRun(), {})
 
       expect(result).toMatchObject({ kind: "ok" })
       expect(seen[0]?.files).toEqual(["session.json", "leads.md", "CONTRACT.md"])
@@ -285,22 +306,26 @@ The agent claimed the build was fixed after the tests failed.
       })
     })
 
-    test("SC10: an AI review is saved done, with no error, through the highest line seeded", async () => {
+    test("SC10: an AI review is saved done on its queued row, with no error, read through the latest-timestamped message", async () => {
       const { runner } = problemsRunner(problemsMd("the build is fixed"))
-      const result = await runAiReview(depsWith(runner), sessionId, {})
+      const run = await queuedRun()
+      const result = await runAiReview(depsWith(runner), run, {})
 
-      expect(result).toMatchObject({ kind: "ok" })
-      const lastSeeded = Math.max(...normalizedFixtures.map((message) => message.subIndex + 1))
+      expect(result).toMatchObject({ kind: "ok", reviewId: run.id })
+      const [latest] = await db
+        .select({ id: messages.id })
+        .from(messages)
+        .where(eq(messages.timestamp, new Date(T0_PLUS_120S)))
       const [row] = await db
         .select()
         .from(sessionReviews)
         .where(eq(sessionReviews.sessionId, sessionId))
-      expect(row).toMatchObject({ status: "done", error: null, reviewedThrough: lastSeeded })
+      expect(row).toMatchObject({ status: "done", error: null, lastMessageId: latest?.id })
     })
 
     test("PR2: a problem quoting what is not in the session is dropped, and the drop is recorded", async () => {
       const { runner } = problemsRunner(problemsMd("tests are all green"))
-      const result = await runAiReview(depsWith(runner), sessionId, {})
+      const result = await runAiReview(depsWith(runner), await queuedRun(), {})
 
       expect(result).toMatchObject({ kind: "ok" })
       expect(await savedProblems()).toEqual([])
@@ -313,7 +338,7 @@ The agent claimed the build was fixed after the tests failed.
 
     test("PR3: a custom prompt is merged first, and the reviewer's contract is the merge plus the fixed output", async () => {
       const { runner, seen } = problemsRunner(problemsMd("the build is fixed"))
-      const result = await runAiReview(depsWith(runner), sessionId, {
+      const result = await runAiReview(depsWith(runner), await queuedRun(), {
         prompt: "After plan approval every human message is a problem.",
       })
 
@@ -326,27 +351,27 @@ The agent claimed the build was fixed after the tests failed.
 
     test("PR4: a merge that writes nothing stops the run before any review", async () => {
       const { runner, seen } = problemsRunner(problemsMd("the build is fixed"), "")
-      const result = await runAiReview(depsWith(runner), sessionId, {
+      const result = await runAiReview(depsWith(runner), await queuedRun(), {
         prompt: "anything",
       })
 
       expect(result).toMatchObject({ kind: "error", code: "promptMergeFailed" })
       expect(seen).toHaveLength(1)
-      expect(await db.select().from(sessionReviews)).toEqual([])
+      expect(await doneRuns()).toEqual([])
     })
 
     test("PR5: a review.md that is not a review saves nothing", async () => {
       const { runner } = problemsRunner("not a review")
-      const result = await runAiReview(depsWith(runner), sessionId, {})
+      const result = await runAiReview(depsWith(runner), await queuedRun(), {})
 
       expect(result).toMatchObject({ kind: "error", code: "unparseable" })
-      expect(await db.select().from(sessionReviews)).toEqual([])
+      expect(await doneRuns()).toEqual([])
     })
 
     test("PR6: an extra field the merged prompt asks for is required on every problem", async () => {
       const merged = "# How to review\n\n## Extra fields\n\n- topic: what the person asked about\n"
       const { runner } = problemsRunner(problemsMd("the build is fixed"), merged)
-      const result = await runAiReview(depsWith(runner), sessionId, {
+      const result = await runAiReview(depsWith(runner), await queuedRun(), {
         prompt: "Add a topic field.",
       })
 
@@ -368,51 +393,69 @@ The agent claimed the build was fixed after the tests failed.
       )
       try {
         const { runner } = problemsRunner(problemsMd("the build is fixed"))
-        await expect(runAiReview(depsWith(runner), sessionId, {})).rejects.toThrow()
+        await expect(runAiReview(depsWith(runner), await queuedRun(), {})).rejects.toThrow()
       } finally {
         await db.execute(sql`drop trigger if exists fail_problem_trigger on "reviewProblems"`)
       }
-      expect(await db.select().from(sessionReviews)).toEqual([])
+      expect(await doneRuns()).toEqual([])
     })
 
-    test("PR8: a redo keeps the review's id and replaces its problems", async () => {
+    test("SC2: a second review is a new row with its own problems and recordIds, and the first reads back as before", async () => {
       const first = await runAiReview(
         depsWith(problemsRunner(problemsMd("the build is fixed")).runner),
-        sessionId,
+        await queuedRun(),
         {},
       )
+      const firstId = first.kind === "ok" ? first.reviewId : ""
+      const before = await db.select().from(sessionReviews).where(eq(sessionReviews.id, firstId))
+      const firstProblems = await savedProblems()
+
       const second = await runAiReview(
         depsWith(
           problemsRunner(
             problemsMd("the build is fixed").replace("Said the build", "Claimed the build"),
           ).runner,
         ),
-        sessionId,
+        await queuedRun(),
         {},
       )
-      expect(second).toMatchObject({
-        kind: "ok",
-        reviewId: first.kind === "ok" ? first.reviewId : "",
-      })
-      expect((await savedProblems()).map((row) => row.title)).toEqual([
+
+      expect(second).toMatchObject({ kind: "ok" })
+      const secondId = second.kind === "ok" ? second.reviewId : ""
+      expect(secondId).not.toBe(firstId)
+      expect(await db.select().from(sessionReviews).where(eq(sessionReviews.id, firstId))).toEqual(
+        before,
+      )
+      const problems = await savedProblems()
+      expect(problems.filter((row) => row.reviewId === firstId)).toEqual(firstProblems)
+      expect(problems.filter((row) => row.reviewId === secondId).map((row) => row.title)).toEqual([
         "Claimed the build was fixed after the tests failed",
       ])
+      const [secondRow] = await db
+        .select()
+        .from(sessionReviews)
+        .where(eq(sessionReviews.id, secondId))
+      const recordIdsOf = (row: typeof secondRow) =>
+        (row?.signals as { run?: { recordIds: unknown[] } } | undefined)?.run?.recordIds ?? []
+      expect(recordIdsOf(secondRow).length).toBeGreaterThan(0)
+      expect(recordIdsOf(secondRow)).toEqual(recordIdsOf(before[0]))
+      expect((await doneRuns()).map((row) => row.id).sort()).toEqual([firstId, secondId].sort())
     })
 
     test("PR9: no review.md is deliverableMissing, and one past the size cap saves nothing", async () => {
       const missing: HarnessRunner = { run: async () => ({ stdout: "", firstByteMs: null }) }
-      expect(await runAiReview(depsWith(missing), sessionId, {})).toMatchObject({
+      expect(await runAiReview(depsWith(missing), await queuedRun(), {})).toMatchObject({
         kind: "error",
         code: "deliverableMissing",
       })
 
       const huge = problemsMd("the build is fixed") + "x".repeat(MAX_REVIEW_MD_BYTES)
       const { runner } = problemsRunner(huge)
-      expect(await runAiReview(depsWith(runner), sessionId, {})).toMatchObject({
+      expect(await runAiReview(depsWith(runner), await queuedRun(), {})).toMatchObject({
         kind: "error",
         code: "unparseable",
       })
-      expect(await db.select().from(sessionReviews)).toEqual([])
+      expect(await doneRuns()).toEqual([])
     })
 
     test("PR10: leads the review never answered are saved with it", async () => {
@@ -422,7 +465,7 @@ The agent claimed the build was fixed after the tests failed.
         undefined,
         "- L1: dropped (no kind) — the opening request\n",
       )
-      await runAiReview(depsWith(runner), sessionId, {})
+      await runAiReview(depsWith(runner), await queuedRun(), {})
       const signals = (await persistedSignals()) as {
         unaccountedLeads: string[]
         leadCount: number
@@ -438,7 +481,7 @@ The agent claimed the build was fixed after the tests failed.
         undefined,
         '- msg-2 — "the build is fixed" — said after the only test run failed',
       )
-      await runAiReview(depsWith(runner), sessionId, {})
+      await runAiReview(depsWith(runner), await queuedRun(), {})
       const signals = (await persistedSignals()) as {
         readers: { pieces: number; leads: number; failedPieces: string[] }
         unaccountedLeads: string[]
@@ -457,14 +500,14 @@ The agent claimed the build was fixed after the tests failed.
           throw new Error("claude exited with code 1")
         },
       }
-      const result = await runAiReview(depsWith(runner), sessionId, {})
+      const result = await runAiReview(depsWith(runner), await queuedRun(), {})
       expect(result).toMatchObject({ kind: "error", code: "harnessFailed" })
-      expect(await db.select().from(sessionReviews)).toEqual([])
+      expect(await doneRuns()).toEqual([])
     })
 
     test("PR14: the reviewer sees only the session's alias, and the workspace is removed after", async () => {
       const { runner, seen } = problemsRunner(problemsMd("the build is fixed"))
-      const result = await runAiReview(depsWith(runner), sessionId, {})
+      const result = await runAiReview(depsWith(runner), await queuedRun(), {})
 
       expect(result).toMatchObject({ kind: "ok" })
       expect(seen[0]?.prompt).not.toContain(sessionId)
@@ -505,7 +548,7 @@ The agent claimed the build was fixed after the tests failed.
       )
       const result = await runAiReview(
         depsWith(runner, { env: { ...env, aiReviewHarness: "claude", aiReviewModel: "sonnet" } }),
-        sessionId,
+        await queuedRun(),
         {},
       )
       expect(result).toMatchObject({ kind: "ok" })
@@ -558,7 +601,7 @@ The agent claimed the build was fixed after the tests failed.
           store.close()
         },
       )
-      const result = await runAiReview(depsWith(runner), sessionId, {})
+      const result = await runAiReview(depsWith(runner), await queuedRun(), {})
       expect(result).toMatchObject({ kind: "ok" })
       const run = (await persistedSignals()).run as { transcript?: unknown }
       expect(run.transcript).toEqual([{ role: "user", text: "review the export" }])
@@ -569,12 +612,12 @@ The agent claimed the build was fixed after the tests failed.
       const result = await runAiReview(
         // Configured for opencode, asked for claude, and only opencode has a key.
         depsWith(runner, { credentialEnv: { OPENCODE_API_KEY: "oc-key" } }),
-        sessionId,
+        await queuedRun(),
         { harness: "claude" },
       )
       expect(result).toMatchObject({ kind: "error", code: "harnessUnauthenticated" })
       expect(seen).toHaveLength(0)
-      expect(await db.select().from(sessionReviews)).toHaveLength(0)
+      expect(await doneRuns()).toEqual([])
     })
 
     test("PR18: the pipeline reports milestones through onMilestone, in order", async () => {
@@ -582,7 +625,7 @@ The agent claimed the build was fixed after the tests failed.
       const { runner } = problemsRunner(problemsMd("the build is fixed"))
       const result = await runAiReview(
         depsWith(runner, { onMilestone: (name) => names.push(name) }),
-        sessionId,
+        await queuedRun(),
         {},
       )
       expect(result).toMatchObject({ kind: "ok" })
@@ -595,7 +638,18 @@ The agent claimed the build was fixed after the tests failed.
 
     test("PR19: an unknown session is refused before any agent runs", async () => {
       const { runner, seen } = problemsRunner(problemsMd("the build is fixed"))
-      expect(await runAiReview(depsWith(runner), "does-not-exist", {})).toEqual({
+      expect(
+        await runAiReview(
+          depsWith(runner),
+          {
+            id: crypto.randomUUID(),
+            sessionId: "does-not-exist",
+            newPartOnly: false,
+            basedOn: null,
+          },
+          {},
+        ),
+      ).toEqual({
         kind: "error",
         code: "sessionNotFound",
       })

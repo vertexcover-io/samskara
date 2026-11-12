@@ -1,29 +1,41 @@
 import { MAIN_TRACK } from "@samskara/core"
-import { and, desc, eq, isNotNull } from "drizzle-orm"
+import { and, desc, eq, type SQL, sql } from "drizzle-orm"
 import type { Querier } from "../db/client.js"
 import { projects, sessionReviews, sessions } from "../db/schema.js"
 import { visibleToUser } from "./projects.repo.js"
 
 export type ReviewRow = typeof sessionReviews.$inferSelect
 
-/**
- * A review with a result. A done row always has one (`sessionReviews_done_has_result_check`);
- * a waiting, running or failed row has one when it is a re-review of a finished review.
- */
+/** A done review: it always has a result (`sessionReviews_done_has_result_check`). */
 export type DoneReviewRow = ReviewRow & {
   readonly outcome: string
   readonly summary: string
 }
 
-/** A row is a review once it has a result; a re-review keeps the old one until the new one lands. */
-const isDone = isNotNull(sessionReviews.outcome)
+const isDone = eq(sessionReviews.status, "done")
 
 const asDone = (row: ReviewRow): DoneReviewRow => row as DoneReviewRow
 
 /**
- * Latest-first like every list in the server; callers paginate above this layer. Scoped by
- * `visibleToUser` — a session's reviews are readable exactly by whoever could open the session
- * itself.
+ * The chain rule, for a review row aliased `alias` in raw SQL: the row is done and no newer
+ * done full run of the same session and analyzer exists. That keeps the latest done full run
+ * and every done new-part run after it, and hides older runs, which stay in the database.
+ * `createdAt` orders runs: only one per session is ever waiting or running, so they finish in
+ * the order they were queued.
+ */
+export const shownRun = (alias: SQL): SQL => sql`(${alias}."status" = 'done' and not exists (
+  select 1 from "sessionReviews" newer
+  where newer."sessionId" = ${alias}."sessionId"
+    and newer."analyzer" = ${alias}."analyzer"
+    and newer."status" = 'done'
+    and not newer."newPartOnly"
+    and newer."createdAt" > ${alias}."createdAt"
+))`
+
+/**
+ * The session's shown runs (`shownRun`), newest first: the newest supplies the outcome and
+ * summary a page shows. Scoped by `visibleToUser` — a session's reviews are readable exactly
+ * by whoever could open the session itself.
  */
 export const listReviewsForSession = async (
   db: Querier,
@@ -34,7 +46,13 @@ export const listReviewsForSession = async (
     .select()
     .from(sessionReviews)
     .innerJoin(projects, eq(projects.id, sessionReviews.projectId))
-    .where(and(eq(sessionReviews.sessionId, sessionId), isDone, visibleToUser(db, userId)))
+    .where(
+      and(
+        eq(sessionReviews.sessionId, sessionId),
+        shownRun(sql`"sessionReviews"`),
+        visibleToUser(db, userId),
+      ),
+    )
     .orderBy(desc(sessionReviews.createdAt))
     .then((rows) => rows.map((row) => asDone(row.sessionReviews)))
 
@@ -87,61 +105,53 @@ export const getReview = async (db: Querier, id: string): Promise<DoneReviewRow 
   return row[0] === undefined ? null : asDone(row[0])
 }
 
-/** What a finished review writes. `reviewedThrough` is required so no writer forgets it. */
-export type ReviewWrite = {
-  readonly sessionId: string
-  readonly projectId: string
-  readonly analyzer: string
+/** What a finished run writes onto its own row. `lastMessageId` is required so no writer forgets it. */
+export type ReviewResult = {
   readonly outcome: string
   readonly summary: string
   readonly signals: object
-  /** The main-conversation lineNumber of the last message the review read; null when it read none. */
-  readonly reviewedThrough: number | null
+  /** The message the run read with the latest timestamp; null when it read none. */
+  readonly lastMessageId: string | null
 }
 
 /**
- * The last line a review read: the highest main-conversation lineNumber among the messages it
- * loaded. Each subagent transcript numbers its own lines from 1, so only the main track's
- * numbers can be compared. A subagent is started and answered in the main track, so new
- * subagent work always moves this forward.
+ * The message a run read last in time: the latest `timestamp` across every track, since each
+ * subagent numbers its own lines from 1 and only time compares tracks. With no timestamped
+ * message, the last main-track line read. Null when it read nothing.
  */
-export const lastLineRead = (
-  messages: ReadonlyArray<{ readonly lineNumber: number; readonly trackId: string }>,
-): number | null =>
-  messages
-    .filter((message) => message.trackId === MAIN_TRACK)
-    .reduce<number | null>(
-      (last, message) => (last === null || message.lineNumber > last ? message.lineNumber : last),
-      null,
-    )
+export const lastMessageRead = (
+  messages: ReadonlyArray<{
+    readonly id: string
+    readonly lineNumber: number
+    readonly trackId: string
+    readonly timestamp: string | null
+  }>,
+): string | null => {
+  const timed = messages.flatMap((message) =>
+    message.timestamp === null ? [] : [{ id: message.id, at: Date.parse(message.timestamp) }],
+  )
+  if (timed.length > 0)
+    return timed.reduce((last, message) => (message.at >= last.at ? message : last)).id
+  const main = messages.filter((message) => message.trackId === MAIN_TRACK)
+  if (main.length === 0) return null
+  return main.reduce((last, message) => (message.lineNumber >= last.lineNumber ? message : last)).id
+}
 
 /**
- * Replaces the same (sessionId, analyzer) pair's review — a re-review is a correction of the
- * same analysis, not a new fact. A saved review is done, whatever state the row was in.
+ * Writes a run's result onto its own row and marks it done. Only that row changes: an earlier
+ * run of the same session is history and is never overwritten.
  */
-export const upsertReview = async (db: Querier, values: ReviewWrite): Promise<DoneReviewRow> => {
-  const result = {
-    outcome: values.outcome,
-    summary: values.summary,
-    signals: values.signals,
-    status: "done",
-    error: null,
-    reviewedThrough: values.reviewedThrough,
-  } as const
+export const finishReview = async (
+  db: Querier,
+  id: string,
+  values: ReviewResult,
+): Promise<DoneReviewRow> => {
   const [row] = await db
-    .insert(sessionReviews)
-    .values({
-      sessionId: values.sessionId,
-      projectId: values.projectId,
-      analyzer: values.analyzer,
-      ...result,
-    })
-    .onConflictDoUpdate({
-      target: [sessionReviews.sessionId, sessionReviews.analyzer],
-      set: { ...result, updatedAt: new Date() },
-    })
+    .update(sessionReviews)
+    .set({ ...values, status: "done", error: null, updatedAt: new Date() })
+    .where(eq(sessionReviews.id, id))
     .returning()
-  if (row === undefined) throw new Error("upsertReview returned no row")
+  if (row === undefined) throw new Error(`finishReview: no review ${id}`)
   return asDone(row)
 }
 

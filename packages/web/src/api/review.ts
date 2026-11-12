@@ -17,8 +17,8 @@ export const fetchSessionReviews = (
 export type ReviewerChoice = {
   readonly harness?: "opencode" | "claude"
   readonly model?: string
-  /** Replace an existing review instead of 409-ing — the Redo path. */
-  readonly force?: boolean
+  /** `full` reads the whole session; every run is a new review. */
+  readonly mode?: "full"
 }
 
 /** Starts a harness-run analysis; 202 hands back a job id, 403/503 come back as error codes. */

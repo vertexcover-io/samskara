@@ -694,13 +694,13 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
     ])
   })
 
-  test("SC4: a waiting AI review gives no badge and counts as missing, while a done one does", async () => {
+  test("SC4/SC11: a waiting AI review gives no badge and counts as missing, even one carrying a result, while a done one does", async () => {
     const owner = await seedUser(db, 1602, "ai-waiting-owner")
     const projectId = await projectsRepo.upsert(db, {
       identity: { name: "AI waiting", slug: "ai-waiting" },
       ownerId: owner,
     })
-    for (const id of ["ai-waiting", "ai-done"]) {
+    for (const id of ["ai-waiting", "ai-done", "ai-waiting-with-result", "ai-none"]) {
       await seedSession(db, {
         id,
         userId: owner,
@@ -719,16 +719,32 @@ describe.skipIf(!dockerAvailable())("GET /api/sessions", () => {
         summary: "ai review",
         signals: {},
       },
+      // Only a done run has a result to show; one in flight never counts, whatever it holds.
+      {
+        sessionId: "ai-waiting-with-result",
+        projectId,
+        analyzer: "ai-problems-v2",
+        status: "waiting",
+        outcome: "productive",
+        summary: "not shown",
+        signals: {},
+      },
     ])
 
     const badge = new Map(
       (await listAs(db, owner)).map((session) => [session.id, session.hasAiReview]),
     )
     expect(badge.get("ai-waiting")).toBe(false)
+    expect(badge.get("ai-waiting-with-result")).toBe(false)
+    expect(badge.get("ai-none")).toBe(false)
     expect(badge.get("ai-done")).toBe(true)
 
     expect(idsOf(await listAs(db, owner, "?aiReview=done"))).toEqual(["ai-done"])
-    expect(idsOf(await listAs(db, owner, "?aiReview=missing"))).toEqual(["ai-waiting"])
+    expect([...idsOf(await listAs(db, owner, "?aiReview=missing"))].sort()).toEqual([
+      "ai-none",
+      "ai-waiting",
+      "ai-waiting-with-result",
+    ])
   })
 
   test("SC13: a summary carries its message count, status and start, and nothing it no longer shows", async () => {

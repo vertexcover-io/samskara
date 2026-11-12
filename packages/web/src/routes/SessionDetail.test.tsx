@@ -253,9 +253,6 @@ const renderDetail = (
   let aiLanded = false
   // Every POST /analyze body, in order — the modal-choice test asserts what the dialog sent.
   const analyzeBodies: unknown[] = []
-  // A 409 analysisAlreadyExists means the verdict landed out-of-band (e.g. a stale tab), so
-  // the refreshed review list must include it even though no aireview reply ever said 200.
-  let existsConflict = false
   const respond = (reply: Reply): Promise<Response> =>
     Promise.resolve(new Response(JSON.stringify(reply.body), { status: reply.status }))
   vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
@@ -275,12 +272,6 @@ const renderDetail = (
     }
     if (url.includes("/analyze")) {
       if (typeof init?.body === "string") analyzeBodies.push(JSON.parse(init.body))
-      if (
-        typeof analyze.body === "object" &&
-        analyze.body !== null &&
-        (analyze.body as { error?: string }).error === "analysisAlreadyExists"
-      )
-        existsConflict = true
       return respond(analyze)
     }
     if (url.includes("/aireview")) {
@@ -299,7 +290,7 @@ const renderDetail = (
       return respond(extras.reviewerOptions ?? REVIEWER_OPTIONS)
     }
     if (url.includes("/review")) {
-      const after = aiLanded || existsConflict ? extras.reviewAfterAi : undefined
+      const after = aiLanded ? extras.reviewAfterAi : undefined
       return respond(after ?? review)
     }
     if (url.includes("/api/sessions/")) {
@@ -1441,25 +1432,6 @@ test("AI review: a reload joins the running job — Analyzing shows without a cl
   expect(screen.queryByRole("button", { name: /analyze with ai/i })).not.toBeInTheDocument()
 })
 
-test("AI review: 409 analysisAlreadyExists treats the verdict as arrived — the list refetch paints the card", async () => {
-  const user = userEvent.setup()
-  renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1", {
-    analyze: { status: 409, body: { error: "analysisAlreadyExists" } },
-    aireview: [{ status: 404, body: { error: "noAiReview" } }],
-    reviewAfterAi: { status: 200, body: { reviews: [PROBLEMS_REVIEW_ROW, REVIEW] } },
-  })
-
-  await tabsLoaded()
-  await user.click(screen.getByRole("tab", { name: /Review/ }))
-  await user.click(await within(panelOf()).findByRole("button", { name: /analyze with ai/i }))
-  await user.click(await screen.findByRole("button", { name: "Run analysis" }))
-
-  const panel = panelOf()
-  expect(await within(panel).findByText("AI review")).toBeInTheDocument()
-  expect(within(panel).queryByRole("button", { name: /analyze with ai/i })).not.toBeInTheDocument()
-  expect(within(panel).queryByText(/Analyzing…/)).not.toBeInTheDocument()
-})
-
 test("AI review: the modal offers the server's reviewer choices and posts the picked harness and model", async () => {
   const user = userEvent.setup()
   const view = renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1")
@@ -1696,6 +1668,22 @@ test("AI-9c: the verdict is built from the review's own outcome, and the reviewe
 
   await user.click(within(dialog).getByRole("button", { name: "Close" }))
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+})
+
+test("SC10: Redo review queues a new full run: the request carries mode full and no force", async () => {
+  const user = userEvent.setup()
+  const view = renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1", {
+    review: { status: 200, body: { reviews: [REVIEW_WITH_TRANSCRIPT] } },
+  })
+
+  await tabsLoaded()
+  await user.click(screen.getByRole("tab", { name: /Review/ }))
+  await user.click(await screen.findByRole("button", { name: "Redo review" }))
+  await user.click(await screen.findByRole("button", { name: "Run analysis" }))
+
+  await waitFor(() => expect(view.analyzeBodies).toHaveLength(1))
+  expect(view.analyzeBodies[0]).toMatchObject({ mode: "full" })
+  expect(view.analyzeBodies[0]).not.toHaveProperty("force")
 })
 
 test("AI review: a failed redo surfaces its reason on the card instead of dying silently", async () => {

@@ -9,6 +9,7 @@ import {
   failReviewAttempt,
   queueReview,
   requeueRunningReviews,
+  unfinishedReview,
 } from "./workQueue.repo.js"
 
 const ANALYZER = "ai-problems-v2"
@@ -160,8 +161,8 @@ describe.skipIf(!dockerAvailable())("work queue: reviews", () => {
     expect(await claimReview(db)).toBeNull()
   })
 
-  test("SC6: queueing a session with a finished review keeps the old result", async () => {
-    const row = await seedReview("s-6", { ...finished, attempts: 2, error: "earlier" })
+  test("SC2: queueing a session with a done review adds a new waiting row and leaves the done one untouched", async () => {
+    const row = await seedReview("s-6", { ...finished, attempts: 2 })
 
     const queued = await queueReview(db, {
       sessionId: "s-6",
@@ -170,19 +171,84 @@ describe.skipIf(!dockerAvailable())("work queue: reviews", () => {
       options: { harness: "claude", model: "opus", prompt: "look for loops" },
     })
 
-    expect(queued).toEqual({ id: row.id })
-    expect(await rowById(row.id)).toMatchObject({
+    expect(queued?.id).not.toBe(row.id)
+    expect(await rowById(row.id)).toEqual(row)
+    expect(await rowById(queued?.id as string)).toMatchObject({
       status: "waiting",
       attempts: 0,
-      error: null,
-      outcome: "productive",
-      summary: "old",
+      outcome: null,
       harness: "claude",
       model: "opus",
       prompt: "look for loops",
+      newPartOnly: false,
+      basedOn: null,
     })
     const listed = await listReviewsForSession(db, userId, "s-6")
     expect(listed.map((review) => review.summary)).toEqual(["old"])
+  })
+
+  test("SC3: a second run is refused while one is waiting, and accepted once that run is done", async () => {
+    const waiting = await seedReview("s-one", { status: "waiting" })
+    const input = { sessionId: "s-one", projectId, analyzer: ANALYZER, options: {} }
+
+    expect(await queueReview(db, input)).toBeNull()
+    expect(await db.select().from(sessionReviews)).toHaveLength(1)
+
+    await db
+      .update(sessionReviews)
+      .set({ ...finished })
+      .where(eq(sessionReviews.id, waiting.id))
+    const next = await queueReview(db, input)
+
+    expect(next).not.toBeNull()
+    expect(await db.select().from(sessionReviews)).toHaveLength(2)
+  })
+
+  test("SC4: a failed try is retried on the same row, and after the 3rd a new queue adds a different row", async () => {
+    await seedSession("s-retry")
+    const input = { sessionId: "s-retry", projectId, analyzer: ANALYZER, options: {} }
+    const queued = await queueReview(db, input)
+    const id = queued?.id as string
+
+    for (const attempt of [1, 2, 3]) {
+      const claimed = await claimReview(db)
+      expect(claimed).toMatchObject({ id, attempts: attempt })
+      await failReviewAttempt(db, id, "harnessFailed: boom")
+    }
+
+    expect(await rowById(id)).toMatchObject({ status: "failed", attempts: 3 })
+    const again = await queueReview(db, input)
+    expect(again?.id).toBeDefined()
+    expect(again?.id).not.toBe(id)
+  })
+
+  test("a claimed new-part run says it reads only the new part and which run it continues from", async () => {
+    const base = await seedReview("s-part", finished)
+    await queueReview(db, {
+      sessionId: "s-part",
+      projectId,
+      analyzer: ANALYZER,
+      options: {},
+      basedOn: base.id,
+    })
+
+    expect(await claimReview(db)).toMatchObject({ newPartOnly: true, basedOn: base.id })
+  })
+
+  test("a failed run shows as the job only while it is the newest run; a done run after it ends it", async () => {
+    await seedSession("s-job")
+    const at = (minute: number) => new Date(Date.UTC(2026, 0, 1, 10, minute))
+    const insert = (values: Partial<typeof sessionReviews.$inferInsert>) =>
+      db
+        .insert(sessionReviews)
+        .values({ sessionId: "s-job", projectId, analyzer: ANALYZER, ...values })
+
+    await insert({ ...finished, createdAt: at(1) })
+    await insert({ status: "failed", error: "harnessFailed: boom", createdAt: at(2) })
+    expect(await unfinishedReview(db, "s-job", ANALYZER)).toMatchObject({ status: "failed" })
+
+    await insert({ ...finished, createdAt: at(3) })
+    expect(await unfinishedReview(db, "s-job", ANALYZER)).toBeNull()
   })
 
   test("SC6: queueing a session with no review creates a waiting row", async () => {

@@ -69,17 +69,26 @@ export const PROBLEMS_ANALYZER = "ai-problems-v2"
 /** Stdout excerpt length carried on a failed result — enough to debug, not to leak. */
 const STDOUT_EXCERPT_CHARS = 400
 
+/** The run being done: the row the worker claimed. */
+export type ReviewRun = {
+  readonly id: string
+  readonly sessionId: string
+  readonly newPartOnly: boolean
+  readonly basedOn: string | null
+}
+
 /**
  * One AI review, end to end: readers find leads in every piece of the session, then the
  * reviewer checks each lead and writes review.md, and code checks it before anything is saved.
- * Model output is untrusted at every step. Re-analysis supersedes in place.
+ * Model output is untrusted at every step. The result lands on `run`'s own row.
  */
 export const runAiReview = async (
   deps: AiReviewDeps,
-  sessionId: string,
+  run: ReviewRun,
   options: AiReviewOptions = {},
 ): Promise<AiReviewResult> => {
   const { db, runner, env, log } = deps
+  const { sessionId } = run
   const harness = options.harness ?? env.aiReviewHarness
   const model = options.model ?? env.aiReviewModel
   const mkdtemp = deps.mkdtemp ?? defaultMkdtemp
@@ -272,14 +281,11 @@ export const runAiReview = async (
     // One transaction: a review row whose problems failed to save would read as a
     // review that found nothing.
     const reviewRow = await db.transaction(async (tx) => {
-      const row = await reviewsRepo.upsertReview(tx, {
-        sessionId,
-        projectId: detail.session.projectId,
-        analyzer: PROBLEMS_ANALYZER,
+      const row = await reviewsRepo.finishReview(tx, run.id, {
         outcome: result.review.outcome,
         summary: result.review.summary,
         signals: signals as unknown as object,
-        reviewedThrough: reviewsRepo.lastLineRead(detail.messages),
+        lastMessageId: reviewsRepo.lastMessageRead(detail.messages),
       })
       await replaceReviewProblems(tx, {
         reviewId: row.id,
@@ -294,8 +300,8 @@ export const runAiReview = async (
   } finally {
     if (workspaceDir !== undefined) {
       // A rejection from `finally` replaces the value the try block was about to return, so
-      // an un-removable workspace would report an already-persisted review as a failed run —
-      // and the retry that prompts then hits 409 analysisAlreadyExists. `force` only
+      // an un-removable workspace would report an already-persisted review as a failed run.
+      // `force` only
       // swallows ENOENT; a stale msb mount or a root-owned file still rejects. Cleanup is
       // best-effort and never the verdict.
       await rm(workspaceDir, { recursive: true, force: true }).catch((error: unknown) => {

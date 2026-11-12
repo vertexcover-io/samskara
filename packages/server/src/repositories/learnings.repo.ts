@@ -9,6 +9,7 @@ import {
 import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm"
 import type { Db, Querier } from "../db/client.js"
 import { learningRuns, learnings, reviewProblems, sessionReviews, sessions } from "../db/schema.js"
+import { shownRun } from "./reviews.repo.js"
 
 export type LearningRunRow = typeof learningRuns.$inferSelect
 export type LearningRow = typeof learnings.$inferSelect
@@ -86,7 +87,8 @@ const asProblem = (row: Record<keyof typeof problemColumns, unknown>): ProblemIn
   row as ProblemInput
 
 /**
- * The project's problems that no run has considered yet, oldest first. `limit` is the batch
+ * The project's problems that no run has considered yet, from runs a session page shows
+ * (`shownRun`), oldest first. `limit` is the batch
  * size: a first run over a long history works through it a batch at a time.
  */
 export const unmarkedProblems = async (
@@ -97,7 +99,14 @@ export const unmarkedProblems = async (
   db
     .select(problemColumns)
     .from(reviewProblems)
-    .where(and(eq(reviewProblems.projectId, projectId), isNull(reviewProblems.learningRunId)))
+    .innerJoin(sessionReviews, eq(sessionReviews.id, reviewProblems.reviewId))
+    .where(
+      and(
+        eq(reviewProblems.projectId, projectId),
+        isNull(reviewProblems.learningRunId),
+        shownRun(sql`"sessionReviews"`),
+      ),
+    )
     .orderBy(
       asc(reviewProblems.createdAt),
       asc(reviewProblems.reviewId),
