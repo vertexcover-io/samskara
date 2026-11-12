@@ -11,6 +11,7 @@ import {
   seedSession as seedSessionFixture,
 } from "../services/learnings/testFixtures.js"
 import * as learningsRepo from "./learnings.repo.js"
+import { queueDueFixRuns } from "./workQueue.repo.js"
 
 const problem = problemFixture
 
@@ -405,5 +406,39 @@ describe.skipIf(!dockerAvailable())("learnings repository", () => {
       groups: [{ cause: "x", learningId: null, problemIds: [a?.id as string], answer: written }],
     })
     expect(await db.select().from(learnings)).toEqual([])
+  })
+  test("SC8: a fix run takes only problems of shown runs: a newer full run hides the older run's problems", async () => {
+    counter += 1
+    const twice = `learn-session-${counter}`
+    await seedSessionFixture(db, {
+      sessionId: twice,
+      projectId,
+      userId,
+      problems: [problem("Old")],
+    })
+    await seedSessionFixture(db, {
+      sessionId: twice,
+      projectId,
+      userId,
+      problems: [problem("New")],
+    })
+
+    const picked = await learningsRepo.unmarkedProblems(db, projectId, 10)
+    expect(picked.map((row) => row.title)).toEqual(["New"])
+
+    const hiddenOnly = await newProject(`hidden-only-${counter}`)
+    const other = `learn-session-hidden-${counter}`
+    await seedSessionFixture(db, {
+      sessionId: other,
+      projectId: hiddenOnly,
+      userId,
+      problems: [problem("Hidden")],
+    })
+    await seedSessionFixture(db, { sessionId: other, projectId: hiddenOnly, userId, problems: [] })
+
+    await queueDueFixRuns(db)
+    const queuedFor = (await db.select().from(learningRuns)).map((run) => run.projectId)
+    expect(queuedFor).toContain(projectId)
+    expect(queuedFor).not.toContain(hiddenOnly)
   })
 })

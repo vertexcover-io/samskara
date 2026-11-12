@@ -1,6 +1,12 @@
 import { describe, expect, test } from "vitest"
 import type { SessionExportRecord } from "../export.js"
-import { checkEvidence, LIMITS, parseReviewMd } from "./reviewMd.js"
+import {
+  checkEvidence,
+  keepNewPartProblems,
+  LIMITS,
+  type Problem,
+  parseReviewMd,
+} from "./reviewMd.js"
 
 const problem = (title: string, fields: Record<string, string>): string =>
   [
@@ -435,4 +441,36 @@ test("a review.md that still has a Friction line reads the same, with no frictio
   expect(parsed.value.outcome).toBe("shipped")
   expect(parsed.value).not.toHaveProperty("friction")
   expect(parsed.value.problems).toHaveLength(1)
+})
+
+describe("keepNewPartProblems", () => {
+  const citing = (title: string, from: string, to: string): Problem => ({
+    title,
+    class: "missed",
+    severity: "low",
+    severityReason: "r",
+    fixType: "skill",
+    description: "d",
+    evidence: [{ from, to, quote: "q", why: "w" }],
+    learning: "l",
+    extra: {},
+  })
+
+  test("SC15: with contextCount 20, a problem citing only msg-3..msg-5 is dropped as context; ones reaching msg-21 or msg-25 are kept", () => {
+    const review = {
+      outcome: "shipped" as const,
+      summary: "s",
+      problems: [
+        citing("A", "msg-3", "msg-5"),
+        citing("B", "msg-18", "msg-21"),
+        citing("C", "msg-25", "msg-25"),
+      ],
+    }
+
+    const kept = keepNewPartProblems(review, 20)
+
+    expect(kept.review.problems.map((problem) => problem.title)).toEqual(["B", "C"])
+    expect(kept.dropped).toEqual([`"A": its evidence is all in the already-reviewed context`])
+    expect(kept.review.summary).toBe("s")
+  })
 })

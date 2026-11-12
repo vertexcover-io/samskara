@@ -4,6 +4,7 @@ import { buildApp } from "../app.js"
 import type { Db } from "../db/client.js"
 import {
   learningRuns,
+  messages,
   projects,
   sessionReviews,
   sessions,
@@ -58,6 +59,7 @@ describe.skipIf(!dockerAvailable())("review batch routes", () => {
 
   beforeEach(async () => {
     await db.delete(sessionReviews)
+    await db.delete(messages)
     await db.delete(sessions)
     await db.delete(projects)
     await db.delete(users)
@@ -180,20 +182,93 @@ describe.skipIf(!dockerAvailable())("review batch routes", () => {
     expect(byId.has("b-1")).toBe(false)
   })
 
-  test("SC26: a session already waiting or running counts as queued and is not reset", async () => {
+  /**
+   * a-1 never reviewed; a-2 reviewed at 10:00 with a message at 11:00; a-3 reviewed with nothing
+   * after; c-1 with a run waiting. Returns the done runs of a-2 and a-3.
+   */
+  const seedFourStates = async () => {
+    const message = async (sessionId: string, lineNumber: number, at: string) => {
+      const [row] = await db
+        .insert(messages)
+        .values({
+          sessionId,
+          lineUuid: crypto.randomUUID(),
+          subIndex: 0,
+          msgType: "message",
+          role: "user",
+          lineNumber,
+          raw: {},
+          sourceSchemaVersion: 1,
+          content: { type: "text", value: "hi" },
+          timestamp: new Date(at),
+        })
+        .returning({ id: messages.id })
+      return row?.id ?? null
+    }
+    const doneRun = async (sessionId: string, lastMessageId: string | null) => {
+      const [row] = await db
+        .insert(sessionReviews)
+        .values({
+          sessionId,
+          projectId: projectA,
+          analyzer: PROBLEMS_ANALYZER,
+          outcome: "productive",
+          summary: "done before",
+          signals: {},
+          lastMessageId,
+        })
+        .returning()
+      return row?.id as string
+    }
+    await message("a-1", 1, "2026-01-01T10:00:00Z")
+    const grown = await doneRun("a-2", await message("a-2", 1, "2026-01-01T10:00:00Z"))
+    await message("a-2", 2, "2026-01-01T11:00:00Z")
+    const still = await doneRun("a-3", await message("a-3", 1, "2026-01-01T10:00:00Z"))
     await db.insert(sessionReviews).values({
-      sessionId: "a-1",
-      projectId: projectA,
+      sessionId: "c-1",
+      projectId: projectC,
       analyzer: PROBLEMS_ANALYZER,
-      status: "running",
-      attempts: 2,
+      status: "waiting",
+    })
+    return { grown, still }
+  }
+
+  const waitingRows = async () =>
+    (await rows())
+      .filter((row) => row.status === "waiting" && row.sessionId !== "c-1")
+      .map((row) => [row.sessionId, row.newPartOnly, row.basedOn])
+      .sort()
+
+  test("SC25: new-messages mode gives a never-reviewed session a full run and a grown one a new-part run, and skips one with nothing new or a run waiting", async () => {
+    const { grown } = await seedFourStates()
+
+    const res = await request("/api/review-batches", {
+      method: "POST",
+      body: { sessionIds: ["a-1", "a-2", "a-3", "c-1"], mode: "newMessages" },
     })
 
-    const res = await start(["a-1"])
+    expect(await res.json()).toEqual({ queued: 2, skipped: 2, notAllowed: [], fixRunsQueued: 2 })
+    expect(await waitingRows()).toEqual([
+      ["a-1", false, null],
+      ["a-2", true, grown],
+    ])
+    expect((await rows()).filter((row) => row.sessionId === "c-1")).toHaveLength(1)
+  })
 
-    expect(await res.json()).toEqual({ queued: 1, skipped: 0, notAllowed: [], fixRunsQueued: 1 })
-    const [row] = await rows()
-    expect(row).toMatchObject({ status: "running", attempts: 2 })
+  test("SC26: full mode queues a full run for every ticked session, reviewed or not, and skips one with a run waiting", async () => {
+    await seedFourStates()
+
+    const res = await request("/api/review-batches", {
+      method: "POST",
+      body: { sessionIds: ["a-1", "a-2", "a-3", "c-1"], mode: "full" },
+    })
+
+    expect(await res.json()).toEqual({ queued: 3, skipped: 1, notAllowed: [], fixRunsQueued: 2 })
+    expect(await waitingRows()).toEqual([
+      ["a-1", false, null],
+      ["a-2", false, null],
+      ["a-3", false, null],
+    ])
   })
 
   test("SC27: the batch status routes are gone", async () => {
@@ -261,6 +336,24 @@ describe.skipIf(!dockerAvailable())("review batch routes", () => {
 
     expect(await res.json()).toMatchObject({ queued: 1, fixRunsQueued: 1 })
     expect((await fixRuns()).map((run) => run.projectId)).toEqual([projectC])
+  })
+
+  test("a session whose review is already running is skipped, but its project still gets a fix run that waits for it", async () => {
+    await db.insert(sessionReviews).values({
+      sessionId: "c-1",
+      projectId: projectC,
+      analyzer: PROBLEMS_ANALYZER,
+      status: "running",
+      attempts: 1,
+    })
+
+    const res = await start(["c-1"])
+
+    expect(await res.json()).toEqual({ queued: 0, skipped: 1, notAllowed: [], fixRunsQueued: 1 })
+    expect((await rows()).filter((row) => row.sessionId === "c-1")).toHaveLength(1)
+    expect(await fixRuns()).toEqual([
+      expect.objectContaining({ projectId: projectC, status: "waiting", waitForReviews: true }),
+    ])
   })
 
   test("pressing twice reuses the waiting fix run instead of adding a second", async () => {

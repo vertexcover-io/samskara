@@ -253,9 +253,6 @@ const renderDetail = (
   let aiLanded = false
   // Every POST /analyze body, in order — the modal-choice test asserts what the dialog sent.
   const analyzeBodies: unknown[] = []
-  // A 409 analysisAlreadyExists means the verdict landed out-of-band (e.g. a stale tab), so
-  // the refreshed review list must include it even though no aireview reply ever said 200.
-  let existsConflict = false
   const respond = (reply: Reply): Promise<Response> =>
     Promise.resolve(new Response(JSON.stringify(reply.body), { status: reply.status }))
   vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
@@ -275,12 +272,6 @@ const renderDetail = (
     }
     if (url.includes("/analyze")) {
       if (typeof init?.body === "string") analyzeBodies.push(JSON.parse(init.body))
-      if (
-        typeof analyze.body === "object" &&
-        analyze.body !== null &&
-        (analyze.body as { error?: string }).error === "analysisAlreadyExists"
-      )
-        existsConflict = true
       return respond(analyze)
     }
     if (url.includes("/aireview")) {
@@ -299,7 +290,7 @@ const renderDetail = (
       return respond(extras.reviewerOptions ?? REVIEWER_OPTIONS)
     }
     if (url.includes("/review")) {
-      const after = aiLanded || existsConflict ? extras.reviewAfterAi : undefined
+      const after = aiLanded ? extras.reviewAfterAi : undefined
       return respond(after ?? review)
     }
     if (url.includes("/api/sessions/")) {
@@ -1157,7 +1148,7 @@ test("the Review tab renders no verdict card for a static-only review", async ()
   const panel = panelOf()
   // The static analyzer no longer renders a card: the only verdict surface is the AI one,
   // so a static-only session offers Analyze instead of a verdict.
-  expect(within(panel).getByRole("button", { name: /analyze with ai/i })).toBeInTheDocument()
+  expect(within(panel).getByRole("button", { name: /^Review$/ })).toBeInTheDocument()
   expect(
     within(panel).queryByText("The agent spent most of the session stuck."),
   ).not.toBeInTheDocument()
@@ -1176,7 +1167,7 @@ test("the Review tab stays quiet when no review exists — no verdict", async ()
   const panel = panelOf()
   // The static analyzer stays server-triggered; the one button here is the AI review's.
   expect(within(panel).getAllByRole("button")).toHaveLength(1)
-  expect(within(panel).getByRole("button", { name: /analyze with ai/i })).toBeInTheDocument()
+  expect(within(panel).getByRole("button", { name: /^Review$/ })).toBeInTheDocument()
 })
 
 /** What GET /:id/aireview reports while a job for this session is still running. */
@@ -1216,15 +1207,36 @@ const PROBLEM = {
   extra: {},
 }
 
-const problemsReply = (problems: ReadonlyArray<unknown>): Reply => ({
-  status: 200,
-  body: {
-    review: {
-      ...PROBLEMS_REVIEW_ROW,
-      analyzedAt: PROBLEMS_REVIEW_ROW.createdAt,
-      problems,
-    },
-  },
+const problemsReply = (problems: ReadonlyArray<unknown>): Reply => {
+  const review = { ...PROBLEMS_REVIEW_ROW, analyzedAt: PROBLEMS_REVIEW_ROW.createdAt, problems }
+  return {
+    status: 200,
+    body: { review, runs: [{ ...review, kind: "full" }], newMessages: false },
+  }
+}
+
+/** One run of the shown chain as GET /aireview lists it. */
+const run = (
+  id: string,
+  kind: "full" | "newPart",
+  analyzedAt: string,
+  problems: ReadonlyArray<unknown>,
+  recordIds: ReadonlyArray<string> = ["m-1", "m-2", "tool-msg"],
+) => ({
+  ...PROBLEMS_REVIEW_ROW,
+  id,
+  kind,
+  createdAt: analyzedAt,
+  analyzedAt,
+  signals: { ...PROBLEMS_REVIEW_ROW.signals, run: { recordIds } },
+  problems,
+})
+
+const problemTitled = (id: string, title: string, from = "msg-1") => ({
+  ...PROBLEM,
+  id,
+  title,
+  evidence: [{ from, to: from, quote: "Make it idempotent", why: "the ask needed a key" }],
 })
 
 /** A review whose run captured the reviewer's own session, for the Reviewer session modal. */
@@ -1274,7 +1286,7 @@ test("AI review: clicking Analyze starts a job, polls until it lands, and is rep
 
   await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Review/ }))
-  const analyze = await within(panelOf()).findByRole("button", { name: /analyze with ai/i })
+  const analyze = await within(panelOf()).findByRole("button", { name: /^Review$/ })
 
   // Fake timers drive the 3s poll; fireEvent keeps the click itself timer-free. The modal
   // runs under real timers (its options fetch must resolve) before the poll takes over.
@@ -1300,7 +1312,7 @@ test("AI review: clicking Analyze starts a job, polls until it lands, and is rep
   })
   const panel = panelOf()
   expect(within(panel).getByText("AI review")).toBeInTheDocument()
-  expect(within(panel).queryByRole("button", { name: /analyze with ai/i })).not.toBeInTheDocument()
+  expect(within(panel).queryByRole("button", { name: /^Review$/ })).not.toBeInTheDocument()
   expect(within(panel).getByText(/fake-model · test-harness/)).toBeInTheDocument()
   expect(within(panel).getByText(/wrote the upsert twice/)).toBeInTheDocument()
 })
@@ -1316,7 +1328,7 @@ test("AI review: a problems review renders its verdict, summary and problems wit
   await user.click(screen.getByRole("tab", { name: /Review/ }))
 
   const panel = panelOf()
-  expect(within(panel).queryByRole("button", { name: /analyze with ai/i })).not.toBeInTheDocument()
+  expect(within(panel).queryByRole("button", { name: /^Review$/ })).not.toBeInTheDocument()
   expect(within(panel).getByText("AI review")).toBeInTheDocument()
   expect(within(panel).getByText("The agent spent most of the session stuck.")).toBeInTheDocument()
   expect(within(panel).getByText(/fake-model · test-harness/)).toBeInTheDocument()
@@ -1337,6 +1349,145 @@ test("AI review: a problems review renders its verdict, summary and problems wit
   expect(quote).toHaveAttribute("href", expect.stringContaining("m=m-2"))
 })
 
+test("SC21: the header shows the newest run's verdict and each run gets its own section, newest first", async () => {
+  const user = userEvent.setup()
+  const newest = {
+    ...PROBLEMS_REVIEW_ROW,
+    id: "run-c",
+    summary: "The whole session, through run C.",
+  }
+  renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1", {
+    review: { status: 200, body: { reviews: [newest] } },
+    aireview: {
+      status: 200,
+      body: {
+        review: newest,
+        newMessages: false,
+        runs: [
+          run("run-c", "newPart", "2026-08-28T10:00:00.000Z", [problemTitled("c1", "C one")]),
+          run("run-b", "newPart", "2026-08-27T10:00:00.000Z", [
+            problemTitled("b1", "B one"),
+            problemTitled("b2", "B two"),
+          ]),
+          run("run-a", "full", "2026-08-26T10:00:00.000Z", [
+            problemTitled("a1", "A one"),
+            problemTitled("a2", "A two"),
+            problemTitled("a3", "A three"),
+          ]),
+        ],
+      },
+    },
+  })
+
+  await tabsLoaded()
+  await user.click(screen.getByRole("tab", { name: /Review/ }))
+
+  const panel = panelOf()
+  expect(within(panel).getByText("The whole session, through run C.")).toBeInTheDocument()
+  await within(panel).findByRole("button", { name: /C one/ })
+  const headings = within(panel)
+    .getAllByRole("heading", { level: 3 })
+    .map((heading) => heading.textContent ?? "")
+    .filter((text) => /problem/.test(text))
+  expect(headings).toHaveLength(3)
+  expect(headings[0]).toMatch(/^New messages · .+ · 1 problem$/)
+  expect(headings[1]).toMatch(/^New messages · .+ · 2 problems$/)
+  expect(headings[2]).toMatch(/^Full review · .+ · 3 problems$/)
+  const titles = within(panel)
+    .getAllByRole("button", { name: /^(high).*(one|two|three)/ })
+    .map((button) => button.textContent ?? "")
+  expect(titles.map((text) => text.replace(/^high/, "").split("slow")[0])).toEqual([
+    "C one",
+    "B one",
+    "B two",
+    "A one",
+    "A two",
+    "A three",
+  ])
+})
+
+test("SC22: each run's evidence link opens that run's own message through its own recordIds", async () => {
+  const user = userEvent.setup()
+  renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1", {
+    review: { status: 200, body: { reviews: [PROBLEMS_REVIEW_ROW] } },
+    aireview: {
+      status: 200,
+      body: {
+        review: PROBLEMS_REVIEW_ROW,
+        newMessages: false,
+        runs: [
+          run(
+            "run-b",
+            "newPart",
+            "2026-08-27T10:00:00.000Z",
+            [problemTitled("b1", "B cites", "msg-2")],
+            ["x", "y", "m-b"],
+          ),
+          run(
+            "run-a",
+            "full",
+            "2026-08-26T10:00:00.000Z",
+            [problemTitled("a1", "A cites", "msg-2")],
+            ["x", "y", "m-a"],
+          ),
+        ],
+      },
+    },
+  })
+
+  await tabsLoaded()
+  await user.click(screen.getByRole("tab", { name: /Review/ }))
+  const panel = panelOf()
+  await user.click(await within(panel).findByRole("button", { name: /B cites/ }))
+  await user.click(within(panel).getByRole("button", { name: /A cites/ }))
+
+  const links = within(panel).getAllByRole("link", { name: "msg-2" })
+  expect(links).toHaveLength(2)
+  expect(links[0]).toHaveAttribute("href", expect.stringContaining("m=m-b"))
+  expect(links[1]).toHaveAttribute("href", expect.stringContaining("m=m-a"))
+})
+
+const renderWithNewMessages = () =>
+  renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1", {
+    review: { status: 200, body: { reviews: [PROBLEMS_REVIEW_ROW] } },
+    aireview: {
+      status: 200,
+      body: {
+        review: PROBLEMS_REVIEW_ROW,
+        newMessages: true,
+        runs: [run("run-a", "full", "2026-08-26T10:00:00.000Z", [])],
+      },
+    },
+  })
+
+test("SC23: with new messages the dialog sends the mode picked: Full review over the default", async () => {
+  const user = userEvent.setup()
+  const view = renderWithNewMessages()
+
+  await tabsLoaded()
+  await user.click(screen.getByRole("tab", { name: /Review/ }))
+  await user.click(await within(panelOf()).findByRole("button", { name: "Review new messages" }))
+  await user.click(await screen.findByRole("radio", { name: "Full review" }))
+  await user.click(await screen.findByRole("button", { name: "Run analysis" }))
+
+  await waitFor(() => expect(view.analyzeBodies).toHaveLength(1))
+  expect(view.analyzeBodies[0]).toMatchObject({ mode: "full" })
+})
+
+test("SC23: with new messages and the default left, the dialog sends mode newMessages", async () => {
+  const user = userEvent.setup()
+  const view = renderWithNewMessages()
+
+  await tabsLoaded()
+  await user.click(screen.getByRole("tab", { name: /Review/ }))
+  await user.click(await within(panelOf()).findByRole("button", { name: "Review new messages" }))
+  expect(await screen.findByRole("radio", { name: "Review new messages" })).toBeChecked()
+  await user.click(await screen.findByRole("button", { name: "Run analysis" }))
+
+  await waitFor(() => expect(view.analyzeBodies).toHaveLength(1))
+  expect(view.analyzeBodies[0]).toMatchObject({ mode: "newMessages" })
+})
+
 test("AI review: a problems review that found nothing says so", async () => {
   const user = userEvent.setup()
   renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1", {
@@ -1348,9 +1499,7 @@ test("AI review: a problems review that found nothing says so", async () => {
   await user.click(screen.getByRole("tab", { name: /Review/ }))
 
   expect(await within(panelOf()).findByText("No problems found.")).toBeInTheDocument()
-  expect(
-    within(panelOf()).queryByRole("button", { name: /analyze with ai/i }),
-  ).not.toBeInTheDocument()
+  expect(within(panelOf()).queryByRole("button", { name: /^Review$/ })).not.toBeInTheDocument()
 })
 
 test("AI review: a 403 from analyze explains edit rights instead of starting a run", async () => {
@@ -1361,7 +1510,7 @@ test("AI review: a 403 from analyze explains edit rights instead of starting a r
 
   await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Review/ }))
-  await user.click(await within(panelOf()).findByRole("button", { name: /analyze with ai/i }))
+  await user.click(await within(panelOf()).findByRole("button", { name: /^Review$/ }))
   await user.click(await screen.findByRole("button", { name: "Run analysis" }))
 
   expect(
@@ -1378,7 +1527,7 @@ test("AI review: a 503 from analyze reports the queue is full and keeps the butt
 
   await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Review/ }))
-  await user.click(await within(panelOf()).findByRole("button", { name: /analyze with ai/i }))
+  await user.click(await within(panelOf()).findByRole("button", { name: /^Review$/ }))
   await user.click(await screen.findByRole("button", { name: "Run analysis" }))
 
   expect(
@@ -1386,7 +1535,7 @@ test("AI review: a 503 from analyze reports the queue is full and keeps the butt
       "The server is running 4 analyses already — try again in a minute.",
     ),
   ).toBeInTheDocument()
-  expect(within(panelOf()).getByRole("button", { name: /analyze with ai/i })).toBeEnabled()
+  expect(within(panelOf()).getByRole("button", { name: /^Review$/ })).toBeEnabled()
 })
 
 // The reported bug: reload mid-run lost the page's memory of the running job, so the
@@ -1424,7 +1573,7 @@ test("AI review: a reload joins the running job — Analyzing shows without a cl
 
   // No click ever happened: the page joined the run it found on load.
   expect(screen.getByText(/Analyzing… \(started/)).toBeInTheDocument()
-  expect(screen.getByRole("button", { name: /analyze with ai/i })).toBeDisabled()
+  expect(screen.getByRole("button", { name: /^Review$/ })).toBeDisabled()
 
   // First poll: the job is still running, so the wait goes on.
   await act(async () => {
@@ -1438,26 +1587,7 @@ test("AI review: a reload joins the running job — Analyzing shows without a cl
     await vi.advanceTimersByTimeAsync(0)
   })
   expect(screen.getByText("AI review")).toBeInTheDocument()
-  expect(screen.queryByRole("button", { name: /analyze with ai/i })).not.toBeInTheDocument()
-})
-
-test("AI review: 409 analysisAlreadyExists treats the verdict as arrived — the list refetch paints the card", async () => {
-  const user = userEvent.setup()
-  renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1", {
-    analyze: { status: 409, body: { error: "analysisAlreadyExists" } },
-    aireview: [{ status: 404, body: { error: "noAiReview" } }],
-    reviewAfterAi: { status: 200, body: { reviews: [PROBLEMS_REVIEW_ROW, REVIEW] } },
-  })
-
-  await tabsLoaded()
-  await user.click(screen.getByRole("tab", { name: /Review/ }))
-  await user.click(await within(panelOf()).findByRole("button", { name: /analyze with ai/i }))
-  await user.click(await screen.findByRole("button", { name: "Run analysis" }))
-
-  const panel = panelOf()
-  expect(await within(panel).findByText("AI review")).toBeInTheDocument()
-  expect(within(panel).queryByRole("button", { name: /analyze with ai/i })).not.toBeInTheDocument()
-  expect(within(panel).queryByText(/Analyzing…/)).not.toBeInTheDocument()
+  expect(screen.queryByRole("button", { name: /^Review$/ })).not.toBeInTheDocument()
 })
 
 test("AI review: the modal offers the server's reviewer choices and posts the picked harness and model", async () => {
@@ -1466,7 +1596,7 @@ test("AI review: the modal offers the server's reviewer choices and posts the pi
 
   await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Review/ }))
-  await user.click(await within(panelOf()).findByRole("button", { name: /analyze with ai/i }))
+  await user.click(await within(panelOf()).findByRole("button", { name: /^Review$/ }))
 
   // The dialog preselects the server's env defaults, with both harnesses offered live.
   const harness = await screen.findByLabelText("Reviewer harness")
@@ -1478,7 +1608,7 @@ test("AI review: the modal offers the server's reviewer choices and posts the pi
   expect(screen.getByLabelText("Model")).toHaveValue("sonnet")
 
   await user.click(screen.getByRole("button", { name: "Run analysis" }))
-  expect(view.analyzeBodies.at(-1)).toEqual({ harness: "claude", model: "sonnet" })
+  expect(view.analyzeBodies.at(-1)).toEqual({ mode: "full", harness: "claude", model: "sonnet" })
 })
 
 test("AI review: an unavailable default harness is not preselected; the first usable one is", async () => {
@@ -1504,13 +1634,13 @@ test("AI review: an unavailable default harness is not preselected; the first us
 
   await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Review/ }))
-  await user.click(await within(panelOf()).findByRole("button", { name: /analyze with ai/i }))
+  await user.click(await within(panelOf()).findByRole("button", { name: /^Review$/ }))
 
   expect(await screen.findByLabelText("Reviewer harness")).toHaveValue("claude")
   expect(screen.getByLabelText("Model")).toHaveValue("sonnet")
 
   await user.click(screen.getByRole("button", { name: "Run analysis" }))
-  expect(view.analyzeBodies.at(-1)).toEqual({ harness: "claude", model: "sonnet" })
+  expect(view.analyzeBodies.at(-1)).toEqual({ mode: "full", harness: "claude", model: "sonnet" })
 })
 
 test("AI review: a joined run that fails surfaces the failure instead of analyzing forever", async () => {
@@ -1530,7 +1660,7 @@ test("AI review: a joined run that fails surfaces the failure instead of analyzi
 
   await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Review/ }))
-  const analyze = await within(panelOf()).findByRole("button", { name: /analyze with ai/i })
+  const analyze = await within(panelOf()).findByRole("button", { name: /^Review$/ })
 
   fireEvent.click(analyze)
   fireEvent.click(await screen.findByRole("button", { name: "Run analysis" }))
@@ -1572,7 +1702,7 @@ test("AI review: a failed job surfaces its reason, re-enables Analyze, and stops
 
   await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Review/ }))
-  const analyze = await within(panelOf()).findByRole("button", { name: /analyze with ai/i })
+  const analyze = await within(panelOf()).findByRole("button", { name: /^Review$/ })
   fireEvent.click(analyze)
   fireEvent.click(await screen.findByRole("button", { name: "Run analysis" }))
 
@@ -1613,7 +1743,7 @@ test("AI review: a reload after a review failed all its tries shows the failure 
   expect(await within(panelOf()).findByText(/the agent ran out of memory/)).toBeInTheDocument()
   expect(within(panelOf()).getByText(/Analysis failed/i)).toBeInTheDocument()
   expect(within(panelOf()).queryByText(/Analyzing…/)).not.toBeInTheDocument()
-  expect(within(panelOf()).getByRole("button", { name: /analyze with ai/i })).toBeEnabled()
+  expect(within(panelOf()).getByRole("button", { name: /^Review$/ })).toBeEnabled()
 })
 
 test("AI review: 409 analysisAlreadyRunning joins the existing run and polls it to the verdict", async () => {
@@ -1638,7 +1768,7 @@ test("AI review: 409 analysisAlreadyRunning joins the existing run and polls it 
 
   await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Review/ }))
-  const analyze = await within(panelOf()).findByRole("button", { name: /analyze with ai/i })
+  const analyze = await within(panelOf()).findByRole("button", { name: /^Review$/ })
 
   fireEvent.click(analyze)
   fireEvent.click(await screen.findByRole("button", { name: "Run analysis" }))
@@ -1656,9 +1786,7 @@ test("AI review: 409 analysisAlreadyRunning joins the existing run and polls it 
     await vi.advanceTimersByTimeAsync(0)
   })
   expect(within(panelOf()).getByText("AI review")).toBeInTheDocument()
-  expect(
-    within(panelOf()).queryByRole("button", { name: /analyze with ai/i }),
-  ).not.toBeInTheDocument()
+  expect(within(panelOf()).queryByRole("button", { name: /^Review$/ })).not.toBeInTheDocument()
 })
 
 // AI-9c: the verdict is one plain-language sentence built from the outcome — the stamp
@@ -1676,8 +1804,18 @@ test.each([
 
 test("AI-9c: the verdict is built from the review's own outcome, and the reviewer session modal renders the transcript like a conversation - roles, text, inline tools", async () => {
   const user = userEvent.setup()
+  const withTranscript = {
+    ...REVIEW_WITH_TRANSCRIPT,
+    kind: "full",
+    analyzedAt: REVIEW_WITH_TRANSCRIPT.createdAt,
+    problems: [],
+  }
   renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1", {
     review: { status: 200, body: { reviews: [REVIEW_WITH_TRANSCRIPT] } },
+    aireview: {
+      status: 200,
+      body: { review: withTranscript, runs: [withTranscript], newMessages: false },
+    },
   })
 
   await tabsLoaded()
@@ -1698,6 +1836,22 @@ test("AI-9c: the verdict is built from the review's own outcome, and the reviewe
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
 })
 
+test("SC10: Full review again queues a new full run: the request carries mode full and no force", async () => {
+  const user = userEvent.setup()
+  const view = renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1", {
+    review: { status: 200, body: { reviews: [REVIEW_WITH_TRANSCRIPT] } },
+  })
+
+  await tabsLoaded()
+  await user.click(screen.getByRole("tab", { name: /Review/ }))
+  await user.click(await screen.findByRole("button", { name: "Full review again" }))
+  await user.click(await screen.findByRole("button", { name: "Run analysis" }))
+
+  await waitFor(() => expect(view.analyzeBodies).toHaveLength(1))
+  expect(view.analyzeBodies[0]).toMatchObject({ mode: "full" })
+  expect(view.analyzeBodies[0]).not.toHaveProperty("force")
+})
+
 test("AI review: a failed redo surfaces its reason on the card instead of dying silently", async () => {
   const user = userEvent.setup()
   renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1", {
@@ -1707,15 +1861,15 @@ test("AI review: a failed redo surfaces its reason on the card instead of dying 
 
   await tabsLoaded()
   await user.click(screen.getByRole("tab", { name: /Review/ }))
-  await user.click(await screen.findByRole("button", { name: "Redo review" }))
+  await user.click(await screen.findByRole("button", { name: "Full review again" }))
   await user.click(await screen.findByRole("button", { name: "Run analysis" }))
 
   const panel = panelOf()
-  expect(await within(panel).findByText(/Redo failed/)).toBeInTheDocument()
-  expect(within(panel).getByRole("button", { name: "Redo review" })).toBeEnabled()
+  expect(await within(panel).findByText(/Review failed/)).toBeInTheDocument()
+  expect(within(panel).getByRole("button", { name: "Full review again" })).toBeEnabled()
 })
 
-test("AI review: a reload while a redo is running shows Redo running on the existing card, not a fresh button", async () => {
+test("AI review: a reload while a new run is running shows Review running on the existing card, disabled, not a fresh button", async () => {
   renderDetail(PAYLOAD, OK_EMPTY, "/sessions/s-1?tab=review", {
     review: { status: 200, body: { reviews: [PROBLEMS_REVIEW_ROW, REVIEW] } },
     aireview: [
@@ -1723,8 +1877,8 @@ test("AI review: a reload while a redo is running shows Redo running on the exis
       { status: 200, body: { review: PROBLEMS_REVIEW_ROW, job: RUNNING_JOB } },
     ],
   })
-  await waitFor(() => expect(screen.getByText(/Redo running… \(started/)).toBeInTheDocument())
-  expect(screen.getByRole("button", { name: /redo running/i })).toBeDisabled()
+  await waitFor(() => expect(screen.getByText(/Review running… \(started/)).toBeInTheDocument())
+  expect(screen.getByRole("button", { name: /review running/i })).toBeDisabled()
 }, 10_000)
 
 test("EDGE-008: a 404 from the detail endpoint renders a not-found state whose button leads back to the list, not a blank panel", async () => {

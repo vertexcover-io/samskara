@@ -353,11 +353,23 @@ export const pullRequests = pgTable(
     title: text("title"),
     baseBranch: text("baseBranch"),
     headBranch: text("headBranch"),
+    /**
+     * Open until the nightly check reads it from GitHub as merged or closed. A session opened
+     * the PR, so a new row is open; only the worker's nightly check writes the three below.
+     */
+    state: text("state").notNull().default("open"),
+    /** When it was merged, or closed without merging; null while open. */
+    closedAt: timestamp("closedAt", { withTimezone: true }),
+    /** When the nightly check last had an answer from GitHub for it; null until then. */
+    checkedAt: timestamp("checkedAt", { withTimezone: true }),
     createdAt,
     updatedAt,
     searchVector: searchVector("pullRequests"),
   },
-  (t) => [unique("pullRequests_repo_number_unique").on(t.repoId, t.number)],
+  (t) => [
+    unique("pullRequests_repo_number_unique").on(t.repoId, t.number),
+    check("pullRequests_state_check", sql`${t.state} in ('open', 'merged', 'closed')`),
+  ],
 )
 
 /** Only PRs the session opened are stored, so a row here means "this session created that PR". */
@@ -492,13 +504,15 @@ export const artifact = pgTable(
 )
 
 /**
- * One structured analysis of a session. Unique on (sessionId, analyzer): re-running the same
- * analyzer version replaces its review rather than stacking copies, while a future analyzer
- * version writes its own row alongside — reviews are comparable, not overwritten.
+ * One review run of a session. Every run is its own row and nothing overwrites an earlier one:
+ * a full run reads the whole session, a `newPartOnly` run reads only what the run it is
+ * `basedOn` did not, plus a little context. At most one row per (sessionId, analyzer) is
+ * `waiting` or `running` at a time.
  *
- * A row moves waiting -> running -> done | failed. A re-review keeps the previous result on the
- * row while it waits, runs or fails, so readers show any row that has a result (`outcome` is
- * set), whatever its status. The worker (`src/worker/`) is the only writer of running and failed.
+ * A row moves waiting -> running -> done | failed; a failed try goes back to waiting on the same
+ * row until its 3rd. Only a `done` row has a result. Readers show one chain per session: the
+ * latest done full run plus every done new-part run after it (`shownRun` in reviews.repo.ts).
+ * The worker (`src/worker/`) is the only writer of running, failed and done.
  */
 export const sessionReviews = pgTable(
   "sessionReviews",
@@ -526,13 +540,26 @@ export const sessionReviews = pgTable(
     model: text("model"),
     /** The person's own review prompt, merged into the base instructions; null when none. */
     prompt: text("prompt"),
-    /** The main-conversation lineNumber of the last message the review read; null when it read none. */
-    reviewedThrough: integer("reviewedThrough"),
+    /** True for a run that reads only the messages the run it is `basedOn` did not. */
+    newPartOnly: boolean("newPartOnly").notNull().default(false),
+    /** The done run a new-part run continues from; null for a full run. */
+    basedOn: uuid("basedOn").references((): AnyPgColumn => sessionReviews.id, {
+      onDelete: "set null",
+    }),
+    /**
+     * The message the run read with the latest timestamp: messages after it are new. Null
+     * until the run is done, and when it read none.
+     */
+    lastMessageId: uuid("lastMessageId").references(() => messages.id, { onDelete: "set null" }),
     createdAt,
     updatedAt,
   },
   (t) => [
-    unique("sessionReviews_session_analyzer_unique").on(t.sessionId, t.analyzer),
+    // One run in flight per session and analyzer; finished runs are history and stack freely.
+    uniqueIndex("sessionReviews_one_active_per_session")
+      .on(t.sessionId, t.analyzer)
+      .where(sql`${t.status} in ('waiting', 'running')`),
+    index("sessionReviews_session_analyzer_createdAt_idx").on(t.sessionId, t.analyzer, t.createdAt),
     check(
       "sessionReviews_outcome_check",
       sql`${t.outcome} in ('shipped', 'productive', 'struggled', 'aborted')`,
@@ -551,6 +578,24 @@ export const sessionReviews = pgTable(
       .on(t.status, t.updatedAt)
       .where(sql`${t.status} in ('waiting', 'running')`),
   ],
+)
+
+/**
+ * A reader's reply from a try of a review that has not ended, kept so a retry of the same
+ * review reruns only the readers that have none. Keyed by the hash of the piece's records the
+ * reader read (`pieceHash` in @samskara/core), so a piece whose records changed is read again.
+ */
+export const reviewReaderReplies = pgTable(
+  "reviewReaderReplies",
+  {
+    reviewId: uuid("reviewId")
+      .notNull()
+      .references(() => sessionReviews.id, { onDelete: "cascade" }),
+    pieceHash: text("pieceHash").notNull(),
+    reply: text("reply").notNull(),
+    createdAt,
+  },
+  (t) => [primaryKey({ columns: [t.reviewId, t.pieceHash] })],
 )
 
 /**

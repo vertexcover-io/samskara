@@ -4,10 +4,9 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { HarnessRunner, Problem } from "@samskara/core"
 import type { Db } from "../../db/client.js"
-import { messages, orgs } from "../../db/schema.js"
+import { messages, orgs, sessionReviews } from "../../db/schema.js"
 import * as projectsRepo from "../../repositories/projects.repo.js"
 import * as problemsRepo from "../../repositories/reviewProblems.repo.js"
-import * as reviewsRepo from "../../repositories/reviews.repo.js"
 import * as sessionsRepo from "../../repositories/sessions.repo.js"
 
 /**
@@ -89,15 +88,20 @@ export const seedSession = async (
       .returning({ id: messages.id })
     recordIds.push(row?.id as string)
   }
-  const review = await reviewsRepo.upsertReview(db, {
-    sessionId,
-    projectId,
-    analyzer: "ai-problems-v2",
-    outcome: "shipped",
-    summary: "s",
-    signals: recordIds.length === 0 ? {} : { run: { recordIds } },
-    reviewedThrough: recordIds.length === 0 ? null : recordIds.length,
-  })
+  const [review] = await db
+    .insert(sessionReviews)
+    .values({
+      sessionId,
+      projectId,
+      analyzer: "ai-problems-v2",
+      status: "done",
+      outcome: "shipped",
+      summary: "s",
+      signals: recordIds.length === 0 ? {} : { run: { recordIds } },
+      lastMessageId: recordIds.at(-1) ?? null,
+    })
+    .returning({ id: sessionReviews.id })
+  if (review === undefined) throw new Error("seed review failed")
   await problemsRepo.replaceReviewProblems(db, {
     reviewId: review.id,
     sessionId,

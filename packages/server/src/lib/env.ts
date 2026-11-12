@@ -98,7 +98,10 @@ const BaseEnvSchema = z.object({
       "LEARNINGS_HARNESS_REPO must be owner/name, e.g. vertexcover-io/yok",
     )
     .optional(),
-  /** Only for a private LEARNINGS_HARNESS_REPO: a token that can read it. */
+  /**
+   * A read-only GitHub token: it clones a private LEARNINGS_HARNESS_REPO, and the worker's
+   * nightly pick reads pull request states with it. Unset, the pick uses the 6-hour rule alone.
+   */
   LEARNINGS_HARNESS_GITHUB_TOKEN: z.string().min(1).optional(),
   LEARNINGS_HARNESS_PATH: z.string().min(1).optional(),
   /**
@@ -197,6 +200,8 @@ export type Env = {
   /** Set by `loadEnv`; an Env built by hand (in tests) may leave it out for the default. */
   readonly aiAgentSlots?: number
   readonly learningsHarness?: HarnessSource | undefined
+  /** LEARNINGS_HARNESS_GITHUB_TOKEN, read alone: the nightly pick asks GitHub for PR states. */
+  readonly githubReadToken?: string | undefined
   /** Set by `loadEnv`; an Env built by hand (in tests) may leave it out for the review model. */
   readonly learningsModel?: string | undefined
   /** Set by `loadEnv`; an Env built by hand (in tests) may leave it out to queue no nightly reviews. */
@@ -236,6 +241,7 @@ export const loadEnv = (source: Source = process.env): Env => {
     aiReviewTimeoutMs: parsed.data.AI_REVIEW_TIMEOUT_MS,
     aiAgentSlots: parsed.data.AI_AGENT_SLOTS,
     learningsHarness: learningsHarnessOf(parsed.data),
+    githubReadToken: parsed.data.LEARNINGS_HARNESS_GITHUB_TOKEN,
     learningsModel:
       parsed.data.LEARNINGS_MODEL ??
       (parsed.data.AI_REVIEW_HARNESS === "claude" ? "opus" : aiReviewModel),

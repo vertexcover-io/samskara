@@ -13,7 +13,7 @@ const ids = (count: number, prefix = "s"): ReadonlyArray<string> =>
 describe("review batch selection", () => {
   test("SC22: the queued note names what happened", () => {
     expect(queuedMessage({ queued: 3, skipped: 1, notAllowed: ["a", "b"], fixRunsQueued: 2 })).toBe(
-      "Queued 3 sessions for review. Fixes will be found in 2 projects once the reviews finish. 1 session already had a review. 2 sessions you cannot edit.",
+      "Queued 3 sessions for review. Fixes will be found in 2 projects once the reviews finish. 1 session had nothing new or a review already running. 2 sessions you cannot edit.",
     )
     expect(queuedMessage({ queued: 1, skipped: 0, notAllowed: [], fixRunsQueued: 0 })).toBe(
       "Queued 1 session for review.",

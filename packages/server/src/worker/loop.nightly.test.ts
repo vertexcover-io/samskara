@@ -1,14 +1,23 @@
 import { createLogger } from "@samskara/core"
 import { eq } from "drizzle-orm"
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
+import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from "vitest"
 import type { Db } from "../db/client.js"
-import { projects, sessionReviews, sessions, users } from "../db/schema.js"
+import {
+  projects,
+  pullRequests,
+  repos,
+  sessionPullRequests,
+  sessionReviews,
+  sessions,
+  users,
+} from "../db/schema.js"
 import { dockerAvailable, startTestDb } from "../db/testDb.js"
 import type { NightlyReview } from "../lib/env.js"
 import { captureLogger } from "../lib/test-logger.js"
-import { upsertReview } from "../repositories/reviews.repo.js"
+import { finishReview } from "../repositories/reviews.repo.js"
 import type { ClaimedReview } from "../repositories/workQueue.repo.js"
 import type { AiReviewResult } from "../services/ai-review/pipeline.js"
+import type { PullRequestLookup } from "../services/pullRequestStates.js"
 import { createWorkLoop, type WorkLoopDeps } from "./loop.js"
 
 const ANALYZER = "ai-problems-v2"
@@ -82,14 +91,11 @@ describe.skipIf(!dockerAvailable())("work loop: the nightly pick", () => {
 
   /** What runAiReview's success does to the row: saves the result as done. */
   const succeed = async (review: ClaimedReview): Promise<AiReviewResult> => {
-    const saved = await upsertReview(db, {
-      sessionId: review.sessionId,
-      projectId,
-      analyzer: ANALYZER,
+    const saved = await finishReview(db, review.id, {
       outcome: "productive",
       summary: "ok",
       signals: {},
-      reviewedThrough: null,
+      lastMessageId: null,
     })
     return { kind: "ok", reviewId: saved.id, review: {} as never }
   }
@@ -200,5 +206,180 @@ describe.skipIf(!dockerAvailable())("work loop: the nightly pick", () => {
 
     expect(await rows()).toHaveLength(0)
     expect(await lastPick()).toBeNull()
+  })
+  describe("pull request states before the pick", () => {
+    const NO_TOKEN =
+      "no LEARNINGS_HARNESS_GITHUB_TOKEN: the nightly pick will not read pull request states"
+
+    /** A session whose last message was an hour before `now`, so not yet quiet for 6 hours. */
+    const busySession = async (now: Date): Promise<string> => {
+      counter += 1
+      const id = `loop-nightly-${counter}`
+      const at = new Date(now.getTime() - HOUR_MS)
+      await db.insert(sessions).values({
+        id,
+        source: "claude_code",
+        userId,
+        projectId,
+        lastMessageAt: at,
+        updatedAt: at,
+      })
+      return id
+    }
+
+    /** An open github.com pull request the session opened. */
+    const openPullRequest = async (sessionId: string): Promise<string> => {
+      counter += 1
+      const [repo] = await db
+        .insert(repos)
+        .values({
+          host: "github.com",
+          owner: "acme",
+          repoName: `app-${counter}`,
+          ownerUserId: userId,
+        })
+        .returning({ id: repos.id })
+      const [pr] = await db
+        .insert(pullRequests)
+        .values({ repoId: repo?.id as string, number: counter })
+        .returning({ id: pullRequests.id })
+      await db.insert(sessionPullRequests).values({ sessionId, prId: pr?.id as string })
+      return pr?.id as string
+    }
+
+    const prRow = async (id: string) => {
+      const [row] = await db.select().from(pullRequests).where(eq(pullRequests.id, id))
+      return row
+    }
+
+    test("SC15: a due tick saves GitHub's answer and queues the merged session", async () => {
+      const now = ist(2)
+      const merged = await busySession(now)
+      const prId = await openPullRequest(merged)
+      const mergedAt = new Date(now.getTime() - 30 * 60 * 1000)
+      const lookup = vi.fn<PullRequestLookup>(async (prs) => ({
+        answers: prs.map((pr) => ({ id: pr.id, state: "merged" as const, closedAt: mergedAt })),
+        failures: [],
+      }))
+      const loop = loopAt(now, { pullRequestLookup: lookup })
+
+      await loop.tick()
+      await loop.idle()
+
+      expect(lookup).toHaveBeenCalledTimes(1)
+      expect(await prRow(prId)).toMatchObject({
+        state: "merged",
+        closedAt: mergedAt,
+        checkedAt: now,
+      })
+      const all = await rows()
+      expect(all.map((row) => row.sessionId)).toEqual([merged])
+      expect(all[0]?.status).toBe("done")
+    })
+
+    test("SC16: a pull request GitHub still reports open leaves its session waiting", async () => {
+      const now = ist(2)
+      const busy = await busySession(now)
+      const prId = await openPullRequest(busy)
+      const quiet = await readySession()
+      const lookup: PullRequestLookup = async (prs) => ({
+        answers: prs.map((pr) => ({ id: pr.id, state: "open" as const, closedAt: null })),
+        failures: [],
+      })
+      const loop = loopAt(now, { pullRequestLookup: lookup })
+
+      await loop.tick()
+      await loop.idle()
+
+      expect((await rows()).map((row) => row.sessionId)).toEqual([quiet])
+      expect(await prRow(prId)).toMatchObject({ state: "open", closedAt: null, checkedAt: now })
+    })
+
+    test("SC17: without a token the pick runs on the 6-hour rule and says so once", async () => {
+      const now = ist(2)
+      const quiet = await readySession()
+      const busy = await busySession(now)
+      await openPullRequest(busy)
+      const captured = captureLogger()
+      const loop = loopAt(now, { log: captured.log })
+
+      await loop.tick()
+      await loop.idle()
+      await loop.tick()
+      await loop.idle()
+
+      expect((await rows()).map((row) => row.sessionId)).toEqual([quiet])
+      expect(captured.lines.filter((line) => line.msg === NO_TOKEN)).toHaveLength(1)
+    })
+
+    test.each([
+      {
+        label: "reports a failed request",
+        lookup: (async () => ({ answers: [], failures: ["boom"] })) satisfies PullRequestLookup,
+      },
+      {
+        label: "rejects",
+        lookup: (async () => {
+          throw new Error("network down")
+        }) satisfies PullRequestLookup,
+      },
+    ])("SC18: a GitHub lookup that $label does not stop the pick", async ({ lookup }) => {
+      const now = ist(2)
+      const quiet = await readySession()
+      const busy = await busySession(now)
+      const prId = await openPullRequest(busy)
+      const before = await prRow(prId)
+      const captured = captureLogger()
+      const loop = loopAt(now, { log: captured.log, pullRequestLookup: lookup })
+
+      await loop.tick()
+      await loop.idle()
+
+      const all = await rows()
+      expect(all.map((row) => row.sessionId)).toEqual([quiet])
+      expect(all[0]?.status).toBe("done")
+      expect(await prRow(prId)).toEqual(before)
+      expect(captured.at("warn").length).toBeGreaterThan(0)
+    })
+
+    test("SC18: a request that fails does not cost the answers the other requests got", async () => {
+      const now = ist(2)
+      const merged = await busySession(now)
+      const prId = await openPullRequest(merged)
+      const mergedAt = new Date(now.getTime() - 30 * 60 * 1000)
+      const lookup: PullRequestLookup = async (prs) => ({
+        answers: prs.map((pr) => ({ id: pr.id, state: "merged" as const, closedAt: mergedAt })),
+        failures: ["github pull request check failed (502)"],
+      })
+      const captured = captureLogger()
+      const loop = loopAt(now, { log: captured.log, pullRequestLookup: lookup })
+
+      await loop.tick()
+      await loop.idle()
+
+      expect(await prRow(prId)).toMatchObject({ state: "merged", closedAt: mergedAt })
+      const all = await rows()
+      expect(all.map((row) => row.sessionId)).toEqual([merged])
+      expect(all[0]?.status).toBe("done")
+      expect(captured.at("warn").length).toBeGreaterThan(0)
+    })
+
+    test("SC19: no GitHub call outside the due minute", async () => {
+      await db
+        .update(projects)
+        .set({ lastNightlyPickAt: ist(2) })
+        .where(eq(projects.id, projectId))
+      const now = ist(23)
+      await openPullRequest(await busySession(now))
+      await readySession()
+      const lookup = vi.fn<PullRequestLookup>(async () => ({ answers: [], failures: [] }))
+      const loop = loopAt(now, { pullRequestLookup: lookup })
+
+      await loop.tick()
+      await loop.idle()
+
+      expect(lookup).not.toHaveBeenCalled()
+      expect(await rows()).toHaveLength(0)
+    })
   })
 })

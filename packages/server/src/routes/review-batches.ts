@@ -5,7 +5,11 @@ import type { Db } from "../db/client.js"
 import { type Env, hasCredential } from "../lib/env.js"
 import { type AuthVariables, requireAuth } from "../lib/require-auth.js"
 import { canWrite } from "../repositories/projects.repo.js"
-import { hasReviewFrom, visibleSessionProjectId } from "../repositories/reviews.repo.js"
+import {
+  hasNewMessagesSince,
+  latestDoneRun,
+  visibleSessionProjectId,
+} from "../repositories/reviews.repo.js"
 import { queueFixRun, queueReview } from "../repositories/workQueue.repo.js"
 import { PROBLEMS_ANALYZER } from "../services/ai-review/pipeline.js"
 
@@ -22,12 +26,17 @@ type Deps = {
 }
 
 const startBodySchema = z
-  .object({ sessionIds: z.array(z.string().min(1)).min(1).max(MAX_REVIEW_BATCH_SESSIONS) })
+  .object({
+    sessionIds: z.array(z.string().min(1)).min(1).max(MAX_REVIEW_BATCH_SESSIONS),
+    /** One mode for every ticked session; `newMessages` gives never-reviewed ones a full review. */
+    mode: z.enum(["full", "newMessages"]).default("newMessages"),
+  })
   .strict()
 
 /**
- * Review ticked sessions: each one the caller may edit and that has no review yet is queued
- * for the worker, and each project that got a review queued gets a fix run that waits for its
+ * Review ticked sessions in one mode: each one the caller may edit gets a run queued for the
+ * worker (`full`, or in `newMessages` a full run when never reviewed, a new-part run when it
+ * has new messages, and nothing when it has none), and each project that got a review queued gets a fix run that waits for its
  * reviews to finish. Its own base: a static path under /api/sessions would be read as a session id.
  */
 export const reviewBatchRoutes = ({ db, env, notifyWorker, credentialEnv }: Deps) =>
@@ -43,7 +52,8 @@ export const reviewBatchRoutes = ({ db, env, notifyWorker, credentialEnv }: Deps
       const userId = c.get("user").id
       if (!hasCredential(env.aiReviewHarness, credentialEnv ?? process.env))
         return c.json({ error: "harnessUnauthenticated" }, 400)
-      const sessionIds = [...new Set(c.req.valid("json").sessionIds)]
+      const { sessionIds: ids, mode } = c.req.valid("json")
+      const sessionIds = [...new Set(ids)]
       // The same gate as Analyze: the session is visible, and its project editable. Edit
       // rights are asked once per project, since 50 sessions usually share one or two.
       const visible = await Promise.all(
@@ -73,15 +83,29 @@ export const reviewBatchRoutes = ({ db, env, notifyWorker, credentialEnv }: Deps
           notAllowed.push(sessionId)
           continue
         }
-        // Without this skip, Review on a page of reviewed sessions would quietly redo each one.
-        if (await hasReviewFrom(db, { userId, sessionId, analyzer: PROBLEMS_ANALYZER })) {
+        // newMessages: a reviewed session continues from its newest run, and one with nothing new
+        // is skipped, so a page of reviewed sessions is not quietly redone.
+        const base =
+          mode === "newMessages" ? await latestDoneRun(db, sessionId, PROBLEMS_ANALYZER) : null
+        if (base !== null && !(await hasNewMessagesSince(db, sessionId, base.id))) {
           skipped += 1
           continue
         }
-        // Null means the review is already waiting or running: it will be done all the same.
-        await queueReview(db, { sessionId, projectId, analyzer: PROBLEMS_ANALYZER, options: {} })
-        queued += 1
+        const queuedRun = await queueReview(db, {
+          sessionId,
+          projectId,
+          analyzer: PROBLEMS_ANALYZER,
+          options: {},
+          ...(base === null ? {} : { basedOn: base.id }),
+        })
+        // Either way the project gets a fix run that waits for the review. Null: a run is
+        // already waiting or running; it is not queued twice, and it will finish all the same.
         reviewedProjects.add(projectId)
+        if (queuedRun === null) {
+          skipped += 1
+          continue
+        }
+        queued += 1
       }
       // As Run now does, with no harness path of the caller's; a server with no learnings
       // harness would only fail the run, so it queues none.

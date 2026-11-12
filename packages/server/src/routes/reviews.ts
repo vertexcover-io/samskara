@@ -14,8 +14,16 @@ import {
 } from "../lib/env.js"
 import { type AuthVariables, requireAuth } from "../lib/require-auth.js"
 import { canWrite } from "../repositories/projects.repo.js"
-import { listProblemsForSession } from "../repositories/reviewProblems.repo.js"
-import { listReviewsForSession, visibleSessionProjectId } from "../repositories/reviews.repo.js"
+import {
+  listProblemsForSession,
+  type ReviewProblemRow,
+} from "../repositories/reviewProblems.repo.js"
+import {
+  hasNewMessagesSince,
+  latestDoneRun,
+  listReviewsForSession,
+  visibleSessionProjectId,
+} from "../repositories/reviews.repo.js"
 import {
   activeReview,
   queueReview,
@@ -23,7 +31,6 @@ import {
   unfinishedReview,
 } from "../repositories/workQueue.repo.js"
 import { type AiReviewErrorCode, PROBLEMS_ANALYZER } from "../services/ai-review/pipeline.js"
-import { reviewAndPersist } from "../services/review.js"
 
 type Deps = {
   readonly db: Db
@@ -52,14 +59,27 @@ const serializeRunningJob = (row: { readonly id: string; readonly updatedAt: Dat
 })
 
 /**
- * When the result on the row was written. Queueing, claiming and failing a redo all touch
- * updatedAt while the old result stays, so an AI review's own finish time wins; updatedAt is for
- * rows that carry none, such as static reviews.
+ * When the run's result was written. A run's row is written once, so updatedAt is its finish
+ * time; an AI review's own recorded finish time wins when it has one.
  */
 const analyzedAt = (row: { readonly signals: unknown; readonly updatedAt: Date }): string =>
   new Date(
     (row.signals as { run?: { finishedAt?: string } } | null)?.run?.finishedAt ?? row.updatedAt,
   ).toISOString()
+
+/** A saved problem as the session page reads it. */
+const serializeProblem = (problem: ReviewProblemRow) => ({
+  id: problem.id,
+  title: problem.title,
+  class: problem.class,
+  severity: problem.severity,
+  severityReason: problem.severityReason,
+  fixType: problem.fixType,
+  description: problem.description,
+  evidence: problem.evidence,
+  learning: problem.learning,
+  extra: problem.extra,
+})
 
 /** A job that failed all its tries, with its saved reason split into the web's code and message. */
 const serializeFailedJob = (row: { readonly id: string; readonly error: string | null }) => {
@@ -100,8 +120,11 @@ const analyzeBodySchema = z
     // The charset is the guard, not just the quoting: this value reaches the msb runner's
     // in-guest shell command, and the guest has the workspace mounted at /work.
     model: z.string().trim().min(1).max(100).regex(REVIEW_MODEL_PATTERN).optional(),
-    /** Replace an existing review — the Redo path. Supersedes in place. */
-    force: z.boolean().optional(),
+    /**
+     * `full` reads the whole session; `newMessages` reads only what the newest done run did not,
+     * and is refused when there is nothing new. Every run is a new row.
+     */
+    mode: z.enum(["full", "newMessages"]).optional(),
     /** The user's own review prompt, any shape; merged into the review's base instructions. */
     prompt: z.string().trim().min(1).max(MAX_USER_PROMPT_CHARS).optional(),
   })
@@ -158,38 +181,6 @@ export const reviewerOptionsRoutes = ({
 
 export const reviewRoutes = ({ db, env, notifyWorker, credentialEnv }: AiReviewDeps) =>
   new Hono<{ Variables: AuthVariables }>()
-    /**
-     * Reviewing is a write (it persists the review), so `web` and `cli` both may trigger it —
-     * and, like `/analyze`, only a project editor may. Read visibility is not enough: this
-     * route rewrites the session's review row, so a viewer-scoped member gated only by
-     * `getDetail` could edit a project they are only allowed to read.
-     */
-    .post("/:id/review", requireAuth({ db, env }, ["web", "cli"]), async (c) => {
-      const sessionId = c.req.param("id")
-      const userId = c.get("user").id
-      const projectId = await visibleSessionProjectId(db, userId, sessionId)
-      if (projectId === null) return c.json({ error: "sessionNotFound" }, 404)
-      if (!(await canWrite(db, userId, projectId))) return c.json({ error: "notEditable" }, 403)
-      const result = await reviewAndPersist(db, userId, sessionId)
-      if (result === null) return c.json({ error: "sessionNotFound" }, 404)
-      const { review, reviewId } = result
-      return c.json(
-        {
-          reviewId,
-          review: {
-            sessionId: review.sessionId,
-            analyzer: review.analyzer,
-            analyzedAt: review.analyzedAt,
-            outcome: review.outcome,
-            summary: review.summary,
-            signals: review.signals,
-            agentLearnings: review.agentLearnings,
-            humanFeedback: review.humanFeedback,
-          },
-        },
-        201,
-      )
-    })
     .get("/:id/review", requireAuth({ db, env }, ["web", "cli"]), async (c) => {
       const rows = await listReviewsForSession(db, c.get("user").id, c.req.param("id"))
       return c.json(
@@ -218,11 +209,12 @@ export const reviewRoutes = ({ db, env, notifyWorker, credentialEnv }: AiReviewD
       )
     })
     /**
-     * Queue a harness-run AI review for the worker. Editor-gated, then refused synchronously
-     * when the chosen harness has no credential. A review already waiting or running for this
-     * session answers 409 analysisAlreadyRunning (join it via GET /:id/aireview's `job` field);
-     * a landed review answers 409 analysisAlreadyExists unless the body sets `force`, which
-     * re-queues the row in place. Otherwise 202 with the row id as `jobId`, and the caller polls.
+     * Queue a harness-run AI review for the worker as a new run. Editor-gated, then refused
+     * synchronously when the chosen harness has no credential. A run already waiting or running
+     * for this session answers 409 analysisAlreadyRunning (join it via GET /:id/aireview's `job`
+     * field). `mode: "newMessages"` continues from the newest done run and answers 400
+     * nothingNew when there is none or nothing came after it. Otherwise 202 with the new row's
+     * id as `jobId`, and the caller polls.
      */
     .post(
       "/:id/analyze",
@@ -237,7 +229,7 @@ export const reviewRoutes = ({ db, env, notifyWorker, credentialEnv }: AiReviewD
         const codes: Record<string, string> = {
           harness: "invalidHarness",
           model: "invalidModel",
-          force: "invalidForce",
+          mode: "invalidMode",
           prompt: "invalidPrompt",
         }
         return c.json({ error: codes[String(field)] ?? "invalidAnalyzeBody" }, 400)
@@ -255,17 +247,21 @@ export const reviewRoutes = ({ db, env, notifyWorker, credentialEnv }: AiReviewD
           return c.json({ error: "harnessUnauthenticated" }, 400)
         if ((await activeReview(db, sessionId, PROBLEMS_ANALYZER)) !== null)
           return c.json({ error: "analysisAlreadyRunning" }, 409)
-        const rows = await listReviewsForSession(db, userId, sessionId)
         const body = c.req.valid("json")
-        const hasReview = rows.some((review) => review.analyzer === PROBLEMS_ANALYZER)
-        // A landed review blocks a re-run unless the caller asked to redo — the redo re-queues
-        // the same row, which keeps the old result until the new one replaces it.
-        if (hasReview && body?.force !== true)
-          return c.json({ error: "analysisAlreadyExists" }, 409)
+        const base =
+          body?.mode === "newMessages"
+            ? await latestDoneRun(db, sessionId, PROBLEMS_ANALYZER)
+            : null
+        if (
+          body?.mode === "newMessages" &&
+          (base === null || !(await hasNewMessagesSince(db, sessionId, base.id)))
+        )
+          return c.json({ error: "nothingNew" }, 400)
         const queued = await queueReview(db, {
           sessionId,
           projectId,
           analyzer: PROBLEMS_ANALYZER,
+          ...(base === null ? {} : { basedOn: base.id }),
           options: {
             ...(body?.harness === undefined ? {} : { harness: body.harness }),
             ...(body?.model === undefined ? {} : { model: body.model }),
@@ -316,36 +312,48 @@ export const reviewRoutes = ({ db, env, notifyWorker, credentialEnv }: AiReviewD
       if ((await visibleSessionProjectId(db, userId, sessionId)) === null)
         return c.json({ error: "noAiReview" }, 404)
       const rows = await listReviewsForSession(db, userId, sessionId)
-      const row = rows.find((review) => review.analyzer === PROBLEMS_ANALYZER)
+      const chain = rows.filter((review) => review.analyzer === PROBLEMS_ANALYZER)
       const job = await unfinishedReview(db, sessionId, PROBLEMS_ANALYZER)
-      if (row === undefined && job === null) return c.json({ error: "noAiReview" }, 404)
+      if (chain.length === 0 && job === null) return c.json({ error: "noAiReview" }, 404)
       const problems =
-        row === undefined ? [] : await listProblemsForSession(db, userId, sessionId, row.id)
+        chain.length === 0
+          ? []
+          : await listProblemsForSession(
+              db,
+              userId,
+              sessionId,
+              chain.map((run) => run.id),
+            )
+      const runs = chain.map((run) => ({
+        id: run.id,
+        kind: run.newPartOnly ? ("newPart" as const) : ("full" as const),
+        createdAt: new Date(run.createdAt).toISOString(),
+        analyzedAt: analyzedAt(run),
+        outcome: run.outcome,
+        summary: run.summary,
+        signals: run.signals,
+        problems: problems.filter((problem) => problem.reviewId === run.id).map(serializeProblem),
+      }))
+      const newest = runs[0]
+      // The newest shown run is the newest done run: the same base `mode: "newMessages"` uses.
+      const newMessages =
+        newest === undefined ? false : await hasNewMessagesSince(db, sessionId, newest.id)
       return c.json(
         {
+          newMessages,
           review:
-            row === undefined
+            newest === undefined
               ? null
               : {
-                  id: row.id,
-                  createdAt: new Date(row.createdAt).toISOString(),
-                  analyzedAt: analyzedAt(row),
-                  outcome: row.outcome,
-                  summary: row.summary,
-                  signals: row.signals,
-                  problems: problems.map((problem) => ({
-                    id: problem.id,
-                    title: problem.title,
-                    class: problem.class,
-                    severity: problem.severity,
-                    severityReason: problem.severityReason,
-                    fixType: problem.fixType,
-                    description: problem.description,
-                    evidence: problem.evidence,
-                    learning: problem.learning,
-                    extra: problem.extra,
-                  })),
+                  id: newest.id,
+                  createdAt: newest.createdAt,
+                  analyzedAt: newest.analyzedAt,
+                  outcome: newest.outcome,
+                  summary: newest.summary,
+                  signals: newest.signals,
+                  problems: newest.problems,
                 },
+          runs,
           ...(job === null
             ? {}
             : {

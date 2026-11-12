@@ -3,6 +3,7 @@ import type pino from "pino"
 import type { Db } from "../db/client.js"
 import type { NightlyReview, ReviewHarness } from "../lib/env.js"
 import { finishRun, type RunOutcome } from "../repositories/learnings.repo.js"
+import { savePullRequestStates } from "../repositories/pullRequests.repo.js"
 import {
   type ClaimedFixRun,
   type ClaimedReview,
@@ -10,6 +11,7 @@ import {
   claimReview,
   failFixRunAttempt,
   failReviewAttempt,
+  pullRequestsToCheck,
   queueDueFixRuns,
   queueNightlyReviews,
   requeueRunningFixRuns,
@@ -20,6 +22,7 @@ import {
   type AiReviewResult,
   PROBLEMS_ANALYZER,
 } from "../services/ai-review/pipeline.js"
+import type { PullRequestLookup } from "../services/pullRequestStates.js"
 
 /** How many reviews this worker runs at once; the machine has room for no more. */
 export const REVIEW_SLOTS = 2
@@ -35,6 +38,11 @@ export type WorkLoopDeps = {
   readonly queueDue?: boolean
   /** When and how many sessions to queue for review each night; undefined queues none. */
   readonly nightlyReview?: NightlyReview
+  /**
+   * Asks GitHub for pull request states before the nightly pick; undefined when the server has
+   * no token, and the pick then goes by the 6-hour rule alone.
+   */
+  readonly pullRequestLookup?: PullRequestLookup
   /** The clock the nightly pick reads; tests set it, production leaves it to the real one. */
   readonly now?: () => Date
   readonly reviewSlots?: number
@@ -135,12 +143,50 @@ export const createWorkLoop = (deps: WorkLoopDeps): WorkLoop => {
     inFlight.add(running)
   }
 
+  let toldNoToken = false
+
+  /**
+   * Asks GitHub about the open pull requests of sessions tonight's pick could take, and saves
+   * the answers, so the pick sees merged and closed ones. Never throws: the pick goes on.
+   */
+  const checkPullRequests = async (nightly: NightlyReview, now: Date): Promise<void> => {
+    const lookup = deps.pullRequestLookup
+    if (lookup === undefined) {
+      if (!toldNoToken)
+        deps.log.info(
+          "no LEARNINGS_HARNESS_GITHUB_TOKEN: the nightly pick will not read pull request states",
+        )
+      toldNoToken = true
+      return
+    }
+    try {
+      const prs = await pullRequestsToCheck(deps.db, {
+        ...nightly,
+        now,
+        analyzer: PROBLEMS_ANALYZER,
+      })
+      if (prs.length === 0) return
+      const { answers, failures } = await lookup(prs)
+      const saved = await savePullRequestStates(deps.db, answers, now)
+      const ended = answers.filter((a) => a.state === "merged" || a.state === "closed").length
+      // unseen: GitHub returned no pull request, most often a repo the token cannot read.
+      const unseen = answers.filter((a) => a.state === null).length
+      deps.log.info({ asked: prs.length, saved, ended, unseen }, "pull request states checked")
+      if (failures.length > 0)
+        deps.log.warn({ failures }, "pull request checks failed; those wait for the 6-hour rule")
+    } catch (error) {
+      deps.log.warn({ err: error }, "pull request check failed; picking on the 6-hour rule")
+    }
+  }
+
   /** Before the claims, so tonight's picked rows start in this same pass. */
   const pickNightly = async (): Promise<void> => {
     const nightly = deps.nightlyReview
     if (nightly === undefined) return
+    const now = (deps.now ?? (() => new Date()))()
+    // Outside the pick's statement: the GitHub calls never hold it open.
+    await checkPullRequests(nightly, now)
     try {
-      const now = (deps.now ?? (() => new Date()))()
       const { picked, queued } = await queueNightlyReviews(deps.db, {
         ...nightly,
         now,

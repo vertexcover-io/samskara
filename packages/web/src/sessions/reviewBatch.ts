@@ -47,7 +47,9 @@ export const queuedMessage = (counts: {
     counts.fixRunsQueued === 0
       ? null
       : `Fixes will be found in ${counts.fixRunsQueued} project${counts.fixRunsQueued === 1 ? "" : "s"} once the reviews finish.`,
-    counts.skipped === 0 ? null : `${sessions(counts.skipped)} already had a review.`,
+    counts.skipped === 0
+      ? null
+      : `${sessions(counts.skipped)} had nothing new or a review already running.`,
     counts.notAllowed.length === 0
       ? null
       : `${sessions(counts.notAllowed.length)} you cannot edit.`,

@@ -3,23 +3,30 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
   BASE_REVIEW_INSTRUCTIONS,
+  buildNewPartExport,
   capAgentLog,
+  type EarlierReview,
   HARNESS_STATE_DIR,
   type HarnessRunner,
+  keepNewPartProblems,
   mergeReviewPrompt,
   missingCredentialMessage,
+  type NormalizedMessage,
   type ProblemReview,
   prepareProblems,
   problemReviewFiles,
+  type ReaderReplyStore,
   readProblemWorkspace,
 } from "@samskara/core"
 import type pino from "pino"
 import type { Db } from "../../db/client.js"
 import type { Env, ReviewHarness } from "../../lib/env.js"
-import { replaceReviewProblems } from "../../repositories/reviewProblems.repo.js"
+import { savedReaderReplies, saveReaderReply } from "../../repositories/readerReplies.repo.js"
+import { problemTitlesOf, replaceReviewProblems } from "../../repositories/reviewProblems.repo.js"
 import * as reviewsRepo from "../../repositories/reviews.repo.js"
-import { reviewableSession } from "../../repositories/sessions.repo.js"
-import { reviewSessionExport } from "./sessionExport.js"
+import { type ReviewableSession, reviewableSession } from "../../repositories/sessions.repo.js"
+import { splitNewPart } from "./newPart.js"
+import { REVIEW_SESSION_ALIAS, reviewSessionExport } from "./sessionExport.js"
 import { transcriptFromClaudeConfigDir, transcriptFromOpencodeDataDir } from "./transcript.js"
 
 /** Per-run reviewer choice: absent fields fall back to the env-driven defaults. */
@@ -69,17 +76,45 @@ export const PROBLEMS_ANALYZER = "ai-problems-v2"
 /** Stdout excerpt length carried on a failed result — enough to debug, not to leak. */
 const STDOUT_EXCERPT_CHARS = 400
 
+/** The run being done: the row the worker claimed. */
+export type ReviewRun = {
+  readonly id: string
+  readonly sessionId: string
+  readonly newPartOnly: boolean
+  readonly basedOn: string | null
+}
+
+/**
+ * The readers' replies kept on the review row, so a retry reads only the pieces no earlier try
+ * finished. Never throws: a database hiccup costs a reader rerun, never a lost piece.
+ */
+const readerReplyStore = (db: Db, reviewId: string, log: pino.Logger): ReaderReplyStore => ({
+  load: () =>
+    savedReaderReplies(db, reviewId).catch((error: unknown) => {
+      log.warn(
+        { reviewId, err: error },
+        "saved reader replies could not be read; every reader runs",
+      )
+      return new Map<string, string>()
+    }),
+  save: (pieceHash, reply) =>
+    saveReaderReply(db, { reviewId, pieceHash, reply }).catch((error: unknown) => {
+      log.warn({ reviewId, pieceHash, err: error }, "a reader reply could not be saved")
+    }),
+})
+
 /**
  * One AI review, end to end: readers find leads in every piece of the session, then the
  * reviewer checks each lead and writes review.md, and code checks it before anything is saved.
- * Model output is untrusted at every step. Re-analysis supersedes in place.
+ * Model output is untrusted at every step. The result lands on `run`'s own row.
  */
 export const runAiReview = async (
   deps: AiReviewDeps,
-  sessionId: string,
+  run: ReviewRun,
   options: AiReviewOptions = {},
 ): Promise<AiReviewResult> => {
   const { db, runner, env, log } = deps
+  const { sessionId } = run
   const harness = options.harness ?? env.aiReviewHarness
   const model = options.model ?? env.aiReviewModel
   const mkdtemp = deps.mkdtemp ?? defaultMkdtemp
@@ -110,7 +145,14 @@ export const runAiReview = async (
     return { kind: "error", code: "harnessUnauthenticated", detail: { message: credentialProblem } }
   }
 
-  const sessionExport = reviewSessionExport({ session: detail.session, messages: detail.messages })
+  const part = run.newPartOnly ? await newPartOf(db, run, detail) : null
+  // A new-part run whose base is gone has nothing to continue: its session was deleted.
+  if (run.newPartOnly && part === null) return { kind: "error", code: "sessionNotFound" }
+  const sessionExport =
+    part === null
+      ? reviewSessionExport({ session: detail.session, messages: detail.messages })
+      : part.exported
+  const readMessages = part === null ? detail.messages : part.read
 
   // The review's instructions: ours, or the user's prompt merged into ours first.
   let instructions = BASE_REVIEW_INSTRUCTIONS
@@ -138,6 +180,7 @@ export const runAiReview = async (
       instructions,
       runner,
       run: { harness, model },
+      replies: readerReplyStore(db, run.id, log),
     })
   } catch (error) {
     // A reader that fails only leaves its piece unread; anything else failing here fails
@@ -151,8 +194,9 @@ export const runAiReview = async (
     pieces: prepared.found.pieceCount,
     leads: prepared.found.leads.length,
     failed: prepared.found.failedPieces.length,
+    reused: prepared.found.reusedPieces,
   })
-  const staged = problemReviewFiles(sessionExport, instructions, prepared.leadsMd)
+  const staged = problemReviewFiles(sessionExport, instructions, prepared.leadsMd, part?.earlier)
 
   let workspaceDir: string | undefined
   try {
@@ -241,8 +285,13 @@ export const runAiReview = async (
         detail: { errors: result.errors, start: markdown.slice(0, STDOUT_EXCERPT_CHARS) },
       }
     }
-    if (result.dropped.length > 0)
-      log.info({ sessionId, dropped: result.dropped }, "ai review dropped problems")
+    // A new-part run saves only problems that rest on something new.
+    const kept =
+      part === null
+        ? { review: result.review, dropped: [] as string[] }
+        : keepNewPartProblems(result.review, part.exported.contextCount)
+    const dropped = [...result.dropped, ...kept.dropped]
+    if (dropped.length > 0) log.info({ sessionId, dropped }, "ai review dropped problems")
     milestone("grounded")
 
     const finishedAt = now()
@@ -250,7 +299,10 @@ export const runAiReview = async (
       model,
       harness,
       reviewMd: markdown,
-      dropped: [...result.dropped],
+      dropped,
+      ...(part === null
+        ? {}
+        : { newPart: { basedOn: run.basedOn, contextCount: part.exported.contextCount } }),
       unaccountedLeads: [...result.unaccountedLeads],
       leadCount: prepared.leadIds.length,
       // Kept apart from the problems: what was looked at, and what the reviewer decided.
@@ -272,35 +324,92 @@ export const runAiReview = async (
     // One transaction: a review row whose problems failed to save would read as a
     // review that found nothing.
     const reviewRow = await db.transaction(async (tx) => {
-      const row = await reviewsRepo.upsertReview(tx, {
-        sessionId,
-        projectId: detail.session.projectId,
-        analyzer: PROBLEMS_ANALYZER,
-        outcome: result.review.outcome,
-        summary: result.review.summary,
+      const row = await reviewsRepo.finishReview(tx, run.id, {
+        outcome: kept.review.outcome,
+        summary: kept.review.summary,
         signals: signals as unknown as object,
-        reviewedThrough: reviewsRepo.lastLineRead(detail.messages),
+        lastMessageId: reviewsRepo.lastMessageRead(readMessages),
       })
       await replaceReviewProblems(tx, {
         reviewId: row.id,
         sessionId,
         projectId: detail.session.projectId,
-        problems: result.review.problems,
+        problems: kept.review.problems,
       })
       return row
     })
     milestone("persisted")
-    return { kind: "ok", reviewId: reviewRow.id, review: result.review }
+    return { kind: "ok", reviewId: reviewRow.id, review: kept.review }
   } finally {
     if (workspaceDir !== undefined) {
       // A rejection from `finally` replaces the value the try block was about to return, so
-      // an un-removable workspace would report an already-persisted review as a failed run —
-      // and the retry that prompts then hits 409 analysisAlreadyExists. `force` only
+      // an un-removable workspace would report an already-persisted review as a failed run.
+      // `force` only
       // swallows ENOENT; a stale msb mount or a root-owned file still rejects. Cleanup is
       // best-effort and never the verdict.
       await rm(workspaceDir, { recursive: true, force: true }).catch((error: unknown) => {
         log.warn({ sessionId, workspaceDir, err: error }, "ai review workspace cleanup failed")
       })
     }
+  }
+}
+
+/**
+ * What a new-part run reads: the session split at its base run's last message, the export of
+ * the new part with context, and what the shown chain already reported. Null when the base is
+ * gone. `read` is every message the run reads, for its own `lastMessageId`. The base's
+ * `updatedAt` is its finish time: a run's row is written once, when it finishes.
+ */
+const newPartOf = async (
+  db: Db,
+  run: ReviewRun,
+  detail: ReviewableSession,
+): Promise<{
+  readonly exported: ReturnType<typeof buildNewPartExport>
+  readonly read: ReviewableSession["messages"]
+  readonly earlier: EarlierReview
+} | null> => {
+  if (run.basedOn === null) return null
+  const base = await reviewsRepo.getReview(db, run.basedOn)
+  if (base === null) return null
+  const after =
+    base.lastMessageId === null
+      ? null
+      : (detail.messages.find((message) => message.id === base.lastMessageId)?.timestamp ?? null)
+  const { earlier, fresh } = splitNewPart(detail.messages, { after, finishedAt: base.updatedAt })
+  const exported = buildNewPartExport({
+    sessionId: REVIEW_SESSION_ALIAS,
+    title: detail.session.title ?? detail.session.id,
+    source: detail.session.source,
+    ...(detail.session.startedAt === null ? {} : { startedAt: detail.session.startedAt }),
+    endedAt: detail.session.lastActiveAt,
+    earlier: earlier as unknown as ReadonlyArray<NormalizedMessage>,
+    fresh: fresh as unknown as ReadonlyArray<NormalizedMessage>,
+  })
+  const shown = await reviewsRepo.shownRunsOf(db, detail.session.id, PROBLEMS_ANALYZER)
+  const contextIds = new Set(
+    exported.records.slice(0, exported.contextCount).map((record) => record.sourceId),
+  )
+  // The base's own last message counts as read too, so the boundary never moves back: it may
+  // be a row the export leaves out, and new messages with no time cannot move it forward.
+  const baseLast = detail.messages.filter((message) => message.id === base.lastMessageId)
+  return {
+    exported,
+    read: [
+      ...baseLast,
+      ...earlier.filter(
+        (message) => contextIds.has(message.id) && message.id !== base.lastMessageId,
+      ),
+      ...fresh,
+    ],
+    earlier: {
+      outcome: base.outcome,
+      summary: base.summary,
+      problemTitles: await problemTitlesOf(
+        db,
+        shown.map((row) => row.id),
+      ),
+      contextCount: exported.contextCount,
+    },
   }
 }

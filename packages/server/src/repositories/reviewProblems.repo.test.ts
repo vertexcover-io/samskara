@@ -1,11 +1,10 @@
 import type { Problem } from "@samskara/core"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
 import type { Db } from "../db/client.js"
-import { users } from "../db/schema.js"
+import { sessionReviews, users } from "../db/schema.js"
 import { dockerAvailable, startTestDb } from "../db/testDb.js"
 import * as projectsRepo from "./projects.repo.js"
 import * as problemsRepo from "./reviewProblems.repo.js"
-import * as reviewsRepo from "./reviews.repo.js"
 import * as sessionsRepo from "./sessions.repo.js"
 
 const problem = (title: string): Problem => ({
@@ -43,15 +42,19 @@ describe.skipIf(!dockerAvailable())("review problems repository", () => {
       projectId,
       fields: { title: "t" },
     })
-    const review = await reviewsRepo.upsertReview(db, {
-      sessionId,
-      projectId,
-      analyzer: "ai-problems-v2",
-      outcome: "shipped",
-      summary: "s",
-      signals: {},
-      reviewedThrough: null,
-    })
+    const [review] = await db
+      .insert(sessionReviews)
+      .values({
+        sessionId,
+        projectId,
+        analyzer: "ai-problems-v2",
+        outcome: "shipped",
+        summary: "s",
+        signals: {},
+        status: "done",
+      })
+      .returning()
+    if (review === undefined) throw new Error("seed review failed")
     return { userId: user.id, projectId, reviewId: review.id }
   }
 
@@ -128,15 +131,19 @@ describe.skipIf(!dockerAvailable())("review problems repository", () => {
 
   test("RP-DB5: given a review id, only that review's problems come back", async () => {
     const { userId, projectId, reviewId } = await seedReview("problems-5")
-    const other = await reviewsRepo.upsertReview(db, {
-      sessionId: "problems-5",
-      projectId,
-      analyzer: "heuristic-v1",
-      outcome: "shipped",
-      summary: "s",
-      signals: {},
-      reviewedThrough: null,
-    })
+    const [other] = await db
+      .insert(sessionReviews)
+      .values({
+        sessionId: "problems-5",
+        projectId,
+        analyzer: "heuristic-v1",
+        outcome: "shipped",
+        summary: "s",
+        signals: {},
+        status: "done",
+      })
+      .returning()
+    if (other === undefined) throw new Error("seed review failed")
     const input = { sessionId: "problems-5", projectId }
     await problemsRepo.replaceReviewProblems(db, {
       ...input,
@@ -148,7 +155,7 @@ describe.skipIf(!dockerAvailable())("review problems repository", () => {
       reviewId: other.id,
       problems: [problem("Other")],
     })
-    const rows = await problemsRepo.listProblemsForSession(db, userId, "problems-5", reviewId)
+    const rows = await problemsRepo.listProblemsForSession(db, userId, "problems-5", [reviewId])
     expect(rows.map((row) => row.title)).toEqual(["Mine"])
     expect(await problemsRepo.listProblemsForSession(db, userId, "problems-5")).toHaveLength(2)
   })

@@ -2,7 +2,9 @@ import { describe, expect, test } from "vitest"
 import type { NormalizedMessage } from "../ingest/types.js"
 import {
   ASSISTANT_TEXT_EXCERPT_CHARS,
+  buildNewPartExport,
   buildSessionExport,
+  NEW_PART_CONTEXT_RECORDS,
   REASONING_TEXT_EXCERPT_CHARS,
   USER_TEXT_EXCERPT_CHARS,
 } from "./export.js"
@@ -475,5 +477,44 @@ describe("where a message came from, in a full export", () => {
       "systemReminder",
       undefined,
     ])
+  })
+})
+
+describe("buildNewPartExport", () => {
+  const said = (count: number, prefix: string) =>
+    Array.from({ length: count }, (_, i) =>
+      message({
+        id: `${prefix}-${i}`,
+        subIndex: i,
+        content: { type: "text", value: `${prefix} ${i}` },
+      }),
+    )
+  const meta = { sessionId: "s1", title: "t", source: "claude_code" }
+
+  test("SC14: 30 earlier and 3 fresh messages export as 20 context records then the 3 fresh ones, msg-0 to msg-22", () => {
+    const exported = buildNewPartExport({
+      ...meta,
+      earlier: said(30, "old"),
+      fresh: said(3, "new"),
+    })
+
+    expect(NEW_PART_CONTEXT_RECORDS).toBe(20)
+    expect(exported.records.map((record) => record.id)).toEqual(
+      Array.from({ length: 23 }, (_, i) => `msg-${i}`),
+    )
+    expect(exported.records.map((record) => record.seq)).toEqual(exported.index.seqs)
+    expect(exported.contextCount).toBe(20)
+    expect(exported.records[0]?.sourceId).toBe("old-10")
+    expect(exported.records.slice(20).map((record) => record.sourceId)).toEqual([
+      "new-0",
+      "new-1",
+      "new-2",
+    ])
+  })
+
+  test("SC14: with only 5 earlier messages every one is context, so contextCount is 5", () => {
+    const exported = buildNewPartExport({ ...meta, earlier: said(5, "old"), fresh: said(3, "new") })
+    expect(exported.contextCount).toBe(5)
+    expect(exported.records).toHaveLength(8)
   })
 })
