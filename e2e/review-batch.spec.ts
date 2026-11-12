@@ -10,8 +10,8 @@ const SESSIONS = [
 ] as const
 
 /**
- * Two sessions that already have a problems review, written straight to the table. Review on
- * ticked sessions skips both, so nothing is queued and no agent runs.
+ * Two sessions that already have a problems review, written straight to the table, and no messages
+ * since. Review in new-messages mode skips both, so nothing is queued and no agent runs.
  */
 const seedReviewedSessions = async (): Promise<void> => {
   await seedDatabase({
@@ -31,7 +31,7 @@ const seedReviewedSessions = async (): Promise<void> => {
   }
 }
 
-test("SC28: a person ticks 2 reviewed sessions, presses Review, and is told both already had one", async ({
+test("SC28: a person ticks 2 reviewed sessions with nothing new, starts a new-messages review, and is told both were skipped", async ({
   authedPage: page,
 }) => {
   await seedReviewedSessions()
@@ -42,10 +42,11 @@ test("SC28: a person ticks 2 reviewed sessions, presses Review, and is told both
   const bar = page.getByRole("region", { name: "Selected sessions" })
   await expect(bar).toContainText("2 selected")
 
-  await bar.getByRole("button", { name: "Review", exact: true }).click()
+  await expect(bar.getByRole("combobox", { name: "Review" })).toHaveValue("newMessages")
+  await bar.getByRole("button", { name: "Review and find fixes" }).click()
 
   await expect(page.getByRole("status")).toHaveText(
-    "Queued 0 sessions for review. 2 sessions already had a review.",
+    "Queued 0 sessions for review. 2 sessions had nothing new or a review already running.",
   )
   await expect(bar).toContainText("0 selected")
   await expect(page.getByRole("region", { name: "Review progress" })).toHaveCount(0)
