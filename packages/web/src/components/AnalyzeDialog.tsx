@@ -3,6 +3,7 @@ import { useFocusTrap } from "../account/useFocusTrap.js"
 import type { ApiError } from "../api/client.js"
 import { fetchReviewerOptions, type ReviewerChoice } from "../api/review.js"
 import type { ReviewerOptions } from "../api/types.js"
+import type { ReviewChoice, ReviewMode } from "../routes/reviewChoices.js"
 import { controlClass, labelClass } from "./TextField.js"
 
 const CUSTOM = "__custom__"
@@ -17,16 +18,19 @@ type Props = {
   readonly onClose: () => void
   readonly onRun: (choice: ReviewerChoice) => void
   readonly restoreFocusTo?: () => HTMLElement | null
+  /** From `reviewChoices`, default first; one entry means no radio group. */
+  readonly choices: ReadonlyArray<ReviewChoice>
 }
 
 /**
- * The choices behind "Analyze with AI": which harness CLI runs the reviewer and with which
- * model, fetched live from the server (which knows what is installed). Defaults come from
+ * The choices behind Review: what to review when the session offers a choice, then which
+ * harness CLI runs the reviewer and with which model, fetched live from the server (which knows what is installed). Defaults come from
  * the server's env configuration; "Custom…" escapes the curated model list for anything
  * else a harness accepts.
  */
-export const AnalyzeDialog = ({ open, onClose, onRun, restoreFocusTo }: Props) => {
+export const AnalyzeDialog = ({ open, onClose, onRun, restoreFocusTo, choices }: Props) => {
   const [state, setState] = useState<State>({ phase: "loading" })
+  const [mode, setMode] = useState<ReviewMode>(choices[0]?.mode ?? "full")
   const [harness, setHarness] = useState("")
   const [model, setModel] = useState("")
   const [customModel, setCustomModel] = useState("")
@@ -38,13 +42,16 @@ export const AnalyzeDialog = ({ open, onClose, onRun, restoreFocusTo }: Props) =
   const harnessId = useId()
   const modelId = useId()
   const customId = useId()
+  const modeName = useId()
   const ran = useRef(false)
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the default choice is picked as the dialog opens, not each time the parent re-renders.
   useEffect(() => {
     if (!open) return
     ran.current = false
     setState({ phase: "loading" })
     setCustomModel("")
+    setMode(choices[0]?.mode ?? "full")
     fetchReviewerOptions().then((result) => {
       if (ran.current) return
       setState(
@@ -79,6 +86,7 @@ export const AnalyzeDialog = ({ open, onClose, onRun, restoreFocusTo }: Props) =
     ran.current = true
     const chosenModel = model === CUSTOM ? customModel.trim() : model === "" ? undefined : model
     onRun({
+      mode,
       harness: harness === "" ? undefined : (harness as "opencode" | "claude"),
       ...(chosenModel === undefined || chosenModel === "" ? {} : { model: chosenModel }),
     })
@@ -94,11 +102,28 @@ export const AnalyzeDialog = ({ open, onClose, onRun, restoreFocusTo }: Props) =
         className="relative w-full max-w-md border border-rule bg-panel-2 p-6 text-ink shadow-overlay"
       >
         <h2 id="analyze-dialog-title" className="text-[1.375rem] font-semibold leading-tight">
-          Analyze with AI
+          {choices.find((choice) => choice.mode === mode)?.label ?? "Review"}
         </h2>
         <p className="mt-2 text-ink-soft">
           Choose which reviewer runs the analysis. The server's defaults are preselected.
         </p>
+
+        {choices.length > 1 ? (
+          <fieldset className="mt-4">
+            <legend className={labelClass}>What to review</legend>
+            {choices.map((choice) => (
+              <label key={choice.mode} className="mt-1 flex items-center gap-2 text-[0.875rem]">
+                <input
+                  type="radio"
+                  name={modeName}
+                  checked={mode === choice.mode}
+                  onChange={() => setMode(choice.mode)}
+                />
+                {choice.label}
+              </label>
+            ))}
+          </fieldset>
+        ) : null}
 
         {state.phase === "loading" ? (
           <p className="mt-4 font-mono text-[0.72rem] text-ink-soft">Loading reviewer options…</p>

@@ -1,8 +1,10 @@
-import { and, eq, inArray, notInArray, sql } from "drizzle-orm"
+import { and, desc, eq, inArray, notInArray, type SQL, sql } from "drizzle-orm"
 import type { Querier } from "../db/client.js"
 import { learningRuns, sessionActivityAt, sessionReviews } from "../db/schema.js"
 import type { NightlyReview } from "../lib/env.js"
 import type { PullRequestRef } from "./pullRequests.repo.js"
+import { deleteReaderReplies } from "./readerReplies.repo.js"
+import { newUserMessagesAfter, SILENT_TYPES, shownRun } from "./reviews.repo.js"
 
 /** A row that fails this many tries becomes `failed` and is not picked again. */
 export const MAX_ATTEMPTS = 3
@@ -14,9 +16,9 @@ export type QueuedReviewOptions = {
 }
 
 /**
- * Puts the session's review in `waiting` with fresh tries, creating the row if needed. A
- * re-review keeps the old result on the row. Null when the review is already waiting or running:
- * one review per (sessionId, analyzer) at a time.
+ * Adds a new `waiting` run for the session. A full run has no `basedOn`; a new-part run names
+ * the done run it continues from. Null when a run is already waiting or running: the
+ * one-active-run index refuses the insert, and no earlier row is touched.
  */
 export const queueReview = async (
   db: Querier,
@@ -25,29 +27,25 @@ export const queueReview = async (
     readonly projectId: string
     readonly analyzer: string
     readonly options: QueuedReviewOptions
+    /** The done run a new-part run continues from; absent for a full run. */
+    readonly basedOn?: string
   },
 ): Promise<{ readonly id: string } | null> => {
-  const queued = {
-    status: "waiting",
-    attempts: 0,
-    error: null,
-    harness: input.options.harness ?? null,
-    model: input.options.model ?? null,
-    prompt: input.options.prompt ?? null,
-  } as const
   const [row] = await db
     .insert(sessionReviews)
     .values({
       sessionId: input.sessionId,
       projectId: input.projectId,
       analyzer: input.analyzer,
-      ...queued,
+      status: "waiting",
+      attempts: 0,
+      harness: input.options.harness ?? null,
+      model: input.options.model ?? null,
+      prompt: input.options.prompt ?? null,
+      newPartOnly: input.basedOn !== undefined,
+      basedOn: input.basedOn ?? null,
     })
-    .onConflictDoUpdate({
-      target: [sessionReviews.sessionId, sessionReviews.analyzer],
-      set: { ...queued, updatedAt: new Date() },
-      setWhere: inArray(sessionReviews.status, ["done", "failed"]),
-    })
+    .onConflictDoNothing()
     .returning({ id: sessionReviews.id })
   return row ?? null
 }
@@ -62,16 +60,24 @@ export const requeueRunningReviews = async (
   except: ReadonlyArray<string> = [],
 ): Promise<number> => {
   const last = sql`${sessionReviews.attempts} >= ${MAX_ATTEMPTS}`
-  const rows = await db
-    .update(sessionReviews)
-    .set({
-      status: sql`case when ${last} then 'failed' else 'waiting' end`,
-      error: sql`case when ${last} then 'harnessFailed: the worker stopped during the last try' else ${sessionReviews.error} end`,
-      updatedAt: new Date(),
-    })
-    .where(and(eq(sessionReviews.status, "running"), notInArray(sessionReviews.id, [...except])))
-    .returning({ id: sessionReviews.id })
-  return rows.length
+  // One transaction: a failed delete must not leave a row failed for good with its replies kept.
+  return db.transaction(async (tx) => {
+    const rows = await tx
+      .update(sessionReviews)
+      .set({
+        status: sql`case when ${last} then 'failed' else 'waiting' end`,
+        error: sql`case when ${last} then 'harnessFailed: the worker stopped during the last try' else ${sessionReviews.error} end`,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(sessionReviews.status, "running"), notInArray(sessionReviews.id, [...except])))
+      .returning({ id: sessionReviews.id, status: sessionReviews.status })
+    // A review failed for good is never tried again, so its readers' replies are no use any more.
+    await deleteReaderReplies(
+      tx,
+      rows.filter((row) => row.status === "failed").map((row) => row.id),
+    )
+    return rows.length
+  })
 }
 
 export type ClaimedReview = {
@@ -81,6 +87,9 @@ export type ClaimedReview = {
   readonly harness: string | null
   readonly model: string | null
   readonly prompt: string | null
+  readonly newPartOnly: boolean
+  /** The done run a new-part run continues from; null for a full run. */
+  readonly basedOn: string | null
 }
 
 /**
@@ -95,7 +104,7 @@ export const claimReview = async (db: Querier): Promise<ClaimedReview | null> =>
       order by "updatedAt" asc limit 1
       for update skip locked
     )
-    returning "id", "sessionId", "attempts", "harness", "model", "prompt"`)
+    returning "id", "sessionId", "attempts", "harness", "model", "prompt", "newPartOnly", "basedOn"`)
   return rows[0] ?? null
 }
 
@@ -104,18 +113,23 @@ export const failReviewAttempt = async (
   db: Querier,
   id: string,
   error: string,
-): Promise<"waiting" | "failed"> => {
-  const [row] = await db
-    .update(sessionReviews)
-    .set({
-      status: sql`case when ${sessionReviews.attempts} >= ${MAX_ATTEMPTS} then 'failed' else 'waiting' end`,
-      error,
-      updatedAt: new Date(),
-    })
-    .where(and(eq(sessionReviews.id, id), eq(sessionReviews.status, "running")))
-    .returning({ status: sessionReviews.status })
-  return row?.status === "failed" ? "failed" : "waiting"
-}
+): Promise<"waiting" | "failed"> =>
+  // One transaction: if the delete fails, the row stays running instead of failed with replies kept.
+  db.transaction(async (tx) => {
+    const [row] = await tx
+      .update(sessionReviews)
+      .set({
+        status: sql`case when ${sessionReviews.attempts} >= ${MAX_ATTEMPTS} then 'failed' else 'waiting' end`,
+        error,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(sessionReviews.id, id), eq(sessionReviews.status, "running")))
+      .returning({ status: sessionReviews.status })
+    if (row?.status !== "failed") return "waiting"
+    // A review failed for good is never tried again, so its readers' replies are no use any more.
+    await deleteReaderReplies(tx, [id])
+    return "failed"
+  })
 
 /** The row behind a review job id, scoped to its session; null when it is not that session's. */
 export const reviewJob = async (db: Querier, sessionId: string, id: string) => {
@@ -155,6 +169,7 @@ const reviewIn = async (
         inArray(sessionReviews.status, [...query.statuses]),
       ),
     )
+    .orderBy(desc(sessionReviews.createdAt))
     .limit(1)
   return row ?? null
 }
@@ -163,9 +178,18 @@ const reviewIn = async (
 export const activeReview = (db: Querier, sessionId: string, analyzer: string) =>
   reviewIn(db, { sessionId, analyzer, statuses: ["waiting", "running"] })
 
-/** The session's review that is waiting, running or failed: what a reloaded page shows. */
-export const unfinishedReview = (db: Querier, sessionId: string, analyzer: string) =>
-  reviewIn(db, { sessionId, analyzer, statuses: ["waiting", "running", "failed"] })
+/**
+ * What a reloaded page shows as the job: the run that is waiting or running, else the session's
+ * newest run when that one failed. A failed run followed by a done one is over.
+ */
+export const unfinishedReview = async (db: Querier, sessionId: string, analyzer: string) => {
+  const newest = await reviewIn(db, {
+    sessionId,
+    analyzer,
+    statuses: ["waiting", "running", "done", "failed"],
+  })
+  return newest === null || newest.status === "done" ? null : newest
+}
 
 export type QueuedFixRun = { readonly id: string }
 
@@ -276,7 +300,9 @@ export const queueDueFixRuns = async (db: Querier): Promise<number> => {
     select p."id", 'waiting', true from "projects" p
     where exists (
       select 1 from "reviewProblems" rp
+      join "sessionReviews" sr on sr."id" = rp."reviewId"
       where rp."projectId" = p."id" and rp."learningRunId" is null
+        and ${shownRun(sql`sr`)}
     )
     and not exists (
       select 1 from "learningRuns" lr
@@ -293,10 +319,16 @@ export const queueDueFixRuns = async (db: Querier): Promise<number> => {
 export const QUIET_FOR = "6 hours"
 
 /**
- * Only sessions active this recently are candidates, so the ranking reads a month of a project's
- * sessions rather than its whole history. Older ones are reviewed by ticking them.
+ * Only sessions active this recently are candidates, so the ranking reads two weeks of a
+ * project's sessions rather than its whole history. Older ones are reviewed by ticking them.
  */
-export const PICK_WITHIN = "30 days"
+export const PICK_WITHIN = "14 days"
+
+/**
+ * A reviewed session is picked again only once the person typed this many messages after its
+ * newest run: one or two ("ok", "push") are not worth a review. Review by hand has no minimum.
+ */
+export const MIN_NEW_USER_MESSAGES = 3
 
 /** How many open pull requests the check before one nightly pick asks GitHub about, at most. */
 export const PR_CHECK_LIMIT = 200
@@ -317,6 +349,36 @@ const nightlyClock = (input: NightlyInput) => {
     and ("projects"."lastNightlyPickAt" is null or "projects"."lastNightlyPickAt" < ${dueAt})`
   return { now, due }
 }
+
+/**
+ * The newest review run of `"sessions"` for `analyzer`, any status, as a lateral row named
+ * `last`; the caller joins it with `left join lateral … on true`.
+ */
+const lastRun = (analyzer: string): SQL => sql`(
+  select r."id", r."status", r."lastMessageId", r."updatedAt"
+  from "sessionReviews" r
+  where r."sessionId" = "sessions"."id" and r."analyzer" = ${analyzer}
+  order by r."createdAt" desc limit 1
+)`
+
+/**
+ * Whether tonight's pick may take `"sessions"`, given its newest run `last` (null when never
+ * reviewed). Never reviewed: yes. Newest run done: when the person typed at least
+ * `MIN_NEW_USER_MESSAGES` messages that run did not read (`newUserMessagesAfter`). Newest run failed: once a message other than a silent one
+ * (`SILENT_TYPES`) was stored after it failed, so a failure is not retried every night on the
+ * same messages; a failed run has no
+ * `lastMessageId`, so the new-messages rule would call every message new. Waiting or running: no.
+ */
+const pickableSession = sql`(
+  "last"."id" is null
+  or ("last"."status" = 'done'
+    and ${newUserMessagesAfter(sql`"sessions"."id"`, sql`"last"`, MIN_NEW_USER_MESSAGES)})
+  or ("last"."status" = 'failed' and exists (
+    select 1 from "messages" fm
+    where fm."sessionId" = "sessions"."id" and fm."createdAt" > "last"."updatedAt"
+      and fm."msgType" not in ${SILENT_TYPES}
+  ))
+)`
 
 /**
  * The open github.com pull requests opened by a session tonight's pick could take only through
@@ -340,14 +402,12 @@ export const pullRequestsToCheck = async (
         select 1 from "sessionPullRequests" spr
         join "sessions" on "sessions"."id" = spr."sessionId"
         join "projects" on "projects"."id" = "sessions"."projectId"
+        left join lateral ${lastRun(input.analyzer)} "last" on true
         where spr."prId" = pr."id"
           and ${due}
           and ${sessionActivityAt} > ${now} - ${PICK_WITHIN}::interval
           and ${sessionActivityAt} > ${now} - ${QUIET_FOR}::interval
-          and not exists (
-            select 1 from "sessionReviews" sr
-            where sr."sessionId" = "sessions"."id" and sr."analyzer" = ${input.analyzer}
-          )
+          and ${pickableSession}
       )
     order by pr."checkedAt" asc nulls first, pr."id"
     limit ${PR_CHECK_LIMIT}`)
@@ -357,11 +417,14 @@ export const pullRequestsToCheck = async (
 /**
  * The nightly rule. Each project with automatic review on, whose pick for today is due and not
  * yet made, is stamped as picked and gets `waiting` reviews for its `limit` ready sessions. A
- * session is ready once it has been quiet for `QUIET_FOR`, or once a pull request it opened is
- * merged or closed; those with an ended pull request go first, then the ones active longest ago. "Today" and the time of day are read in
- * `timeZone`, so a worker started after midnight but before `at` makes no pick for the night
- * before. A session with a row for the analyzer, in any state, is left alone. One statement, so a
- * crash cannot stamp a project without queueing its reviews, or queue them without the stamp.
+ * session is a candidate when `pickableSession` holds: never reviewed, reviewed with at least
+ * `MIN_NEW_USER_MESSAGES` new user messages, or failed with messages since. It is ready once quiet for `QUIET_FOR`, or once a pull
+ * request it opened is merged or closed (for a reviewed session, after its last run). Never
+ * reviewed go first, then an ended pull request, then the ones active longest ago. A session
+ * with a done run gets a new-part run based on its newest one; others get a full run. "Today"
+ * and the time of day are read in `timeZone`, so a worker started after midnight but before
+ * `at` makes no pick for the night before. One statement, so a crash cannot stamp a project
+ * without queueing its reviews, or queue them without the stamp.
  */
 export const queueNightlyReviews = async (
   db: Querier,
@@ -375,30 +438,42 @@ export const queueNightlyReviews = async (
       returning "id"
     ), "candidates" as (
       select "sessions"."id", "sessions"."projectId", ${sessionActivityAt} as "activityAt",
+        "last"."id" is null as "neverReviewed",
+        (
+          select d."id" from "sessionReviews" d
+          where d."sessionId" = "sessions"."id" and d."analyzer" = ${input.analyzer}
+            and d."status" = 'done'
+          order by d."createdAt" desc limit 1
+        ) as "basedOn",
         exists (
           select 1 from "sessionPullRequests" spr
           join "pullRequests" pr on pr."id" = spr."prId"
           where spr."sessionId" = "sessions"."id" and pr."state" in ('merged', 'closed')
+            -- A reviewed session counts only a pull request that ended after its last run.
+            and ("last"."id" is null or pr."closedAt" > "last"."updatedAt")
         ) as "prEnded"
       from "sessions"
+      left join lateral ${lastRun(input.analyzer)} "last" on true
       where "sessions"."projectId" in (select "id" from "picked")
         and ${sessionActivityAt} > ${now} - ${PICK_WITHIN}::interval
-        and not exists (
-          select 1 from "sessionReviews" sr
-          where sr."sessionId" = "sessions"."id" and sr."analyzer" = ${input.analyzer}
-        )
+        and ${pickableSession}
     ), "ready" as (
-      -- A session whose pull request ended goes first: it is recent, so oldest-first alone would
-      -- leave it behind every quiet session of a busy project and the trigger would never fire.
-      select "id", "projectId",
+      -- Never reviewed first; then an ended pull request, which is recent, so oldest-first alone
+      -- would leave it behind every quiet session of a busy project; then the oldest.
+      select "id", "projectId", "basedOn",
         row_number() over (
-          partition by "projectId" order by "prEnded" desc, "activityAt", "id"
+          partition by "projectId"
+          order by "neverReviewed" desc, "prEnded" desc, "activityAt", "id"
         ) as "rank"
       from "candidates"
       where "prEnded" or "activityAt" <= ${now} - ${QUIET_FOR}::interval
     ), "queued" as (
-      insert into "sessionReviews" ("sessionId", "projectId", "analyzer", "status", "attempts")
-      select "id", "projectId", ${input.analyzer}, 'waiting', 0 from "ready"
+      -- The one-active-run index makes "on conflict" a race guard: pickableSession already
+      -- leaves out a session with a run waiting or running.
+      insert into "sessionReviews"
+        ("sessionId", "projectId", "analyzer", "status", "attempts", "newPartOnly", "basedOn")
+      select "id", "projectId", ${input.analyzer}, 'waiting', 0, "basedOn" is not null, "basedOn"
+      from "ready"
       where "rank" <= ${input.limit}
       on conflict do nothing
       returning "id"

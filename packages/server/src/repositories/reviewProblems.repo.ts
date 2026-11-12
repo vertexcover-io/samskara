@@ -1,5 +1,5 @@
 import type { Problem } from "@samskara/core"
-import { and, asc, eq } from "drizzle-orm"
+import { and, asc, desc, eq, inArray } from "drizzle-orm"
 import type { Querier } from "../db/client.js"
 import { projects, reviewProblems } from "../db/schema.js"
 import { visibleToUser } from "./projects.repo.js"
@@ -7,9 +7,9 @@ import { visibleToUser } from "./projects.repo.js"
 export type ReviewProblemRow = typeof reviewProblems.$inferSelect
 
 /**
- * Saves a review's problems, replacing whatever that review had before: a redo supersedes
- * the review row in place, so its problems are swapped as a set rather than added to. Runs
- * inside the caller's transaction, with the review row itself.
+ * Saves a run's problems as a set. Only problems of `reviewId` are replaced: a fresh run has
+ * none, and a retried try of the same run swaps its own partial set. Runs inside the caller's
+ * transaction, with the review row itself.
  */
 export const replaceReviewProblems = async (
   db: Querier,
@@ -43,13 +43,13 @@ export const replaceReviewProblems = async (
 
 /**
  * A session's problems in the order the reviewer wrote them, for whoever can see the session.
- * With `reviewId`, only that review's.
+ * With `reviewIds`, only those reviews'.
  */
 export const listProblemsForSession = async (
   db: Querier,
   userId: string,
   sessionId: string,
-  reviewId?: string,
+  reviewIds?: ReadonlyArray<string>,
 ): Promise<ReviewProblemRow[]> =>
   db
     .select()
@@ -58,9 +58,23 @@ export const listProblemsForSession = async (
     .where(
       and(
         eq(reviewProblems.sessionId, sessionId),
-        reviewId === undefined ? undefined : eq(reviewProblems.reviewId, reviewId),
+        reviewIds === undefined ? undefined : inArray(reviewProblems.reviewId, [...reviewIds]),
         visibleToUser(db, userId),
       ),
     )
     .orderBy(asc(reviewProblems.reviewId), asc(reviewProblems.position))
     .then((rows) => rows.map((row) => row.reviewProblems))
+
+/** The titles of the given runs' problems, newest run first, each run's in its own order. */
+export const problemTitlesOf = async (
+  db: Querier,
+  reviewIds: ReadonlyArray<string>,
+): Promise<string[]> => {
+  if (reviewIds.length === 0) return []
+  const rows = await db
+    .select({ title: reviewProblems.title })
+    .from(reviewProblems)
+    .where(inArray(reviewProblems.reviewId, [...reviewIds]))
+    .orderBy(desc(reviewProblems.createdAt), asc(reviewProblems.position))
+  return rows.map((row) => row.title)
+}

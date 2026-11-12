@@ -8,6 +8,7 @@ import type { Db } from "../db/client.js"
 import {
   messages,
   projects,
+  reviewProblems,
   sessionReviews,
   sessions,
   userProjectGrant,
@@ -16,6 +17,7 @@ import {
 import { dockerAvailable, startTestDb } from "../db/testDb.js"
 import type { Env } from "../lib/env.js"
 import { signToken } from "../lib/jwt.js"
+import { reviewSessions } from "../repositories/learnings.repo.js"
 import { runAiReview } from "../services/ai-review/pipeline.js"
 import { createWorkLoop, reviewOptions } from "../worker/loop.js"
 
@@ -185,7 +187,7 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
       runReview: (review) =>
         runAiReview(
           { db, runner, env, log, credentialEnv: CREDENTIAL_ENV },
-          review.sessionId,
+          review,
           reviewOptions(review),
         ),
     })
@@ -307,7 +309,7 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
 
     const second = await request(`/api/sessions/${sessionId}/analyze`, {
       method: "POST",
-      body: { force: true },
+      body: { mode: "full" },
     })
 
     expect(second.status).toBe(409)
@@ -361,12 +363,14 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
       job: { status: "failed", jobId, code: "harnessFailed", detail: { message: "boom" } },
     })
 
-    const again = await analyze({ force: true })
-    expect(again).toBe(jobId)
+    // A new press after the failure is a new run; the failed one stays failed.
+    const again = await analyze({ mode: "full" })
+    expect(again).not.toBe(jobId)
     await drainQueue()
-    expect(await (await jobStatus(jobId)).json()).toEqual({
-      job: { status: "succeeded", jobId, reviewId: jobId },
+    expect(await (await jobStatus(again)).json()).toEqual({
+      job: { status: "succeeded", jobId: again, reviewId: again },
     })
+    expect(await (await jobStatus(jobId)).json()).toMatchObject({ job: { status: "failed" } })
   })
 
   test("SC18: a failed reason the web does not know reads as harnessFailed", async () => {
@@ -384,7 +388,7 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
 
   test("SC19: a reloaded session page sees the review in progress beside the old one", async () => {
     await db.insert(sessionReviews).values({ ...doneReview, sessionId, projectId })
-    await analyze({ force: true })
+    await analyze({ mode: "full" })
 
     const res = await request(`/api/sessions/${sessionId}/aireview`)
 
@@ -403,6 +407,8 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
       review: null,
+      runs: [],
+      newMessages: false,
       job: { jobId, status: "running", startedAt: expect.any(String), lastEvent: null },
     })
   })
@@ -451,11 +457,14 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
     expect(res.status).toBe(401)
   })
 
-  test("A7: analyze on a session that already holds a review returns 409 analysisAlreadyExists", async () => {
-    await db.insert(sessionReviews).values({ ...doneReview, sessionId, projectId })
-    const res = await request(`/api/sessions/${sessionId}/analyze`, { method: "POST" })
-    expect(res.status).toBe(409)
-    expect(await res.json()).toEqual({ error: "analysisAlreadyExists" })
+  test("A7: analyze on a session that already holds a review queues a new run beside it", async () => {
+    const [old] = await db
+      .insert(sessionReviews)
+      .values({ ...doneReview, sessionId, projectId })
+      .returning()
+    const jobId = await analyze()
+    expect(jobId).not.toBe(old?.id)
+    expect(await db.select().from(sessionReviews)).toHaveLength(2)
   })
 
   test("A10: an unrecognized harness or a blank model in the body is 400, not a silent env fallback", async () => {
@@ -474,16 +483,18 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
     expect(await badModel.json()).toEqual({ error: "invalidModel" })
   })
 
-  test("A12: force=true redoes a finished review in place once the worker runs it", async () => {
+  test("A12: mode full adds a new run once the worker runs it, and the old one stays done", async () => {
     await db.insert(sessionReviews).values({ ...doneReview, sessionId, projectId })
-    await analyze({ force: true })
+    await analyze({ mode: "full" })
     await drainQueue()
 
     const rows = (await db.select().from(sessionReviews)).filter(
       (row) => row.sessionId === sessionId,
     )
-    expect(rows).toHaveLength(1)
-    expect(rows[0]).toMatchObject({ status: "done", summary: "Clean two-message session." })
+    expect(rows.map((row) => [row.status, row.summary]).sort()).toEqual([
+      ["done", "Clean two-message session."],
+      ["done", "the old verdict"],
+    ])
   })
 
   test("A14: analyze refuses an unauthenticated harness synchronously, queueing nothing", async () => {
@@ -571,7 +582,7 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
   test("A17: a stranger cannot see a queued review through /aireview or poll it by jobId", async () => {
     const jobId = await analyze()
     await db.update(sessionReviews).set({ status: "failed", error: "harnessFailed: /tmp/ws" })
-    await analyze({ force: true })
+    await analyze({ mode: "full" })
 
     const [stranger] = await db
       .insert(users)
@@ -592,14 +603,13 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
     expect((await jobStatus(jobId)).status).toBe(200)
   })
 
-  test("A21: a review already there blocks a second one unless forced", async () => {
-    await analyze()
-    await drainQueue()
-
-    const again = await request(`/api/sessions/${sessionId}/analyze`, { method: "POST" })
-    expect(again.status).toBe(409)
-    expect(await again.json()).toEqual({ error: "analysisAlreadyExists" })
-    await analyze({ force: true })
+  test("A21: the old force flag is refused as an unknown field", async () => {
+    const forced = await request(`/api/sessions/${sessionId}/analyze`, {
+      method: "POST",
+      body: { force: true },
+    })
+    expect(forced.status).toBe(400)
+    expect(await forced.json()).toEqual({ error: "invalidAnalyzeBody" })
   })
 
   test("A22: an unknown field or an empty prompt is 400", async () => {
@@ -638,14 +648,19 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
       review: null,
+      runs: [],
+      newMessages: false,
       job: { jobId, status: "failed", code: "harnessFailed", detail: { message: "boom" } },
     })
   })
 
   test("a redo that failed all its tries keeps the old result beside the failed job", async () => {
     await db.insert(sessionReviews).values({ ...doneReview, sessionId, projectId })
-    const jobId = await analyze({ force: true })
-    await db.update(sessionReviews).set({ status: "failed", error: "unparseable: bad file" })
+    const jobId = await analyze({ mode: "full" })
+    await db
+      .update(sessionReviews)
+      .set({ status: "failed", error: "unparseable: bad file" })
+      .where(eq(sessionReviews.id, jobId))
     const body = (await (await request(`/api/sessions/${sessionId}/aireview`)).json()) as {
       review: { summary: string }
       job: unknown
@@ -657,5 +672,160 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
       code: "unparseable",
       detail: { message: "bad file" },
     })
+  })
+  test("each run in the chain carries only its own problems, in the order the reviewer wrote them", async () => {
+    const seedRun = async (
+      minute: number,
+      newPartOnly: boolean,
+      titles: ReadonlyArray<string>,
+    ): Promise<string> => {
+      const [row] = await db
+        .insert(sessionReviews)
+        .values({
+          ...doneReview,
+          sessionId,
+          projectId,
+          status: "done",
+          newPartOnly,
+          createdAt: new Date(Date.UTC(2026, 0, 1, 10, minute)),
+        })
+        .returning({ id: sessionReviews.id })
+      if (row === undefined) throw new Error("seed run failed")
+      if (titles.length > 0)
+        await db.insert(reviewProblems).values(
+          titles.map((title, position) => ({
+            reviewId: row.id,
+            sessionId,
+            projectId,
+            position,
+            title,
+            class: "missed" as const,
+            severity: "low" as const,
+            severityReason: "r",
+            fixType: "skill" as const,
+            description: "d",
+            evidence: [],
+            learning: "l",
+          })),
+        )
+      return row.id
+    }
+    await seedRun(0, false, ["Hidden by the newer full run"])
+    const full = await seedRun(1, false, ["Full second", "Full first"])
+    const newPart = await seedRun(2, true, ["New part only"])
+
+    const body = (await (await request(`/api/sessions/${sessionId}/aireview`)).json()) as {
+      runs: Array<{ id: string; problems: Array<{ title: string }> }>
+    }
+
+    expect(body.runs.map((run) => [run.id, run.problems.map((p) => p.title)])).toEqual([
+      [newPart, ["New part only"]],
+      [full, ["Full second", "Full first"]],
+    ])
+  })
+
+  test("SC6: after a newer full run the page shows only it, and the older run's problem still resolves its evidence through its own recordIds", async () => {
+    const [cited] = await db
+      .select({ id: messages.id })
+      .from(messages)
+      .where(eq(messages.lineNumber, 2))
+    await analyze()
+    await drainQueue()
+    const older = await reviewRow()
+    await analyze({ mode: "full" })
+    await drainQueue()
+
+    const body = (await (await request(`/api/sessions/${sessionId}/aireview`)).json()) as {
+      review: { id: string }
+      runs: Array<{ id: string; kind: string; summary: string; problems: unknown[] }>
+    }
+    expect(body.runs).toHaveLength(1)
+    expect(body.runs[0]?.id).not.toBe(older?.id)
+    expect(body.runs[0]).toMatchObject({ kind: "full", summary: "Clean two-message session." })
+    expect(body.runs[0]?.problems).toHaveLength(1)
+    expect(body.review.id).toBe(body.runs[0]?.id)
+
+    // The kept problem cites msg-1, the agent's "done": the second message seeded.
+    const [kept] = await reviewSessions(db, [older?.id as string])
+    expect(kept?.recordIds?.[1]).toBe(cited?.id)
+    const keptProblems = await db
+      .select()
+      .from(reviewProblems)
+      .where(eq(reviewProblems.reviewId, older?.id as string))
+    expect(keptProblems).toHaveLength(1)
+  })
+
+  test("SC9: the rule-based review endpoint is gone", async () => {
+    const res = await request(`/api/sessions/${sessionId}/review`, { method: "POST" })
+    expect(res.status).toBe(404)
+  })
+  test("SC18: newMessages is refused with 400 nothingNew for a never-reviewed session and for one with nothing after its done run; a later message lets it queue on that run", async () => {
+    const refuse = async () => {
+      const res = await request(`/api/sessions/${sessionId}/analyze`, {
+        method: "POST",
+        body: { mode: "newMessages" },
+      })
+      expect(res.status).toBe(400)
+      expect(await res.json()).toEqual({ error: "nothingNew" })
+    }
+    await refuse()
+    expect(await db.select().from(sessionReviews)).toHaveLength(0)
+
+    const [last] = await db
+      .update(messages)
+      .set({ timestamp: new Date("2026-01-01T10:00:00Z") })
+      .returning({ id: messages.id, lineNumber: messages.lineNumber })
+    const [base] = await db
+      .insert(sessionReviews)
+      .values({ ...doneReview, sessionId, projectId, status: "done", lastMessageId: last?.id })
+      .returning()
+    await refuse()
+    expect(await db.select().from(sessionReviews)).toHaveLength(1)
+
+    await db.insert(messages).values({
+      sessionId,
+      lineUuid: crypto.randomUUID(),
+      subIndex: 0,
+      msgType: "message",
+      role: "user",
+      lineNumber: 9,
+      raw: {},
+      sourceSchemaVersion: 1,
+      content: { type: "text", value: "one more thing" },
+      timestamp: new Date("2026-01-01T11:00:00Z"),
+    })
+    const jobId = await analyze({ mode: "newMessages" })
+    const [row] = await db.select().from(sessionReviews).where(eq(sessionReviews.id, jobId))
+    expect(row).toMatchObject({ status: "waiting", newPartOnly: true, basedOn: base?.id })
+  })
+  test("SC24: GET aireview says newMessages false right after a done run and true once a later message arrives, with runs newest first", async () => {
+    await db.update(messages).set({ timestamp: new Date("2026-01-01T10:00:00Z") })
+    await analyze()
+    await drainQueue()
+
+    const before = (await (await request(`/api/sessions/${sessionId}/aireview`)).json()) as {
+      newMessages: boolean
+      runs: Array<{ id: string; problems: unknown[] }>
+    }
+    expect(before.newMessages).toBe(false)
+    expect(before.runs).toHaveLength(1)
+    expect(before.runs[0]?.problems).toHaveLength(1)
+
+    await db.insert(messages).values({
+      sessionId,
+      lineUuid: crypto.randomUUID(),
+      subIndex: 0,
+      msgType: "message",
+      role: "user",
+      lineNumber: 9,
+      raw: {},
+      sourceSchemaVersion: 1,
+      content: { type: "text", value: "one more thing" },
+      timestamp: new Date("2026-01-01T11:00:00Z"),
+    })
+    const after = (await (await request(`/api/sessions/${sessionId}/aireview`)).json()) as {
+      newMessages: boolean
+    }
+    expect(after.newMessages).toBe(true)
   })
 })

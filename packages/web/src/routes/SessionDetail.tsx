@@ -12,6 +12,7 @@ import {
 } from "../api/review.js"
 import type {
   CapturedArtifact,
+  ProblemsReviewRun,
   ProblemsReviewSignals,
   ReviewerTranscriptEntry,
   ReviewProblem,
@@ -48,6 +49,7 @@ import { useFilterOptions } from "../sessions/useFilterOptions.js"
 import { LoadingShell } from "../shell/LoadingShell.js"
 import { useMeasuredHeight } from "../shell/useMeasuredHeight.js"
 import { absoluteTime } from "../time.js"
+import { type ReviewChoice, reviewChoices } from "./reviewChoices.js"
 
 type State =
   | { readonly phase: "loading" }
@@ -825,17 +827,22 @@ const useGroundingLink = (
   )
 }
 
-/** The top of the AI review card: label, time, redo, verdict, and the redo's own state. */
+/**
+ * The top of the AI review card: label, time, the Review control (labelled with the default
+ * choice, disabled while a run is waiting or running), verdict, and the new run's own state.
+ */
 const AiReviewHeader = ({
   review,
   signals,
   analysis,
   onRedo,
+  choices,
 }: {
   review: SessionReviewSummary
   signals: { readonly model: string; readonly harness: string } | null
   analysis: AiAnalysis
   onRedo: (choice: ReviewerChoice) => void
+  choices: ReadonlyArray<ReviewChoice>
 }) => {
   const [redoOpen, setRedoOpen] = useState(false)
   const redoRef = useRef<HTMLButtonElement>(null)
@@ -852,10 +859,10 @@ const AiReviewHeader = ({
           ref={redoRef}
           type="button"
           onClick={() => setRedoOpen(true)}
-          disabled={analysis.phase === "running"}
+          disabled={choices.length === 0}
           className="ml-auto rounded-xs border border-rule px-2 py-0.5 font-mono text-[0.72rem] text-ink-soft transition-colors hover:border-ink-soft hover:bg-panel-2 disabled:opacity-60"
         >
-          {analysis.phase === "running" ? "Redo running…" : "Redo review"}
+          {analysis.phase === "running" ? "Review running…" : (choices[0]?.label ?? "Review")}
         </button>
       </div>
       <Verdict outcome={review.outcome} />
@@ -868,12 +875,12 @@ const AiReviewHeader = ({
        * no review exists, so every redo phase has to surface here, on the card itself. */}
       {analysis.phase === "running" ? (
         <p className="mt-1.5 font-mono text-[0.72rem] text-ink-soft">
-          Redo running… (started {absoluteTime(analysis.startedAt)})
+          Review running… (started {absoluteTime(analysis.startedAt)})
         </p>
       ) : null}
       {analysis.phase === "failed" ? (
         <p role="alert" className="mt-1.5 text-[0.82rem] text-err">
-          Redo failed — {analysis.message} You can try again.
+          Review failed — {analysis.message} You can try again.
         </p>
       ) : null}
       {analysis.phase === "forbidden" ? (
@@ -888,11 +895,12 @@ const AiReviewHeader = ({
       ) : null}
       <AnalyzeDialog
         open={redoOpen}
+        choices={choices}
         onClose={() => setRedoOpen(false)}
         restoreFocusTo={() => redoRef.current}
         onRun={(choice) => {
           setRedoOpen(false)
-          onRedo({ ...choice, force: true })
+          onRedo(choice)
         }}
       />
     </>
@@ -967,9 +975,59 @@ const ProblemRow = ({
 type ProblemsState =
   | { readonly phase: "loading" }
   | { readonly phase: "failed"; readonly message: string }
-  | { readonly phase: "ready"; readonly problems: ReadonlyArray<ReviewProblem> }
+  | {
+      readonly phase: "ready"
+      readonly runs: ReadonlyArray<ProblemsReviewRun>
+      readonly newMessages: boolean
+    }
 
-/** The AI review: the verdict and summary, then every problem it saved. */
+/**
+ * One run of the chain: its kind and date, then its own problems and reviewer session. Each
+ * run resolves its evidence through its own recordIds, so the hook is called per run.
+ */
+const RunSection = ({ run }: { run: ProblemsReviewRun }) => {
+  const linkFor = useGroundingLink(run.signals?.run?.recordIds)
+  const [logOpen, setLogOpen] = useState(false)
+  const kind = run.kind === "newPart" ? "New messages" : "Full review"
+  const count = `${run.problems.length} problem${run.problems.length === 1 ? "" : "s"}`
+  return (
+    <section className="mt-4">
+      <SectionHeading>{`${kind} · ${absoluteTime(run.analyzedAt)} · ${count}`}</SectionHeading>
+      {run.problems.length === 0 ? (
+        <p className="text-[0.82rem] text-ink-soft">No problems found.</p>
+      ) : (
+        <ul className="flex flex-col gap-2">
+          {run.problems.map((problem) => (
+            <ProblemRow key={problem.id} problem={problem} linkFor={linkFor} />
+          ))}
+        </ul>
+      )}
+      {/* The reviewer's own session, rendered like the conversation tab: who said what and
+       * which tools ran, captured from its sandbox before the workspace was deleted. Falls
+       * back to the raw output tail when no structured transcript was captured. */}
+      {run.signals?.run?.transcript === undefined &&
+      run.signals?.run?.agentLog === undefined ? null : (
+        <>
+          <button
+            type="button"
+            onClick={() => setLogOpen(true)}
+            className="mt-2 rounded-xs border border-rule px-2 py-0.5 font-mono text-[0.72rem] text-ink-soft transition-colors hover:border-ink-soft hover:bg-panel-2"
+          >
+            Reviewer session
+          </button>
+          <ReviewerSessionModal
+            open={logOpen}
+            onClose={() => setLogOpen(false)}
+            transcript={run.signals?.run?.transcript ?? []}
+            tail={run.signals?.run?.agentLog}
+          />
+        </>
+      )}
+    </section>
+  )
+}
+
+/** The AI review: the newest run's verdict and summary, then one section per run of the chain. */
 const ProblemsReviewCard = ({
   sessionId,
   review,
@@ -982,9 +1040,7 @@ const ProblemsReviewCard = ({
   onRedo: (choice: ReviewerChoice) => void
 }) => {
   const signals = review.signals as ProblemsReviewSignals | null
-  const linkFor = useGroundingLink(signals?.run?.recordIds)
   const [problems, setProblems] = useState<ProblemsState>({ phase: "loading" })
-  const [logOpen, setLogOpen] = useState(false)
 
   // The review list carries the row but not its problems; they live in their own table.
   const reviewKey = `${review.id}·${review.analyzedAt ?? review.createdAt}`
@@ -998,7 +1054,11 @@ const ProblemsReviewCard = ({
         setProblems({ phase: "failed", message: result.error.message })
         return
       }
-      setProblems({ phase: "ready", problems: result.data.review?.problems ?? [] })
+      setProblems({
+        phase: "ready",
+        runs: result.data.runs,
+        newMessages: result.data.newMessages,
+      })
     })
     return () => {
       active = false
@@ -1007,46 +1067,24 @@ const ProblemsReviewCard = ({
 
   return (
     <article className="border border-rule bg-panel p-4">
-      <AiReviewHeader review={review} signals={signals} analysis={analysis} onRedo={onRedo} />
+      <AiReviewHeader
+        review={review}
+        signals={signals}
+        analysis={analysis}
+        onRedo={onRedo}
+        choices={reviewChoices({
+          reviewed: true,
+          newMessages: problems.phase === "ready" && problems.newMessages,
+          running: analysis.phase === "running",
+        })}
+      />
       <p className="mt-2 text-ink">{review.summary}</p>
-      <section className="mt-4">
-        <SectionHeading>
-          {problems.phase === "ready" ? `Problems (${problems.problems.length})` : "Problems"}
-        </SectionHeading>
-        {problems.phase === "loading" ? null : problems.phase === "failed" ? (
-          <p className="text-[0.82rem] text-ink-soft">
-            The problems could not be retrieved. {problems.message}
-          </p>
-        ) : problems.problems.length === 0 ? (
-          <p className="text-[0.82rem] text-ink-soft">No problems found.</p>
-        ) : (
-          <ul className="flex flex-col gap-2">
-            {problems.problems.map((problem) => (
-              <ProblemRow key={problem.id} problem={problem} linkFor={linkFor} />
-            ))}
-          </ul>
-        )}
-      </section>
-
-      {/* The reviewer's own session, rendered like the conversation tab: who said what and
-       * which tools ran, captured from its sandbox before the workspace was deleted. Falls
-       * back to the raw output tail when no structured transcript was captured. */}
-      {signals?.run?.transcript === undefined && signals?.run?.agentLog === undefined ? null : (
-        <>
-          <button
-            type="button"
-            onClick={() => setLogOpen(true)}
-            className="mt-4 rounded-xs border border-rule px-2 py-0.5 font-mono text-[0.72rem] text-ink-soft transition-colors hover:border-ink-soft hover:bg-panel-2"
-          >
-            Reviewer session
-          </button>
-          <ReviewerSessionModal
-            open={logOpen}
-            onClose={() => setLogOpen(false)}
-            transcript={signals?.run?.transcript ?? []}
-            tail={signals?.run?.agentLog}
-          />
-        </>
+      {problems.phase === "loading" ? null : problems.phase === "failed" ? (
+        <p className="mt-4 text-[0.82rem] text-ink-soft">
+          The problems could not be retrieved. {problems.message}
+        </p>
+      ) : (
+        problems.runs.map((run) => <RunSection key={run.id} run={run} />)
       )}
     </article>
   )
@@ -1079,7 +1117,7 @@ const AnalyzeSection = ({
           disabled={running}
           className="rounded-xs border border-rule px-2 py-0.5 text-ink-soft transition-colors hover:border-ink-soft hover:bg-panel disabled:cursor-default disabled:opacity-60 disabled:hover:border-rule disabled:hover:bg-transparent"
         >
-          Analyze with AI
+          Review
         </button>
         {analysis.phase === "running" ? (
           <span className="font-mono text-[0.72rem] text-ink-soft">
@@ -1104,6 +1142,7 @@ const AnalyzeSection = ({
       </div>
       <AnalyzeDialog
         open={dialogOpen}
+        choices={reviewChoices({ reviewed: false, newMessages: false, running })}
         onClose={() => setDialogOpen(false)}
         restoreFocusTo={() => buttonRef.current}
         onRun={(choice) => {
@@ -1164,11 +1203,6 @@ const useAiAnalysis = (
         // through the same poll instead of erroring or duplicating the run.
         if (result.error.code === "analysisAlreadyRunning") {
           setAnalysis({ phase: "running", startedAt: Date.now() })
-          return
-        }
-        // The verdict landed out-of-band — refetch the list so the card replaces the button.
-        if (result.error.code === "analysisAlreadyExists") {
-          arrived.current()
           return
         }
         setAnalysis({ phase: "failed", message: result.error.message })

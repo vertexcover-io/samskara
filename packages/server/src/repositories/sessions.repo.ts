@@ -304,11 +304,11 @@ const durationMs = sql<
   number | null
 >`(extract(epoch from ${sessions.lastMessageAt} - ${sessions.startedAt}) * 1000)::bigint`
 
-/** The badge's definition of "AI analysis ran": an AI review row with a result. */
+/** The badge's definition of "AI analysis ran": a done AI review run, so a chain to show. */
 const aiReviewExists = (sessionId: SQL): SQL => sql`exists (
   select 1 from "sessionReviews" sr
   where sr."sessionId" = ${sessionId} and sr."analyzer" = 'ai-problems-v2'
-    and sr."outcome" is not null
+    and sr."status" = 'done'
 )`
 
 const dominantRepoId = sql`(
@@ -915,6 +915,7 @@ export const sessionMessages = (db: Querier, sessionId: string) =>
       subIndex: messages.subIndex,
       trackId: messages.trackId,
       timestamp: sql<string | null>`${messages.timestamp}`,
+      createdAt: sql<string>`${messages.createdAt}`,
       agentId: messages.agentId,
       isSubagent: messages.isSubagent,
       model: messages.model,

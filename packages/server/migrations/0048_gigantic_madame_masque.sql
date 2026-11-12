@@ -1,0 +1,1 @@
+ALTER TABLE "sessionReviews" DROP COLUMN "reviewedThrough";

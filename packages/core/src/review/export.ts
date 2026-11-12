@@ -270,3 +270,44 @@ export const buildSessionExport = (input: {
     },
   }
 }
+
+/** How many records of the already-reviewed part a new-part run sees before the new ones. */
+export const NEW_PART_CONTEXT_RECORDS = 20
+
+/**
+ * The export a new-part run reads: the last `NEW_PART_CONTEXT_RECORDS` records of `earlier`,
+ * then every record of `fresh`, renumbered from msg-0 as one list. Records before
+ * `contextCount` were already reviewed and are context only. The parts are built apart because
+ * records follow line numbers across tracks: a new subagent's line 1 would otherwise sort among
+ * the session's first records.
+ */
+export const buildNewPartExport = (input: {
+  readonly sessionId: string
+  readonly title: string
+  readonly source: string
+  readonly startedAt?: string
+  readonly endedAt?: string
+  readonly earlier: ReadonlyArray<NormalizedMessage>
+  readonly fresh: ReadonlyArray<NormalizedMessage>
+}): SessionExport & { readonly contextCount: number } => {
+  const { earlier, fresh, ...meta } = input
+  const context = buildSessionExport({ ...meta, messages: earlier, full: true }).records.slice(
+    -NEW_PART_CONTEXT_RECORDS,
+  )
+  const part = buildSessionExport({ ...meta, messages: fresh, full: true })
+  const records = [...context, ...part.records].map((record, position) => ({
+    ...record,
+    seq: position,
+    id: messageIdOf(position),
+  }))
+  return {
+    meta: part.meta,
+    records,
+    index: {
+      seqs: records.map((record) => record.seq),
+      messageIds: records.map((record) => record.id),
+      tracks: [...new Set(records.map((record) => record.track))],
+    },
+    contextCount: context.length,
+  }
+}

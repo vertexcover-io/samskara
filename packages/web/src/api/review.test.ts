@@ -26,17 +26,18 @@ test("AR1: a running job comes back alongside a null review, so a reload can rej
 
   const result = await fetchProblemsReview("s-1")
 
-  expect(result).toEqual({ ok: true, data: { review: null, job } })
+  expect(result).toEqual({ ok: true, data: { review: null, job, runs: [], newMessages: false } })
   expect(urls[0]).toContain("/api/sessions/s-1/aireview")
 })
 
 test("AR2: a landed review without a running job maps to a null job, keeping the old shape honest", async () => {
   const review = { id: "rev-1", createdAt: "2026-08-26T20:01:00.000Z", outcome: "productive" }
-  stubFetch(response(200, { review }))
+  const runs = [{ ...review, kind: "full" }]
+  stubFetch(response(200, { review, runs, newMessages: true }))
 
   const result = await fetchProblemsReview("s-1")
 
-  expect(result).toEqual({ ok: true, data: { review, job: null } })
+  expect(result).toEqual({ ok: true, data: { review, job: null, runs, newMessages: true } })
 })
 
 test("AR3: a 404 noAiReview still means not-yet — null review, null job, no error", async () => {
@@ -44,5 +45,8 @@ test("AR3: a 404 noAiReview still means not-yet — null review, null job, no er
 
   const result = await fetchProblemsReview("s-1")
 
-  expect(result).toEqual({ ok: true, data: { review: null, job: null } })
+  expect(result).toEqual({
+    ok: true,
+    data: { review: null, job: null, runs: [], newMessages: false },
+  })
 })

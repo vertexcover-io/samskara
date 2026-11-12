@@ -1,14 +1,16 @@
-import { eq } from "drizzle-orm"
+import { eq, sql } from "drizzle-orm"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import { createDb, type Db } from "../db/client.js"
-import { projects, sessionReviews, sessions, users } from "../db/schema.js"
+import { projects, reviewReaderReplies, sessionReviews, sessions, users } from "../db/schema.js"
 import { dockerAvailable, startTestDb } from "../db/testDb.js"
+import { saveReaderReply } from "./readerReplies.repo.js"
 import { listReviewsForSession } from "./reviews.repo.js"
 import {
   claimReview,
   failReviewAttempt,
   queueReview,
   requeueRunningReviews,
+  unfinishedReview,
 } from "./workQueue.repo.js"
 
 const ANALYZER = "ai-problems-v2"
@@ -160,8 +162,8 @@ describe.skipIf(!dockerAvailable())("work queue: reviews", () => {
     expect(await claimReview(db)).toBeNull()
   })
 
-  test("SC6: queueing a session with a finished review keeps the old result", async () => {
-    const row = await seedReview("s-6", { ...finished, attempts: 2, error: "earlier" })
+  test("SC2: queueing a session with a done review adds a new waiting row and leaves the done one untouched", async () => {
+    const row = await seedReview("s-6", { ...finished, attempts: 2 })
 
     const queued = await queueReview(db, {
       sessionId: "s-6",
@@ -170,19 +172,84 @@ describe.skipIf(!dockerAvailable())("work queue: reviews", () => {
       options: { harness: "claude", model: "opus", prompt: "look for loops" },
     })
 
-    expect(queued).toEqual({ id: row.id })
-    expect(await rowById(row.id)).toMatchObject({
+    expect(queued?.id).not.toBe(row.id)
+    expect(await rowById(row.id)).toEqual(row)
+    expect(await rowById(queued?.id as string)).toMatchObject({
       status: "waiting",
       attempts: 0,
-      error: null,
-      outcome: "productive",
-      summary: "old",
+      outcome: null,
       harness: "claude",
       model: "opus",
       prompt: "look for loops",
+      newPartOnly: false,
+      basedOn: null,
     })
     const listed = await listReviewsForSession(db, userId, "s-6")
     expect(listed.map((review) => review.summary)).toEqual(["old"])
+  })
+
+  test("SC3: a second run is refused while one is waiting, and accepted once that run is done", async () => {
+    const waiting = await seedReview("s-one", { status: "waiting" })
+    const input = { sessionId: "s-one", projectId, analyzer: ANALYZER, options: {} }
+
+    expect(await queueReview(db, input)).toBeNull()
+    expect(await db.select().from(sessionReviews)).toHaveLength(1)
+
+    await db
+      .update(sessionReviews)
+      .set({ ...finished })
+      .where(eq(sessionReviews.id, waiting.id))
+    const next = await queueReview(db, input)
+
+    expect(next).not.toBeNull()
+    expect(await db.select().from(sessionReviews)).toHaveLength(2)
+  })
+
+  test("SC4: a failed try is retried on the same row, and after the 3rd a new queue adds a different row", async () => {
+    await seedSession("s-retry")
+    const input = { sessionId: "s-retry", projectId, analyzer: ANALYZER, options: {} }
+    const queued = await queueReview(db, input)
+    const id = queued?.id as string
+
+    for (const attempt of [1, 2, 3]) {
+      const claimed = await claimReview(db)
+      expect(claimed).toMatchObject({ id, attempts: attempt })
+      await failReviewAttempt(db, id, "harnessFailed: boom")
+    }
+
+    expect(await rowById(id)).toMatchObject({ status: "failed", attempts: 3 })
+    const again = await queueReview(db, input)
+    expect(again?.id).toBeDefined()
+    expect(again?.id).not.toBe(id)
+  })
+
+  test("a claimed new-part run says it reads only the new part and which run it continues from", async () => {
+    const base = await seedReview("s-part", finished)
+    await queueReview(db, {
+      sessionId: "s-part",
+      projectId,
+      analyzer: ANALYZER,
+      options: {},
+      basedOn: base.id,
+    })
+
+    expect(await claimReview(db)).toMatchObject({ newPartOnly: true, basedOn: base.id })
+  })
+
+  test("a failed run shows as the job only while it is the newest run; a done run after it ends it", async () => {
+    await seedSession("s-job")
+    const at = (minute: number) => new Date(Date.UTC(2026, 0, 1, 10, minute))
+    const insert = (values: Partial<typeof sessionReviews.$inferInsert>) =>
+      db
+        .insert(sessionReviews)
+        .values({ sessionId: "s-job", projectId, analyzer: ANALYZER, ...values })
+
+    await insert({ ...finished, createdAt: at(1) })
+    await insert({ status: "failed", error: "harnessFailed: boom", createdAt: at(2) })
+    expect(await unfinishedReview(db, "s-job", ANALYZER)).toMatchObject({ status: "failed" })
+
+    await insert({ ...finished, createdAt: at(3) })
+    expect(await unfinishedReview(db, "s-job", ANALYZER)).toBeNull()
   })
 
   test("SC6: queueing a session with no review creates a waiting row", async () => {
@@ -217,5 +284,71 @@ describe.skipIf(!dockerAvailable())("work queue: reviews", () => {
 
     expect(queued).toBeNull()
     expect(await rowById(row.id)).toMatchObject({ status: "running", attempts: 1, model: "first" })
+  })
+
+  describe("saved reader replies", () => {
+    /** A review row holding one saved reader reply, as a try that read one piece leaves it. */
+    const seedWithReply = async (
+      sessionId: string,
+      values: Partial<typeof sessionReviews.$inferInsert>,
+    ) => {
+      const row = await seedReview(sessionId, values)
+      await saveReaderReply(db, { reviewId: row.id, pieceHash: "piece-1", reply: "Nothing found." })
+      return row
+    }
+
+    const repliesOf = async (reviewId: string) =>
+      db.select().from(reviewReaderReplies).where(eq(reviewReaderReplies.reviewId, reviewId))
+
+    test("SC411: the 3rd failed try removes the review's replies; an earlier failed try keeps them", async () => {
+      const last = await seedWithReply("s-last", { status: "running", attempts: 3 })
+      const early = await seedWithReply("s-early", { status: "running", attempts: 1 })
+
+      expect(await failReviewAttempt(db, last.id, "harnessFailed: boom")).toBe("failed")
+      expect(await failReviewAttempt(db, early.id, "harnessFailed: boom")).toBe("waiting")
+
+      expect(await repliesOf(last.id)).toEqual([])
+      expect(await repliesOf(early.id)).toHaveLength(1)
+    })
+
+    test("SC412: a worker start that fails a review on its 3rd try removes its replies; one going back to waiting keeps them", async () => {
+      const last = await seedWithReply("s-last", { status: "running", attempts: 3 })
+      const second = await seedWithReply("s-second", { status: "running", attempts: 2 })
+
+      expect(await requeueRunningReviews(db)).toBe(2)
+
+      expect(await rowById(last.id)).toMatchObject({ status: "failed" })
+      expect(await repliesOf(last.id)).toEqual([])
+      expect(await rowById(second.id)).toMatchObject({ status: "waiting" })
+      expect(await repliesOf(second.id)).toHaveLength(1)
+    })
+
+    test("SC414: when the replies cannot be deleted, a 3rd failed try and a restart both leave the row running rather than failed with its replies behind", async () => {
+      const failing = await seedWithReply("s-failing", { status: "running", attempts: 3 })
+      await db.execute(sql`
+        create function "refuseDelete"() returns trigger language plpgsql
+        as $$ begin raise exception 'delete refused'; end $$`)
+      await db.execute(sql`
+        create trigger "refuseDelete" before delete on "reviewReaderReplies"
+        for each row execute function "refuseDelete"()`)
+      try {
+        await expect(failReviewAttempt(db, failing.id, "harnessFailed: boom")).rejects.toThrow()
+        expect(await rowById(failing.id)).toMatchObject({ status: "running" })
+
+        await expect(requeueRunningReviews(db)).rejects.toThrow()
+        expect(await rowById(failing.id)).toMatchObject({ status: "running" })
+        expect(await repliesOf(failing.id)).toHaveLength(1)
+      } finally {
+        await db.execute(sql`drop trigger "refuseDelete" on "reviewReaderReplies"`)
+        await db.execute(sql`drop function "refuseDelete"()`)
+      }
+    })
+
+    test("SC413: claiming a retry keeps the replies its earlier tries saved", async () => {
+      const retry = await seedWithReply("s-retry", { status: "waiting", attempts: 1 })
+
+      expect(await claimReview(db)).toMatchObject({ id: retry.id, attempts: 2 })
+      expect(await repliesOf(retry.id)).toHaveLength(1)
+    })
   })
 })

@@ -88,8 +88,7 @@ log.info({ agentSlots }, "agent slots")
 const loop = createWorkLoop({
   db,
   log,
-  runReview: (review) =>
-    runAiReview({ db, runner, env, log }, review.sessionId, reviewOptions(review)),
+  runReview: (review) => runAiReview({ db, runner, env, log }, review, reviewOptions(review)),
   runFixRun: fixRunner({
     serverHarness: env.learningsHarness,
     execute: (run, harness) =>

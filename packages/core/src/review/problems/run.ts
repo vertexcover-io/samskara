@@ -5,10 +5,12 @@ import type { HarnessRunInput, HarnessRunner } from "../runner.js"
 import {
   assembleReviewContract,
   buildProblemReviewPrompt,
+  type EarlierReview,
+  earlierReviewMd,
   reviewMdSkeleton,
   sessionJsonText,
 } from "./contract.js"
-import { type FoundLeads, findAgentLeads } from "./finder.js"
+import { type FoundLeads, findAgentLeads, type ReaderReplyStore } from "./finder.js"
 import { findLeads, HUMAN_SECTION, type Leads } from "./leads.js"
 import {
   checkEvidence,
@@ -171,6 +173,8 @@ export const prepareProblems = async (input: {
   readonly instructions: string
   readonly runner: HarnessRunner
   readonly run?: Pick<HarnessRunInput, "harness" | "model">
+  /** Replies kept from an earlier try of this review; absent, every reader runs. */
+  readonly replies?: ReaderReplyStore
 }): Promise<PreparedProblems> => {
   const found = await findAgentLeads(input)
   const leads = findLeads(input.exported.records, found.leads)
@@ -187,6 +191,8 @@ export const problemReviewFiles = (
   instructions: string,
   /** leads.md from `prepareProblems`; without it (a dry run), only what code finds. */
   leadsMd: string = findLeads(exported.records).markdown,
+  /** Set for a new-part run: adds earlier-review.md and points the prompt at it. */
+  earlier?: EarlierReview,
 ): { files: Readonly<Record<string, string>>; prompt: string } => ({
   files: {
     "session.json": sessionJsonText(exported),
@@ -195,8 +201,9 @@ export const problemReviewFiles = (
     "leads-answered.md": "",
     "check.mjs": LEAD_CHECK_SCRIPT,
     "review.md": reviewMdSkeleton(),
+    ...(earlier === undefined ? {} : { "earlier-review.md": earlierReviewMd(earlier) }),
   },
-  prompt: buildProblemReviewPrompt({ title: exported.meta.title }),
+  prompt: buildProblemReviewPrompt({ title: exported.meta.title, newPart: earlier !== undefined }),
 })
 
 /** A user may ask for up to this many extra fields; each becomes required on every problem. */
