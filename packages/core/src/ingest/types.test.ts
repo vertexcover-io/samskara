@@ -9,6 +9,7 @@ import {
   projectIdentitySchema,
   reassignSessionsRequestSchema,
   reassignSessionsResponseSchema,
+  updateProjectRequestSchema,
   updateSessionRequestSchema,
   updateSessionTagsRequestSchema,
 } from "./types.js"
@@ -395,4 +396,18 @@ test("ST1: the tags request schema rejects whitespace, commas, over-long tags an
 test("ST1: the tags request schema accepts remove on its own and both together", () => {
   expect(updateSessionTagsRequestSchema.safeParse({ remove: ["harness"] }).success).toBe(true)
   expect(updateSessionTagsRequestSchema.safeParse({ add: ["a"], remove: ["b"] }).success).toBe(true)
+})
+
+describe("updateProjectRequestSchema", () => {
+  test.each([
+    [{ fixRunEveryDays: 3 }, true],
+    [{ autoReview: true, fixRunEveryDays: 1 }, true],
+    [{}, false],
+    [{ fixRunEveryDays: 0 }, false],
+    [{ fixRunEveryDays: 1.5 }, false],
+    [{ fixRunEveryDays: "3" }, false],
+    [{ nightlyLimit: 5 }, false],
+  ])("SC743: %j parses: %s", (body, parses) => {
+    expect(updateProjectRequestSchema.safeParse(body).success).toBe(parses)
+  })
 })

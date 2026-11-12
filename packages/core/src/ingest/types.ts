@@ -435,8 +435,14 @@ export const reassignSessionsRequestSchema = z
 
 export const reassignSessionsResponseSchema = z.object({ moved: nonnegativeInteger }).strict()
 
-/** The settings a project admin can change; today only automatic review. */
-export const updateProjectRequestSchema = z.object({ autoReview: z.boolean() }).strict()
+/** The settings a project admin can change: automatic review, and the days between automatic fix runs. */
+export const updateProjectRequestSchema = z
+  .object({
+    autoReview: z.boolean().optional(),
+    fixRunEveryDays: z.number().int().min(1).optional(),
+  })
+  .strict()
+  .refine((body) => Object.keys(body).length > 0, { message: "no fields to update" })
 
 export const updateOrgRequestSchema = z
   .object({

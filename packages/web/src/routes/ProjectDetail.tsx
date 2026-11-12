@@ -11,6 +11,7 @@ import { FixesTab } from "../project/FixesTab.js"
 import { ProjectTabs, parseProjectPath, tabPath } from "../project/ProjectTabs.js"
 import { RunPage } from "../project/RunPage.js"
 import { RunsTab } from "../project/RunsTab.js"
+import { SettingsTab } from "../project/SettingsTab.js"
 import { LoadingShell } from "../shell/LoadingShell.js"
 
 type State =
@@ -19,6 +20,7 @@ type State =
       readonly phase: "ready"
       readonly project: ProjectDetailPayload
       readonly viewerCanDelete: boolean
+      readonly viewerCanEdit: boolean
     }
   | { readonly phase: "failed"; readonly error: ApiError }
 
@@ -68,6 +70,7 @@ export const ProjectDetail = () => {
               phase: "ready",
               project: result.data.project,
               viewerCanDelete: result.data.viewerCanDelete,
+              viewerCanEdit: result.data.viewerCanEdit,
             }
           : { phase: "failed", error: result.error },
       )
@@ -132,6 +135,21 @@ export const ProjectDetail = () => {
           ) : (
             <RunPage projectId={project.id} runId={view.runId} />
           )}
+        </div>
+      ) : view.tab === "settings" ? (
+        <div className="pt-4">
+          <SettingsTab
+            projectId={project.id}
+            settings={{ autoReview: project.autoReview, fixRunEveryDays: project.fixRunEveryDays }}
+            canEdit={state.viewerCanEdit}
+            onSaved={(saved) =>
+              setState((current) =>
+                current.phase === "ready"
+                  ? { ...current, project: { ...current.project, ...saved } }
+                  : current,
+              )
+            }
+          />
         </div>
       ) : (
         <>

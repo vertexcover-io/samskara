@@ -1262,6 +1262,56 @@ describe.skipIf(!dockerAvailable())("PATCH /api/projects/:id", () => {
     expect(await autoReviewOf(projectId)).toBe(false)
   })
 
+  const fixRunEveryDaysOf = async (projectId: string): Promise<number | undefined> => {
+    const [row] = await db
+      .select({ days: projects.fixRunEveryDays })
+      .from(projects)
+      .where(eq(projects.id, projectId))
+    return row?.days
+  }
+
+  test("SC744: a project admin sets the fix-run interval, it persists, and automatic review is untouched", async () => {
+    const owner = await seedUser(db, 1206, "sc744-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Interval", slug: "interval" },
+      ownerId: owner,
+    })
+
+    expect(await patchAs(owner, projectId, { fixRunEveryDays: 3 })).toEqual({
+      status: 200,
+      body: { fixRunEveryDays: 3 },
+    })
+    expect(await getAs(owner, projectId)).toMatchObject({
+      project: { fixRunEveryDays: 3, autoReview: false },
+      viewerCanEdit: true,
+    })
+  })
+
+  test("SC745: a zero interval or an empty body is refused and changes nothing", async () => {
+    const owner = await seedUser(db, 1207, "sc745-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Bad interval", slug: "bad-interval" },
+      ownerId: owner,
+    })
+
+    expect((await patchAs(owner, projectId, { fixRunEveryDays: 0 })).status).toBe(400)
+    expect((await patchAs(owner, projectId, {})).status).toBe(400)
+    expect(await fixRunEveryDaysOf(projectId)).toBe(7)
+  })
+
+  test("SC746: an org member who is not a project admin cannot change the interval, and reads viewerCanEdit false", async () => {
+    const member = await seedUser(db, 1208, "sc746-member")
+    const { orgId, projectId } = await orgProject("sc746-org")
+    await db.insert(userOrgs).values({ userId: member, orgId })
+
+    expect(await patchAs(member, projectId, { fixRunEveryDays: 2 })).toEqual({
+      status: 403,
+      body: { error: "forbidden" },
+    })
+    expect(await fixRunEveryDaysOf(projectId)).toBe(7)
+    expect(await getAs(member, projectId)).toMatchObject({ viewerCanEdit: false })
+  })
+
   test.each([
     { label: "a project the caller cannot see", id: "real" },
     { label: "a malformed project id", id: "malformed" },

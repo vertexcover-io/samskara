@@ -21,7 +21,7 @@ const PROJECT: ProjectDetailPayload = {
   lastActiveAt: "2026-02-01T09:30:00.000Z",
   repo: null,
   autoReview: false,
-  fixRunEveryDays: 3,
+  fixRunEveryDays: 7,
 }
 
 const session = (id: string, title: string): SessionSummary => ({
@@ -75,6 +75,8 @@ const renderDetail = (
     runs?: ReadonlyArray<ListedRun>
     run?: LearningRun
     learnings?: ReadonlyArray<LearningSummary>
+    viewerCanEdit?: boolean
+    patch?: { status: number; body: unknown }
   } = {},
 ) => {
   const {
@@ -84,10 +86,21 @@ const renderDetail = (
     runs = [],
     run,
     learnings = [LEARNING],
+    viewerCanEdit = false,
+    patch,
   } = options
   const urls: string[] = []
-  vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = input instanceof Request ? input.url : String(input)
+    const method = input instanceof Request ? input.method : (init?.method ?? "GET")
+    if (method === "PATCH") {
+      // Recorded as "PATCH url body", so a test can read what each save sent.
+      const body = input instanceof Request ? await input.clone().text() : String(init?.body)
+      urls.push(`PATCH ${url} ${body}`)
+      return new Response(JSON.stringify(patch?.body ?? JSON.parse(body)), {
+        status: patch?.status ?? 200,
+      })
+    }
     urls.push(url)
     if (url.includes("/api/learnings/runs/")) {
       return Promise.resolve(new Response(JSON.stringify({ run }), { status: 200 }))
@@ -111,7 +124,7 @@ const renderDetail = (
     }
     if (url.includes("/api/projects/")) {
       return Promise.resolve(
-        new Response(JSON.stringify({ project, viewerCanDelete }), { status: 200 }),
+        new Response(JSON.stringify({ project, viewerCanDelete, viewerCanEdit }), { status: 200 }),
       )
     }
     return Promise.resolve(new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 }))
@@ -196,9 +209,9 @@ test("SC10: a project with a linked repo renders it as a GitHub link, and a remo
 
 const tabRow = () => screen.getByRole("navigation", { name: "Project" })
 const projectFetches = (urls: ReadonlyArray<string>) =>
-  urls.filter((url) => url.includes("/api/projects/p-1")).length
+  urls.filter((url) => !url.startsWith("PATCH") && url.includes("/api/projects/p-1")).length
 
-test("SC705: the project page opens on Overview with the tab row (Overview, Fixes, Runs), its fields and recent sessions, and loads no fixes", async () => {
+test("SC705: the project page opens on Overview with the tab row (Overview, Fixes, Runs, Settings), its fields and recent sessions, and loads no fixes", async () => {
   const urls = renderDetail(PROJECT, {
     sessions: [session("s-1", "Port the detail page"), session("s-2", "Fix the sync bar")],
   })
@@ -208,7 +221,7 @@ test("SC705: the project page opens on Overview with the tab row (Overview, Fixe
     within(tabRow())
       .getAllByRole("link")
       .map((link) => link.textContent),
-  ).toEqual(["Overview", "Fixes", "Runs"])
+  ).toEqual(["Overview", "Fixes", "Runs", "Settings"])
   expect(within(tabRow()).getByRole("link", { name: "Overview" })).toHaveAttribute(
     "aria-current",
     "page",
@@ -274,23 +287,26 @@ const listedRun = (id: string, fields: Partial<ListedRun> = {}): ListedRun => ({
 })
 
 test("SC728: the Runs tab says how often runs come and lists runs as cards that open their run", async () => {
-  renderDetail(PROJECT, {
-    entry: "/projects/p-1/runs",
-    runs: [
-      listedRun("r-2", {
-        status: "running",
-        finishedAt: null,
-        startedAt: "2026-11-12T09:00:00.000Z",
-      }),
-      listedRun("r-1", {
-        status: "failed",
-        error: "harness timed out",
-        startedAt: "2026-11-11T09:00:00.000Z",
-      }),
-      listedRun("r-0", { fixesCreated: 1, fixesUpdated: 2 }),
-    ],
-    run: listedRun("r-0"),
-  })
+  renderDetail(
+    { ...PROJECT, fixRunEveryDays: 3 },
+    {
+      entry: "/projects/p-1/runs",
+      runs: [
+        listedRun("r-2", {
+          status: "running",
+          finishedAt: null,
+          startedAt: "2026-11-12T09:00:00.000Z",
+        }),
+        listedRun("r-1", {
+          status: "failed",
+          error: "harness timed out",
+          startedAt: "2026-11-11T09:00:00.000Z",
+        }),
+        listedRun("r-0", { fixesCreated: 1, fixesUpdated: 2 }),
+      ],
+      run: listedRun("r-0"),
+    },
+  )
   const user = userEvent.setup()
 
   expect(await screen.findByText("Automatic fix run every 3 days")).toBeInTheDocument()
@@ -358,4 +374,87 @@ test("SC730: a run's page lists the fixes it touched, marked new or updated, wit
     "href",
     "/projects/p-1/runs",
   )
+})
+
+const patches = (urls: ReadonlyArray<string>) =>
+  urls.filter((url) => url.startsWith("PATCH")).map((url) => url.slice(url.lastIndexOf(" ") + 1))
+const daysField = () => screen.getByRole("spinbutton", { name: "Days between automatic fix runs" })
+
+test("SC748: an admin saves automatic review and the fix-run interval, and Runs reads the new interval", async () => {
+  const urls = renderDetail(
+    { ...PROJECT, autoReview: true },
+    { entry: "/projects/p-1/settings", viewerCanEdit: true },
+  )
+  const user = userEvent.setup()
+
+  const autoReview = await screen.findByRole("checkbox", { name: "On" })
+  expect(within(tabRow()).getByRole("link", { name: "Settings" })).toHaveAttribute(
+    "aria-current",
+    "page",
+  )
+  await user.click(autoReview)
+  await waitFor(() => expect(patches(urls)).toEqual(['{"autoReview":false}']))
+  await user.clear(daysField())
+  await user.type(daysField(), "3")
+  await user.click(screen.getByRole("button", { name: "Save" }))
+
+  await waitFor(() =>
+    expect(patches(urls)).toEqual(['{"autoReview":false}', '{"fixRunEveryDays":3}']),
+  )
+  expect(
+    urls.filter((url) => url.startsWith("PATCH")).every((url) => url.includes("/api/projects/p-1")),
+  ).toBe(true)
+  expect(await screen.findByText("Saved")).toBeInTheDocument()
+  await user.click(within(tabRow()).getByRole("link", { name: "Runs" }))
+  expect(await screen.findByText("Automatic fix run every 3 days")).toBeInTheDocument()
+  expect(projectFetches(urls)).toBe(1)
+})
+
+test.each([
+  ["7", false],
+  ["0", false],
+  ["", false],
+  ["2.5", false],
+  ["3", true],
+])("SC749: with %j in the days field, Save is enabled: %s", async (typed, enabled) => {
+  renderDetail(PROJECT, { entry: "/projects/p-1/settings", viewerCanEdit: true })
+  const user = userEvent.setup()
+  await screen.findByRole("checkbox", { name: "On" })
+
+  await user.clear(daysField())
+  if (typed !== "") await user.type(daysField(), typed)
+
+  const save = screen.getByRole("button", { name: "Save" })
+  if (enabled) expect(save).toBeEnabled()
+  else expect(save).toBeDisabled()
+})
+
+test("SC750: a refused save says why and puts the saved value back", async () => {
+  renderDetail(PROJECT, {
+    entry: "/projects/p-1/settings",
+    viewerCanEdit: true,
+    patch: { status: 403, body: { error: "forbidden" } },
+  })
+  const user = userEvent.setup()
+  await screen.findByRole("checkbox", { name: "On" })
+
+  await user.clear(daysField())
+  await user.type(daysField(), "3")
+  await user.click(screen.getByRole("button", { name: "Save" }))
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Only a project admin can change these settings.",
+  )
+  expect(daysField()).toHaveValue(7)
+})
+
+test("SC751: someone who is not an admin sees the settings as text, with no controls", async () => {
+  renderDetail(PROJECT, { entry: "/projects/p-1/settings", viewerCanEdit: false })
+
+  expect(await screen.findByText("Off")).toBeInTheDocument()
+  expect(screen.getByText("7 days")).toBeInTheDocument()
+  expect(screen.getByText("Only a project admin can change these.")).toBeInTheDocument()
+  expect(screen.queryByRole("checkbox")).toBeNull()
+  expect(screen.queryByRole("spinbutton")).toBeNull()
+  expect(screen.queryByRole("button", { name: "Save" })).toBeNull()
 })

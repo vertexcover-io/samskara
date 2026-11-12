@@ -7,6 +7,7 @@ export const PROJECT_TABS: ReadonlyArray<{ readonly id: ProjectTab; readonly lab
   { id: "overview", label: "Overview" },
   { id: "fixes", label: "Fixes" },
   { id: "runs", label: "Runs" },
+  { id: "settings", label: "Settings" },
 ]
 
 /** Where a tab lives: Overview is the project's own path, every other tab a segment under it. */

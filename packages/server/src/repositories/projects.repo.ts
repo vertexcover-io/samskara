@@ -268,6 +268,18 @@ export const setAutoReview = async (
     .where(eq(projects.id, projectId))
 }
 
+/** The days between this project's automatic fix runs; the worker's next due-run check reads it. */
+export const setFixRunEveryDays = async (
+  db: Querier,
+  projectId: string,
+  days: number,
+): Promise<void> => {
+  await db
+    .update(projects)
+    .set({ fixRunEveryDays: days, updatedAt: new Date() })
+    .where(eq(projects.id, projectId))
+}
+
 export const canDelete = async (
   db: Querier,
   userId: string,
