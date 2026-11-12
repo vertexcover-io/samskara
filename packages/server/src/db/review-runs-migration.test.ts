@@ -57,7 +57,12 @@ describe.skipIf(!dockerAvailable())("the review runs migration", () => {
     return { sessionId, projectId: project.id }
   }
 
-  const seedMessage = async (sessionId: string, lineNumber: number, subIndex: number) => {
+  const seedMessage = async (
+    sessionId: string,
+    lineNumber: number,
+    subIndex: number,
+    extra: Partial<typeof messages.$inferInsert> = {},
+  ) => {
     const [row] = await db
       .insert(messages)
       .values({
@@ -70,6 +75,7 @@ describe.skipIf(!dockerAvailable())("the review runs migration", () => {
         lineNumber,
         raw: {},
         sourceSchemaVersion: 1,
+        ...extra,
       })
       .returning({ id: messages.id })
     if (!row) throw new Error("seed message failed")
@@ -197,5 +203,30 @@ describe.skipIf(!dockerAvailable())("the review runs migration", () => {
       where "status" in ('waiting', 'running')
       group by "sessionId", "analyzer" having count(*) > 1`
     expect(doubled).toEqual([])
+  })
+  test("SC7: a reviewedThrough line ending in an untimed line links to the latest timed main message at or before it, never a subagent's", async () => {
+    const { sessionId, projectId } = await seedSession()
+    await seedMessage(sessionId, 5, 0, { timestamp: new Date("2026-01-01T09:00:00Z") })
+    const latestTimed = await seedMessage(sessionId, 6, 0, {
+      timestamp: new Date("2026-01-01T09:05:00Z"),
+    })
+    await seedMessage(sessionId, 7, 0, { msgType: "custom", role: null })
+    await seedMessage(sessionId, 3, 0, {
+      trackId: "agent-1",
+      timestamp: new Date("2026-01-01T09:06:00Z"),
+    })
+    await seedMessage(sessionId, 8, 0, { timestamp: new Date("2026-01-01T09:10:00Z") })
+    const reviewId = await insertReview({
+      sessionId,
+      projectId,
+      analyzer: "ai-problems-v2",
+      ...result,
+      reviewedThrough: 7,
+    })
+
+    await backfill()
+
+    const [run] = await db.select().from(sessionReviews).where(eq(sessionReviews.id, reviewId))
+    expect(run?.lastMessageId).toBe(latestTimed)
   })
 })
