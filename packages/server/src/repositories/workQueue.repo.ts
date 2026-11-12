@@ -1,8 +1,9 @@
-import { and, eq, inArray, notInArray, sql } from "drizzle-orm"
+import { and, desc, eq, inArray, notInArray, sql } from "drizzle-orm"
 import type { Querier } from "../db/client.js"
 import { learningRuns, sessionActivityAt, sessionReviews } from "../db/schema.js"
 import type { NightlyReview } from "../lib/env.js"
 import type { PullRequestRef } from "./pullRequests.repo.js"
+import { shownRun } from "./reviews.repo.js"
 
 /** A row that fails this many tries becomes `failed` and is not picked again. */
 export const MAX_ATTEMPTS = 3
@@ -14,9 +15,9 @@ export type QueuedReviewOptions = {
 }
 
 /**
- * Puts the session's review in `waiting` with fresh tries, creating the row if needed. A
- * re-review keeps the old result on the row. Null when the review is already waiting or running:
- * one review per (sessionId, analyzer) at a time.
+ * Adds a new `waiting` run for the session. A full run has no `basedOn`; a new-part run names
+ * the done run it continues from. Null when a run is already waiting or running: the
+ * one-active-run index refuses the insert, and no earlier row is touched.
  */
 export const queueReview = async (
   db: Querier,
@@ -25,29 +26,25 @@ export const queueReview = async (
     readonly projectId: string
     readonly analyzer: string
     readonly options: QueuedReviewOptions
+    /** The done run a new-part run continues from; absent for a full run. */
+    readonly basedOn?: string
   },
 ): Promise<{ readonly id: string } | null> => {
-  const queued = {
-    status: "waiting",
-    attempts: 0,
-    error: null,
-    harness: input.options.harness ?? null,
-    model: input.options.model ?? null,
-    prompt: input.options.prompt ?? null,
-  } as const
   const [row] = await db
     .insert(sessionReviews)
     .values({
       sessionId: input.sessionId,
       projectId: input.projectId,
       analyzer: input.analyzer,
-      ...queued,
+      status: "waiting",
+      attempts: 0,
+      harness: input.options.harness ?? null,
+      model: input.options.model ?? null,
+      prompt: input.options.prompt ?? null,
+      newPartOnly: input.basedOn !== undefined,
+      basedOn: input.basedOn ?? null,
     })
-    .onConflictDoUpdate({
-      target: [sessionReviews.sessionId, sessionReviews.analyzer],
-      set: { ...queued, updatedAt: new Date() },
-      setWhere: inArray(sessionReviews.status, ["done", "failed"]),
-    })
+    .onConflictDoNothing()
     .returning({ id: sessionReviews.id })
   return row ?? null
 }
@@ -81,6 +78,9 @@ export type ClaimedReview = {
   readonly harness: string | null
   readonly model: string | null
   readonly prompt: string | null
+  readonly newPartOnly: boolean
+  /** The done run a new-part run continues from; null for a full run. */
+  readonly basedOn: string | null
 }
 
 /**
@@ -95,7 +95,7 @@ export const claimReview = async (db: Querier): Promise<ClaimedReview | null> =>
       order by "updatedAt" asc limit 1
       for update skip locked
     )
-    returning "id", "sessionId", "attempts", "harness", "model", "prompt"`)
+    returning "id", "sessionId", "attempts", "harness", "model", "prompt", "newPartOnly", "basedOn"`)
   return rows[0] ?? null
 }
 
@@ -155,6 +155,7 @@ const reviewIn = async (
         inArray(sessionReviews.status, [...query.statuses]),
       ),
     )
+    .orderBy(desc(sessionReviews.createdAt))
     .limit(1)
   return row ?? null
 }
@@ -163,9 +164,18 @@ const reviewIn = async (
 export const activeReview = (db: Querier, sessionId: string, analyzer: string) =>
   reviewIn(db, { sessionId, analyzer, statuses: ["waiting", "running"] })
 
-/** The session's review that is waiting, running or failed: what a reloaded page shows. */
-export const unfinishedReview = (db: Querier, sessionId: string, analyzer: string) =>
-  reviewIn(db, { sessionId, analyzer, statuses: ["waiting", "running", "failed"] })
+/**
+ * What a reloaded page shows as the job: the run that is waiting or running, else the session's
+ * newest run when that one failed. A failed run followed by a done one is over.
+ */
+export const unfinishedReview = async (db: Querier, sessionId: string, analyzer: string) => {
+  const newest = await reviewIn(db, {
+    sessionId,
+    analyzer,
+    statuses: ["waiting", "running", "done", "failed"],
+  })
+  return newest === null || newest.status === "done" ? null : newest
+}
 
 export type QueuedFixRun = { readonly id: string }
 
@@ -276,7 +286,9 @@ export const queueDueFixRuns = async (db: Querier): Promise<number> => {
     select p."id", 'waiting', true from "projects" p
     where exists (
       select 1 from "reviewProblems" rp
+      join "sessionReviews" sr on sr."id" = rp."reviewId"
       where rp."projectId" = p."id" and rp."learningRunId" is null
+        and ${shownRun(sql`sr`)}
     )
     and not exists (
       select 1 from "learningRuns" lr

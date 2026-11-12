@@ -7,9 +7,9 @@ import { visibleToUser } from "./projects.repo.js"
 export type ReviewProblemRow = typeof reviewProblems.$inferSelect
 
 /**
- * Saves a review's problems, replacing whatever that review had before: a redo supersedes
- * the review row in place, so its problems are swapped as a set rather than added to. Runs
- * inside the caller's transaction, with the review row itself.
+ * Saves a run's problems as a set. Only problems of `reviewId` are replaced: a fresh run has
+ * none, and a retried try of the same run swaps its own partial set. Runs inside the caller's
+ * transaction, with the review row itself.
  */
 export const replaceReviewProblems = async (
   db: Querier,

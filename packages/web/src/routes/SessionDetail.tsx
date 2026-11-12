@@ -892,7 +892,7 @@ const AiReviewHeader = ({
         restoreFocusTo={() => redoRef.current}
         onRun={(choice) => {
           setRedoOpen(false)
-          onRedo({ ...choice, force: true })
+          onRedo({ ...choice, mode: "full" })
         }}
       />
     </>
@@ -1164,11 +1164,6 @@ const useAiAnalysis = (
         // through the same poll instead of erroring or duplicating the run.
         if (result.error.code === "analysisAlreadyRunning") {
           setAnalysis({ phase: "running", startedAt: Date.now() })
-          return
-        }
-        // The verdict landed out-of-band — refetch the list so the card replaces the button.
-        if (result.error.code === "analysisAlreadyExists") {
-          arrived.current()
           return
         }
         setAnalysis({ phase: "failed", message: result.error.message })

@@ -12,7 +12,7 @@ import {
 } from "../db/schema.js"
 import { dockerAvailable, startTestDb } from "../db/testDb.js"
 import type { RunOutcome } from "../repositories/learnings.repo.js"
-import { upsertReview } from "../repositories/reviews.repo.js"
+import { finishReview } from "../repositories/reviews.repo.js"
 import type { ClaimedFixRun, ClaimedReview } from "../repositories/workQueue.repo.js"
 import type { AiReviewResult } from "../services/ai-review/pipeline.js"
 import { problemFixture, seedSession } from "../services/learnings/testFixtures.js"
@@ -97,14 +97,11 @@ describe.skipIf(!dockerAvailable())("work loop: reviews", () => {
 
   /** What runAiReview's success does to the row: saves the result as done. */
   const succeed = async (review: ClaimedReview): Promise<AiReviewResult> => {
-    const saved = await upsertReview(db, {
-      sessionId: review.sessionId,
-      projectId,
-      analyzer: ANALYZER,
+    const saved = await finishReview(db, review.id, {
       outcome: "productive",
       summary: "ok",
       signals: {},
-      reviewedThrough: null,
+      lastMessageId: null,
     })
     return { kind: "ok", reviewId: saved.id, review: {} as never }
   }
@@ -463,14 +460,11 @@ describe.skipIf(!dockerAvailable())("work loop: fix runs", () => {
       log,
       runReview: async (review) => {
         await held.opened
-        const saved = await upsertReview(db, {
-          sessionId: review.sessionId,
-          projectId,
-          analyzer: ANALYZER,
+        const saved = await finishReview(db, review.id, {
           outcome: "productive",
           summary: "ok",
           signals: {},
-          reviewedThrough: null,
+          lastMessageId: null,
         })
         return { kind: "ok", reviewId: saved.id, review: {} as never }
       },
