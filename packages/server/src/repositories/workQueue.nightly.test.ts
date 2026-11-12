@@ -505,7 +505,12 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
   })
   describe("sessions that grew after their review", () => {
     /** A message at `at`, stored at `storedAt` (by default the same instant). */
-    const message = async (sessionId: string, at: Date | null, storedAt?: Date) => {
+    const message = async (
+      sessionId: string,
+      at: Date | null,
+      storedAt?: Date,
+      msgType: "message" | "usage" | "turnEvent" | "custom" = "message",
+    ) => {
       counter += 1
       const [row] = await db
         .insert(messages)
@@ -513,8 +518,8 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
           sessionId,
           lineUuid: crypto.randomUUID(),
           subIndex: 0,
-          msgType: "message",
-          role: "user",
+          msgType,
+          role: msgType === "message" ? "user" : null,
           lineNumber: counter,
           raw: {},
           sourceSchemaVersion: 1,
@@ -617,6 +622,21 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
         ])
       },
     )
+
+    test("a failed review followed only by token reports, turn markers and custom lines is not retried", async () => {
+      const now = ist(11, 2)
+      const on = await project({ autoReview: true })
+      const id = await quietSession(on, now, 8)
+      await message(id, hoursBefore(now, 12))
+      await run(id, on, { status: "failed", at: hoursBefore(now, 11) })
+      await message(id, null, hoursBefore(now, 10), "usage")
+      await message(id, hoursBefore(now, 9.5), hoursBefore(now, 9.5), "turnEvent")
+      await message(id, null, hoursBefore(now, 9), "custom")
+
+      await queueNightlyReviews(db, { ...DEFAULTS, now })
+
+      expect(await waitingFor(id)).toEqual([])
+    })
 
     test("SC32: for a reviewed session only a pull request that ended after its last review counts", async () => {
       const now = ist(11, 2)
