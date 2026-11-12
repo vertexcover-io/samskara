@@ -80,8 +80,8 @@ const serializeLearning = (row: learningsRepo.LearningRow) => ({
   sessionsAtSkip: row.sessionsAtSkip,
   // The session count at which a skipped fix comes back; null when it is not skipped.
   returnsAtSessions: returnsAtSessions(row as Parameters<typeof returnsAtSessions>[0]),
-  // `samskara learn` from before decisions lists only fixes whose skippedAt is null; a rejected
-  // fix must stay off that list too. Nothing in this repo reads it any more.
+  // `samskara learn` (packages/cli/src/commands/learn.ts) lists only fixes whose skippedAt is
+  // null, in this repo and in every CLI already installed; a rejected fix must stay off it too.
   skippedAt:
     row.decision === "skipped" || row.decision === "rejected"
       ? (row.decidedAt?.toISOString() ?? null)
