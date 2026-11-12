@@ -17,14 +17,17 @@ export const tabPath = (projectId: string, tab: ProjectTab): string =>
 /** The tab, and the run when the path names one, from the part of the URL after `/projects/:id`. */
 export type ProjectView = { readonly tab: ProjectTab; readonly runId: string | null }
 
-/** Null for a path no tab owns, so the page can send the reader to Overview instead. */
+/**
+ * Null for a path no tab owns, so the page can send the reader to Overview instead. `rest` comes
+ * from the router already decoded: decoding it again throws on a run id holding `%`.
+ */
 export const parseProjectPath = (rest: string): ProjectView | null => {
   const [first = "", second, ...more] = rest.split("/").filter((part) => part !== "")
   if (first === "") return { tab: "overview", runId: null }
   const tab = PROJECT_TABS.find((t) => t.id === first && t.id !== "overview")
   if (tab === undefined || more.length > 0) return null
   if (second === undefined) return { tab: tab.id, runId: null }
-  return tab.id === "runs" ? { tab: "runs", runId: decodeURIComponent(second) } : null
+  return tab.id === "runs" ? { tab: "runs", runId: second } : null
 }
 
 export const ProjectTabs = ({

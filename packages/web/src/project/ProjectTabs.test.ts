@@ -10,6 +10,7 @@ test.each([
   ["overview", null],
   ["runs", { tab: "runs", runId: null }],
   ["runs/r-1", { tab: "runs", runId: "r-1" }],
+  ["runs/a%b", { tab: "runs", runId: "a%b" }],
   ["runs/r-1/x", null],
   ["fixes/r-1", null],
 ])(
