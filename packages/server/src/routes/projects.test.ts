@@ -1287,7 +1287,7 @@ describe.skipIf(!dockerAvailable())("PATCH /api/projects/:id", () => {
     })
   })
 
-  test("SC745: a zero interval or an empty body is refused and changes nothing", async () => {
+  test("SC745: a zero interval, one over 3650 days or an empty body is refused and changes nothing", async () => {
     const owner = await seedUser(db, 1207, "sc745-owner")
     const projectId = await projectsRepo.upsert(db, {
       identity: { name: "Bad interval", slug: "bad-interval" },
@@ -1295,6 +1295,7 @@ describe.skipIf(!dockerAvailable())("PATCH /api/projects/:id", () => {
     })
 
     expect((await patchAs(owner, projectId, { fixRunEveryDays: 0 })).status).toBe(400)
+    expect((await patchAs(owner, projectId, { fixRunEveryDays: 9999999 })).status).toBe(400)
     expect((await patchAs(owner, projectId, {})).status).toBe(400)
     expect(await fixRunEveryDaysOf(projectId)).toBe(7)
   })

@@ -16,11 +16,14 @@ const REFUSED: Readonly<Record<string, string>> = {
   projectNotFound: "This project could not be found.",
 }
 
-/** A whole number of days, at least 1, or null for anything else. */
+/** Matches the server's limit, `MAX_FIX_RUN_EVERY_DAYS` in packages/core/src/ingest/types.ts. */
+const MAX_FIX_RUN_EVERY_DAYS = 3650
+
+/** A whole number of days from 1 to the server's limit, or null for anything else. */
 const asDays = (text: string): number | null => {
   if (!/^\d+$/.test(text.trim())) return null
   const days = Number(text)
-  return days >= 1 ? days : null
+  return days >= 1 && days <= MAX_FIX_RUN_EVERY_DAYS ? days : null
 }
 
 const Row = ({
@@ -102,6 +105,7 @@ export const SettingsTab = ({
               <input
                 type="number"
                 min={1}
+                max={MAX_FIX_RUN_EVERY_DAYS}
                 step={1}
                 aria-label="Days between automatic fix runs"
                 className={`${controlClass} w-20`}

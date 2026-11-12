@@ -415,7 +415,9 @@ test.each([
   ["0", false],
   ["", false],
   ["2.5", false],
+  ["3651", false],
   ["3", true],
+  ["3650", true],
 ])("SC749: with %j in the days field, Save is enabled: %s", async (typed, enabled) => {
   renderDetail(PROJECT, { entry: "/projects/p-1/settings", viewerCanEdit: true })
   const user = userEvent.setup()
