@@ -155,7 +155,7 @@ describe.skipIf(!dockerAvailable())("review problems repository", () => {
       reviewId: other.id,
       problems: [problem("Other")],
     })
-    const rows = await problemsRepo.listProblemsForSession(db, userId, "problems-5", reviewId)
+    const rows = await problemsRepo.listProblemsForSession(db, userId, "problems-5", [reviewId])
     expect(rows.map((row) => row.title)).toEqual(["Mine"])
     expect(await problemsRepo.listProblemsForSession(db, userId, "problems-5")).toHaveLength(2)
   })

@@ -315,20 +315,25 @@ export const reviewRoutes = ({ db, env, notifyWorker, credentialEnv }: AiReviewD
       const chain = rows.filter((review) => review.analyzer === PROBLEMS_ANALYZER)
       const job = await unfinishedReview(db, sessionId, PROBLEMS_ANALYZER)
       if (chain.length === 0 && job === null) return c.json({ error: "noAiReview" }, 404)
-      const runs = await Promise.all(
-        chain.map(async (run) => ({
-          id: run.id,
-          kind: run.newPartOnly ? ("newPart" as const) : ("full" as const),
-          createdAt: new Date(run.createdAt).toISOString(),
-          analyzedAt: analyzedAt(run),
-          outcome: run.outcome,
-          summary: run.summary,
-          signals: run.signals,
-          problems: (await listProblemsForSession(db, userId, sessionId, run.id)).map(
-            serializeProblem,
-          ),
-        })),
-      )
+      const problems =
+        chain.length === 0
+          ? []
+          : await listProblemsForSession(
+              db,
+              userId,
+              sessionId,
+              chain.map((run) => run.id),
+            )
+      const runs = chain.map((run) => ({
+        id: run.id,
+        kind: run.newPartOnly ? ("newPart" as const) : ("full" as const),
+        createdAt: new Date(run.createdAt).toISOString(),
+        analyzedAt: analyzedAt(run),
+        outcome: run.outcome,
+        summary: run.summary,
+        signals: run.signals,
+        problems: problems.filter((problem) => problem.reviewId === run.id).map(serializeProblem),
+      }))
       const newest = runs[0]
       // The newest shown run is the newest done run: the same base `mode: "newMessages"` uses.
       const newMessages =

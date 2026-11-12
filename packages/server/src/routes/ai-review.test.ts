@@ -673,6 +673,57 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
       detail: { message: "bad file" },
     })
   })
+  test("each run in the chain carries only its own problems, in the order the reviewer wrote them", async () => {
+    const seedRun = async (
+      minute: number,
+      newPartOnly: boolean,
+      titles: ReadonlyArray<string>,
+    ): Promise<string> => {
+      const [row] = await db
+        .insert(sessionReviews)
+        .values({
+          ...doneReview,
+          sessionId,
+          projectId,
+          status: "done",
+          newPartOnly,
+          createdAt: new Date(Date.UTC(2026, 0, 1, 10, minute)),
+        })
+        .returning({ id: sessionReviews.id })
+      if (row === undefined) throw new Error("seed run failed")
+      if (titles.length > 0)
+        await db.insert(reviewProblems).values(
+          titles.map((title, position) => ({
+            reviewId: row.id,
+            sessionId,
+            projectId,
+            position,
+            title,
+            class: "missed" as const,
+            severity: "low" as const,
+            severityReason: "r",
+            fixType: "skill" as const,
+            description: "d",
+            evidence: [],
+            learning: "l",
+          })),
+        )
+      return row.id
+    }
+    await seedRun(0, false, ["Hidden by the newer full run"])
+    const full = await seedRun(1, false, ["Full second", "Full first"])
+    const newPart = await seedRun(2, true, ["New part only"])
+
+    const body = (await (await request(`/api/sessions/${sessionId}/aireview`)).json()) as {
+      runs: Array<{ id: string; problems: Array<{ title: string }> }>
+    }
+
+    expect(body.runs.map((run) => [run.id, run.problems.map((p) => p.title)])).toEqual([
+      [newPart, ["New part only"]],
+      [full, ["Full second", "Full first"]],
+    ])
+  })
+
   test("SC6: after a newer full run the page shows only it, and the older run's problem still resolves its evidence through its own recordIds", async () => {
     const [cited] = await db
       .select({ id: messages.id })
