@@ -99,7 +99,7 @@ describe.skipIf(!dockerAvailable())("the review runs migration", () => {
       .where(eq(sessionReviews.sessionId, sessionId))
       .orderBy(asc(sessionReviews.createdAt))
 
-  test("SC7: a carried result stays done on its row, the redo's state moves to a new row, and reviewedThrough becomes the line's last message", async () => {
+  test("SC7: a carried result stays done on its row, the redo's state moves to a new row created after it, and reviewedThrough becomes the line's last message or stays unlinked", async () => {
     const failed = await seedSession()
     const failedId = await insertReview({
       sessionId: failed.sessionId,
@@ -148,6 +148,25 @@ describe.skipIf(!dockerAvailable())("the review runs migration", () => {
       ...result,
       reviewedThrough: 7,
     })
+    const carriedWaiting = await seedSession()
+    const carriedWaitingId = await insertReview({
+      sessionId: carriedWaiting.sessionId,
+      projectId: carriedWaiting.projectId,
+      analyzer: "ai-problems-v2",
+      ...result,
+      status: "waiting",
+      createdAt: "2026-01-01T09:00:00.000Z",
+      updatedAt: savedAt,
+    })
+    const missingLine = await seedSession()
+    await seedMessage(missingLine.sessionId, 1, 0)
+    const missingLineId = await insertReview({
+      sessionId: missingLine.sessionId,
+      projectId: missingLine.projectId,
+      analyzer: "ai-problems-v2",
+      ...result,
+      reviewedThrough: 99,
+    })
     const plain = await seedSession()
     const resultOnlyId = await insertReview({
       sessionId: plain.sessionId,
@@ -181,6 +200,21 @@ describe.skipIf(!dockerAvailable())("the review runs migration", () => {
       [true, "done", "shipped"],
       [false, "waiting", null],
     ])
+    expect(runningRuns[1]?.createdAt.getTime()).toBeGreaterThan(
+      runningRuns[0]?.createdAt.getTime() ?? 0,
+    )
+
+    const waitingRuns = await runsOf(carriedWaiting.sessionId)
+    expect(waitingRuns.map((r) => [r.id === carriedWaitingId, r.status, r.outcome])).toEqual([
+      [true, "done", "shipped"],
+      [false, "waiting", null],
+    ])
+    expect(waitingRuns[1]?.createdAt.getTime()).toBeGreaterThan(
+      waitingRuns[0]?.createdAt.getTime() ?? 0,
+    )
+
+    const [missingLineRun] = await runsOf(missingLine.sessionId)
+    expect(missingLineRun).toMatchObject({ id: missingLineId, lastMessageId: null })
 
     const [doneRun] = await runsOf(done.sessionId)
     expect(doneRun).toMatchObject({ id: doneId, status: "done", lastMessageId: lastOfLine7 })
@@ -194,6 +228,7 @@ describe.skipIf(!dockerAvailable())("the review runs migration", () => {
       attempts: 0,
       error: null,
       newPartOnly: false,
+      lastMessageId: null,
     })
     const [waiting] = await db.select().from(sessionReviews).where(eq(sessionReviews.id, waitingId))
     expect(waiting).toMatchObject({ status: "waiting", outcome: null })
