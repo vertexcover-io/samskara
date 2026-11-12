@@ -43,13 +43,13 @@ export const replaceReviewProblems = async (
 
 /**
  * A session's problems in the order the reviewer wrote them, for whoever can see the session.
- * With `reviewId`, only that review's.
+ * With `reviewIds`, only those reviews'.
  */
 export const listProblemsForSession = async (
   db: Querier,
   userId: string,
   sessionId: string,
-  reviewId?: string,
+  reviewIds?: ReadonlyArray<string>,
 ): Promise<ReviewProblemRow[]> =>
   db
     .select()
@@ -58,7 +58,7 @@ export const listProblemsForSession = async (
     .where(
       and(
         eq(reviewProblems.sessionId, sessionId),
-        reviewId === undefined ? undefined : eq(reviewProblems.reviewId, reviewId),
+        reviewIds === undefined ? undefined : inArray(reviewProblems.reviewId, [...reviewIds]),
         visibleToUser(db, userId),
       ),
     )
