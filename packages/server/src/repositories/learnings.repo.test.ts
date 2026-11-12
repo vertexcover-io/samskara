@@ -585,6 +585,21 @@ describe.skipIf(!dockerAvailable())("learnings repository", () => {
     ).toEqual([])
   })
 
+  test("a fix rejected at grouping but reopened before save is linked quietly, not counted as updated", async () => {
+    const before = await savedLearning()
+    await joinRun(before.id, 1, { verdict: "link" })
+    const [latest] = await learningsRepo.listRuns(db, projectId)
+    expect(latest).toMatchObject({ fixesCreated: 0, fixesUpdated: 0 })
+    expect(
+      await learningsRepo.listLearnings(db, projectId, { runId: latest?.id as string }),
+    ).toEqual([])
+    const linked = await db
+      .select()
+      .from(reviewProblems)
+      .where(eq(reviewProblems.learningRunId, latest?.id as string))
+    expect(linked.map((row) => row.linkedQuietly)).toEqual([true])
+  })
+
   test("SC836: a rejected fix never comes back on its own", async () => {
     const before = await savedLearning()
     await setState(before.id, {

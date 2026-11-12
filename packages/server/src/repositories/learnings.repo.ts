@@ -412,7 +412,7 @@ export const saveBatch = async (
       const problemIds = present.map((row) => row.id)
       await tx
         .update(reviewProblems)
-        .set({ learningRunId: input.runId, learningId, linkedQuietly: rejected })
+        .set({ learningRunId: input.runId, learningId, linkedQuietly: linkOnly })
         .where(inArray(reviewProblems.id, problemIds))
       // A joined fix may be a skipped one this batch has now seen in enough more sessions.
       if (!linkOnly && learningId !== null && group.learningId !== null)
