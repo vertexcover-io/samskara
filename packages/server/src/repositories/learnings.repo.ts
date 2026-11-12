@@ -388,7 +388,8 @@ export type LearningFilter = {
  * The filter as conditions on `learnings`. The date window is an `exists` over the learning's
  * problems rather than a condition on the joined rows, so a fix it keeps still counts all its
  * problems and sessions, not only the ones inside the window. The subquery aliases its tables
- * because the outer query joins `sessions` too.
+ * because the outer query joins `sessions` too. A session moved to another project matches
+ * neither, so the dates never show when a project the reader may not see was active.
  */
 const filterConditions = (filter: LearningFilter): SQL[] => {
   const conditions: SQL[] = []
@@ -408,7 +409,8 @@ const filterConditions = (filter: LearningFilter): SQL[] => {
         ? sql``
         : sql` and coalesce(s."lastMessageAt", s."updatedAt") < ${filter.seenBefore.toISOString()}::timestamptz`
     conditions.push(sql`exists (
-      select 1 from "reviewProblems" rp join "sessions" s on s."id" = rp."sessionId"
+      select 1 from "reviewProblems" rp
+      join "sessions" s on s."id" = rp."sessionId" and s."projectId" = ${learnings.projectId}
       where rp."learningId" = ${learnings.id}${from}${before}
     )`)
   }
@@ -457,7 +459,10 @@ export const listLearnings = async (
     })
     .from(learnings)
     .leftJoin(reviewProblems, eq(reviewProblems.learningId, learnings.id))
-    .leftJoin(sessions, eq(sessions.id, reviewProblems.sessionId))
+    .leftJoin(
+      sessions,
+      and(eq(sessions.id, reviewProblems.sessionId), eq(sessions.projectId, learnings.projectId)),
+    )
     .where(and(eq(learnings.projectId, projectId), ...filterConditions(filter)))
     .groupBy(learnings.id)
     .orderBy(

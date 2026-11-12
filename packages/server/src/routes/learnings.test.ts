@@ -896,6 +896,31 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
     ])
   })
 
+  test("a session moved to another project no longer sets a fix's seen dates or matches its date filter, though it still counts", async () => {
+    const moved = daysAgo(2)
+    const stayed = daysAgo(30)
+    await seedFix("Moved fix", [{ at: stayed }, { at: moved }])
+    const elsewhere = await seedProject(
+      db,
+      await seedOrg(db, `elsewhere-${counter}`),
+      `elsewhere-${counter}`,
+    )
+    await db.update(sessions).set({ projectId: elsewhere }).where(eq(sessions.lastMessageAt, moved))
+
+    const { body } = await listed("")
+    expect(body.learnings).toEqual([
+      expect.objectContaining({
+        title: "Moved fix",
+        problemCount: 2,
+        sessionCount: 2,
+        firstSeenAt: stayed.toISOString(),
+        lastSeenAt: stayed.toISOString(),
+        sessionsLast7Days: 0,
+      }),
+    ])
+    expect(await titles(`&from=${daysAgo(5).toISOString()}`)).toEqual([])
+  })
+
   /** A finished run of `project`, started at `startedAt`, written straight to the table. */
   const insertRun = async (
     startedAt: Date,
