@@ -3,11 +3,15 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
   BASE_REVIEW_INSTRUCTIONS,
+  buildNewPartExport,
   capAgentLog,
+  type EarlierReview,
   HARNESS_STATE_DIR,
   type HarnessRunner,
+  keepNewPartProblems,
   mergeReviewPrompt,
   missingCredentialMessage,
+  type NormalizedMessage,
   type ProblemReview,
   prepareProblems,
   problemReviewFiles,
@@ -16,10 +20,11 @@ import {
 import type pino from "pino"
 import type { Db } from "../../db/client.js"
 import type { Env, ReviewHarness } from "../../lib/env.js"
-import { replaceReviewProblems } from "../../repositories/reviewProblems.repo.js"
+import { problemTitlesOf, replaceReviewProblems } from "../../repositories/reviewProblems.repo.js"
 import * as reviewsRepo from "../../repositories/reviews.repo.js"
-import { reviewableSession } from "../../repositories/sessions.repo.js"
-import { reviewSessionExport } from "./sessionExport.js"
+import { type ReviewableSession, reviewableSession } from "../../repositories/sessions.repo.js"
+import { splitNewPart } from "./newPart.js"
+import { REVIEW_SESSION_ALIAS, reviewSessionExport } from "./sessionExport.js"
 import { transcriptFromClaudeConfigDir, transcriptFromOpencodeDataDir } from "./transcript.js"
 
 /** Per-run reviewer choice: absent fields fall back to the env-driven defaults. */
@@ -119,7 +124,14 @@ export const runAiReview = async (
     return { kind: "error", code: "harnessUnauthenticated", detail: { message: credentialProblem } }
   }
 
-  const sessionExport = reviewSessionExport({ session: detail.session, messages: detail.messages })
+  const part = run.newPartOnly ? await newPartOf(db, run, detail) : null
+  // A new-part run whose base is gone has nothing to continue: its session was deleted.
+  if (run.newPartOnly && part === null) return { kind: "error", code: "sessionNotFound" }
+  const sessionExport =
+    part === null
+      ? reviewSessionExport({ session: detail.session, messages: detail.messages })
+      : part.exported
+  const readMessages = part === null ? detail.messages : part.read
 
   // The review's instructions: ours, or the user's prompt merged into ours first.
   let instructions = BASE_REVIEW_INSTRUCTIONS
@@ -161,7 +173,7 @@ export const runAiReview = async (
     leads: prepared.found.leads.length,
     failed: prepared.found.failedPieces.length,
   })
-  const staged = problemReviewFiles(sessionExport, instructions, prepared.leadsMd)
+  const staged = problemReviewFiles(sessionExport, instructions, prepared.leadsMd, part?.earlier)
 
   let workspaceDir: string | undefined
   try {
@@ -250,8 +262,13 @@ export const runAiReview = async (
         detail: { errors: result.errors, start: markdown.slice(0, STDOUT_EXCERPT_CHARS) },
       }
     }
-    if (result.dropped.length > 0)
-      log.info({ sessionId, dropped: result.dropped }, "ai review dropped problems")
+    // A new-part run saves only problems that rest on something new.
+    const kept =
+      part === null
+        ? { review: result.review, dropped: [] as string[] }
+        : keepNewPartProblems(result.review, part.exported.contextCount)
+    const dropped = [...result.dropped, ...kept.dropped]
+    if (dropped.length > 0) log.info({ sessionId, dropped }, "ai review dropped problems")
     milestone("grounded")
 
     const finishedAt = now()
@@ -259,7 +276,10 @@ export const runAiReview = async (
       model,
       harness,
       reviewMd: markdown,
-      dropped: [...result.dropped],
+      dropped,
+      ...(part === null
+        ? {}
+        : { newPart: { basedOn: run.basedOn, contextCount: part.exported.contextCount } }),
       unaccountedLeads: [...result.unaccountedLeads],
       leadCount: prepared.leadIds.length,
       // Kept apart from the problems: what was looked at, and what the reviewer decided.
@@ -282,21 +302,21 @@ export const runAiReview = async (
     // review that found nothing.
     const reviewRow = await db.transaction(async (tx) => {
       const row = await reviewsRepo.finishReview(tx, run.id, {
-        outcome: result.review.outcome,
-        summary: result.review.summary,
+        outcome: kept.review.outcome,
+        summary: kept.review.summary,
         signals: signals as unknown as object,
-        lastMessageId: reviewsRepo.lastMessageRead(detail.messages),
+        lastMessageId: reviewsRepo.lastMessageRead(readMessages),
       })
       await replaceReviewProblems(tx, {
         reviewId: row.id,
         sessionId,
         projectId: detail.session.projectId,
-        problems: result.review.problems,
+        problems: kept.review.problems,
       })
       return row
     })
     milestone("persisted")
-    return { kind: "ok", reviewId: reviewRow.id, review: result.review }
+    return { kind: "ok", reviewId: reviewRow.id, review: kept.review }
   } finally {
     if (workspaceDir !== undefined) {
       // A rejection from `finally` replaces the value the try block was about to return, so
@@ -308,5 +328,56 @@ export const runAiReview = async (
         log.warn({ sessionId, workspaceDir, err: error }, "ai review workspace cleanup failed")
       })
     }
+  }
+}
+
+/**
+ * What a new-part run reads: the session split at its base run's last message, the export of
+ * the new part with context, and what the shown chain already reported. Null when the base is
+ * gone. `read` is every message the run reads, for its own `lastMessageId`. The base's
+ * `updatedAt` is its finish time: a run's row is written once, when it finishes.
+ */
+const newPartOf = async (
+  db: Db,
+  run: ReviewRun,
+  detail: ReviewableSession,
+): Promise<{
+  readonly exported: ReturnType<typeof buildNewPartExport>
+  readonly read: ReviewableSession["messages"]
+  readonly earlier: EarlierReview
+} | null> => {
+  if (run.basedOn === null) return null
+  const base = await reviewsRepo.getReview(db, run.basedOn)
+  if (base === null) return null
+  const after =
+    base.lastMessageId === null
+      ? null
+      : (detail.messages.find((message) => message.id === base.lastMessageId)?.timestamp ?? null)
+  const { earlier, fresh } = splitNewPart(detail.messages, { after, finishedAt: base.updatedAt })
+  const exported = buildNewPartExport({
+    sessionId: REVIEW_SESSION_ALIAS,
+    title: detail.session.title ?? detail.session.id,
+    source: detail.session.source,
+    ...(detail.session.startedAt === null ? {} : { startedAt: detail.session.startedAt }),
+    endedAt: detail.session.lastActiveAt,
+    earlier: earlier as unknown as ReadonlyArray<NormalizedMessage>,
+    fresh: fresh as unknown as ReadonlyArray<NormalizedMessage>,
+  })
+  const shown = await reviewsRepo.shownRunsOf(db, detail.session.id, PROBLEMS_ANALYZER)
+  const contextIds = new Set(
+    exported.records.slice(0, exported.contextCount).map((record) => record.sourceId),
+  )
+  return {
+    exported,
+    read: [...earlier.filter((message) => contextIds.has(message.id)), ...fresh],
+    earlier: {
+      outcome: base.outcome,
+      summary: base.summary,
+      problemTitles: await problemTitlesOf(
+        db,
+        shown.map((row) => row.id),
+      ),
+      contextCount: exported.contextCount,
+    },
   }
 }

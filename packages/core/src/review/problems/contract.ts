@@ -198,16 +198,58 @@ export const reviewMdSkeleton = (): string => `# Review
 ## Problems
 `
 
+/** What a new-part run is told about the review it continues. */
+export type EarlierReview = {
+  readonly outcome: string
+  readonly summary: string
+  /** Every problem title the session page shows, newest run first. */
+  readonly problemTitles: ReadonlyArray<string>
+  /** Records msg-0 .. msg-(contextCount - 1) were already reviewed. */
+  readonly contextCount: number
+}
+
+/** earlier-review.md: the earlier verdict, the problems already reported, and where new begins. */
+export const earlierReviewMd = (earlier: EarlierReview): string =>
+  [
+    "# Earlier review",
+    "",
+    `The part of this session before msg-${earlier.contextCount} was already reviewed.`,
+    `Records msg-0 to msg-${Math.max(earlier.contextCount - 1, 0)} are its last records, shown for context only.`,
+    `Report only problems whose evidence includes msg-${earlier.contextCount} or later; others are dropped.`,
+    "",
+    `Earlier outcome: ${earlier.outcome}`,
+    "",
+    `Earlier summary: ${earlier.summary}`,
+    "",
+    "Problems already reported (do not report them again):",
+    ...(earlier.problemTitles.length === 0
+      ? ["- none"]
+      : earlier.problemTitles.map((title) => `- ${title}`)),
+    "",
+    "Write the Outcome and Summary for the whole session: the earlier part as summarised above, and the new part you read.",
+    "",
+  ].join("\n")
+
 /**
  * The short prompt the reviewer starts from. Everything it needs is in files it can re-read,
  * so the prompt only points at them.
  */
-export const buildProblemReviewPrompt = (meta: { readonly title: string }): string =>
+export const buildProblemReviewPrompt = (meta: {
+  readonly title: string
+  /** Set for a new-part run: the prompt then points at earlier-review.md first. */
+  readonly newPart?: boolean
+}): string =>
   [
     "You are reviewing a recorded AI agent session to find its problems.",
     "",
     `Session: ${meta.title}`,
     "",
+    ...(meta.newPart === true
+      ? [
+          "Only the newest part of this session is new. Read `earlier-review.md` before anything else.",
+          "",
+        ]
+      : []),
     "Read `CONTRACT.md` first: it says how to review and exactly how to write `review.md`.",
     "Then check the leads in `leads.md` against `session.json`, write the real problems in `review.md`, and answer every lead in `leads-answered.md`.",
     "The file is the deliverable. Your final reply is one short line.",

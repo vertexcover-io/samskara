@@ -706,4 +706,43 @@ describe.skipIf(!dockerAvailable())("ai review routes", () => {
     const res = await request(`/api/sessions/${sessionId}/review`, { method: "POST" })
     expect(res.status).toBe(404)
   })
+  test("SC18: newMessages is refused with 400 nothingNew for a never-reviewed session and for one with nothing after its done run; a later message lets it queue on that run", async () => {
+    const refuse = async () => {
+      const res = await request(`/api/sessions/${sessionId}/analyze`, {
+        method: "POST",
+        body: { mode: "newMessages" },
+      })
+      expect(res.status).toBe(400)
+      expect(await res.json()).toEqual({ error: "nothingNew" })
+    }
+    await refuse()
+    expect(await db.select().from(sessionReviews)).toHaveLength(0)
+
+    const [last] = await db
+      .update(messages)
+      .set({ timestamp: new Date("2026-01-01T10:00:00Z") })
+      .returning({ id: messages.id, lineNumber: messages.lineNumber })
+    const [base] = await db
+      .insert(sessionReviews)
+      .values({ ...doneReview, sessionId, projectId, status: "done", lastMessageId: last?.id })
+      .returning()
+    await refuse()
+    expect(await db.select().from(sessionReviews)).toHaveLength(1)
+
+    await db.insert(messages).values({
+      sessionId,
+      lineUuid: crypto.randomUUID(),
+      subIndex: 0,
+      msgType: "message",
+      role: "user",
+      lineNumber: 9,
+      raw: {},
+      sourceSchemaVersion: 1,
+      content: { type: "text", value: "one more thing" },
+      timestamp: new Date("2026-01-01T11:00:00Z"),
+    })
+    const jobId = await analyze({ mode: "newMessages" })
+    const [row] = await db.select().from(sessionReviews).where(eq(sessionReviews.id, jobId))
+    expect(row).toMatchObject({ status: "waiting", newPartOnly: true, basedOn: base?.id })
+  })
 })

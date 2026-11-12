@@ -74,6 +74,29 @@ describe("problem review run", () => {
     expect(prompt).toContain("Fix the build")
   })
 
+  test("SC16: a new-part reviewer gets earlier-review.md naming where new begins, the earlier verdict and its problem titles, and the prompt points at it; a full run gets neither", () => {
+    const earlier = {
+      outcome: "struggled",
+      summary: "Fixed the build after two wrong starts.",
+      problemTitles: ["Claimed tests passed", "Ignored the lint failure"],
+      contextCount: 20,
+    }
+    const { files, prompt } = problemReviewFiles(exported, "# How to review", "- L1\n", earlier)
+
+    const md = files["earlier-review.md"] ?? ""
+    expect(md).toContain("msg-20")
+    expect(md).toContain("struggled")
+    expect(md).toContain("Fixed the build after two wrong starts.")
+    expect(md).toContain("- Claimed tests passed")
+    expect(md).toContain("- Ignored the lint failure")
+    expect(md).toContain("whole session")
+    expect(prompt).toContain("earlier-review.md")
+
+    const full = problemReviewFiles(exported, "# How to review", "- L1\n")
+    expect(full.files).not.toHaveProperty("earlier-review.md")
+    expect(full.prompt).not.toContain("earlier-review.md")
+  })
+
   test("RR1b: without readers' leads (a dry run), leads.md holds what code finds", () => {
     expect(problemReviewFiles(exported, "# How to review").files["leads.md"]).toContain(
       "fix the build",

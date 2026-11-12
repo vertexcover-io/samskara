@@ -415,3 +415,25 @@ export const checkEvidence = (
   })
   return { review: { ...review, problems }, dropped }
 }
+
+/** The record number a cited id carries: `msg-12` is 12. */
+const recordNumber = (id: string): number => Number(/^msg-(\d+)$/.exec(id)?.[1] ?? -1)
+
+/**
+ * For a new-part run: keeps a problem only when a piece of its evidence reaches a record at or
+ * after `contextCount`, the first new one. Ranges run forward (`checkEvidence`), so `to` is the
+ * end that can reach the new part. The rest are dropped, with the reason.
+ */
+export const keepNewPartProblems = (
+  review: ProblemReview,
+  contextCount: number,
+): { review: ProblemReview; dropped: string[] } => {
+  const touchesNew = (problem: Problem): boolean =>
+    problem.evidence.some((item) => recordNumber(item.to) >= contextCount)
+  return {
+    review: { ...review, problems: review.problems.filter(touchesNew) },
+    dropped: review.problems
+      .filter((problem) => !touchesNew(problem))
+      .map((problem) => `"${problem.title}": its evidence is all in the already-reviewed context`),
+  }
+}
