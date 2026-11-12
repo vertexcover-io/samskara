@@ -19,7 +19,7 @@ A review in progress lived in server memory and a fix run was marked failed on b
 
 ## Decision Outcome
 
-Chosen: one forked worker, because the database rows make a restart lose nothing while a separate process keeps a crash or a slow review out of the API, and a single worker needs no per-row liveness. Per-row liveness for several workers is recorded in ADR 0003 as dropped (`heartbeatAt`).
+Chosen: one forked worker, because the database rows make a restart lose nothing while a separate process keeps a crash or a slow review out of the API, and a single worker needs no per-row liveness. Per-row liveness for several workers (`heartbeatAt`) was dropped.
 
 ## Consequences
 
