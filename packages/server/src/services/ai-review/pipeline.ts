@@ -390,9 +390,18 @@ const newPartOf = async (
   const contextIds = new Set(
     exported.records.slice(0, exported.contextCount).map((record) => record.sourceId),
   )
+  // The base's own last message counts as read too, so the boundary never moves back: it may
+  // be a row the export leaves out, and new messages with no time cannot move it forward.
+  const baseLast = detail.messages.filter((message) => message.id === base.lastMessageId)
   return {
     exported,
-    read: [...earlier.filter((message) => contextIds.has(message.id)), ...fresh],
+    read: [
+      ...baseLast,
+      ...earlier.filter(
+        (message) => contextIds.has(message.id) && message.id !== base.lastMessageId,
+      ),
+      ...fresh,
+    ],
     earlier: {
       outcome: base.outcome,
       summary: base.summary,

@@ -601,6 +601,71 @@ The whole session, the earlier part and the deploy.
       )
     })
 
+    test("a new-part run never moves the last message read back before its base's, even when the base ended on a row the export leaves out and the new messages have no time", async () => {
+      // The base run ended on a custom line: later than every conversation message, and
+      // left out of what a reviewer reads, so it is never among the context records.
+      const [lastLine] = await db
+        .insert(messages)
+        .values({
+          sessionId,
+          lineUuid: crypto.randomUUID(),
+          subIndex: 0,
+          msgType: "custom",
+          lineNumber: 5,
+          raw: {},
+          sourceSchemaVersion: 1,
+          timestamp: new Date(T0_PLUS_120S + 60_000),
+        })
+        .returning({ id: messages.id })
+      const [base] = await db
+        .insert(sessionReviews)
+        .values({
+          sessionId,
+          projectId,
+          analyzer: "ai-problems-v2",
+          status: "done",
+          outcome: "productive",
+          summary: "the earlier verdict",
+          signals: {},
+          lastMessageId: lastLine?.id ?? null,
+          updatedAt: new Date(T0_PLUS_120S + 120_000),
+        })
+        .returning()
+      if (base === undefined) throw new Error("seed base failed")
+      // New, but with no time of its own: stored after the base run finished.
+      await db.insert(messages).values({
+        sessionId,
+        lineUuid: crypto.randomUUID(),
+        subIndex: 0,
+        msgType: "message",
+        role: "user",
+        lineNumber: 6,
+        raw: {},
+        sourceSchemaVersion: 1,
+        content: { type: "text", value: "now deploy it" },
+        details: {},
+        timestamp: null,
+      })
+      const queued = await queueReview(db, {
+        sessionId,
+        projectId,
+        analyzer: "ai-problems-v2",
+        options: {},
+        basedOn: base.id,
+      })
+      const run = { id: queued?.id as string, sessionId, newPartOnly: true, basedOn: base.id }
+
+      const result = await runAiReview(
+        depsWith(problemsRunner(problemsMd("now deploy it")).runner),
+        run,
+        {},
+      )
+
+      expect(result).toMatchObject({ kind: "ok" })
+      const [row] = await db.select().from(sessionReviews).where(eq(sessionReviews.id, run.id))
+      expect(row?.lastMessageId).toBe(lastLine?.id)
+    })
+
     test("a new-part run with no base run is sessionNotFound and saves no result", async () => {
       const queued = await queuedRun()
       const { runner } = problemsRunner(problemsMd("the build is fixed"))
