@@ -98,6 +98,7 @@ export const RunPage = ({
   const { run, learnings } = state
   const created = learnings.filter((row) => row.runMark === "new").length
   const updated = learnings.filter((row) => row.runMark === "updated").length
+  const open = run.status === "waiting" || run.status === "running"
   return (
     <div>
       {back}
@@ -115,8 +116,13 @@ export const RunPage = ({
       {learnings.length === 0 ? (
         <section className="border border-dashed border-rule bg-panel p-8 text-center">
           <p className="text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-stamp">
-            This run changed no fixes
+            {open ? "This run has not finished yet" : "This run changed no fixes"}
           </p>
+          {open ? (
+            <p className="mx-auto mt-2 max-w-md text-ink-soft">
+              Reload the page once it finishes to see the fixes it changed.
+            </p>
+          ) : null}
         </section>
       ) : (
         <div className="flex flex-col gap-3">

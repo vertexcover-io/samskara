@@ -378,6 +378,33 @@ test("SC730: a run's page lists the fixes it touched, marked new or updated, wit
   )
 })
 
+test.each([
+  ["waiting", "This run has not finished yet"],
+  ["running", "This run has not finished yet"],
+  ["done", "This run changed no fixes"],
+  ["failed", "This run changed no fixes"],
+])(
+  "a %s run with no fixes yet reads %j, so an open run never reads as finished",
+  async (status, says) => {
+    renderDetail(PROJECT, {
+      entry: "/projects/p-1/runs/r-0",
+      run: {
+        id: "r-0",
+        projectId: "p-1",
+        status,
+        harnessRef: null,
+        error: null,
+        startedAt: "2026-11-10T10:00:00.000Z",
+        finishedAt:
+          status === "waiting" || status === "running" ? null : "2026-11-10T10:08:00.000Z",
+      },
+      learnings: [],
+    })
+
+    expect(await screen.findByText(says)).toBeInTheDocument()
+  },
+)
+
 test("a run of another project, opened under this one, is not shown as this project's run", async () => {
   renderDetail(PROJECT, {
     entry: "/projects/p-1/runs/r-9",
