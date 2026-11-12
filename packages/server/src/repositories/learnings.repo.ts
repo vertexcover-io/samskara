@@ -1,6 +1,5 @@
 import {
   type DecisionRequest,
-  type DecisionState,
   type FixDecision,
   type KnownLearning,
   LEARNING_IMPACTS,
@@ -245,7 +244,7 @@ export const learningsWithProblems = async (
     ...(row as LearningInput),
     story: parseStory(row.story),
     updatedByRunId: row.updatedByRunId,
-    decision: row.decision as FixDecision,
+    decision: row.decision,
     problems: linked.filter((problem) => problem.learningId === row.id).map(asProblem),
   }))
 }
@@ -338,8 +337,7 @@ const returnIfSeenEnough = async (tx: Tx, learningId: string): Promise<void> => 
     .from(learnings)
     .where(eq(learnings.id, learningId))
     .for("update")
-  const at =
-    row === undefined ? null : returnsAtSessions(row as Parameters<typeof returnsAtSessions>[0])
+  const at = row === undefined ? null : returnsAtSessions(row)
   if (at === null || (await sessionCountOf(tx, learningId)) < at) return
   await tx
     .update(learnings)
@@ -595,13 +593,12 @@ export const setDecision = async (
   db.transaction(async (tx) => {
     const [row] = await tx.select().from(learnings).where(eq(learnings.id, id)).for("update")
     if (row === undefined) return null
-    const current = row as LearningRow & DecisionState
-    const next = nextDecision(current, request, {
+    const next = nextDecision(row, request, {
       userId: by,
       at: new Date(),
       sessionCount: await sessionCountOf(tx, id),
     })
-    if (next === current) return row
+    if (next === row) return row
     const { decision, decidedAt, decidedBy, rejectReason, skipCount, sessionsAtSkip } = next
     const [updated] = await tx
       .update(learnings)

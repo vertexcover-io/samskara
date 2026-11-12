@@ -3,7 +3,6 @@ import {
   type Evidence,
   evidenceMessages,
   FIX_TYPES,
-  type FixDecision,
   type LearningImpact,
   messageIdAt,
   parseStory,
@@ -73,13 +72,13 @@ const serializeLearning = (row: learningsRepo.LearningRow) => ({
   howItHelps: row.howItHelps,
   fixSummary: row.fixSummary,
   story: parseStory(row.story),
-  decision: row.decision as FixDecision,
+  decision: row.decision,
   decidedAt: row.decidedAt?.toISOString() ?? null,
   rejectReason: row.rejectReason,
   skipCount: row.skipCount,
   sessionsAtSkip: row.sessionsAtSkip,
   // The session count at which a skipped fix comes back; null when it is not skipped.
-  returnsAtSessions: returnsAtSessions(row as Parameters<typeof returnsAtSessions>[0]),
+  returnsAtSessions: returnsAtSessions(row),
   // `samskara learn` (packages/cli/src/commands/learn.ts) lists only fixes whose skippedAt is
   // null, in this repo and in every CLI already installed; a rejected fix must stay off it too.
   skippedAt:

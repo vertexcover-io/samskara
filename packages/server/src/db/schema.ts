@@ -682,7 +682,7 @@ export const learnings = pgTable(
      * decided fix stays a known learning, so a later run joins its cause here rather than
      * making a new one; `saveBatch` says what each decision lets that run change.
      */
-    decision: text("decision").notNull().default("open"),
+    decision: text("decision", { enum: FIX_DECISIONS }).notNull().default("open"),
     /** When the decision was last set; null on a fix nobody has decided on. */
     decidedAt: timestamp("decidedAt", { withTimezone: true }),
     /** Who set it; null as well on a skipped fix that came back on its own. */
