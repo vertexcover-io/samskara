@@ -4,7 +4,9 @@ import { type ApiError, client, request } from "../api/client.js"
 import type { LearningSummary } from "../api/types.js"
 import { SessionExpired } from "../auth/SessionExpired.js"
 import { LearningCard } from "../learnings/LearningCard.js"
+import { FIX_TYPE_LABEL, FIX_TYPE_ORDER } from "../learnings/labels.js"
 import { LoadingShell } from "../shell/LoadingShell.js"
+import { localDayStart } from "../time.js"
 import { controlClass, controlLabelClass } from "./controls.js"
 
 type State =
@@ -47,6 +49,14 @@ export const FixesTab = ({ projectId }: { readonly projectId: string }) => {
   const [state, setState] = useState<State>({ phase: "loading" })
 
   const show = showLimit(searchParams.get("show"))
+  // The type and the days as the URL holds them; anything unknown is no filter.
+  const type = FIX_TYPE_ORDER.find((t) => t === searchParams.get("type"))
+  const from = searchParams.get("from") ?? ""
+  const to = searchParams.get("to") ?? ""
+  const filtered = type !== undefined || from !== "" || to !== ""
+  // The days the reader picked, as the instants the server compares: To counts its whole day.
+  const seenFrom = localDayStart(from) ?? undefined
+  const seenBefore = localDayStart(to, 1) ?? undefined
   // A skip or unskip changes one row in place; the filter below moves it between the lists.
   const onSkipChange = (id: string, skippedAt: string | null) =>
     setState((current) =>
@@ -70,7 +80,16 @@ export const FixesTab = ({ projectId }: { readonly projectId: string }) => {
   useEffect(() => {
     let active = true
     setState({ phase: "loading" })
-    request(() => client.api.learnings.$get({ query: { project: projectId } })).then((result) => {
+    request(() =>
+      client.api.learnings.$get({
+        query: {
+          project: projectId,
+          ...(type === undefined ? {} : { type }),
+          ...(seenFrom === undefined ? {} : { from: seenFrom }),
+          ...(seenBefore === undefined ? {} : { to: seenBefore }),
+        },
+      }),
+    ).then((result) => {
       if (!active) return
       setState(
         result.ok
@@ -81,7 +100,7 @@ export const FixesTab = ({ projectId }: { readonly projectId: string }) => {
     return () => {
       active = false
     }
-  }, [projectId])
+  }, [projectId, type, seenFrom, seenBefore])
 
   if (state.phase === "failed")
     return state.error.kind === "unauthorized" ? (
@@ -104,15 +123,20 @@ export const FixesTab = ({ projectId }: { readonly projectId: string }) => {
         title: "No skipped fixes",
         detail: "A fix you skip moves here, and stays here when later runs find it again.",
       }
-    : state.phase === "ready" && state.learnings.length > 0
+    : filtered && state.phase === "ready" && state.learnings.length === 0
       ? {
-          title: "Every fix here is skipped",
-          detail: 'Choose Show "Skipped" to see them, or to unskip one.',
+          title: "No fixes match these filters",
+          detail: "Choose another type or widen the dates to see more.",
         }
-      : {
-          title: "No learnings here yet",
-          detail: "Learnings appear after a learning run reads this project's reviewed sessions.",
-        }
+      : state.phase === "ready" && state.learnings.length > 0
+        ? {
+            title: "Every fix here is skipped",
+            detail: 'Choose Show "Skipped" to see them, or to unskip one.',
+          }
+        : {
+            title: "No learnings here yet",
+            detail: "Learnings appear after a learning run reads this project's reviewed sessions.",
+          }
 
   return (
     <div>
@@ -131,6 +155,41 @@ export const FixesTab = ({ projectId }: { readonly projectId: string }) => {
                 </option>
               ))}
             </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className={controlLabelClass}>Type</span>
+            <select
+              className={controlClass}
+              value={type ?? ""}
+              onChange={(e) => setParam("type", e.target.value)}
+            >
+              <option value="">All types</option>
+              {FIX_TYPE_ORDER.map((choice) => (
+                <option key={choice} value={choice}>
+                  {FIX_TYPE_LABEL[choice]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className={controlLabelClass}>From</span>
+            <input
+              type="date"
+              className={controlClass}
+              value={from}
+              max={to === "" ? undefined : to}
+              onChange={(e) => setParam("from", e.target.value)}
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className={controlLabelClass}>To</span>
+            <input
+              type="date"
+              className={controlClass}
+              value={to}
+              min={from === "" ? undefined : from}
+              onChange={(e) => setParam("to", e.target.value)}
+            />
           </label>
         </div>
       </div>

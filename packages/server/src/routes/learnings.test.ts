@@ -123,6 +123,70 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
     return ((await res.json()) as { run: { status: string; error: string | null } }).run
   }
 
+  const DAY = 24 * 60 * 60 * 1000
+  const daysAgo = (days: number) => new Date(Date.now() - days * DAY)
+
+  /**
+   * A fix written straight to the tables, with one session per entry of `seen`: each session is
+   * active at that instant and holds `problems` problems (1 by default) linked to the fix.
+   */
+  const seedFix = async (
+    title: string,
+    seen: ReadonlyArray<{ readonly at: Date; readonly problems?: number }>,
+    options: { readonly fixType?: string; readonly priority?: string } = {},
+  ) => {
+    const run = await learningsRepo.startRun(db, projectId)
+    if (run === null) throw new Error("a run is already going")
+    await learningsRepo.finishRun(db, run.id, { status: "done" })
+    const [fix] = await db
+      .insert(learnings)
+      .values({
+        projectId,
+        updatedByRunId: run.id,
+        title,
+        cause: "c",
+        problem: "p",
+        priority: options.priority ?? "high",
+        priorityReason: "r",
+        fixType: options.fixType ?? "skill",
+        fix: "f",
+      })
+      .returning()
+    for (const entry of seen) {
+      counter += 1
+      const sessionId = `route-seen-${counter}`
+      await seedSession(db, {
+        sessionId,
+        projectId,
+        userId,
+        problems: Array.from({ length: entry.problems ?? 1 }, (_, index) =>
+          problemFixture(`${title} ${index}`),
+        ),
+      })
+      await db.update(sessions).set({ lastMessageAt: entry.at }).where(eq(sessions.id, sessionId))
+      await db
+        .update(reviewProblems)
+        .set({ learningId: fix?.id as string, learningRunId: run.id })
+        .where(eq(reviewProblems.sessionId, sessionId))
+    }
+    return fix?.id as string
+  }
+
+  type Listed = {
+    title: string
+    problemCount: number
+    sessionCount: number
+    firstSeenAt: string | null
+    lastSeenAt: string | null
+    sessionsLast7Days: number
+  }
+  const listed = async (query: string) => {
+    const res = await request(`/api/learnings?project=${projectId}${query}`)
+    return { status: res.status, body: (await res.json()) as { learnings: Listed[] } }
+  }
+  const titles = async (query: string) =>
+    (await listed(query)).body.learnings.map((row) => row.title)
+
   beforeAll(async () => {
     const started = await startTestDb()
     db = started.db
@@ -770,5 +834,61 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
     expect(await withPath.json()).toEqual({ error: "harnessPathNeedsAdmin" })
     expect(await runRows()).toEqual([])
     expect(notified).toBe(0)
+  })
+
+  test("SC714: type keeps only that fix type's fixes, no type keeps them all, and an unknown type is a 400", async () => {
+    await seedFix("Skill fix", [{ at: daysAgo(1) }], { fixType: "skill" })
+    await seedFix("Code fix", [{ at: daysAgo(1) }], { fixType: "code", priority: "low" })
+
+    expect(await titles("&type=skill")).toEqual(["Skill fix"])
+    expect(await titles("")).toEqual(["Skill fix", "Code fix"])
+    expect((await listed("&type=bogus")).status).toBe(400)
+  })
+
+  test("SC715: from and to keep fixes with a session active between them, still counting all their problems", async () => {
+    await seedFix("Fix A", [
+      { at: new Date("2026-11-02T12:00:00Z") },
+      { at: new Date("2026-11-20T12:00:00Z") },
+    ])
+    await seedFix("Fix B", [{ at: new Date("2026-10-01T12:00:00Z") }], { priority: "low" })
+
+    const window = await listed("&from=2026-11-01T00:00:00Z&to=2026-11-10T00:00:00Z")
+    expect(
+      window.body.learnings.map((row) => [row.title, row.problemCount, row.sessionCount]),
+    ).toEqual([["Fix A", 2, 2]])
+    expect(await titles("&from=2026-11-01T00:00:00Z")).toEqual(["Fix A"])
+    expect(await titles("&to=2026-10-02T00:00:00Z")).toEqual(["Fix B"])
+    expect((await listed("&from=not-a-date")).status).toBe(400)
+  })
+
+  test("SC716: each fix carries its first and last seen dates and how many of its sessions were active in the last 7 days", async () => {
+    const twentyDays = daysAgo(20)
+    const twoDays = daysAgo(2)
+    await seedFix("Seen fix", [
+      { at: daysAgo(3) },
+      { at: twoDays, problems: 2 },
+      { at: twentyDays },
+    ])
+    const orphanId = await seedFix("Orphan fix", [{ at: daysAgo(1) }], { priority: "low" })
+    await db
+      .update(reviewProblems)
+      .set({ learningId: null })
+      .where(eq(reviewProblems.learningId, orphanId))
+
+    const { body } = await listed("")
+    expect(body.learnings).toEqual([
+      expect.objectContaining({
+        title: "Seen fix",
+        firstSeenAt: twentyDays.toISOString(),
+        lastSeenAt: twoDays.toISOString(),
+        sessionsLast7Days: 2,
+      }),
+      expect.objectContaining({
+        title: "Orphan fix",
+        firstSeenAt: null,
+        lastSeenAt: null,
+        sessionsLast7Days: 0,
+      }),
+    ])
   })
 })

@@ -57,6 +57,9 @@ const LEARNING: LearningSummary = {
   updatedAt: "2026-10-20T10:00:00.000Z",
   problemCount: 9,
   sessionCount: 6,
+  firstSeenAt: null,
+  lastSeenAt: null,
+  sessionsLast7Days: 0,
 }
 
 const renderDetail = (

@@ -6,9 +6,16 @@ import {
   parseStory,
   type WrittenLearning,
 } from "@samskara/core"
-import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm"
+import { and, asc, desc, eq, inArray, isNull, type SQL, sql } from "drizzle-orm"
 import type { Db, Querier } from "../db/client.js"
-import { learningRuns, learnings, reviewProblems, sessionReviews, sessions } from "../db/schema.js"
+import {
+  learningRuns,
+  learnings,
+  reviewProblems,
+  sessionActivityAt,
+  sessionReviews,
+  sessions,
+} from "../db/schema.js"
 import { shownRun } from "./reviews.repo.js"
 
 export type LearningRunRow = typeof learningRuns.$inferSelect
@@ -283,7 +290,49 @@ export const saveBatch = async (
 export type ListedLearning = LearningRow & {
   readonly problemCount: number
   readonly sessionCount: number
+  /** The earliest and latest activity date of the sessions behind its problems; null with no problems. */
+  readonly firstSeenAt: Date | null
+  readonly lastSeenAt: Date | null
+  /** How many of those sessions were active in the last 7 days. */
+  readonly sessionsLast7Days: number
 }
+
+/** Which of a project's learnings to list. Every field narrows; an empty filter lists them all. */
+export type LearningFilter = {
+  readonly fixType?: string | undefined
+  /** Only learnings with a problem from a session active at or after this instant… */
+  readonly seenFrom?: Date | undefined
+  /** …and before this one. */
+  readonly seenBefore?: Date | undefined
+}
+
+/**
+ * The filter as conditions on `learnings`. The date window is an `exists` over the learning's
+ * problems rather than a condition on the joined rows, so a fix it keeps still counts all its
+ * problems and sessions, not only the ones inside the window. The subquery aliases its tables
+ * because the outer query joins `sessions` too.
+ */
+const filterConditions = (filter: LearningFilter): SQL[] => {
+  const conditions: SQL[] = []
+  if (filter.fixType !== undefined) conditions.push(eq(learnings.fixType, filter.fixType))
+  if (filter.seenFrom !== undefined || filter.seenBefore !== undefined) {
+    const from =
+      filter.seenFrom === undefined
+        ? sql``
+        : sql` and coalesce(s."lastMessageAt", s."updatedAt") >= ${filter.seenFrom.toISOString()}::timestamptz`
+    const before =
+      filter.seenBefore === undefined
+        ? sql``
+        : sql` and coalesce(s."lastMessageAt", s."updatedAt") < ${filter.seenBefore.toISOString()}::timestamptz`
+    conditions.push(sql`exists (
+      select 1 from "reviewProblems" rp join "sessions" s on s."id" = rp."sessionId"
+      where rp."learningId" = ${learnings.id}${from}${before}
+    )`)
+  }
+  return conditions
+}
+
+const asDate = (value: string | null): Date | null => (value === null ? null : new Date(value))
 
 /** High first: a priority's place in `LEARNING_PRIORITIES`. */
 const PRIORITY_ORDER = sql`array_position(${sql.raw(`array[${LEARNING_PRIORITIES.map((p) => `'${p}'`).join(", ")}]`)}::text[], ${learnings.priority})`
@@ -291,15 +340,34 @@ const PRIORITY_ORDER = sql`array_position(${sql.raw(`array[${LEARNING_PRIORITIES
 /** Worst impact first; a learning with none (written before impact existed) sorts last. */
 const IMPACT_ORDER = sql`array_position(${sql.raw(`array[${LEARNING_IMPACTS.map((p) => `'${p}'`).join(", ")}]`)}::text[], ${learnings.impact}) nulls last`
 
-/** The project's learnings: high priority first, then worst impact, then most sessions. */
-export const listLearnings = async (db: Querier, projectId: string): Promise<ListedLearning[]> => {
+/**
+ * The project's learnings: high priority first, then worst impact, then most sessions. A
+ * learning is seen when one of its problems' sessions is active, by the session's activity
+ * date (`sessionActivityAt`), the date the sessions list shows.
+ */
+export const listLearnings = async (
+  db: Querier,
+  projectId: string,
+  filter: LearningFilter = {},
+): Promise<ListedLearning[]> => {
   const problemCount = sql<number>`count(${reviewProblems.id})::int`
   const sessionCount = sql<number>`count(distinct ${reviewProblems.sessionId})::int`
+  const firstSeenAt = sql<string | null>`min(${sessionActivityAt})`
+  const lastSeenAt = sql<string | null>`max(${sessionActivityAt})`
+  const sessionsLast7Days = sql<number>`(count(distinct ${reviewProblems.sessionId}) filter (where ${sessionActivityAt} >= now() - interval '7 days'))::int`
   const rows = await db
-    .select({ learning: learnings, problemCount, sessionCount })
+    .select({
+      learning: learnings,
+      problemCount,
+      sessionCount,
+      firstSeenAt,
+      lastSeenAt,
+      sessionsLast7Days,
+    })
     .from(learnings)
     .leftJoin(reviewProblems, eq(reviewProblems.learningId, learnings.id))
-    .where(eq(learnings.projectId, projectId))
+    .leftJoin(sessions, eq(sessions.id, reviewProblems.sessionId))
+    .where(and(eq(learnings.projectId, projectId), ...filterConditions(filter)))
     .groupBy(learnings.id)
     .orderBy(
       PRIORITY_ORDER,
@@ -312,6 +380,9 @@ export const listLearnings = async (db: Querier, projectId: string): Promise<Lis
     ...row.learning,
     problemCount: row.problemCount,
     sessionCount: row.sessionCount,
+    firstSeenAt: asDate(row.firstSeenAt),
+    lastSeenAt: asDate(row.lastSeenAt),
+    sessionsLast7Days: row.sessionsLast7Days,
   }))
 }
 

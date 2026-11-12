@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom"
 import type { LearningSummary } from "../api/types.js"
+import { dayDate } from "../time.js"
 import { asSentence, PRIORITY_TONE, plural } from "./labels.js"
 import { SkipButton } from "./SkipButton.js"
 
@@ -33,6 +34,11 @@ export const LearningCard = ({
           {`${plural(row.problemCount, "problem")} in ${plural(row.sessionCount, "session")}`}
         </p>
       </div>
+      {row.firstSeenAt === null || row.lastSeenAt === null ? null : (
+        <p className="mt-1.5 font-mono text-[0.72rem] text-ink-soft">
+          {`first seen ${dayDate(row.firstSeenAt)} · last seen ${dayDate(row.lastSeenAt)} · seen in ${plural(row.sessionsLast7Days, "session")} in the last 7 days`}
+        </p>
+      )}
       <p className="mt-1.5 text-ink-soft">{row.problem}</p>
       {row.impactReason === null ? null : (
         <p className="mt-2 text-[0.82rem]">

@@ -22,5 +22,15 @@ export const FIX_TYPE_LABEL: Readonly<Record<string, string>> = {
   human: "The person",
 }
 
+/** The fix types the Type filter offers, in this order; the server accepts exactly these. */
+export const FIX_TYPE_ORDER = [
+  "skill",
+  "code",
+  "project_guidelines",
+  "knowledge_base",
+  "human",
+] as const
+export type FixTypeChoice = (typeof FIX_TYPE_ORDER)[number]
+
 export const plural = (count: number, word: string): string =>
   `${count} ${word}${count === 1 ? "" : "s"}`

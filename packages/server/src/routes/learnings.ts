@@ -1,6 +1,7 @@
 import {
   type Evidence,
   evidenceMessages,
+  FIX_TYPES,
   type LearningImpact,
   messageIdAt,
   parseStory,
@@ -163,28 +164,53 @@ export const learningsRoutes = ({ db, env, notifyWorker }: Deps) => {
           return c.json({ error: "runNotFound" }, 404)
         return c.json({ run: serializeRun(run) }, 200)
       })
-      /** The project's learnings, high priority first, with how many problems and sessions each has. */
-      .get("/", requireAuth({ db, env }, ["web", "cli"]), async (c) => {
-        const projectId = c.req.query("project") ?? ""
-        const scope = await scopeIn(c.get("user").id, projectId)
-        if (scope === null) return c.json({ error: "projectNotFound" }, 404)
-        const [rows, latest] = await Promise.all([
-          learningsRepo.listLearnings(db, projectId),
-          learningsRepo.latestRun(db, projectId),
-        ])
-        return c.json(
-          {
-            learnings: rows.map((row) => ({
-              ...serializeLearning(row),
-              problemCount: row.problemCount,
-              sessionCount: row.sessionCount,
-            })),
-            latestRun: latest === null ? null : serializeRun(latest),
-            canEdit: scope !== "viewer",
-          },
-          200,
-        )
-      })
+      /**
+       * The project's learnings, high priority first, with how many problems and sessions each
+       * has and when they were seen. `type` keeps one fix type; `from` and `to` (instants, `to`
+       * exclusive) keep learnings with a problem from a session active between them.
+       */
+      .get(
+        "/",
+        requireAuth({ db, env }, ["web", "cli"]),
+        validate(
+          "query",
+          z.object({
+            project: z.string().optional(),
+            type: z.enum(FIX_TYPES).optional(),
+            from: z.string().datetime({ offset: true }).optional(),
+            to: z.string().datetime({ offset: true }).optional(),
+          }),
+        ),
+        async (c) => {
+          const query = c.req.valid("query")
+          const projectId = query.project ?? ""
+          const scope = await scopeIn(c.get("user").id, projectId)
+          if (scope === null) return c.json({ error: "projectNotFound" }, 404)
+          const [rows, latest] = await Promise.all([
+            learningsRepo.listLearnings(db, projectId, {
+              fixType: query.type,
+              seenFrom: query.from === undefined ? undefined : new Date(query.from),
+              seenBefore: query.to === undefined ? undefined : new Date(query.to),
+            }),
+            learningsRepo.latestRun(db, projectId),
+          ])
+          return c.json(
+            {
+              learnings: rows.map((row) => ({
+                ...serializeLearning(row),
+                problemCount: row.problemCount,
+                sessionCount: row.sessionCount,
+                firstSeenAt: row.firstSeenAt?.toISOString() ?? null,
+                lastSeenAt: row.lastSeenAt?.toISOString() ?? null,
+                sessionsLast7Days: row.sessionsLast7Days,
+              })),
+              latestRun: latest === null ? null : serializeRun(latest),
+              canEdit: scope !== "viewer",
+            },
+            200,
+          )
+        },
+      )
       /** One learning, with every problem behind it, so a reader can check it holds. */
       .get("/:id", requireAuth({ db, env }, ["web", "cli"]), async (c) => {
         const id = c.req.param("id")

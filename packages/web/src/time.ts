@@ -60,3 +60,23 @@ export const relativeTime = (iso: string, now: number = Date.now()): string => {
   if (elapsed < MONTH) return RELATIVE.format(-Math.floor(elapsed / DAY), "day")
   return localDate(new Date(at))
 }
+
+/** A day, without the time: "Nov 3, 2026", in the reader's timezone. */
+export const dayDate = (at: string): string => {
+  const parsed = new Date(at)
+  if (Number.isNaN(parsed.getTime())) return "unavailable"
+  return parsed.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" })
+}
+
+/**
+ * The instant a `YYYY-MM-DD` day starts in the reader's timezone, `addDays` later, as ISO; null
+ * for anything that is not such a day. A To date of the 12th is sent as the start of the 13th, so
+ * the whole 12th counts.
+ */
+export const localDayStart = (day: string, addDays = 0): string | null => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return null
+  const start = new Date(`${day}T00:00:00`)
+  if (Number.isNaN(start.getTime())) return null
+  start.setDate(start.getDate() + addDays)
+  return start.toISOString()
+}

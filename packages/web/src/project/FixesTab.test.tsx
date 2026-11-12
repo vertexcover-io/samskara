@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { Route, Routes } from "react-router-dom"
 import { afterEach, beforeEach, expect, test, vi } from "vitest"
@@ -25,6 +25,9 @@ const LEARNING = {
   updatedAt: "2026-10-20T10:00:00.000Z",
   problemCount: 9,
   sessionCount: 6,
+  firstSeenAt: null,
+  lastSeenAt: null,
+  sessionsLast7Days: 0,
 }
 
 const RUN = {
@@ -510,4 +513,97 @@ test("the page has no How this page works box", async () => {
 
   await screen.findByText(LEARNING.title)
   expect(screen.queryByText(/How this page works/i)).toBeNull()
+})
+
+const lastLearningsUrl = (urls: ReadonlyArray<string>) =>
+  urls.filter((url) => url.includes("/api/learnings?")).at(-1) ?? ""
+
+test("SC717: choosing a type and dates asks the server for them and keeps them in the URL", async () => {
+  const urls = stubFetch([
+    {
+      match: "/api/learnings",
+      status: 200,
+      body: { learnings: [LEARNING], latestRun: RUN, canEdit: true },
+    },
+  ])
+  renderPage()
+  const user = userEvent.setup()
+  await screen.findByText(LEARNING.title)
+
+  await user.selectOptions(screen.getByRole("combobox", { name: "Type" }), "skill")
+  fireEvent.change(screen.getByLabelText("From"), { target: { value: "2026-11-01" } })
+  fireEvent.change(screen.getByLabelText("To"), { target: { value: "2026-11-12" } })
+
+  await waitFor(() =>
+    expect(lastLearningsUrl(urls)).toContain(
+      "/api/learnings?project=p-1&type=skill&from=2026-11-01T00%3A00%3A00.000Z&to=2026-11-13T00%3A00%3A00.000Z",
+    ),
+  )
+  expect(screen.getByTestId("location")).toHaveTextContent(
+    "/projects/p-1/fixes?type=skill&from=2026-11-01&to=2026-11-12",
+  )
+
+  await user.selectOptions(screen.getByRole("combobox", { name: "Type" }), "")
+  await waitFor(() => expect(lastLearningsUrl(urls)).not.toContain("type="))
+  expect(screen.getByTestId("location")).not.toHaveTextContent("type=")
+})
+
+test("SC718: a reload with filters in the URL shows them and asks for them, and no To is sent when none is set", async () => {
+  const urls = stubFetch([
+    {
+      match: "/api/learnings",
+      status: 200,
+      body: { learnings: [LEARNING], latestRun: RUN, canEdit: true },
+    },
+  ])
+  renderPage("/projects/p-1/fixes?type=code&from=2026-11-01")
+
+  await screen.findByText(LEARNING.title)
+  expect(screen.getByRole("combobox", { name: "Type" })).toHaveValue("code")
+  expect(screen.getByLabelText("From")).toHaveValue("2026-11-01")
+  expect(screen.getByLabelText("To")).toHaveValue("")
+  const first = urls.find((url) => url.includes("/api/learnings?")) ?? ""
+  expect(first).toContain("type=code")
+  expect(first).toContain("from=2026-11-01T00%3A00%3A00.000Z")
+  expect(first).not.toContain("to=")
+})
+
+test("SC719: a card says when its fix was first and last seen and how many sessions saw it this week", async () => {
+  const seen = {
+    ...LEARNING,
+    firstSeenAt: "2026-11-03T10:00:00.000Z",
+    lastSeenAt: "2026-11-11T10:00:00.000Z",
+    sessionsLast7Days: 4,
+  }
+  stubFetch([
+    {
+      match: "/api/learnings",
+      status: 200,
+      body: { learnings: [seen, SECOND], latestRun: RUN, canEdit: true },
+    },
+  ])
+  renderPage()
+
+  const card = (await screen.findByText(LEARNING.title)).closest("article") as HTMLElement
+  expect(
+    within(card).getByText(
+      "first seen Nov 3, 2026 · last seen Nov 11, 2026 · seen in 4 sessions in the last 7 days",
+    ),
+  ).toBeInTheDocument()
+  const unseen = screen.getByText(SECOND.title).closest("article") as HTMLElement
+  expect(unseen.textContent).not.toMatch(/first seen/)
+})
+
+test("SC720: filters that match nothing say so, not that the project has no fixes yet", async () => {
+  stubFetch([
+    {
+      match: "/api/learnings",
+      status: 200,
+      body: { learnings: [], latestRun: RUN, canEdit: true },
+    },
+  ])
+  renderPage("/projects/p-1/fixes?type=human")
+
+  expect(await screen.findByText("No fixes match these filters")).toBeInTheDocument()
+  expect(screen.queryByText("No learnings here yet")).toBeNull()
 })
