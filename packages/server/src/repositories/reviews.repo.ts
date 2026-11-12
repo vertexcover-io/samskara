@@ -55,13 +55,33 @@ export const newMessagesAfter = (sessionId: SQL, run: SQL): SQL => sql`exists (
   select 1 from "messages" nm
   where nm."sessionId" = ${sessionId}
     and nm."msgType" not in ${SILENT_TYPES}
-    and (
-      (nm."timestamp" is not null and nm."timestamp" > coalesce(
-        (select lm."timestamp" from "messages" lm where lm."id" = ${run}."lastMessageId"),
-        '-infinity'::timestamptz))
-      or (nm."timestamp" is null and nm."createdAt" > ${run}."updatedAt")
-    )
+    and ${readAfter(sql`nm`, run)}
 )`
+
+/** Whether message `message` (a raw SQL alias) came after what run `run` read; see `newMessagesAfter`. */
+const readAfter = (message: SQL, run: SQL): SQL => sql`(
+  (${message}."timestamp" is not null and ${message}."timestamp" > coalesce(
+    (select lm."timestamp" from "messages" lm where lm."id" = ${run}."lastMessageId"),
+    '-infinity'::timestamptz))
+  or (${message}."timestamp" is null and ${message}."createdAt" > ${run}."updatedAt")
+)`
+
+/**
+ * True when session `sessionId` has at least `atLeast` messages the person typed after what run
+ * `run` read: user messages of the main conversation, leaving out injected ones (a `subType`,
+ * or `isMeta`) and subagent prompts. Stops counting at `atLeast`.
+ */
+export const newUserMessagesAfter = (sessionId: SQL, run: SQL, atLeast: number): SQL => sql`(
+  select count(*) from (
+    select 1 from "messages" um
+    where um."sessionId" = ${sessionId}
+      and um."msgType" = 'message' and um."role" = 'user' and um."trackId" = ${MAIN_TRACK}
+      and um."subType" is null
+      and coalesce(um."details"->>'isMeta', 'false') <> 'true'
+      and ${readAfter(sql`um`, run)}
+    limit ${atLeast}
+  ) typed
+) >= ${atLeast}`
 
 /** The session's newest done run of `analyzer`: the newest run of its shown chain. */
 export const latestDoneRun = async (

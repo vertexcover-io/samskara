@@ -3,7 +3,7 @@ import type { Querier } from "../db/client.js"
 import { learningRuns, sessionActivityAt, sessionReviews } from "../db/schema.js"
 import type { NightlyReview } from "../lib/env.js"
 import type { PullRequestRef } from "./pullRequests.repo.js"
-import { newMessagesAfter, SILENT_TYPES, shownRun } from "./reviews.repo.js"
+import { newUserMessagesAfter, SILENT_TYPES, shownRun } from "./reviews.repo.js"
 
 /** A row that fails this many tries becomes `failed` and is not picked again. */
 export const MAX_ATTEMPTS = 3
@@ -305,10 +305,16 @@ export const queueDueFixRuns = async (db: Querier): Promise<number> => {
 export const QUIET_FOR = "6 hours"
 
 /**
- * Only sessions active this recently are candidates, so the ranking reads a month of a project's
- * sessions rather than its whole history. Older ones are reviewed by ticking them.
+ * Only sessions active this recently are candidates, so the ranking reads two weeks of a
+ * project's sessions rather than its whole history. Older ones are reviewed by ticking them.
  */
-export const PICK_WITHIN = "30 days"
+export const PICK_WITHIN = "14 days"
+
+/**
+ * A reviewed session is picked again only once the person typed this many messages after its
+ * newest run: one or two ("ok", "push") are not worth a review. Review by hand has no minimum.
+ */
+export const MIN_NEW_USER_MESSAGES = 3
 
 /** How many open pull requests the check before one nightly pick asks GitHub about, at most. */
 export const PR_CHECK_LIMIT = 200
@@ -343,15 +349,16 @@ const lastRun = (analyzer: string): SQL => sql`(
 
 /**
  * Whether tonight's pick may take `"sessions"`, given its newest run `last` (null when never
- * reviewed). Never reviewed: yes. Newest run done: when the session has messages that run did
- * not read (`newMessagesAfter`). Newest run failed: once a message other than a silent one
+ * reviewed). Never reviewed: yes. Newest run done: when the person typed at least
+ * `MIN_NEW_USER_MESSAGES` messages that run did not read (`newUserMessagesAfter`). Newest run failed: once a message other than a silent one
  * (`SILENT_TYPES`) was stored after it failed, so a failure is not retried every night on the
  * same messages; a failed run has no
  * `lastMessageId`, so the new-messages rule would call every message new. Waiting or running: no.
  */
 const pickableSession = sql`(
   "last"."id" is null
-  or ("last"."status" = 'done' and ${newMessagesAfter(sql`"sessions"."id"`, sql`"last"`)})
+  or ("last"."status" = 'done'
+    and ${newUserMessagesAfter(sql`"sessions"."id"`, sql`"last"`, MIN_NEW_USER_MESSAGES)})
   or ("last"."status" = 'failed' and exists (
     select 1 from "messages" fm
     where fm."sessionId" = "sessions"."id" and fm."createdAt" > "last"."updatedAt"
@@ -396,8 +403,8 @@ export const pullRequestsToCheck = async (
 /**
  * The nightly rule. Each project with automatic review on, whose pick for today is due and not
  * yet made, is stamped as picked and gets `waiting` reviews for its `limit` ready sessions. A
- * session is a candidate when `pickableSession` holds: never reviewed, reviewed with new
- * messages, or failed with messages since. It is ready once quiet for `QUIET_FOR`, or once a pull
+ * session is a candidate when `pickableSession` holds: never reviewed, reviewed with at least
+ * `MIN_NEW_USER_MESSAGES` new user messages, or failed with messages since. It is ready once quiet for `QUIET_FOR`, or once a pull
  * request it opened is merged or closed (for a reviewed session, after its last run). Never
  * reviewed go first, then an ended pull request, then the ones active longest ago. A session
  * with a done run gets a new-part run based on its newest one; others get a full run. "Today"

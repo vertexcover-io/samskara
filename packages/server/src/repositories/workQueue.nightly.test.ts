@@ -13,7 +13,12 @@ import {
 } from "../db/schema.js"
 import { dockerAvailable, startTestDb } from "../db/testDb.js"
 import { insertOpened } from "./pullRequests.repo.js"
-import { PR_CHECK_LIMIT, pullRequestsToCheck, queueNightlyReviews } from "./workQueue.repo.js"
+import {
+  MIN_NEW_USER_MESSAGES,
+  PR_CHECK_LIMIT,
+  pullRequestsToCheck,
+  queueNightlyReviews,
+} from "./workQueue.repo.js"
 
 const ANALYZER = "ai-problems-v2"
 const HOUR_MS = 60 * 60 * 1000
@@ -211,11 +216,11 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
     for (let hours = 9; hours <= 18; hours += 1) expect(reviewed).toContain(byHoursAgo.get(hours))
   })
 
-  test("a session last active more than a month ago is not picked", async () => {
+  test("a session last active more than two weeks ago is not picked", async () => {
     const now = ist(11, 2)
     const on = await project({ autoReview: true })
-    const recent = await quietSession(on, now, 29 * 24)
-    await quietSession(on, now, 31 * 24)
+    const recent = await quietSession(on, now, 13 * 24)
+    await quietSession(on, now, 15 * 24)
     await session(on, { updatedAt: hoursBefore(now, 31 * 24) })
 
     const result = await queueNightlyReviews(db, { ...DEFAULTS, now })
@@ -330,12 +335,12 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
       expect(await reviewedIds()).toEqual([quiet])
     })
 
-    test("SC3: a reviewed or month-old session is left alone even when its pull request ended", async () => {
+    test("SC3: a reviewed or two-week-old session is left alone even when its pull request ended", async () => {
       const now = ist(11, 2)
       const on = await project({ autoReview: true })
       const reviewed = await busySession(on, now)
       await linkPullRequest(reviewed, "merged")
-      const old = await busySession(on, now, 31 * 24)
+      const old = await busySession(on, now, 15 * 24)
       await linkPullRequest(old, "merged")
       await db.insert(sessionReviews).values({
         sessionId: reviewed,
@@ -447,7 +452,7 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
         analyzer: ANALYZER,
         status: "waiting",
       })
-      await linkPullRequest(await busySession(a, now, 31 * 24), "open")
+      await linkPullRequest(await busySession(a, now, 15 * 24), "open")
       // Quiet for 6 hours already, so the pick takes it whatever GitHub says.
       await linkPullRequest(await quietSession(a, now), "open")
       const b = await project()
@@ -510,6 +515,7 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
       at: Date | null,
       storedAt?: Date,
       msgType: "message" | "usage" | "turnEvent" | "custom" = "message",
+      who: { role?: "user" | "assistant"; trackId?: string } = {},
     ) => {
       counter += 1
       const [row] = await db
@@ -519,7 +525,8 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
           lineUuid: crypto.randomUUID(),
           subIndex: 0,
           msgType,
-          role: msgType === "message" ? "user" : null,
+          role: msgType === "message" ? (who.role ?? "user") : null,
+          trackId: who.trackId ?? "main",
           lineNumber: counter,
           raw: {},
           sourceSchemaVersion: 1,
@@ -554,6 +561,12 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
       return row?.id as string
     }
 
+    /** `count` user messages in the main conversation, a minute apart from `at`. */
+    const userTurns = async (sessionId: string, at: Date, count = MIN_NEW_USER_MESSAGES) => {
+      for (let turn = 0; turn < count; turn += 1)
+        await message(sessionId, new Date(at.getTime() + turn * 60_000))
+    }
+
     const waitingFor = async (sessionId: string) =>
       (await reviewRows()).filter((row) => row.sessionId === sessionId && row.status === "waiting")
 
@@ -566,7 +579,7 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
         at: hoursBefore(now, hours + 1),
         lastMessageId: read,
       })
-      if (grew) await message(id, hoursBefore(now, hours))
+      if (grew) await userTurns(id, hoursBefore(now, hours))
       return { id, done }
     }
 
@@ -581,6 +594,28 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
       expect(await waitingFor(id)).toEqual([
         expect.objectContaining({ newPartOnly: true, basedOn: done }),
       ])
+    })
+
+    test("a reviewed session needs 3 new user messages, not counting replies, tool calls or subagent prompts", async () => {
+      const now = ist(11, 2)
+      const on = await project({ autoReview: true })
+      const grown = async (userMessages: number) => {
+        const { id } = await reviewedQuiet(on, now, false)
+        const at = hoursBefore(now, 8)
+        await userTurns(id, at, userMessages)
+        await message(id, at, at, "message", { role: "assistant" })
+        await message(id, at, at, "message", { role: "assistant" })
+        await message(id, at, at, "message", { trackId: "agent-1" })
+        return id
+      }
+      const two = await grown(2)
+      const three = await grown(3)
+
+      await queueNightlyReviews(db, { ...DEFAULTS, now })
+
+      expect(MIN_NEW_USER_MESSAGES).toBe(3)
+      expect(await waitingFor(two)).toEqual([])
+      expect(await waitingFor(three)).toHaveLength(1)
     })
 
     test("SC30: a reviewed quiet session with nothing after its review is skipped", async () => {
@@ -645,7 +680,7 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
         const id = await busySession(on, now)
         const read = await message(id, hoursBefore(now, 5))
         await run(id, on, { status: "done", at: hoursBefore(now, 3), lastMessageId: read })
-        await message(id, hoursBefore(now, 1))
+        await userTurns(id, hoursBefore(now, 1))
         return id
       }
       const endedBefore = await grownBusy()
@@ -666,7 +701,7 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
       const prSession = await busySession(on, now)
       const read = await message(prSession, hoursBefore(now, 5))
       await run(prSession, on, { status: "done", at: hoursBefore(now, 3), lastMessageId: read })
-      await message(prSession, hoursBefore(now, 1))
+      await userTurns(prSession, hoursBefore(now, 1))
       await linkPullRequest(prSession, "merged", "github.com", hoursBefore(now, 2))
       const neverReviewed = await quietSession(on, now, 8)
 
@@ -696,7 +731,7 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
         const id = await busySession(on, now)
         const read = await message(id, hoursBefore(now, 5))
         await run(id, on, { status: "done", at: hoursBefore(now, 3), lastMessageId: read })
-        if (grew) await message(id, hoursBefore(now, 1))
+        if (grew) await userTurns(id, hoursBefore(now, 1))
         return linkPullRequest(id, "open")
       }
       await reviewedBusy(false)
