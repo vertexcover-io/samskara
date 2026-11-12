@@ -903,7 +903,7 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
     ])
   })
 
-  test("a session moved to another project no longer sets a fix's seen dates or matches its date filter, though it still counts", async () => {
+  test("a session moved to another project leaves a fix's counts, seen dates and date filter alike, so the card's count and seen line describe the same sessions", async () => {
     const moved = daysAgo(2)
     const stayed = daysAgo(30)
     await seedFix("Moved fix", [{ at: stayed }, { at: moved }])
@@ -918,8 +918,8 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
     expect(body.learnings).toEqual([
       expect.objectContaining({
         title: "Moved fix",
-        problemCount: 2,
-        sessionCount: 2,
+        problemCount: 1,
+        sessionCount: 1,
         firstSeenAt: stayed.toISOString(),
         lastSeenAt: stayed.toISOString(),
         sessionsLast7Days: 0,

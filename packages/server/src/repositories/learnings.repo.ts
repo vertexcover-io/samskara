@@ -387,7 +387,7 @@ export type LearningFilter = {
 /**
  * The filter as conditions on `learnings`. The date window is an `exists` over the learning's
  * problems rather than a condition on the joined rows, so a fix it keeps still counts all its
- * problems and sessions, not only the ones inside the window. The subquery aliases its tables
+ * problems and sessions in this project, not only the ones inside the window. The subquery aliases its tables
  * because the outer query joins `sessions` too. A session moved to another project matches
  * neither, so the dates never show when a project the reader may not see was active.
  */
@@ -435,8 +435,10 @@ export const listLearnings = async (
   projectId: string,
   filter: LearningFilter = {},
 ): Promise<ListedLearning[]> => {
-  const problemCount = sql<number>`count(${reviewProblems.id})::int`
-  const sessionCount = sql<number>`count(distinct ${reviewProblems.sessionId})::int`
+  // Counted through the joined session, so a session moved to another project leaves the counts
+  // as it leaves the seen dates, and a card's count and seen line describe the same sessions.
+  const problemCount = sql<number>`count(${sessions.id})::int`
+  const sessionCount = sql<number>`count(distinct ${sessions.id})::int`
   const firstSeenAt = sql<string | null>`min(${sessionActivityAt})`
   const lastSeenAt = sql<string | null>`max(${sessionActivityAt})`
   const sessionsLast7Days = sql<number>`(count(distinct ${reviewProblems.sessionId}) filter (where ${sessionActivityAt} >= now() - interval '7 days'))::int`
