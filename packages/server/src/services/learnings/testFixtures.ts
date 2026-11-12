@@ -140,6 +140,8 @@ export const fakeAgents = (
     badGroups?: boolean
     verdict?: "learning" | "drop"
     oneGroupEach?: boolean
+    /** Writes groups.md from the batch's problem ids instead of the built-in grouping. */
+    groups?: (problemIds: ReadonlyArray<string | undefined>) => string
     /**
      * The example each learning tells, as learnings.md fields; `STORY_MD` when unset. A group
      * groups.md marks "Example: none" gets none, as the real writer is told.
@@ -162,14 +164,16 @@ export const fakeAgents = (
         const ids = options.badGroups ? problemIds.slice(1) : problemIds
         writeFileSync(
           join(workspaceDir, "groups.md"),
-          options.oneGroupEach
-            ? ids
-                .map(
-                  (id) =>
-                    `## Cause ${id}\n- **Joins:** new\n- **Cause:** cause of ${id}\n- **Problems:** ${id}\n`,
-                )
-                .join("\n")
-            : `## Wait\n- **Joins:** ${joins}\n- **Cause:** No wait rule.\n- **Problems:** ${ids.join(", ")}\n`,
+          options.groups !== undefined
+            ? options.groups(ids)
+            : options.oneGroupEach
+              ? ids
+                  .map(
+                    (id) =>
+                      `## Cause ${id}\n- **Joins:** new\n- **Cause:** cause of ${id}\n- **Problems:** ${id}\n`,
+                  )
+                  .join("\n")
+              : `## Wait\n- **Joins:** ${joins}\n- **Cause:** No wait rule.\n- **Problems:** ${ids.join(", ")}\n`,
         )
         return { stdout: "done", firstByteMs: 1 }
       }

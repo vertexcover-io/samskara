@@ -283,6 +283,52 @@ describe.skipIf(!dockerAvailable())("runLearnings", () => {
     })
   })
 
+  test("a batch with one group joining a rejected fix and one new sends only the new one to agent 2, and saves each with its own answer", async () => {
+    await seedSession(["A"], high)
+    await run(fakeAgents().runner)
+    const [fix] = await db.select().from(learnings)
+    const rejected = await learningsRepo.setDecision(
+      db,
+      fix?.id as string,
+      { decision: "rejected", reason: "not ours" },
+      userId,
+    )
+    await seedSession(["B", "C"], high)
+    const { runner, seen } = fakeAgents({
+      groups: ([joining, fresh]) =>
+        `## Old\n- **Joins:** K1\n- **Cause:** No wait rule.\n- **Problems:** ${joining}\n\n## Fresh\n- **Joins:** new\n- **Cause:** A new cause.\n- **Problems:** ${fresh}\n`,
+    })
+    const result = await run(runner)
+
+    expect(seen.writerMd).toHaveLength(1)
+    expect([...(seen.writerMd[0] ?? "").matchAll(/^## G\d+/gm)]).toHaveLength(1)
+    expect(seen.writerMd[0]).toContain("A new cause.")
+    expect(seen.writerMd[0]).not.toContain("No wait rule.")
+    const saved = readLog(runIdOf(result)).find((line) => line.step === "batch.saved")
+    expect(saved).toMatchObject({
+      groups: [
+        { group: 1, writerGroup: null, action: "linked", learningId: fix?.id },
+        { group: 2, writerGroup: "G1", action: "created" },
+      ],
+    })
+    const all = await db.select().from(learnings)
+    expect(all.find((row) => row.id === fix?.id)).toEqual(rejected)
+    const created = all.find((row) => row.id !== fix?.id)
+    expect(created).toMatchObject({
+      cause: "A new cause.",
+      title: "Helpers report early",
+      decision: "open",
+    })
+    const problems = await db.select().from(reviewProblems)
+    const [b, c] = ["B", "C"].map((title) => problems.find((row) => row.title === title))
+    const linked = [b, c].find((row) => row?.learningId === fix?.id)
+    expect(linked).toMatchObject({ linkedQuietly: true })
+    expect([b, c].find((row) => row !== linked)).toMatchObject({
+      learningId: created?.id,
+      linkedQuietly: false,
+    })
+  })
+
   test("LS7: groups that fail the check fail the run, and no problem is marked", async () => {
     await seedSession(["A", "B"])
     const result = await run(fakeAgents({ badGroups: true }).runner)
