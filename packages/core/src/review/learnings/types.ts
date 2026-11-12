@@ -70,6 +70,12 @@ export type LearningInput = {
   readonly story: LearningStory | null
 }
 
+/** What the grouper is shown of a learning so far. A rejected one carries why. */
+export type KnownLearning = Pick<LearningInput, "id" | "title" | "cause"> & {
+  /** Why the project rejected it; null or absent when it is not rejected. */
+  readonly rejectedReason?: string | null
+}
+
 /** One group from agent 1: problems with the same cause, and the learning they join, if any. */
 export type ProblemGroup = {
   readonly cause: string

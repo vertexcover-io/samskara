@@ -1,6 +1,8 @@
 import {
   type DecisionRequest,
   type DecisionState,
+  type FixDecision,
+  type KnownLearning,
   LEARNING_IMPACTS,
   LEARNING_PRIORITIES,
   type LearningInput,
@@ -99,11 +101,13 @@ export const listRuns = async (db: Querier, projectId: string): Promise<ListedRu
   const touched = sql<number>`(
     select count(distinct rp."learningId")::int from "reviewProblems" rp
     where rp."learningRunId" = "learningRuns"."id" and rp."learningId" is not null
+      and not rp."linkedQuietly"
   )`
   const created = sql<number>`(
     select count(distinct rp."learningId")::int from "reviewProblems" rp
     join "learnings" l on l."id" = rp."learningId"
     where rp."learningRunId" = "learningRuns"."id"
+      and not rp."linkedQuietly"
       and ${createdDuring(sql`l."createdAt"`, sql`"learningRuns"`)}
   )`
   const rows = await db
@@ -194,13 +198,22 @@ export const unmarkedProblems = async (
     .limit(limit)
     .then((rows) => rows.map(asProblem))
 
-/** What agent 1 is shown of each learning so far: enough to tell whether a cause is the same. */
+/**
+ * What agent 1 is shown of each learning so far: enough to tell whether a cause is the same,
+ * and why a rejected one was rejected, so it joins problems there instead of copying it.
+ */
 export const learningsForGrouping = async (
   db: Querier,
   projectId: string,
-): Promise<Array<Pick<LearningInput, "id" | "title" | "cause">>> =>
+): Promise<KnownLearning[]> =>
   db
-    .select({ id: learnings.id, title: learnings.title, cause: learnings.cause })
+    .select({
+      id: learnings.id,
+      title: learnings.title,
+      cause: learnings.cause,
+      // Set exactly while the fix is rejected (learnings_rejectReason_check).
+      rejectedReason: learnings.rejectReason,
+    })
     .from(learnings)
     .where(eq(learnings.projectId, projectId))
     .orderBy(asc(learnings.createdAt))
@@ -210,7 +223,13 @@ export const learningsWithProblems = async (
   db: Querier,
   ids: ReadonlyArray<string>,
 ): Promise<
-  Array<LearningInput & { readonly updatedByRunId: string; readonly problems: ProblemInput[] }>
+  Array<
+    LearningInput & {
+      readonly updatedByRunId: string
+      readonly decision: FixDecision
+      readonly problems: ProblemInput[]
+    }
+  >
 > => {
   if (ids.length === 0) return []
   const rows = await db
@@ -226,6 +245,7 @@ export const learningsWithProblems = async (
     ...(row as LearningInput),
     story: parseStory(row.story),
     updatedByRunId: row.updatedByRunId,
+    decision: row.decision as FixDecision,
     problems: linked.filter((problem) => problem.learningId === row.id).map(asProblem),
   }))
 }
@@ -266,21 +286,40 @@ export const reviewSessions = async (
   }))
 }
 
+/**
+ * What a run saves for one group: agent 2's answer, or `link` for a group joining a rejected
+ * fix, which agent 2 never sees: its problems are linked and the fix is left as it is.
+ */
+export type SaveAnswer = WrittenLearning | { readonly verdict: "link" }
+
 export type SavedGroup = {
   readonly cause: string
   /** The learning this group joined, or null when it is new. */
   readonly learningId: string | null
   readonly problemIds: ReadonlyArray<string>
-  readonly answer: WrittenLearning
+  readonly answer: SaveAnswer
 }
 
 /** What saving did with one group, in group order: for the run's log. */
 export type SavedOutcome = {
-  /** `skipped`: none of its problems were left to save (a review was redone mid-run). */
-  readonly action: "created" | "updated" | "dropped" | "skipped"
+  /**
+   * `skipped`: none of its problems were left to save (a review was redone mid-run).
+   * `linked`: its problems were filed under the joined fix and the fix was not changed.
+   */
+  readonly action: "created" | "updated" | "dropped" | "skipped" | "linked"
   readonly learningId: string | null
   /** The problems actually marked. */
   readonly problemIds: ReadonlyArray<string>
+}
+
+/** A fix's decision, read with a row lock so a decision being set at the same time waits. */
+const decisionOf = async (tx: Tx, learningId: string): Promise<string | null> => {
+  const [row] = await tx
+    .select({ decision: learnings.decision })
+    .from(learnings)
+    .where(eq(learnings.id, learningId))
+    .for("update")
+  return row?.decision ?? null
 }
 
 /**
@@ -343,8 +382,13 @@ export const saveBatch = async (
         outcomes.push({ action: "skipped", learningId: null, problemIds: [] })
         continue
       }
-      let learningId: string | null = null
-      if (group.answer.verdict === "learning") {
+      // Read under a lock, so a fix rejected after this run grouped its problems is still left
+      // as it is. A `link` answer is never a rewrite either, even if the fix was reopened since.
+      const rejected =
+        group.learningId !== null && (await decisionOf(tx, group.learningId)) === "rejected"
+      const linkOnly = rejected || group.answer.verdict === "link"
+      let learningId: string | null = linkOnly ? group.learningId : null
+      if (!linkOnly && group.answer.verdict === "learning") {
         const { verdict: _, ...fields } = group.answer
         if (group.learningId === null) {
           const [row] = await tx
@@ -368,13 +412,15 @@ export const saveBatch = async (
       const problemIds = present.map((row) => row.id)
       await tx
         .update(reviewProblems)
-        .set({ learningRunId: input.runId, learningId })
+        .set({ learningRunId: input.runId, learningId, linkedQuietly: rejected })
         .where(inArray(reviewProblems.id, problemIds))
       // A joined fix may be a skipped one this batch has now seen in enough more sessions.
-      if (learningId !== null && group.learningId !== null) await returnIfSeenEnough(tx, learningId)
+      if (!linkOnly && learningId !== null && group.learningId !== null)
+        await returnIfSeenEnough(tx, learningId)
       outcomes.push({
-        action:
-          group.answer.verdict === "drop"
+        action: linkOnly
+          ? "linked"
+          : group.answer.verdict === "drop"
             ? "dropped"
             : group.learningId === null
               ? "created"
@@ -423,6 +469,7 @@ const filterConditions = (filter: LearningFilter): SQL[] => {
     conditions.push(sql`exists (
       select 1 from "reviewProblems" rp
       where rp."learningId" = ${learnings.id} and rp."learningRunId" = ${filter.runId}
+        and not rp."linkedQuietly"
     )`)
   if (filter.seenFrom !== undefined || filter.seenBefore !== undefined) {
     const from =

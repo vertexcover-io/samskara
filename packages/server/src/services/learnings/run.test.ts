@@ -257,6 +257,32 @@ describe.skipIf(!dockerAvailable())("runLearnings", () => {
     expect(list[0]?.problemCount).toBe(2)
   })
 
+  test("SC832: a run files a matching problem under a rejected fix and changes nothing else", async () => {
+    await seedSession(["A"], high)
+    await run(fakeAgents().runner)
+    const [fix] = await db.select().from(learnings)
+    const rejected = await learningsRepo.setDecision(
+      db,
+      fix?.id as string,
+      { decision: "rejected", reason: "not ours" },
+      userId,
+    )
+    await seedSession(["B"], high)
+    const { runner, seen } = fakeAgents()
+    const result = await run(runner)
+
+    expect(seen.knownLearningsMd[0]).toContain("Rejected by the project: not ours")
+    expect(seen.writerMd).toEqual([])
+    const [after] = await db.select().from(learnings)
+    expect(after).toEqual(rejected)
+    const b = (await db.select().from(reviewProblems)).find((row) => row.title === "B")
+    expect(b).toMatchObject({ learningId: fix?.id, linkedQuietly: true })
+    expect(readLog(runIdOf(result)).find((line) => line.step === "batch.saved")).toMatchObject({
+      groups: [{ group: 1, writerGroup: null, action: "linked", learningId: fix?.id }],
+      priorityUsedThisBatch: { high: 0, medium: 0 },
+    })
+  })
+
   test("LS7: groups that fail the check fail the run, and no problem is marked", async () => {
     await seedSession(["A", "B"])
     const result = await run(fakeAgents({ badGroups: true }).runner)

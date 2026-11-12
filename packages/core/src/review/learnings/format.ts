@@ -1,5 +1,6 @@
 import { LIMITS, PROBLEM_CLASSES, PROBLEM_SEVERITIES } from "../problems/reviewMd.js"
 import {
+  type KnownLearning,
   LEARNING_IMPACTS,
   LEARNING_PRIORITIES,
   type LearningInput,
@@ -465,9 +466,7 @@ export const problemsMd = (problems: ReadonlyArray<ProblemInput>): string =>
   ].join("\n")
 
 /** known-learnings.md for agent 1: the learnings found so far, each under a short id. */
-export const knownLearningsMd = (
-  learnings: ReadonlyArray<Pick<LearningInput, "id" | "title" | "cause">>,
-): string =>
+export const knownLearningsMd = (learnings: ReadonlyArray<KnownLearning>): string =>
   learnings.length === 0
     ? "# Learnings found so far\n\nNone yet: every group is new.\n"
     : [
@@ -478,6 +477,9 @@ export const knownLearningsMd = (
           "",
           `Cause: ${learning.cause}`,
           "",
+          ...(learning.rejectedReason == null
+            ? []
+            : [`Rejected by the project: ${learning.rejectedReason}`, ""]),
         ]),
       ].join("\n")
 

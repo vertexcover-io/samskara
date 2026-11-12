@@ -800,6 +800,14 @@ export const reviewProblems = pgTable(
      * time, when the problem was saved.
      */
     seenAt: timestamp("seenAt", { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * True when the run filed it under a rejected fix: linked, with the fix left as it was, and
+     * not counted as that run creating or updating the fix. Run counts and a run's fix list
+     * leave out these links rather than filtering by the fix's current decision, so an earlier
+     * run's history never changes: a fix that run created still counts as created after
+     * someone rejects it.
+     */
+    linkedQuietly: boolean("linkedQuietly").notNull().default(false),
     createdAt,
   },
   (t) => [
