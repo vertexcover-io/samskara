@@ -84,9 +84,11 @@ export const RunsTab = ({
           setState({ phase: "ready", runs: result.data.runs, canEdit: result.data.canEdit })
           return
         }
-        // A failed poll keeps the list it already has, and the next poll tries again.
+        // A network or server failure keeps the list and the next poll tries again; a 404 or an
+        // expired session will not pass, so it shows the error, which also ends the polling.
+        const passing = result.error.kind === "network" || result.error.kind === "server"
         setState((previous) =>
-          previous.phase === "ready" && result.error.kind !== "unauthorized"
+          previous.phase === "ready" && passing
             ? previous
             : { phase: "failed", error: result.error },
         )

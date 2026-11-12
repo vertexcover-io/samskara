@@ -264,6 +264,28 @@ test("one failed read while a run is open keeps the list on screen and keeps fol
   expect(await screen.findByText(/finished .* · 1 new fix, 0 updated/)).toBeInTheDocument()
 })
 
+test("a 404 while a run is open (access removed, project deleted) says so and stops polling instead of showing the old list as current", async () => {
+  const calls = stubServer([
+    list([run("r-2", { status: "waiting", finishedAt: null })]),
+    { failStatus: 404 },
+    list([run("r-2", { fixesCreated: 1 })]),
+  ])
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
+  renderTab()
+
+  expect(await screen.findByText(/waiting to start/)).toBeInTheDocument()
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(RUN_POLL_MS)
+  })
+  expect(await screen.findByText("Retrieval failed")).toBeInTheDocument()
+  expect(screen.queryByText(/waiting to start/)).toBeNull()
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(RUN_POLL_MS * 2)
+  })
+  expect(listReads(calls)).toHaveLength(2)
+})
+
 test("SC741: a viewer is offered no Run now", async () => {
   stubServer([list([run("r-0")], 0, false)])
   renderTab()
