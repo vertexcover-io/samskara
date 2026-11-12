@@ -9,12 +9,12 @@ tags: [session-reviews, ai-review]
 
 ## Context and Problem Statement
 
-A session keeps growing after it is reviewed. Under ADR 0003 a redo overwrote the one row per session and analyzer and deleted its problems, so history was lost and covering a few new messages meant re-reading the whole session.
+A session keeps growing after it is reviewed. Before this, a redo overwrote the one row per session and analyzer and deleted its problems, so history was lost and covering a few new messages meant re-reading the whole session.
 
 ## Considered Options
 
 - A row per run: full runs and new-part runs (`newPartOnly`, `basedOn`, `lastMessageId`), at most one waiting or running per session and analyzer, readers show a chain
-- One row per session and analyzer, the old result carried on the row during a redo (ADR 0003)
+- One row per session and analyzer, the old result carried on the row during a redo
 - One row per session and analyzer, earlier results copied into a history table
 
 ## Decision Outcome
@@ -24,4 +24,3 @@ Chosen: a row per run, because each run's problems cite records by its own `msg-
 ## Consequences
 
 Every reader shows or counts reviews through `shownRun` (reviews.repo.ts) and `status = 'done'`, never `outcome is not null`; older runs keep their rows and problems.
-This supersedes ADR 0003.
