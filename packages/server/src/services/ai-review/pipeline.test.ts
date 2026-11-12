@@ -247,6 +247,7 @@ The agent claimed the build was fixed after the tests failed.
         leads?: string
         prompt?: string
         session?: unknown
+        earlier?: string
       }> = []
       const runner: HarnessRunner = {
         run: async ({ workspaceDir, oneShot, prompt }) => {
@@ -266,6 +267,9 @@ The agent claimed the build was fixed after the tests failed.
             leads: readFileSync(join(workspaceDir, "leads.md"), "utf8"),
             prompt,
             session: JSON.parse(readFileSync(join(workspaceDir, "session.json"), "utf8")),
+            ...(has("earlier-review.md")
+              ? { earlier: readFileSync(join(workspaceDir, "earlier-review.md"), "utf8") }
+              : {}),
           })
           onReview(workspaceDir)
           writeFileSync(join(workspaceDir, "review.md"), reviewMd)
@@ -566,6 +570,8 @@ The whole session, the earlier part and the deploy.
           .sort(),
       ).toEqual(["deploying now", "skipped the migration check"])
       expect(staged?.files).toContain("session.json")
+      expect(staged?.earlier).toContain("Earlier outcome: struggled")
+      expect(staged?.earlier).toContain("- An earlier problem")
 
       const [row] = await db.select().from(sessionReviews).where(eq(sessionReviews.id, run.id))
       expect(row).toMatchObject({
@@ -590,6 +596,20 @@ The whole session, the earlier part and the deploy.
       expect(await db.select().from(sessionReviews).where(eq(sessionReviews.id, base.id))).toEqual(
         baseBefore,
       )
+    })
+
+    test("a new-part run with no base run is sessionNotFound and saves no result", async () => {
+      const queued = await queuedRun()
+      const { runner } = problemsRunner(problemsMd("the build is fixed"))
+
+      const result = await runAiReview(
+        depsWith(runner),
+        { ...queued, newPartOnly: true, basedOn: null },
+        {},
+      )
+
+      expect(result).toEqual({ kind: "error", code: "sessionNotFound" })
+      expect(await doneRuns()).toEqual([])
     })
 
     test("PR9: no review.md is deliverableMissing, and one past the size cap saves nothing", async () => {
