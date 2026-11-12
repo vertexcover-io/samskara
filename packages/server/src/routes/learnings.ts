@@ -157,6 +157,24 @@ export const learningsRoutes = ({ db, env, notifyWorker }: Deps) => {
           return c.json({ runId: queued.id }, 202)
         },
       )
+      /** The project's runs, newest first, with how many fixes each created and updated. */
+      .get("/runs", requireAuth({ db, env }, ["web", "cli"]), async (c) => {
+        const projectId = c.req.query("project") ?? ""
+        const scope = await scopeIn(c.get("user").id, projectId)
+        if (scope === null) return c.json({ error: "projectNotFound" }, 404)
+        const runs = await learningsRepo.listRuns(db, projectId)
+        return c.json(
+          {
+            runs: runs.map((run) => ({
+              ...serializeRun(run),
+              fixesCreated: run.fixesCreated,
+              fixesUpdated: run.fixesUpdated,
+            })),
+            canEdit: scope !== "viewer",
+          },
+          200,
+        )
+      })
       .get("/runs/:id", requireAuth({ db, env }, ["web", "cli"]), async (c) => {
         const id = c.req.param("id")
         const run = uuid.safeParse(id).success ? await learningsRepo.getRun(db, id) : null
@@ -179,6 +197,7 @@ export const learningsRoutes = ({ db, env, notifyWorker }: Deps) => {
             type: z.enum(FIX_TYPES).optional(),
             from: z.string().datetime({ offset: true }).optional(),
             to: z.string().datetime({ offset: true }).optional(),
+            run: uuid.optional(),
           }),
         ),
         async (c) => {
@@ -191,6 +210,7 @@ export const learningsRoutes = ({ db, env, notifyWorker }: Deps) => {
               fixType: query.type,
               seenFrom: query.from === undefined ? undefined : new Date(query.from),
               seenBefore: query.to === undefined ? undefined : new Date(query.to),
+              runId: query.run,
             }),
             learningsRepo.latestRun(db, projectId),
           ])
@@ -203,6 +223,7 @@ export const learningsRoutes = ({ db, env, notifyWorker }: Deps) => {
                 firstSeenAt: row.firstSeenAt?.toISOString() ?? null,
                 lastSeenAt: row.lastSeenAt?.toISOString() ?? null,
                 sessionsLast7Days: row.sessionsLast7Days,
+                runMark: row.runMark,
               })),
               latestRun: latest === null ? null : serializeRun(latest),
               canEdit: scope !== "viewer",

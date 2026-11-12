@@ -891,4 +891,139 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
       }),
     ])
   })
+
+  /** A finished run of `project`, started at `startedAt`, written straight to the table. */
+  const insertRun = async (
+    startedAt: Date,
+    fields: { readonly status?: string; readonly error?: string; readonly project?: string } = {},
+  ) => {
+    const [run] = await db
+      .insert(learningRuns)
+      .values({
+        projectId: fields.project ?? projectId,
+        status: fields.status ?? "done",
+        error: fields.error ?? null,
+        startedAt,
+        finishedAt: new Date(startedAt.getTime() + 60_000),
+      })
+      .returning()
+    return run?.id as string
+  }
+
+  const insertFix = async (title: string, runId: string, priority = "high") => {
+    const [fix] = await db
+      .insert(learnings)
+      .values({
+        projectId,
+        updatedByRunId: runId,
+        title,
+        cause: "c",
+        problem: "p",
+        priority,
+        priorityReason: "r",
+        fixType: "skill",
+        fix: "f",
+      })
+      .returning()
+    return fix?.id as string
+  }
+
+  /** One problem, in a session of its own, that `runId` considered and linked to `fixId`. */
+  const linkProblem = async (runId: string, fixId: string) => {
+    counter += 1
+    const sessionId = `route-run-${counter}`
+    await seedSession(db, { sessionId, projectId, userId, problems: [problemFixture("x")] })
+    await db
+      .update(reviewProblems)
+      .set({ learningId: fixId, learningRunId: runId })
+      .where(eq(reviewProblems.sessionId, sessionId))
+  }
+
+  /**
+   * Run A (oldest) creates L1 and L2; run B updates L1 and creates L3; run C failed and linked
+   * nothing. Another project has a run of its own.
+   */
+  const seedRuns = async () => {
+    const runA = await insertRun(new Date("2026-11-01T10:00:00Z"))
+    const runB = await insertRun(new Date("2026-11-05T10:00:00Z"))
+    const runC = await insertRun(new Date("2026-11-09T10:00:00Z"), {
+      status: "failed",
+      error: "harness timed out",
+    })
+    const l1 = await insertFix("L1", runB, "high")
+    const l2 = await insertFix("L2", runA, "low")
+    const l3 = await insertFix("L3", runB, "medium")
+    await linkProblem(runA, l1)
+    await linkProblem(runA, l2)
+    await linkProblem(runB, l1)
+    await linkProblem(runB, l3)
+    const other = await seedProject(
+      db,
+      await seedOrg(db, `other-org-${counter}`),
+      `other-${counter}`,
+    )
+    await insertRun(new Date("2026-11-10T10:00:00Z"), { project: other })
+    return { runA, runB, runC }
+  }
+
+  type ListedRunBody = {
+    runs: Array<{ id: string; fixesCreated: number; fixesUpdated: number; error: string | null }>
+    canEdit: boolean
+  }
+
+  test("SC724: a project's runs list newest first with how many fixes each created and updated", async () => {
+    const { runA, runB, runC } = await seedRuns()
+
+    const res = await request(`/api/learnings/runs?project=${projectId}`)
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as ListedRunBody
+    expect(body.runs.map((run) => [run.id, run.fixesCreated, run.fixesUpdated, run.error])).toEqual(
+      [
+        [runC, 0, 0, "harness timed out"],
+        [runB, 1, 1, null],
+        [runA, 2, 0, null],
+      ],
+    )
+    expect(body.canEdit).toBe(true)
+  })
+
+  test("SC725: a stranger cannot list a project's runs, and a viewer reads them with canEdit false", async () => {
+    await seedRuns()
+
+    const stranger = await request(`/api/learnings/runs?project=${projectId}`, { as: strangerId })
+    expect(stranger.status).toBe(404)
+    expect(await stranger.json()).toEqual({ error: "projectNotFound" })
+
+    const viewer = await request(`/api/learnings/runs?project=${projectId}`, {
+      as: await newViewer(),
+    })
+    expect(viewer.status).toBe(200)
+    expect(((await viewer.json()) as ListedRunBody).canEdit).toBe(false)
+  })
+
+  test("SC726: a run filter lists the fixes that run touched, in list order, each marked new or updated", async () => {
+    const { runA, runB } = await seedRuns()
+    const marks = async (query: string) => {
+      const res = await request(`/api/learnings?project=${projectId}${query}`)
+      const body = (await res.json()) as {
+        learnings: Array<{ title: string; runMark: string | null }>
+      }
+      return body.learnings.map((row) => [row.title, row.runMark])
+    }
+
+    expect(await marks(`&run=${runB}`)).toEqual([
+      ["L1", "updated"],
+      ["L3", "new"],
+    ])
+    expect(await marks(`&run=${runA}`)).toEqual([
+      ["L1", "new"],
+      ["L2", "new"],
+    ])
+    expect(await marks("")).toEqual([
+      ["L1", null],
+      ["L3", null],
+      ["L2", null],
+    ])
+    expect((await request(`/api/learnings?project=${projectId}&run=not-a-uuid`)).status).toBe(400)
+  })
 })

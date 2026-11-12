@@ -9,6 +9,8 @@ import { RepoLink } from "../components/RepoLink.js"
 import { SessionRow } from "../components/SessionRow.js"
 import { FixesTab } from "../project/FixesTab.js"
 import { ProjectTabs, parseProjectPath, tabPath } from "../project/ProjectTabs.js"
+import { RunPage } from "../project/RunPage.js"
+import { RunsTab } from "../project/RunsTab.js"
 import { LoadingShell } from "../shell/LoadingShell.js"
 
 type State =
@@ -122,6 +124,14 @@ export const ProjectDetail = () => {
       {view.tab === "fixes" ? (
         <div className="pt-4">
           <FixesTab projectId={project.id} />
+        </div>
+      ) : view.tab === "runs" ? (
+        <div className="pt-4">
+          {view.runId === null ? (
+            <RunsTab projectId={project.id} fixRunEveryDays={project.fixRunEveryDays} />
+          ) : (
+            <RunPage projectId={project.id} runId={view.runId} />
+          )}
         </div>
       ) : (
         <>

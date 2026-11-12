@@ -10,11 +10,14 @@ export const LearningCard = ({
   search,
   canEdit,
   onSkipChange,
+  mark,
 }: {
   readonly row: LearningSummary
   readonly search: string
   readonly canEdit: boolean
   readonly onSkipChange: (id: string, skippedAt: string | null) => void
+  /** On a run page: whether that run created this fix or updated it. */
+  readonly mark?: "new" | "updated" | null | undefined
 }) => {
   return (
     <article className="relative border border-rule bg-panel p-4 break-words transition-colors hover:border-ink">
@@ -26,6 +29,11 @@ export const LearningCard = ({
           {row.title}
         </Link>
         <p className="font-mono text-[0.72rem] text-ink-soft">
+          {mark === undefined || mark === null ? null : (
+            <span className="mr-2 rounded-xs border border-custody/40 px-1.5 py-0.5 font-semibold text-custody">
+              {mark}
+            </span>
+          )}
           <span
             className={`mr-2 rounded-xs border px-1.5 py-0.5 font-semibold ${PRIORITY_TONE[row.priority] ?? PRIORITY_TONE.low}`}
           >

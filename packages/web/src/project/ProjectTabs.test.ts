@@ -8,10 +8,12 @@ test.each([
   ["nope", null],
   ["fixes/x", null],
   ["overview", null],
-  ["runs", null],
-  ["runs/r-1", null],
+  ["runs", { tab: "runs", runId: null }],
+  ["runs/r-1", { tab: "runs", runId: "r-1" }],
+  ["runs/r-1/x", null],
+  ["fixes/r-1", null],
 ])(
-  "SC702: parseProjectPath(%j) reads the tab, or null for a path no listed tab owns",
+  "SC702/SC722: parseProjectPath(%j) reads the tab and run, or null for a path no listed tab owns",
   (rest, expected) => {
     expect(parseProjectPath(rest)).toEqual(expected)
   },

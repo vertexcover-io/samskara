@@ -3,7 +3,9 @@ import userEvent from "@testing-library/user-event"
 import { Route, Routes } from "react-router-dom"
 import { afterEach, beforeEach, expect, test, vi } from "vitest"
 import type {
+  LearningRun,
   LearningSummary,
+  ListedRun,
   ProjectDetail as ProjectDetailPayload,
   SessionSummary,
 } from "../api/types.js"
@@ -19,6 +21,7 @@ const PROJECT: ProjectDetailPayload = {
   lastActiveAt: "2026-02-01T09:30:00.000Z",
   repo: null,
   autoReview: false,
+  fixRunEveryDays: 3,
 }
 
 const session = (id: string, title: string): SessionSummary => ({
@@ -60,6 +63,7 @@ const LEARNING: LearningSummary = {
   firstSeenAt: null,
   lastSeenAt: null,
   sessionsLast7Days: 0,
+  runMark: null,
 }
 
 const renderDetail = (
@@ -68,16 +72,34 @@ const renderDetail = (
     entry?: string
     viewerCanDelete?: boolean
     sessions?: ReadonlyArray<SessionSummary>
+    runs?: ReadonlyArray<ListedRun>
+    run?: LearningRun
+    learnings?: ReadonlyArray<LearningSummary>
   } = {},
 ) => {
-  const { entry = "/projects/p-1", viewerCanDelete = false, sessions = [] } = options
+  const {
+    entry = "/projects/p-1",
+    viewerCanDelete = false,
+    sessions = [],
+    runs = [],
+    run,
+    learnings = [LEARNING],
+  } = options
   const urls: string[] = []
   vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
     const url = input instanceof Request ? input.url : String(input)
     urls.push(url)
+    if (url.includes("/api/learnings/runs/")) {
+      return Promise.resolve(new Response(JSON.stringify({ run }), { status: 200 }))
+    }
+    if (url.includes("/api/learnings/runs")) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ runs, canEdit: true, reviewsWaiting: 0 }), { status: 200 }),
+      )
+    }
     if (url.includes("/api/learnings")) {
       return Promise.resolve(
-        new Response(JSON.stringify({ learnings: [LEARNING], latestRun: null, canEdit: true }), {
+        new Response(JSON.stringify({ learnings, latestRun: null, canEdit: true }), {
           status: 200,
         }),
       )
@@ -176,7 +198,7 @@ const tabRow = () => screen.getByRole("navigation", { name: "Project" })
 const projectFetches = (urls: ReadonlyArray<string>) =>
   urls.filter((url) => url.includes("/api/projects/p-1")).length
 
-test("SC705: the project page opens on Overview with the tab row, its fields and recent sessions, and loads no fixes", async () => {
+test("SC705: the project page opens on Overview with the tab row (Overview, Fixes, Runs), its fields and recent sessions, and loads no fixes", async () => {
   const urls = renderDetail(PROJECT, {
     sessions: [session("s-1", "Port the detail page"), session("s-2", "Fix the sync bar")],
   })
@@ -186,7 +208,7 @@ test("SC705: the project page opens on Overview with the tab row, its fields and
     within(tabRow())
       .getAllByRole("link")
       .map((link) => link.textContent),
-  ).toEqual(["Overview", "Fixes"])
+  ).toEqual(["Overview", "Fixes", "Runs"])
   expect(within(tabRow()).getByRole("link", { name: "Overview" })).toHaveAttribute(
     "aria-current",
     "page",
@@ -236,5 +258,104 @@ test("SC708: a path no tab owns falls back to Overview", async () => {
   expect(within(tabRow()).getByRole("link", { name: "Overview" })).toHaveAttribute(
     "aria-current",
     "page",
+  )
+})
+
+const listedRun = (id: string, fields: Partial<ListedRun> = {}): ListedRun => ({
+  id,
+  status: "done",
+  harnessRef: null,
+  error: null,
+  startedAt: "2026-11-10T10:00:00.000Z",
+  finishedAt: "2026-11-10T10:08:00.000Z",
+  fixesCreated: 0,
+  fixesUpdated: 0,
+  ...fields,
+})
+
+test("SC728: the Runs tab says how often runs come and lists runs as cards that open their run", async () => {
+  renderDetail(PROJECT, {
+    entry: "/projects/p-1/runs",
+    runs: [
+      listedRun("r-2", {
+        status: "running",
+        finishedAt: null,
+        startedAt: "2026-11-12T09:00:00.000Z",
+      }),
+      listedRun("r-1", {
+        status: "failed",
+        error: "harness timed out",
+        startedAt: "2026-11-11T09:00:00.000Z",
+      }),
+      listedRun("r-0", { fixesCreated: 1, fixesUpdated: 2 }),
+    ],
+    run: listedRun("r-0"),
+  })
+  const user = userEvent.setup()
+
+  expect(await screen.findByText("Automatic fix run every 3 days")).toBeInTheDocument()
+  expect(screen.getByText(/^Last run .* · running$/)).toBeInTheDocument()
+  expect(within(tabRow()).getByRole("link", { name: "Runs" })).toHaveAttribute(
+    "aria-current",
+    "page",
+  )
+  const cards = screen.getAllByRole("article")
+  expect(cards.map((card) => within(card).getByRole("link").getAttribute("href"))).toEqual([
+    "/projects/p-1/runs/r-2",
+    "/projects/p-1/runs/r-1",
+    "/projects/p-1/runs/r-0",
+  ])
+  const [running, failed, done] = cards as [HTMLElement, HTMLElement, HTMLElement]
+  expect(within(running).getByText("running")).toBeInTheDocument()
+  expect(running).toHaveTextContent("running… · 0 new fixes, 0 updated")
+  expect(within(failed).getByText("failed")).toBeInTheDocument()
+  expect(within(failed).getByText("harness timed out")).toBeInTheDocument()
+  expect(done).toHaveTextContent(/finished .* · 1 new fix, 2 updated/)
+
+  await user.click(within(done).getByRole("link"))
+  expect(screen.getByTestId("location")).toHaveTextContent(/^\/projects\/p-1\/runs\/r-0$/)
+})
+
+test("SC729: a project with no runs says so", async () => {
+  renderDetail(PROJECT, { entry: "/projects/p-1/runs", runs: [] })
+
+  expect(await screen.findByText("No fix runs yet")).toBeInTheDocument()
+  expect(screen.getByText("No fix run yet")).toBeInTheDocument()
+  expect(screen.queryByRole("article")).toBeNull()
+})
+
+test("SC730: a run's page lists the fixes it touched, marked new or updated, with a way back to all runs", async () => {
+  const urls = renderDetail(PROJECT, {
+    entry: "/projects/p-1/runs/r-0",
+    run: {
+      id: "r-0",
+      status: "done",
+      harnessRef: null,
+      error: null,
+      startedAt: "2026-11-10T10:00:00.000Z",
+      finishedAt: "2026-11-10T10:08:00.000Z",
+    },
+    learnings: [
+      { ...LEARNING, id: "l-1", title: "L1", runMark: "updated" },
+      { ...LEARNING, id: "l-3", title: "L3", runMark: "new" },
+    ],
+  })
+
+  expect(await screen.findByText("L1")).toBeInTheDocument()
+  expect(urls.some((url) => url.includes("/api/learnings/runs/r-0"))).toBe(true)
+  expect(urls.some((url) => url.includes("/api/learnings?project=p-1&run=r-0"))).toBe(true)
+  expect(within(tabRow()).getByRole("link", { name: "Runs" })).toHaveAttribute(
+    "aria-current",
+    "page",
+  )
+  expect(screen.getByRole("heading", { name: /^Run · / })).toBeInTheDocument()
+  expect(screen.getByText(/finished .* · 1 new fix, 1 updated/)).toHaveTextContent(/^done/)
+  const cards = screen.getAllByRole("article")
+  expect(cards.map((card) => within(card).getByRole("link").textContent)).toEqual(["L1", "L3"])
+  expect(within(cards[0] as HTMLElement).getByText("updated")).toBeInTheDocument()
+  expect(within(cards[1] as HTMLElement).getByText("new")).toBeInTheDocument()
+  expect(screen.getByRole("link", { name: "← All runs" })).toHaveAttribute(
+    "href",
+    "/projects/p-1/runs",
   )
 })

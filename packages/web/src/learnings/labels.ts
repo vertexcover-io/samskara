@@ -34,3 +34,18 @@ export type FixTypeChoice = (typeof FIX_TYPE_ORDER)[number]
 
 export const plural = (count: number, word: string): string =>
   `${count} ${word}${count === 1 ? "" : "s"}`
+
+export const RUN_STATUS_TONE: Readonly<Record<string, string>> = {
+  done: "border-ok/40 text-ok",
+  failed: "border-err/40 text-err",
+  waiting: "border-rule text-ink-soft",
+  running: "border-rule text-ink-soft",
+}
+
+/** A run's status as a small mono chip. */
+export const runStatusClass = (status: string): string =>
+  `rounded-xs border px-1.5 py-0.5 font-mono text-[0.72rem] font-semibold ${RUN_STATUS_TONE[status] ?? RUN_STATUS_TONE.waiting}`
+
+/** What a run did, in the mockup's words: "1 new fix, 2 updated". */
+export const runWork = (created: number, updated: number): string =>
+  `${created} new ${created === 1 ? "fix" : "fixes"}, ${updated} updated`

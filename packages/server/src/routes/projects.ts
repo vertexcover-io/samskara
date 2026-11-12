@@ -55,7 +55,14 @@ export const projectsRoutes = ({ db, env }: Deps) =>
       ])
       if (row === null) return c.json({ error: "projectNotFound" }, 404)
       return c.json(
-        { project: { ...serialize(row), autoReview: row.autoReview }, viewerCanDelete: deletable },
+        {
+          project: {
+            ...serialize(row),
+            autoReview: row.autoReview,
+            fixRunEveryDays: row.fixRunEveryDays,
+          },
+          viewerCanDelete: deletable,
+        },
         200,
       )
     })

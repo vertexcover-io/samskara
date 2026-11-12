@@ -1194,6 +1194,17 @@ describe.skipIf(!dockerAvailable())("PATCH /api/projects/:id", () => {
     expect(await getAs(owner, projectId)).toMatchObject({ project: { autoReview: false } })
   })
 
+  test("SC727: the project page says how many days pass between automatic fix runs", async () => {
+    const owner = await seedUser(db, 1205, "sc727-owner")
+    const projectId = await projectsRepo.upsert(db, {
+      identity: { name: "Every", slug: "every" },
+      ownerId: owner,
+    })
+    await db.update(projects).set({ fixRunEveryDays: 3 }).where(eq(projects.id, projectId))
+
+    expect(await getAs(owner, projectId)).toMatchObject({ project: { fixRunEveryDays: 3 } })
+  })
+
   test("turning it on counts as today's pick, so the first pick waits for the next night", async () => {
     const owner = await seedUser(db, 1210, "auto-stamp-owner")
     const projectId = await projectsRepo.upsert(db, {

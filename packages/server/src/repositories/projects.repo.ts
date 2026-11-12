@@ -194,6 +194,7 @@ export type ProjectSummaryRow = {
   readonly repoOwner: string | null
   readonly repoName: string | null
   readonly autoReview: boolean
+  readonly fixRunEveryDays: number
 }
 
 const ownSessions = sql`"sessions" where "sessions"."projectId" = "projects"."id"`
@@ -216,6 +217,7 @@ const summaryColumns = {
   repoOwner: repos.owner,
   repoName: repos.repoName,
   autoReview: projects.autoReview,
+  fixRunEveryDays: projects.fixRunEveryDays,
 }
 
 export const listAccessibleSummaries = (

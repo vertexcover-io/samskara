@@ -6,6 +6,7 @@ export type ProjectTab = "overview" | "fixes" | "runs" | "settings"
 export const PROJECT_TABS: ReadonlyArray<{ readonly id: ProjectTab; readonly label: string }> = [
   { id: "overview", label: "Overview" },
   { id: "fixes", label: "Fixes" },
+  { id: "runs", label: "Runs" },
 ]
 
 /** Where a tab lives: Overview is the project's own path, every other tab a segment under it. */

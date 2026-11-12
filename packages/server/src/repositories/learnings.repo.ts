@@ -75,6 +75,51 @@ export const latestRun = async (db: Querier, projectId: string): Promise<Learnin
   return row ?? null
 }
 
+/**
+ * True when the learning has a problem from a run that started before the given instant: it
+ * existed before that run, so the run updated it rather than created it. `startedAt` is reset
+ * when the worker claims a run, so "before" is the order runs read problems in.
+ */
+const hadEarlierProblem = (learningId: SQL, before: SQL): SQL => sql`exists (
+  select 1 from "reviewProblems" earlier
+  join "learningRuns" er on er."id" = earlier."learningRunId"
+  where earlier."learningId" = ${learningId} and er."startedAt" < ${before}
+)`
+
+export type ListedRun = LearningRunRow & {
+  readonly fixesCreated: number
+  readonly fixesUpdated: number
+}
+
+/**
+ * The project's runs, newest first, with how many fixes each created and updated: the distinct
+ * learnings its problems were linked to, split by whether a learning had problems from an
+ * earlier run.
+ */
+export const listRuns = async (db: Querier, projectId: string): Promise<ListedRun[]> => {
+  // The outer run is named in full: with no join, Drizzle renders its columns unqualified, and a
+  // bare "id" inside the subquery would bind to the subquery's own row.
+  const touched = sql<number>`(
+    select count(distinct rp."learningId")::int from "reviewProblems" rp
+    where rp."learningRunId" = "learningRuns"."id" and rp."learningId" is not null
+  )`
+  const created = sql<number>`(
+    select count(distinct rp."learningId")::int from "reviewProblems" rp
+    where rp."learningRunId" = "learningRuns"."id" and rp."learningId" is not null
+      and not ${hadEarlierProblem(sql`rp."learningId"`, sql`"learningRuns"."startedAt"`)}
+  )`
+  const rows = await db
+    .select({ run: learningRuns, touched, created })
+    .from(learningRuns)
+    .where(eq(learningRuns.projectId, projectId))
+    .orderBy(desc(learningRuns.startedAt))
+  return rows.map((row) => ({
+    ...row.run,
+    fixesCreated: row.created,
+    fixesUpdated: row.touched - row.created,
+  }))
+}
+
 const problemColumns = {
   id: reviewProblems.id,
   reviewId: reviewProblems.reviewId,
@@ -295,6 +340,8 @@ export type ListedLearning = LearningRow & {
   readonly lastSeenAt: Date | null
   /** How many of those sessions were active in the last 7 days. */
   readonly sessionsLast7Days: number
+  /** With a run filter: whether that run created this learning or updated it; otherwise null. */
+  readonly runMark: "new" | "updated" | null
 }
 
 /** Which of a project's learnings to list. Every field narrows; an empty filter lists them all. */
@@ -304,6 +351,8 @@ export type LearningFilter = {
   readonly seenFrom?: Date | undefined
   /** …and before this one. */
   readonly seenBefore?: Date | undefined
+  /** Only learnings this run touched: one of its problems is linked to them. */
+  readonly runId?: string | undefined
 }
 
 /**
@@ -315,6 +364,11 @@ export type LearningFilter = {
 const filterConditions = (filter: LearningFilter): SQL[] => {
   const conditions: SQL[] = []
   if (filter.fixType !== undefined) conditions.push(eq(learnings.fixType, filter.fixType))
+  if (filter.runId !== undefined)
+    conditions.push(sql`exists (
+      select 1 from "reviewProblems" rp
+      where rp."learningId" = ${learnings.id} and rp."learningRunId" = ${filter.runId}
+    )`)
   if (filter.seenFrom !== undefined || filter.seenBefore !== undefined) {
     const from =
       filter.seenFrom === undefined
@@ -355,6 +409,13 @@ export const listLearnings = async (
   const firstSeenAt = sql<string | null>`min(${sessionActivityAt})`
   const lastSeenAt = sql<string | null>`max(${sessionActivityAt})`
   const sessionsLast7Days = sql<number>`(count(distinct ${reviewProblems.sessionId}) filter (where ${sessionActivityAt} >= now() - interval '7 days'))::int`
+  const runMark =
+    filter.runId === undefined
+      ? sql<"new" | "updated" | null>`null`
+      : sql<"new" | "updated">`case when ${hadEarlierProblem(
+          sql`${learnings.id}`,
+          sql`(select "startedAt" from "learningRuns" where "id" = ${filter.runId})`,
+        )} then 'updated' else 'new' end`
   const rows = await db
     .select({
       learning: learnings,
@@ -363,6 +424,7 @@ export const listLearnings = async (
       firstSeenAt,
       lastSeenAt,
       sessionsLast7Days,
+      runMark,
     })
     .from(learnings)
     .leftJoin(reviewProblems, eq(reviewProblems.learningId, learnings.id))
@@ -383,6 +445,7 @@ export const listLearnings = async (
     firstSeenAt: asDate(row.firstSeenAt),
     lastSeenAt: asDate(row.lastSeenAt),
     sessionsLast7Days: row.sessionsLast7Days,
+    runMark: row.runMark,
   }))
 }
 
