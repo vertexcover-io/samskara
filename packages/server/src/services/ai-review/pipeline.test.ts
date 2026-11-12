@@ -6,11 +6,12 @@ import { MAX_REVIEW_MD_BYTES } from "@samskara/core"
 import Database from "better-sqlite3"
 import { eq, sql } from "drizzle-orm"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
-import type { Db } from "../../db/client.js"
+import { createDb, type Db } from "../../db/client.js"
 import {
   messages,
   projects,
   reviewProblems as reviewProblemsTable,
+  reviewReaderReplies,
   sessionReviews,
   sessions,
   tokenUsage,
@@ -97,11 +98,13 @@ const normalizedFixtures: ReadonlyArray<NormalizedMessage> = [
 
 describe.skipIf(!dockerAvailable())("runAiReview", () => {
   let db: Db
+  let dbUrl: string
   let teardown: () => Promise<void>
 
   beforeAll(async () => {
     const started = await startTestDb()
     db = started.db
+    dbUrl = started.url
     teardown = started.teardown
   }, 120_000)
 
@@ -824,6 +827,184 @@ The whole session, the earlier part and the deploy.
         code: "sessionNotFound",
       })
       expect(seen).toHaveLength(0)
+    })
+
+    describe("reader replies kept across tries of one review", () => {
+      /** One lead per piece, each quoting its own piece, so leads.md shows which pieces were read. */
+      const READER_REPLIES: Readonly<Record<string, string>> = {
+        "main, part 1": '- msg-2 — "the build is fixed" — said before any test was rerun',
+        "helper agent:a": '- msg-3 — "helper a read the logs" — read the logs, fixed nothing',
+        "helper agent:b": '- msg-4 — "helper b ran the linter" — ran the linter, not the tests',
+      }
+
+      /** Stores one message on a helper track, after the fixture's four. */
+      const addHelperMessage = async (track: string, line: number, text: string) => {
+        await db.insert(messages).values({
+          sessionId,
+          lineUuid: crypto.randomUUID(),
+          subIndex: 0,
+          msgType: "message",
+          role: "assistant",
+          lineNumber: line,
+          source: "claude_code",
+          sourceRelativePath: "test.jsonl",
+          trackId: track,
+          raw: {},
+          sourceSchemaVersion: 1,
+          content: { type: "text", value: text },
+          details: {},
+          timestamp: new Date(T0_PLUS_120S + line * 1000),
+        })
+      }
+
+      /** The session in three pieces, and a running review run on its first try. */
+      const threePieceReview = async (): Promise<ReviewRun> => {
+        await addHelperMessage("agent:a", 5, "helper a read the logs")
+        await addHelperMessage("agent:b", 6, "helper b ran the linter")
+        const [row] = await db
+          .insert(sessionReviews)
+          .values({
+            sessionId,
+            projectId,
+            analyzer: "ai-problems-v2",
+            status: "running",
+            attempts: 1,
+          })
+          .returning({ id: sessionReviews.id })
+        if (row === undefined) throw new Error("seed review failed")
+        return { id: row.id, sessionId, newPartOnly: false, basedOn: null }
+      }
+
+      /**
+       * One try's agents: each reader call is recorded by its piece, `failReader` names a piece
+       * whose reader throws, and the reviewer throws when `reviewerFails`.
+       */
+      const tryRunner = (opts: {
+        readonly failReader?: string
+        readonly reviewerFails?: boolean
+      }) => {
+        const readers: string[] = []
+        const reviewerLeads: string[] = []
+        let reviewerCalls = 0
+        const runner: HarnessRunner = {
+          run: async ({ workspaceDir, oneShot, prompt }) => {
+            if (oneShot) {
+              const piece = /# The piece: (.+)/.exec(prompt)?.[1] ?? "?"
+              readers.push(piece)
+              if (piece === opts.failReader) throw new Error("harness run timed out")
+              return { stdout: READER_REPLIES[piece] ?? "Nothing found.", firstByteMs: 1 }
+            }
+            reviewerCalls += 1
+            if (opts.reviewerFails === true) throw new Error("reviewer crashed")
+            reviewerLeads.push(readFileSync(join(workspaceDir, "leads.md"), "utf8"))
+            writeFileSync(join(workspaceDir, "review.md"), problemsMd("the build is fixed"))
+            writeFileSync(join(workspaceDir, "leads-answered.md"), "")
+            return { stdout: "review.md ready", firstByteMs: 1 }
+          },
+        }
+        return { runner, readers, reviewerLeads, reviewerCalls: () => reviewerCalls }
+      }
+
+      const readersDone = (lines: ReadonlyArray<Record<string, unknown>>) =>
+        lines.find((line) => line.milestone === "readers_done")
+
+      test("SC401: a retry after one reader failed calls the model only for that reader, then the reviewer", async () => {
+        const run = await threePieceReview()
+        const first = tryRunner({ failReader: "helper agent:b", reviewerFails: true })
+        expect(await runAiReview(depsWith(first.runner), run)).toMatchObject({
+          kind: "error",
+          code: "harnessFailed",
+        })
+        expect([...first.readers].sort()).toEqual([
+          "helper agent:a",
+          "helper agent:b",
+          "main, part 1",
+        ])
+
+        const second = tryRunner({})
+        expect(await runAiReview(depsWith(second.runner), run)).toMatchObject({
+          kind: "ok",
+        })
+        expect(second.readers).toEqual(["helper agent:b"])
+        expect(second.reviewerCalls()).toBe(1)
+        const leads = second.reviewerLeads[0] ?? ""
+        for (const quote of [
+          "the build is fixed",
+          "helper a read the logs",
+          "helper b ran the linter",
+        ])
+          expect(leads).toContain(quote)
+      })
+
+      test("SC402: replies saved by one try are reused by a try on a new database connection, as after a worker restart", async () => {
+        const run = await threePieceReview()
+        const first = tryRunner({ reviewerFails: true })
+        await runAiReview(depsWith(first.runner), run)
+        expect(first.readers).toHaveLength(3)
+
+        const restarted = createDb(dbUrl)
+        try {
+          const second = tryRunner({})
+          const captured = captureLogger()
+          const result = await runAiReview(
+            depsWith(second.runner, { db: restarted.db, log: captured.log }),
+            run,
+          )
+          expect(result).toMatchObject({ kind: "ok" })
+          expect(second.readers).toEqual([])
+          expect(readersDone(captured.lines)).toMatchObject({ pieces: 3, reused: 3 })
+        } finally {
+          await restarted.client.end()
+        }
+      })
+
+      test("SC403: a message added to one piece between tries reruns only that piece's reader", async () => {
+        const run = await threePieceReview()
+        await runAiReview(depsWith(tryRunner({ reviewerFails: true }).runner), run)
+        await addHelperMessage("agent:a", 7, "helper a restarted the service")
+
+        const second = tryRunner({})
+        expect(await runAiReview(depsWith(second.runner), run)).toMatchObject({
+          kind: "ok",
+        })
+        expect(second.readers).toEqual(["helper agent:a"])
+      })
+
+      test("SC410: a review saved done leaves no saved replies on its row", async () => {
+        const run = await threePieceReview()
+        const repliesOnRow = async () =>
+          db.select().from(reviewReaderReplies).where(eq(reviewReaderReplies.reviewId, run.id))
+        await runAiReview(depsWith(tryRunner({ reviewerFails: true }).runner), run)
+        expect(await repliesOnRow()).toHaveLength(3)
+
+        const second = tryRunner({})
+        expect(await runAiReview(depsWith(second.runner), run)).toMatchObject({
+          kind: "ok",
+        })
+        const [row] = await db.select().from(sessionReviews).where(eq(sessionReviews.id, run.id))
+        expect(row?.status).toBe("done")
+        expect(await repliesOnRow()).toEqual([])
+      })
+
+      test("SC408: a reply that cannot be saved is logged, and the review still uses the reader's leads", async () => {
+        const run = await threePieceReview()
+        const agents = tryRunner({})
+        const captured = captureLogger()
+        // Every insert into the replies table is refused, as a lost connection would.
+        await db.execute(
+          sql`alter table "reviewReaderReplies" add constraint "refuseAll" check (false) not valid`,
+        )
+        try {
+          const result = await runAiReview(depsWith(agents.runner, { log: captured.log }), run)
+          expect(result).toMatchObject({ kind: "ok" })
+        } finally {
+          await db.execute(sql`alter table "reviewReaderReplies" drop constraint "refuseAll"`)
+        }
+        expect(
+          captured.at("warn").filter((line) => line.msg === "a reader reply could not be saved"),
+        ).toHaveLength(3)
+        expect(agents.reviewerLeads[0]).toContain("helper b ran the linter")
+      })
     })
   })
 })

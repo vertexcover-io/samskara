@@ -581,6 +581,24 @@ export const sessionReviews = pgTable(
 )
 
 /**
+ * A reader's reply from a try of a review that has not ended, kept so a retry of the same
+ * review reruns only the readers that have none. Keyed by the hash of the piece's records the
+ * reader read (`pieceHash` in @samskara/core), so a piece whose records changed is read again.
+ */
+export const reviewReaderReplies = pgTable(
+  "reviewReaderReplies",
+  {
+    reviewId: uuid("reviewId")
+      .notNull()
+      .references(() => sessionReviews.id, { onDelete: "cascade" }),
+    pieceHash: text("pieceHash").notNull(),
+    reply: text("reply").notNull(),
+    createdAt,
+  },
+  (t) => [primaryKey({ columns: [t.reviewId, t.pieceHash] })],
+)
+
+/**
  * One run of the learning step over one project: the problems no run had considered yet,
  * grouped by cause and turned into learnings. Every problem the run considered points back at
  * it, which is how the next run knows what is new.
