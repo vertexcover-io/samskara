@@ -1,4 +1,3 @@
-import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
 import type { Db } from "../db/client.js"
 import { messages, sessionReviews, users } from "../db/schema.js"
@@ -135,34 +134,6 @@ describe.skipIf(!dockerAvailable())("reviews repository", () => {
     await run("F", 6, { ...done, summary: "F", status: "done", newPartOnly: true })
     await run("G", 7, { status: "waiting", newPartOnly: true })
     expect(await shown()).toEqual(["F", "E"])
-  })
-
-  test("SC5: a failed AI review does not count as reviewed, so the batch tries the session again; once done it counts", async () => {
-    const sessionId = "failed-ai-review"
-    const { userId, projectId } = await seedSession(sessionId)
-    const [failed] = await db
-      .insert(sessionReviews)
-      .values({
-        sessionId,
-        projectId,
-        analyzer: "ai-problems-v2",
-        status: "failed",
-        error: "harness timed out",
-      })
-      .returning()
-    if (!failed) throw new Error("seed review failed")
-    const query = { userId, sessionId, analyzer: "ai-problems-v2" }
-
-    expect(await reviewsRepo.hasReviewFrom(db, query)).toBe(false)
-    expect(await reviewsRepo.getReview(db, failed.id)).toBeNull()
-
-    await db
-      .update(sessionReviews)
-      .set({ status: "done", outcome: "shipped", summary: "s", signals: {}, error: null })
-      .where(eq(sessionReviews.id, failed.id))
-
-    expect(await reviewsRepo.hasReviewFrom(db, query)).toBe(true)
-    expect(await reviewsRepo.getReview(db, failed.id)).toMatchObject({ status: "done" })
   })
 })
 

@@ -330,8 +330,12 @@ export const reviewRoutes = ({ db, env, notifyWorker, credentialEnv }: AiReviewD
         })),
       )
       const newest = runs[0]
+      // The newest shown run is the newest done run: the same base `mode: "newMessages"` uses.
+      const newMessages =
+        newest === undefined ? false : await hasNewMessagesSince(db, sessionId, newest.id)
       return c.json(
         {
+          newMessages,
           review:
             newest === undefined
               ? null

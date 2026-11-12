@@ -193,10 +193,25 @@ test("SC28: pressing Review clears the ticks and shows the note, with no panel",
   expect(await screen.findByRole("status")).toHaveTextContent(
     "Queued 2 sessions for review. Fixes will be found in 1 project once the reviews finish.",
   )
-  expect(calls.starts).toEqual([{ sessionIds: ["s-1", "s-2"] }])
+  expect(calls.starts).toEqual([{ sessionIds: ["s-1", "s-2"], mode: "newMessages" }])
   expect(summary()).toBe("0 selected")
   expect(screen.queryByRole("region", { name: "Review progress" })).toBeNull()
   expect(calls.other.filter((path) => path.includes("review-batches"))).toEqual([])
+})
+
+test("SC27: picking Full review in the bar sends mode full with both ticked sessions", async () => {
+  const calls = stubFetch({
+    start: () => jsonResponse(202, { queued: 2, skipped: 0, notAllowed: [], fixRunsQueued: 1 }),
+  })
+  renderAt("/sessions")
+  await screen.findByRole("link", { name: /first session/i })
+
+  await userEvent.click(pageBox())
+  await userEvent.selectOptions(screen.getByRole("combobox", { name: "Review" }), "Full review")
+  await userEvent.click(screen.getByRole("button", { name: "Review and find fixes" }))
+
+  await screen.findByRole("status")
+  expect(calls.starts).toEqual([{ sessionIds: ["s-1", "s-2"], mode: "full" }])
 })
 
 test("SC29: a refused start shows a plain reason and keeps the ticks", async () => {

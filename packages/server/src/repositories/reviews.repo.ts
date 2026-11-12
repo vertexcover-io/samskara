@@ -128,31 +128,6 @@ export const listReviewsForSession = async (
     .orderBy(desc(sessionReviews.createdAt))
     .then((rows) => rows.map((row) => asDone(row.sessionReviews)))
 
-/**
- * Whether the session has a review with a result from `analyzer` the viewer may read, without
- * loading it. A failed first review does not count, so Review on ticked sessions tries that
- * session again.
- */
-export const hasReviewFrom = async (
-  db: Querier,
-  query: { readonly userId: string; readonly sessionId: string; readonly analyzer: string },
-): Promise<boolean> => {
-  const row = await db
-    .select({ id: sessionReviews.id })
-    .from(sessionReviews)
-    .innerJoin(projects, eq(projects.id, sessionReviews.projectId))
-    .where(
-      and(
-        eq(sessionReviews.sessionId, query.sessionId),
-        eq(sessionReviews.analyzer, query.analyzer),
-        isDone,
-        visibleToUser(db, query.userId),
-      ),
-    )
-    .limit(1)
-  return row.length > 0
-}
-
 /** The session's project when the viewer could open the session — null when invisible or missing. */
 export const visibleSessionProjectId = async (
   db: Querier,
