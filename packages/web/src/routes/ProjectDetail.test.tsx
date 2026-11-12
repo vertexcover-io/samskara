@@ -435,6 +435,25 @@ test("SC748: an admin saves automatic review and the fix-run interval, and Runs 
   expect(projectFetches(urls)).toBe(1)
 })
 
+test("Saved never sits beside an unsaved interval: typing after a save, or ticking the box with an edit pending, shows no Saved", async () => {
+  const urls = renderDetail(PROJECT, { entry: "/projects/p-1/settings", viewerCanEdit: true })
+  const user = userEvent.setup()
+  await screen.findByRole("checkbox", { name: "On" })
+
+  await user.clear(daysField())
+  await user.type(daysField(), "4")
+  await user.click(screen.getByRole("button", { name: "Save" }))
+  expect(await screen.findByText("Saved")).toBeInTheDocument()
+  await user.clear(daysField())
+  await user.type(daysField(), "9")
+  expect(screen.queryByText("Saved")).toBeNull()
+
+  await user.click(screen.getByRole("checkbox", { name: "On" }))
+  await waitFor(() => expect(patches(urls)).toHaveLength(2))
+  expect(screen.queryByText("Saved")).toBeNull()
+  expect(daysField()).toHaveValue(9)
+})
+
 test.each([
   ["7", false],
   ["0", false],

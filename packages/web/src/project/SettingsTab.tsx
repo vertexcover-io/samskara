@@ -132,7 +132,8 @@ export const SettingsTab = ({
       {canEdit ? null : (
         <p className="text-[0.82rem] text-ink-soft">Only a project admin can change these.</p>
       )}
-      {status.kind === "saved" ? (
+      {/* A pending days edit is not saved, whichever control saved last. */}
+      {status.kind === "saved" && days === String(settings.fixRunEveryDays) ? (
         <p role="status" className="text-[0.82rem] text-ok">
           Saved
         </p>
