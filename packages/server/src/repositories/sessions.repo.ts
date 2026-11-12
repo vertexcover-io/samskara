@@ -915,6 +915,7 @@ export const sessionMessages = (db: Querier, sessionId: string) =>
       subIndex: messages.subIndex,
       trackId: messages.trackId,
       timestamp: sql<string | null>`${messages.timestamp}`,
+      createdAt: sql<string>`${messages.createdAt}`,
       agentId: messages.agentId,
       isSubagent: messages.isSubagent,
       model: messages.model,

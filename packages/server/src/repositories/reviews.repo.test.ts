@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
 import type { Db } from "../db/client.js"
-import { sessionReviews, users } from "../db/schema.js"
+import { messages, sessionReviews, users } from "../db/schema.js"
 import { dockerAvailable, startTestDb } from "../db/testDb.js"
 import * as projectsRepo from "./projects.repo.js"
 import * as reviewsRepo from "./reviews.repo.js"
@@ -43,6 +43,62 @@ describe.skipIf(!dockerAvailable())("reviews repository", () => {
     })
     return { userId: user.id, projectId }
   }
+
+  const seedMessage = async (
+    sessionId: string,
+    values: { msgType?: string; timestamp: Date | null; lineNumber: number },
+  ) => {
+    const [row] = await db
+      .insert(messages)
+      .values({
+        sessionId,
+        lineUuid: crypto.randomUUID(),
+        subIndex: 0,
+        msgType: values.msgType ?? "message",
+        role: (values.msgType ?? "message") === "message" ? "user" : null,
+        lineNumber: values.lineNumber,
+        raw: {},
+        sourceSchemaVersion: 1,
+        timestamp: values.timestamp,
+      })
+      .returning({ id: messages.id })
+    if (!row) throw new Error("seed message failed")
+    return row.id
+  }
+
+  test("SC19: token reports and turn markers after a done run are not new; a message at a later timestamp is", async () => {
+    const sessionId = "new-messages"
+    const { projectId } = await seedSession(sessionId)
+    const last = await seedMessage(sessionId, {
+      timestamp: new Date("2026-01-01T10:00:00Z"),
+      lineNumber: 1,
+    })
+    const [run] = await db
+      .insert(sessionReviews)
+      .values({
+        sessionId,
+        projectId,
+        analyzer: "ai-problems-v2",
+        status: "done",
+        outcome: "shipped",
+        summary: "s",
+        signals: {},
+        lastMessageId: last,
+      })
+      .returning()
+    if (!run) throw new Error("seed run failed")
+    const later = new Date("2026-01-01T11:00:00Z")
+    await seedMessage(sessionId, { msgType: "usage", timestamp: later, lineNumber: 2 })
+    await seedMessage(sessionId, { msgType: "turnEvent", timestamp: later, lineNumber: 3 })
+
+    expect(await reviewsRepo.hasNewMessagesSince(db, sessionId, run.id)).toBe(false)
+    expect(await reviewsRepo.latestDoneRun(db, sessionId, "ai-problems-v2")).toMatchObject({
+      id: run.id,
+    })
+
+    await seedMessage(sessionId, { timestamp: later, lineNumber: 4 })
+    expect(await reviewsRepo.hasNewMessagesSince(db, sessionId, run.id)).toBe(true)
+  })
 
   test("SC5: the page shows the latest done full run and the done new-part runs after it; failed and waiting runs never show", async () => {
     const sessionId = "review-chain"

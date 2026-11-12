@@ -17,8 +17,8 @@ export const fetchSessionReviews = (
 export type ReviewerChoice = {
   readonly harness?: "opencode" | "claude"
   readonly model?: string
-  /** `full` reads the whole session; every run is a new review. */
-  readonly mode?: "full"
+  /** `full` reads the whole session; `newMessages` only what the last review did not. */
+  readonly mode?: "full" | "newMessages"
 }
 
 /** Starts a harness-run analysis; 202 hands back a job id, 403/503 come back as error codes. */

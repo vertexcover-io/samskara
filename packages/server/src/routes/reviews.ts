@@ -18,7 +18,12 @@ import {
   listProblemsForSession,
   type ReviewProblemRow,
 } from "../repositories/reviewProblems.repo.js"
-import { listReviewsForSession, visibleSessionProjectId } from "../repositories/reviews.repo.js"
+import {
+  hasNewMessagesSince,
+  latestDoneRun,
+  listReviewsForSession,
+  visibleSessionProjectId,
+} from "../repositories/reviews.repo.js"
 import {
   activeReview,
   queueReview,
@@ -115,8 +120,11 @@ const analyzeBodySchema = z
     // The charset is the guard, not just the quoting: this value reaches the msb runner's
     // in-guest shell command, and the guest has the workspace mounted at /work.
     model: z.string().trim().min(1).max(100).regex(REVIEW_MODEL_PATTERN).optional(),
-    /** `full` reads the whole session. Every run is a new row; nothing earlier is replaced. */
-    mode: z.enum(["full"]).optional(),
+    /**
+     * `full` reads the whole session; `newMessages` reads only what the newest done run did not,
+     * and is refused when there is nothing new. Every run is a new row.
+     */
+    mode: z.enum(["full", "newMessages"]).optional(),
     /** The user's own review prompt, any shape; merged into the review's base instructions. */
     prompt: z.string().trim().min(1).max(MAX_USER_PROMPT_CHARS).optional(),
   })
@@ -204,7 +212,9 @@ export const reviewRoutes = ({ db, env, notifyWorker, credentialEnv }: AiReviewD
      * Queue a harness-run AI review for the worker as a new run. Editor-gated, then refused
      * synchronously when the chosen harness has no credential. A run already waiting or running
      * for this session answers 409 analysisAlreadyRunning (join it via GET /:id/aireview's `job`
-     * field). Otherwise 202 with the new row's id as `jobId`, and the caller polls.
+     * field). `mode: "newMessages"` continues from the newest done run and answers 400
+     * nothingNew when there is none or nothing came after it. Otherwise 202 with the new row's
+     * id as `jobId`, and the caller polls.
      */
     .post(
       "/:id/analyze",
@@ -238,10 +248,20 @@ export const reviewRoutes = ({ db, env, notifyWorker, credentialEnv }: AiReviewD
         if ((await activeReview(db, sessionId, PROBLEMS_ANALYZER)) !== null)
           return c.json({ error: "analysisAlreadyRunning" }, 409)
         const body = c.req.valid("json")
+        const base =
+          body?.mode === "newMessages"
+            ? await latestDoneRun(db, sessionId, PROBLEMS_ANALYZER)
+            : null
+        if (
+          body?.mode === "newMessages" &&
+          (base === null || !(await hasNewMessagesSince(db, sessionId, base.id)))
+        )
+          return c.json({ error: "nothingNew" }, 400)
         const queued = await queueReview(db, {
           sessionId,
           projectId,
           analyzer: PROBLEMS_ANALYZER,
+          ...(base === null ? {} : { basedOn: base.id }),
           options: {
             ...(body?.harness === undefined ? {} : { harness: body.harness }),
             ...(body?.model === undefined ? {} : { model: body.model }),

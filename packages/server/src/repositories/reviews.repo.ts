@@ -33,6 +33,78 @@ export const shownRun = (alias: SQL): SQL => sql`(${alias}."status" = 'done' and
 ))`
 
 /**
+ * Message types that carry no conversation: never "new" on their own, so a session that only
+ * gained token reports or turn markers has nothing to review.
+ */
+const SILENT_TYPES = sql`('turnEvent', 'custom', 'usage')`
+
+/**
+ * True when session `sessionId` has a message newer than run `run` read: a later `timestamp`
+ * than the run's `lastMessageId` message in any track, or no timestamp and stored after the
+ * run finished (`updatedAt`). A run that read nothing makes every message new. `run` is a
+ * review row alias in raw SQL. Time, not line number: each subagent numbers its own lines.
+ */
+export const newMessagesAfter = (sessionId: SQL, run: SQL): SQL => sql`exists (
+  select 1 from "messages" nm
+  where nm."sessionId" = ${sessionId}
+    and nm."msgType" not in ${SILENT_TYPES}
+    and (
+      (nm."timestamp" is not null and nm."timestamp" > coalesce(
+        (select lm."timestamp" from "messages" lm where lm."id" = ${run}."lastMessageId"),
+        '-infinity'::timestamptz))
+      or (nm."timestamp" is null and nm."createdAt" > ${run}."updatedAt")
+    )
+)`
+
+/** The session's newest done run of `analyzer`: the newest run of its shown chain. */
+export const latestDoneRun = async (
+  db: Querier,
+  sessionId: string,
+  analyzer: string,
+): Promise<DoneReviewRow | null> => {
+  const [row] = await db
+    .select()
+    .from(sessionReviews)
+    .where(
+      and(eq(sessionReviews.sessionId, sessionId), eq(sessionReviews.analyzer, analyzer), isDone),
+    )
+    .orderBy(desc(sessionReviews.createdAt))
+    .limit(1)
+  return row === undefined ? null : asDone(row)
+}
+
+/** Whether the session has messages newer than run `runId` read. */
+export const hasNewMessagesSince = async (
+  db: Querier,
+  sessionId: string,
+  runId: string,
+): Promise<boolean> => {
+  const rows = await db.execute<{ yes: boolean }>(sql`
+    select ${newMessagesAfter(sql`${sessionId}`, sql`r`)} as "yes"
+    from "sessionReviews" r where r."id" = ${runId}`)
+  return rows[0]?.yes === true
+}
+
+/** The shown chain of a session, newest first, with no viewer check: for the worker. */
+export const shownRunsOf = async (
+  db: Querier,
+  sessionId: string,
+  analyzer: string,
+): Promise<DoneReviewRow[]> =>
+  db
+    .select()
+    .from(sessionReviews)
+    .where(
+      and(
+        eq(sessionReviews.sessionId, sessionId),
+        eq(sessionReviews.analyzer, analyzer),
+        shownRun(sql`"sessionReviews"`),
+      ),
+    )
+    .orderBy(desc(sessionReviews.createdAt))
+    .then((rows) => rows.map(asDone))
+
+/**
  * The session's shown runs (`shownRun`), newest first: the newest supplies the outcome and
  * summary a page shows. Scoped by `visibleToUser` — a session's reviews are readable exactly
  * by whoever could open the session itself.

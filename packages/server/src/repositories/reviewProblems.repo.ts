@@ -1,5 +1,5 @@
 import type { Problem } from "@samskara/core"
-import { and, asc, eq } from "drizzle-orm"
+import { and, asc, desc, eq, inArray } from "drizzle-orm"
 import type { Querier } from "../db/client.js"
 import { projects, reviewProblems } from "../db/schema.js"
 import { visibleToUser } from "./projects.repo.js"
@@ -64,3 +64,17 @@ export const listProblemsForSession = async (
     )
     .orderBy(asc(reviewProblems.reviewId), asc(reviewProblems.position))
     .then((rows) => rows.map((row) => row.reviewProblems))
+
+/** The titles of the given runs' problems, newest run first, each run's in its own order. */
+export const problemTitlesOf = async (
+  db: Querier,
+  reviewIds: ReadonlyArray<string>,
+): Promise<string[]> => {
+  if (reviewIds.length === 0) return []
+  const rows = await db
+    .select({ title: reviewProblems.title })
+    .from(reviewProblems)
+    .where(inArray(reviewProblems.reviewId, [...reviewIds]))
+    .orderBy(desc(reviewProblems.createdAt), asc(reviewProblems.position))
+  return rows.map((row) => row.title)
+}

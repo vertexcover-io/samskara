@@ -442,6 +442,156 @@ The agent claimed the build was fixed after the tests failed.
       expect((await doneRuns()).map((row) => row.id).sort()).toEqual([firstId, secondId].sort())
     })
 
+    test("SC17: a new-part run reads the context and the new records only, saves its own row and the problem that touches new, and leaves the base run untouched", async () => {
+      const lastRead = await db
+        .select({ id: messages.id })
+        .from(messages)
+        .where(eq(messages.timestamp, new Date(T0_PLUS_120S)))
+      const [base] = await db
+        .insert(sessionReviews)
+        .values({
+          sessionId,
+          projectId,
+          analyzer: "ai-problems-v2",
+          status: "done",
+          outcome: "struggled",
+          summary: "the earlier verdict",
+          signals: { run: { recordIds: ["x"] } },
+          lastMessageId: lastRead[0]?.id ?? null,
+        })
+        .returning()
+      if (base === undefined) throw new Error("seed base failed")
+      await db.insert(reviewProblemsTable).values({
+        reviewId: base.id,
+        sessionId,
+        projectId,
+        position: 0,
+        title: "An earlier problem",
+        class: "missed",
+        severity: "low",
+        severityReason: "r",
+        fixType: "skill",
+        description: "d",
+        evidence: [],
+        learning: "l",
+      })
+      const baseBefore = await db
+        .select()
+        .from(sessionReviews)
+        .where(eq(sessionReviews.id, base.id))
+      const later = (seconds: number) => new Date(T0_PLUS_120S + 300_000 + seconds * 1000)
+      const newMessage = (trackId: string, lineNumber: number, value: string, at: Date) =>
+        db
+          .insert(messages)
+          .values({
+            sessionId,
+            lineUuid: crypto.randomUUID(),
+            subIndex: 0,
+            msgType: "message",
+            role: "assistant",
+            lineNumber,
+            trackId,
+            raw: {},
+            sourceSchemaVersion: 1,
+            content: { type: "text", value },
+            details: {},
+            timestamp: at,
+          })
+          .returning({ id: messages.id })
+      await newMessage("main", 5, "deploying now", later(0))
+      // A subagent numbers its lines from 1, so it sorts first in the new part: msg-3.
+      const [subagentLast] = await newMessage(
+        "agent:a1",
+        1,
+        "skipped the migration check",
+        later(1),
+      )
+
+      const queued = await queueReview(db, {
+        sessionId,
+        projectId,
+        analyzer: "ai-problems-v2",
+        options: {},
+        basedOn: base.id,
+      })
+      const run = { id: queued?.id as string, sessionId, newPartOnly: true, basedOn: base.id }
+      const reviewMd = `# Review
+
+- **Outcome:** struggled
+
+## Summary
+
+The whole session, the earlier part and the deploy.
+
+## Problems
+
+### Skipped the migration check
+
+- **Class:** missed
+- **Severity:** high — a broken schema could ship
+- **Fix type:** skill
+- **Description:** The helper was expected to run the migration check. It skipped it.
+- **Evidence:** msg-3 — "skipped the migration check" — this is wrong: the check never ran.
+- **Learning:** Run the migration check before deploying.
+
+### Said the build was fixed after the tests failed
+
+- **Class:** missed
+- **Severity:** high — a broken build would have shipped
+- **Fix type:** skill
+- **Description:** The agent was expected to rerun the tests. It said fixed.
+- **Evidence:** msg-2 — "the build is fixed" — this is wrong: the only test run failed.
+- **Learning:** Rerun the failing tests first.
+`
+      const { runner, seen } = problemsRunner(reviewMd)
+
+      const result = await runAiReview(depsWith(runner), run, {})
+
+      expect(result).toMatchObject({ kind: "ok", reviewId: run.id })
+      const staged = seen.find((entry) => entry.session !== undefined)
+      const records =
+        (staged?.session as { records?: Array<{ id: string; text?: string }> } | undefined)
+          ?.records ?? []
+      expect(records.map((record) => record.id)).toEqual([
+        "msg-0",
+        "msg-1",
+        "msg-2",
+        "msg-3",
+        "msg-4",
+      ])
+      expect(
+        records
+          .slice(3)
+          .map((record) => record.text)
+          .sort(),
+      ).toEqual(["deploying now", "skipped the migration check"])
+      expect(staged?.files).toContain("session.json")
+
+      const [row] = await db.select().from(sessionReviews).where(eq(sessionReviews.id, run.id))
+      expect(row).toMatchObject({
+        status: "done",
+        newPartOnly: true,
+        basedOn: base.id,
+        lastMessageId: subagentLast?.id,
+      })
+      expect(
+        (row?.signals as { run?: { recordIds: unknown[] } } | undefined)?.run?.recordIds,
+      ).toHaveLength(5)
+      expect((row?.signals as { dropped?: string[] } | undefined)?.dropped).toEqual([
+        `"Said the build was fixed after the tests failed": its evidence is all in the already-reviewed context`,
+      ])
+      const problems = await savedProblems()
+      expect(problems.filter((p) => p.reviewId === run.id).map((p) => p.title)).toEqual([
+        "Skipped the migration check",
+      ])
+      expect(problems.filter((p) => p.reviewId === base.id).map((p) => p.title)).toEqual([
+        "An earlier problem",
+      ])
+      expect(await db.select().from(sessionReviews).where(eq(sessionReviews.id, base.id))).toEqual(
+        baseBefore,
+      )
+    })
+
     test("PR9: no review.md is deliverableMissing, and one past the size cap saves nothing", async () => {
       const missing: HarnessRunner = { run: async () => ({ stdout: "", firstByteMs: null }) }
       expect(await runAiReview(depsWith(missing), await queuedRun(), {})).toMatchObject({
