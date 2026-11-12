@@ -322,6 +322,32 @@ test("an old ?show=skipped link lists the skipped fixes under the default Show c
   expect(screen.getByRole("combobox", { name: "Show" })).toHaveValue("5")
 })
 
+test("from an old ?show=skipped link, choosing Open lists open fixes, and changing Show then keeps Status as chosen", async () => {
+  stubFetch([
+    {
+      match: "/api/learnings",
+      status: 200,
+      body: { learnings: FOUR, latestRun: RUN, canEdit: true },
+    },
+  ])
+  renderPage("/projects/p-1/fixes?show=skipped&type=skill")
+  const user = userEvent.setup()
+
+  await screen.findByText(SKIPPED.title)
+  expect(screen.getByTestId("location")).toHaveTextContent(
+    /^\/projects\/p-1\/fixes\?type=skill&status=skipped$/,
+  )
+
+  await user.selectOptions(screen.getByRole("combobox", { name: "Status" }), "open")
+  expect(shownTitles()).toEqual([OPEN.title, ACCEPTED.title])
+  expect(screen.getByTestId("location")).toHaveTextContent(/^\/projects\/p-1\/fixes\?type=skill$/)
+
+  await user.selectOptions(screen.getByRole("combobox", { name: "Status" }), "skipped")
+  await user.selectOptions(screen.getByRole("combobox", { name: "Show" }), "10")
+  expect(shownTitles()).toEqual([SKIPPED.title])
+  expect(screen.getByRole("combobox", { name: "Status" })).toHaveValue("skipped")
+})
+
 test("SC825: a skipped card says how many more sessions until it returns", async () => {
   stubFetch([
     {

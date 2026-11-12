@@ -73,10 +73,17 @@ export const FixesTab = ({ projectId }: { readonly projectId: string }) => {
   const [state, setState] = useState<State>({ phase: "loading" })
 
   const show = showLimit(searchParams.get("show"))
-  // Skipped was a Show choice before the Status filter; a link saved then still lists them.
-  const statusParam =
-    searchParams.get("status") ?? (searchParams.get("show") === "skipped" ? "skipped" : null)
-  const status: StatusChoice = STATUS_CHOICES.find((c) => c.value === statusParam)?.value ?? "open"
+  const status: StatusChoice =
+    STATUS_CHOICES.find((c) => c.value === searchParams.get("status"))?.value ?? "open"
+  // Skipped was a Show choice before the Status filter. A link saved then is rewritten once, in
+  // place, so the Status and Show controls own their params afterwards.
+  useEffect(() => {
+    if (searchParams.get("show") !== "skipped") return
+    const next = new URLSearchParams(searchParams)
+    next.delete("show")
+    if (!next.has("status")) next.set("status", "skipped")
+    setSearchParams(next, { replace: true })
+  }, [searchParams, setSearchParams])
   // The type and the days as the URL holds them; anything unknown is no filter.
   const type = FIX_TYPE_ORDER.find((t) => t === searchParams.get("type"))
   const from = searchParams.get("from") ?? ""
