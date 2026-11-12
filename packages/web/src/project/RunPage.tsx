@@ -19,6 +19,12 @@ type State =
     }
   | { readonly phase: "failed"; readonly error: ApiError }
 
+const OTHER_PROJECTS_RUN: ApiError = {
+  kind: "notFound",
+  code: "runNotFound",
+  message: "This project has no such run.",
+}
+
 export const RunPage = ({
   projectId,
   runId,
@@ -38,6 +44,9 @@ export const RunPage = ({
       if (!active) return
       if (!run.ok) return setState({ phase: "failed", error: run.error })
       if (!list.ok) return setState({ phase: "failed", error: list.error })
+      // The run route checks access to the run's own project, not to the one in this URL.
+      if (run.data.run.projectId !== projectId)
+        return setState({ phase: "failed", error: OTHER_PROJECTS_RUN })
       setState({
         phase: "ready",
         run: run.data.run,

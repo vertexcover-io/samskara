@@ -7,6 +7,7 @@ import { RUN_POLL_MS, RunsTab } from "./RunsTab.js"
 
 const run = (id: string, fields: Partial<ListedRun> = {}): ListedRun => ({
   id,
+  projectId: "p-1",
   status: "done",
   harnessRef: null,
   error: null,

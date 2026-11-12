@@ -687,6 +687,13 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
     expect(res.status).toBe(409)
   })
 
+  test("a run read on its own names its project, so a page can refuse a run of another project", async () => {
+    const run = await learningsRepo.startRun(db, projectId)
+    const res = await request(`/api/learnings/runs/${run?.id}`)
+    expect(res.status).toBe(200)
+    expect(((await res.json()) as { run: { projectId: string } }).run.projectId).toBe(projectId)
+  })
+
   test("LRT4: someone who cannot see the project sees nothing and cannot start a run", async () => {
     await seedProblems(["A"])
     const run = await learningsRepo.startRun(db, projectId)

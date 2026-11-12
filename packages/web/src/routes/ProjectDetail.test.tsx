@@ -276,6 +276,7 @@ test("SC708: a path no tab owns falls back to Overview", async () => {
 
 const listedRun = (id: string, fields: Partial<ListedRun> = {}): ListedRun => ({
   id,
+  projectId: "p-1",
   status: "done",
   harnessRef: null,
   error: null,
@@ -345,6 +346,7 @@ test("SC730: a run's page lists the fixes it touched, marked new or updated, wit
     entry: "/projects/p-1/runs/r-0",
     run: {
       id: "r-0",
+      projectId: "p-1",
       status: "done",
       harnessRef: null,
       error: null,
@@ -370,6 +372,29 @@ test("SC730: a run's page lists the fixes it touched, marked new or updated, wit
   expect(cards.map((card) => within(card).getByRole("link").textContent)).toEqual(["L1", "L3"])
   expect(within(cards[0] as HTMLElement).getByText("updated")).toBeInTheDocument()
   expect(within(cards[1] as HTMLElement).getByText("new")).toBeInTheDocument()
+  expect(screen.getByRole("link", { name: "← All runs" })).toHaveAttribute(
+    "href",
+    "/projects/p-1/runs",
+  )
+})
+
+test("a run of another project, opened under this one, is not shown as this project's run", async () => {
+  renderDetail(PROJECT, {
+    entry: "/projects/p-1/runs/r-9",
+    run: {
+      id: "r-9",
+      projectId: "p-2",
+      status: "done",
+      harnessRef: null,
+      error: null,
+      startedAt: "2026-11-10T10:00:00.000Z",
+      finishedAt: "2026-11-10T10:08:00.000Z",
+    },
+    learnings: [],
+  })
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("This project has no such run.")
+  expect(screen.queryByRole("heading", { name: /^Run · / })).toBeNull()
   expect(screen.getByRole("link", { name: "← All runs" })).toHaveAttribute(
     "href",
     "/projects/p-1/runs",

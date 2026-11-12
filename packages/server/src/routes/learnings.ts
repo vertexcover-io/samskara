@@ -30,6 +30,7 @@ const uuid = z.string().uuid()
 
 const serializeRun = (run: learningsRepo.LearningRunRow) => ({
   id: run.id,
+  projectId: run.projectId,
   status: run.status,
   harnessRef: run.harnessRef,
   error: run.error,
