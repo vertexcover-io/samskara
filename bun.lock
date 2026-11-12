@@ -14,7 +14,7 @@
     },
     "packages/cli": {
       "name": "@vertexcover/samskara",
-      "version": "0.5.8",
+      "version": "0.5.0",
       "bin": {
         "samskara": "./dist/index.js",
       },
@@ -35,7 +35,7 @@
     },
     "packages/core": {
       "name": "@samskara/core",
-      "version": "0.5.8",
+      "version": "0.5.0",
       "dependencies": {
         "better-sqlite3": "^13",
         "pino": "^9",
@@ -49,7 +49,7 @@
     },
     "packages/server": {
       "name": "@samskara/server",
-      "version": "0.5.8",
+      "version": "0.5.0",
       "dependencies": {
         "@hono/node-server": "1.13.8",
         "@hono/zod-validator": "0.7.6",
@@ -73,7 +73,7 @@
     },
     "packages/web": {
       "name": "@samskara/web",
-      "version": "0.5.8",
+      "version": "0.5.0",
       "dependencies": {
         "downshift": "9.4.0",
         "fflate": "^0.8.3",
