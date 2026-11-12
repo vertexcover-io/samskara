@@ -15,7 +15,11 @@ const TITLE = "Helpers report while their test run is still going"
  * file path, a word too long to wrap at phone width, the way the writing rules ask a fix to.
  */
 const seedFix = async (
-  options: { readonly project?: string; readonly story?: Record<string, unknown> } = {},
+  options: {
+    readonly project?: string
+    readonly story?: Record<string, unknown>
+    readonly title?: string
+  } = {},
 ) => {
   const slug = options.project ?? PROJECT
   await seedDatabase({
@@ -60,7 +64,7 @@ const seedFix = async (
     const [learning] = await sql`
       insert into learnings ("projectId", "updatedByRunId", title, cause, problem, priority,
         "priorityReason", "fixType", fix, impact, "impactReason", "howItHelps", story)
-      values (${project}, ${run?.id}, ${TITLE}, 'No wait rule.',
+      values (${project}, ${run?.id}, ${options.title ?? TITLE}, 'No wait rule.',
         'Coder agents end their turn while packages/server/src/repositories/learnings.repo.test.ts still runs.', 'high', 'it keeps happening',
         'skill', 'In skills/implement/SKILL.md, wait for the test command to exit.',
         'wrong_result', 'one session shipped code whose tests had not finished',
@@ -214,4 +218,30 @@ test("SC403/SC404: a fix with a story opens on its example, with every time it h
       await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
     ).toBe(true)
   }
+})
+
+test("a fix title holding a long file path wraps inside the card on the Fixes tab and the run page at phone width", async ({
+  authedPage: page,
+}) => {
+  const slug = "fixes-long-title"
+  const title =
+    "Agents keep writing packages/server/src/repositories/learnings.repo.integration.test.ts fixtures that read the wall clock"
+  await seedFix({ project: slug, title })
+  await page.setViewportSize({ width: 390, height: 900 })
+
+  // The page clips what overflows rather than scrolling, so the title's own box is the measure.
+  const titleFits = async () => {
+    const link = page.getByRole("link", { name: title })
+    await expect(link).toBeVisible()
+    const box = await link.boundingBox()
+    expect(box === null ? Number.POSITIVE_INFINITY : box.x + box.width).toBeLessThanOrEqual(390)
+  }
+
+  await page.goto(`/projects/${projectId(slug)}/fixes`)
+  await titleFits()
+
+  await page.goto(`/projects/${projectId(slug)}/runs`)
+  await page.locator("article").first().getByRole("link").click()
+  await expect(page.getByRole("heading", { name: /^Run · / })).toBeVisible()
+  await titleFits()
 })

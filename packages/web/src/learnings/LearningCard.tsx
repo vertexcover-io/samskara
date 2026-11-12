@@ -24,7 +24,7 @@ export const LearningCard = ({
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
         <Link
           to={`/learnings/${row.id}${search}`}
-          className="text-[0.9375rem] font-semibold leading-snug after:absolute after:inset-0"
+          className="min-w-0 text-[0.9375rem] font-semibold leading-snug wrap-anywhere after:absolute after:inset-0"
         >
           {row.title}
         </Link>
