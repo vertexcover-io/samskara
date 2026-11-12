@@ -22,7 +22,7 @@ export const saveReaderReply = async (
   await db.insert(reviewReaderReplies).values(input).onConflictDoNothing()
 }
 
-/** Drops every reply saved for these reviews: each one ended, or a new review starts on its row. */
+/** Drops every reply saved for these review runs: each one ended, done or failed for good. */
 export const deleteReaderReplies = async (
   db: Querier,
   reviewIds: ReadonlyArray<string>,
