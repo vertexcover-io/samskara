@@ -239,6 +239,29 @@ describe.skipIf(!dockerAvailable())("the review runs migration", () => {
       group by "sessionId", "analyzer" having count(*) > 1`
     expect(doubled).toEqual([])
   })
+  test("a redo running its 3rd try at deploy moves to its new row as failed, as a worker restart would leave it, not as a 4th try", async () => {
+    const { sessionId, projectId } = await seedSession()
+    const lastTryId = await insertReview({
+      sessionId,
+      projectId,
+      analyzer: "ai-problems-v2",
+      ...result,
+      status: "running",
+      attempts: 3,
+      error: "harness timed out",
+      createdAt: "2026-01-01T09:00:00.000Z",
+      updatedAt: savedAt,
+    })
+
+    await backfill()
+
+    const runs = await runsOf(sessionId)
+    expect(runs.map((r) => [r.id === lastTryId, r.status, r.attempts, r.error])).toEqual([
+      [true, "done", 3, null],
+      [false, "failed", 3, "harnessFailed: the worker stopped during the last try"],
+    ])
+  })
+
   test("SC7: a reviewedThrough line ending in an untimed line links to the latest timed main message at or before it, never a subagent's", async () => {
     const { sessionId, projectId } = await seedSession()
     await seedMessage(sessionId, 5, 0, { timestamp: new Date("2026-01-01T09:00:00Z") })
