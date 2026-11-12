@@ -1,8 +1,9 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react"
+import { render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
+import { Route, Routes } from "react-router-dom"
 import { afterEach, beforeEach, expect, test, vi } from "vitest"
 import { TestRouter } from "../tests/test-router.js"
-import { Learnings, RUN_POLL_MS } from "./Learnings.js"
+import { FixesTab } from "./FixesTab.js"
 
 const LEARNING = {
   id: "l-1",
@@ -35,18 +36,6 @@ const RUN = {
   finishedAt: "2026-10-20T10:08:00.000Z",
 }
 
-const project = (id: string, name: string) => ({
-  id,
-  name,
-  slug: name.toLowerCase(),
-  owner: { type: "user", slug: "dev" },
-  sessionCount: 3,
-  lastActiveAt: "2026-10-20T12:00:00.000Z",
-  repo: null,
-})
-
-const projectsBody = { projects: [project("p-1", "Samskara"), project("p-2", "Yok")] }
-
 /** Answers by URL substring (and method, when a route names one), first match wins, and records every "METHOD url" asked for. */
 const stubFetch = (
   routes: ReadonlyArray<{ match: string; status: number; body: unknown; method?: string }>,
@@ -68,10 +57,12 @@ const stubFetch = (
   return urls
 }
 
-const renderPage = (path = "/learnings") =>
+const renderPage = (path = "/projects/p-1/fixes") =>
   render(
     <TestRouter initialEntries={[path]}>
-      <Learnings />
+      <Routes>
+        <Route path="/projects/:id/*" element={<FixesTab projectId="p-1" />} />
+      </Routes>
     </TestRouter>,
   )
 
@@ -84,14 +75,13 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-test("LR1: shows the first project's learnings with priority, counts, fix and the last run", async () => {
+test("LR1: shows the project's learnings with priority, counts and fix", async () => {
   const urls = stubFetch([
     {
       match: "/api/learnings",
       status: 200,
       body: { learnings: [LEARNING], latestRun: RUN, canEdit: true },
     },
-    { match: "/api/projects", status: 200, body: projectsBody },
   ])
 
   renderPage()
@@ -100,7 +90,6 @@ test("LR1: shows the first project's learnings with priority, counts, fix and th
   expect(within(card).getByText("high")).toBeInTheDocument()
   expect(within(card).getByText(/9 problems in 6 sessions/)).toBeInTheDocument()
   expect(within(card).getByText(/wait for the test command to exit/)).toBeInTheDocument()
-  expect(screen.getByText(/Last run .* succeeded/)).toBeInTheDocument()
   expect(urls.some((url) => url.includes("/api/learnings?project=p-1"))).toBe(true)
 })
 
@@ -111,15 +100,14 @@ test("SC23: a card's link opens its fix page carrying the list's filters, and Sh
       status: 200,
       body: { learnings: [LEARNING], latestRun: RUN, canEdit: true },
     },
-    { match: "/api/projects", status: 200, body: projectsBody },
   ])
 
-  renderPage("/learnings?project=p-1&show=10")
+  renderPage("/projects/p-1/fixes?show=10")
 
   const card = (await screen.findByText(LEARNING.title)).closest("article") as HTMLElement
   expect(within(card).getByRole("link", { name: LEARNING.title })).toHaveAttribute(
     "href",
-    "/learnings/l-1?project=p-1&show=10",
+    "/learnings/l-1?show=10",
   )
   expect(within(card).queryByRole("button", { name: "Show problems" })).toBeNull()
 })
@@ -138,7 +126,6 @@ test("SC401: a card shows only its title row, what goes wrong, why it matters an
       status: 200,
       body: { learnings: [written], latestRun: RUN, canEdit: true },
     },
-    { match: "/api/projects", status: 200, body: projectsBody },
   ])
 
   renderPage()
@@ -162,7 +149,6 @@ test("SC402: an older fix's card shows its own problem text and exact fix, and n
       status: 200,
       body: { learnings: [LEARNING], latestRun: RUN, canEdit: true },
     },
-    { match: "/api/projects", status: 200, body: projectsBody },
   ])
 
   renderPage()
@@ -173,26 +159,6 @@ test("SC402: an older fix's card shows its own problem text and exact fix, and n
   expect(card.textContent).not.toMatch(/Why it matters/)
 })
 
-test("LR3: choosing another project loads that project's learnings", async () => {
-  const urls = stubFetch([
-    {
-      match: "/api/learnings",
-      status: 200,
-      body: { learnings: [LEARNING], latestRun: RUN, canEdit: true },
-    },
-    { match: "/api/projects", status: 200, body: projectsBody },
-  ])
-
-  renderPage()
-  const user = userEvent.setup()
-  await screen.findByText(LEARNING.title)
-  await user.selectOptions(screen.getByRole("combobox", { name: "Project" }), "p-2")
-
-  await waitFor(() => {
-    expect(urls.some((url) => url.includes("/api/learnings?project=p-2"))).toBe(true)
-  })
-})
-
 test("LR4: a project with no learnings says when they appear", async () => {
   stubFetch([
     {
@@ -200,168 +166,162 @@ test("LR4: a project with no learnings says when they appear", async () => {
       status: 200,
       body: { learnings: [], latestRun: null, canEdit: true },
     },
-    { match: "/api/projects", status: 200, body: projectsBody },
   ])
 
   renderPage()
 
   expect(await screen.findByText("No learnings here yet")).toBeInTheDocument()
-  expect(screen.getByText("No learning run yet")).toBeInTheDocument()
 })
 
 test("LR5: a failed load surfaces the error, not a silent blank", async () => {
-  stubFetch([
-    { match: "/api/learnings", status: 500, body: { error: "internal" } },
-    { match: "/api/projects", status: 200, body: projectsBody },
-  ])
+  stubFetch([{ match: "/api/learnings", status: 500, body: { error: "internal" } }])
 
   renderPage()
 
   expect(await screen.findByText("Retrieval failed")).toBeInTheDocument()
 })
 
-const RUNNING = { ...RUN, id: "r-2", status: "running", finishedAt: null }
-
-/**
- * A server with one run that is going until `polls` status checks have answered: the list
- * reports it running until then, and the learning appears once it is done.
- */
-const stubRun = (polls: number) => {
-  const posts: unknown[] = []
-  let checks = 0
-  const done = () => checks >= polls
-  vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
-    const url = input instanceof Request ? input.url : String(input)
-    const method = input instanceof Request ? input.method : (init?.method ?? "GET")
-    const reply = (status: number, body: unknown) =>
-      Promise.resolve(new Response(JSON.stringify(body), { status }))
-    if (url.includes("/api/learnings/runs/r-2")) {
-      checks += 1
-      return reply(200, { run: done() ? { ...RUNNING, status: "done" } : RUNNING })
-    }
-    if (url.includes("/api/learnings/runs") && method === "POST") {
-      const body = input instanceof Request ? input.clone().text() : Promise.resolve(init?.body)
-      return Promise.resolve(body).then((text) => {
-        posts.push(JSON.parse(String(text)))
-        return new Response(JSON.stringify({ runId: "r-2" }), { status: 202 })
-      })
-    }
-    if (url.includes("/api/learnings"))
-      return reply(200, {
-        learnings: done() ? [LEARNING] : [],
-        latestRun: posts.length === 0 ? null : done() ? { ...RUNNING, status: "done" } : RUNNING,
-        canEdit: true,
-      })
-    if (url.includes("/api/projects")) return reply(200, projectsBody)
-    return reply(401, { error: "unauthorized" })
-  })
-  return posts
-}
-
-test("LR6: Run now starts a run for the chosen project, waits for it, and shows its learnings", async () => {
-  const posts = stubRun(2)
-  renderPage()
-  const user = userEvent.setup()
-  await screen.findByText("No learnings here yet")
-  // Only the poll's interval is faked, so clicks and fetches still run on real time.
-  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
-
-  await user.click(screen.getByRole("button", { name: "Run now" }))
-
-  expect(posts).toEqual([{ project: "p-1" }])
-  expect(await screen.findByText(/Running…/)).toBeInTheDocument()
-  expect(screen.getByRole("button", { name: "Run now" })).toBeDisabled()
-
-  // First check still running, second done: the list reloads with the new learning.
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(RUN_POLL_MS)
-  })
-  expect(screen.queryByText(LEARNING.title)).not.toBeInTheDocument()
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(RUN_POLL_MS)
-  })
-  vi.useRealTimers()
-  expect(await screen.findByText(LEARNING.title)).toBeInTheDocument()
-  expect(screen.getByRole("button", { name: "Run now" })).toBeEnabled()
-})
-
-test("LR7: a run already going when the page opens shows as running", async () => {
-  stubFetch([
-    { match: "/api/learnings/runs/r-2", status: 200, body: { run: RUNNING } },
-    {
-      match: "/api/learnings",
-      status: 200,
-      body: { learnings: [], latestRun: RUNNING, canEdit: true },
-    },
-    { match: "/api/projects", status: 200, body: projectsBody },
-  ])
-
-  renderPage()
-
-  expect(await screen.findByText(/Running…/)).toBeInTheDocument()
-  expect(screen.getByRole("button", { name: "Run now" })).toBeDisabled()
-})
-
-test("SC47: the fixes page waits on a queued run, and reloads once it is done", async () => {
-  const WAITING = { ...RUNNING, status: "waiting" }
-  let checks = 0
-  vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
-    const url = input instanceof Request ? input.url : String(input)
-    const reply = (status: number, body: unknown) =>
-      Promise.resolve(new Response(JSON.stringify(body), { status }))
-    const finished = checks >= 2
-    if (url.includes("/api/learnings/runs/r-2")) {
-      checks += 1
-      // Still queued at the first check, done at the second.
-      return reply(200, { run: checks >= 2 ? { ...RUNNING, status: "done" } : WAITING })
-    }
-    if (url.includes("/api/learnings"))
-      return reply(200, {
-        learnings: finished ? [LEARNING] : [],
-        latestRun: finished ? { ...RUNNING, status: "done" } : WAITING,
-        canEdit: true,
-      })
-    if (url.includes("/api/projects")) return reply(200, projectsBody)
-    return reply(401, { error: "unauthorized" })
-  })
-  // The poll starts as the page loads, so its interval is faked from the start.
-  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
-  renderPage()
-
-  expect(await screen.findByText(/Running…/)).toBeInTheDocument()
-  expect(screen.getByRole("button", { name: "Run now" })).toBeDisabled()
-
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(RUN_POLL_MS)
-  })
-  expect(screen.getByRole("button", { name: "Run now" })).toBeDisabled()
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(RUN_POLL_MS)
-  })
-  vi.useRealTimers()
-  expect(await screen.findByText(LEARNING.title)).toBeInTheDocument()
-  expect(screen.getByRole("button", { name: "Run now" })).toBeEnabled()
-})
-
-test("LR8: a refused run says why in plain words", async () => {
-  stubFetch([
-    { match: "/api/learnings/runs", status: 400, body: { error: "noHarnessPath" } },
-    {
-      match: "/api/learnings",
-      status: 200,
-      body: { learnings: [], latestRun: null, canEdit: true },
-    },
-    { match: "/api/projects", status: 200, body: projectsBody },
-  ])
-  renderPage()
-  const user = userEvent.setup()
-  await screen.findByText("No learnings here yet")
-
-  await user.click(screen.getByRole("button", { name: "Run now" }))
-
-  expect(await screen.findByText(/LEARNINGS_HARNESS_PATH/)).toBeInTheDocument()
-  expect(screen.getByRole("button", { name: "Run now" })).toBeEnabled()
-})
+// moves to RunsTab.test.tsx
+// const RUNNING = { ...RUN, id: "r-2", status: "running", finishedAt: null }
+//
+// /**
+//  * A server with one run that is going until `polls` status checks have answered: the list
+//  * reports it running until then, and the learning appears once it is done.
+//  */
+// const stubRun = (polls: number) => {
+//   const posts: unknown[] = []
+//   let checks = 0
+//   const done = () => checks >= polls
+//   vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+//     const url = input instanceof Request ? input.url : String(input)
+//     const method = input instanceof Request ? input.method : (init?.method ?? "GET")
+//     const reply = (status: number, body: unknown) =>
+//       Promise.resolve(new Response(JSON.stringify(body), { status }))
+//     if (url.includes("/api/learnings/runs/r-2")) {
+//       checks += 1
+//       return reply(200, { run: done() ? { ...RUNNING, status: "done" } : RUNNING })
+//     }
+//     if (url.includes("/api/learnings/runs") && method === "POST") {
+//       const body = input instanceof Request ? input.clone().text() : Promise.resolve(init?.body)
+//       return Promise.resolve(body).then((text) => {
+//         posts.push(JSON.parse(String(text)))
+//         return new Response(JSON.stringify({ runId: "r-2" }), { status: 202 })
+//       })
+//     }
+//     if (url.includes("/api/learnings"))
+//       return reply(200, {
+//         learnings: done() ? [LEARNING] : [],
+//         latestRun: posts.length === 0 ? null : done() ? { ...RUNNING, status: "done" } : RUNNING,
+//         canEdit: true,
+//       })
+//     if (url.includes("/api/projects")) return reply(200, projectsBody)
+//     return reply(401, { error: "unauthorized" })
+//   })
+//   return posts
+// }
+//
+// test("LR6: Run now starts a run for the chosen project, waits for it, and shows its learnings", async () => {
+//   const posts = stubRun(2)
+//   renderPage()
+//   const user = userEvent.setup()
+//   await screen.findByText("No learnings here yet")
+//   // Only the poll's interval is faked, so clicks and fetches still run on real time.
+//   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
+//
+//   await user.click(screen.getByRole("button", { name: "Run now" }))
+//
+//   expect(posts).toEqual([{ project: "p-1" }])
+//   expect(await screen.findByText(/Running…/)).toBeInTheDocument()
+//   expect(screen.getByRole("button", { name: "Run now" })).toBeDisabled()
+//
+//   // First check still running, second done: the list reloads with the new learning.
+//   await act(async () => {
+//     await vi.advanceTimersByTimeAsync(RUN_POLL_MS)
+//   })
+//   expect(screen.queryByText(LEARNING.title)).not.toBeInTheDocument()
+//   await act(async () => {
+//     await vi.advanceTimersByTimeAsync(RUN_POLL_MS)
+//   })
+//   vi.useRealTimers()
+//   expect(await screen.findByText(LEARNING.title)).toBeInTheDocument()
+//   expect(screen.getByRole("button", { name: "Run now" })).toBeEnabled()
+// })
+//
+// test("LR7: a run already going when the page opens shows as running", async () => {
+//   stubFetch([
+//     { match: "/api/learnings/runs/r-2", status: 200, body: { run: RUNNING } },
+//     {
+//       match: "/api/learnings",
+//       status: 200,
+//       body: { learnings: [], latestRun: RUNNING, canEdit: true },
+//     },
+//   ])
+//
+//   renderPage()
+//
+//   expect(await screen.findByText(/Running…/)).toBeInTheDocument()
+//   expect(screen.getByRole("button", { name: "Run now" })).toBeDisabled()
+// })
+//
+// test("SC47: the fixes page waits on a queued run, and reloads once it is done", async () => {
+//   const WAITING = { ...RUNNING, status: "waiting" }
+//   let checks = 0
+//   vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+//     const url = input instanceof Request ? input.url : String(input)
+//     const reply = (status: number, body: unknown) =>
+//       Promise.resolve(new Response(JSON.stringify(body), { status }))
+//     const finished = checks >= 2
+//     if (url.includes("/api/learnings/runs/r-2")) {
+//       checks += 1
+//       // Still queued at the first check, done at the second.
+//       return reply(200, { run: checks >= 2 ? { ...RUNNING, status: "done" } : WAITING })
+//     }
+//     if (url.includes("/api/learnings"))
+//       return reply(200, {
+//         learnings: finished ? [LEARNING] : [],
+//         latestRun: finished ? { ...RUNNING, status: "done" } : WAITING,
+//         canEdit: true,
+//       })
+//     if (url.includes("/api/projects")) return reply(200, projectsBody)
+//     return reply(401, { error: "unauthorized" })
+//   })
+//   // The poll starts as the page loads, so its interval is faked from the start.
+//   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
+//   renderPage()
+//
+//   expect(await screen.findByText(/Running…/)).toBeInTheDocument()
+//   expect(screen.getByRole("button", { name: "Run now" })).toBeDisabled()
+//
+//   await act(async () => {
+//     await vi.advanceTimersByTimeAsync(RUN_POLL_MS)
+//   })
+//   expect(screen.getByRole("button", { name: "Run now" })).toBeDisabled()
+//   await act(async () => {
+//     await vi.advanceTimersByTimeAsync(RUN_POLL_MS)
+//   })
+//   vi.useRealTimers()
+//   expect(await screen.findByText(LEARNING.title)).toBeInTheDocument()
+//   expect(screen.getByRole("button", { name: "Run now" })).toBeEnabled()
+// })
+//
+// test("LR8: a refused run says why in plain words", async () => {
+//   stubFetch([
+//     { match: "/api/learnings/runs", status: 400, body: { error: "noHarnessPath" } },
+//     {
+//       match: "/api/learnings",
+//       status: 200,
+//       body: { learnings: [], latestRun: null, canEdit: true },
+//     },
+//   ])
+//   renderPage()
+//   const user = userEvent.setup()
+//   await screen.findByText("No learnings here yet")
+//
+//   await user.click(screen.getByRole("button", { name: "Run now" }))
+//
+//   expect(await screen.findByText(/LEARNINGS_HARNESS_PATH/)).toBeInTheDocument()
+//   expect(screen.getByRole("button", { name: "Run now" })).toBeEnabled()
+// })
 
 /** Twelve learnings, numbered in the order the server ranks them. */
 const MANY = Array.from({ length: 12 }, (_, index) => ({
@@ -377,7 +337,6 @@ test("LR9: shows the top 5 by default, and says how many there are", async () =>
       status: 200,
       body: { learnings: MANY, latestRun: RUN, canEdit: true },
     },
-    { match: "/api/projects", status: 200, body: projectsBody },
   ])
 
   renderPage()
@@ -395,9 +354,8 @@ test("LR10: the Show filter picks how many, and the choice is kept in the URL", 
       status: 200,
       body: { learnings: MANY, latestRun: RUN, canEdit: true },
     },
-    { match: "/api/projects", status: 200, body: projectsBody },
   ])
-  renderPage("/learnings?show=10")
+  renderPage("/projects/p-1/fixes?show=10")
   const user = userEvent.setup()
 
   expect(await screen.findByText("Learning number 10")).toBeInTheDocument()
@@ -406,10 +364,6 @@ test("LR10: the Show filter picks how many, and the choice is kept in the URL", 
   await user.selectOptions(screen.getByRole("combobox", { name: "Show" }), "all")
   expect(screen.getByText("Learning number 12")).toBeInTheDocument()
   expect(screen.getByText("Showing 12 of 12")).toBeInTheDocument()
-
-  // Changing project keeps the chosen count.
-  await user.selectOptions(screen.getByRole("combobox", { name: "Project" }), "p-2")
-  expect(await screen.findByText("Learning number 12")).toBeInTheDocument()
 })
 
 const SECOND = { ...LEARNING, id: "l-2", title: "Agents edit the lockfile by hand" }
@@ -428,7 +382,6 @@ test("SC32: Skip on a card takes the fix out of the list at once, without openin
       status: 200,
       body: { learnings: [LEARNING, SECOND], latestRun: RUN, canEdit: true },
     },
-    { match: "/api/projects", status: 200, body: projectsBody },
   ])
   renderPage()
   const user = userEvent.setup()
@@ -442,7 +395,7 @@ test("SC32: Skip on a card takes the fix out of the list at once, without openin
   expect(
     urls.some((url) => url.startsWith("POST") && url.includes("/api/learnings/l-1/skip")),
   ).toBe(true)
-  expect(screen.getByTestId("location")).toHaveTextContent(/^\/learnings$/)
+  expect(screen.getByTestId("location")).toHaveTextContent(/^\/projects\/p-1\/fixes$/)
 })
 
 test("SC33: Show Skipped lists only skipped fixes with Unskip, and Unskip takes one out", async () => {
@@ -458,9 +411,8 @@ test("SC33: Show Skipped lists only skipped fixes with Unskip, and Unskip takes 
       status: 200,
       body: { learnings: [{ ...LEARNING, skippedAt }, SECOND], latestRun: RUN, canEdit: true },
     },
-    { match: "/api/projects", status: 200, body: projectsBody },
   ])
-  renderPage("/learnings?show=skipped")
+  renderPage("/projects/p-1/fixes?show=skipped")
   const user = userEvent.setup()
 
   const card = (await screen.findByText(LEARNING.title)).closest("article") as HTMLElement
@@ -478,7 +430,6 @@ test("a project whose every fix is skipped says so and points to Show Skipped, n
       status: 200,
       body: { learnings: [{ ...LEARNING, skippedAt }], latestRun: RUN, canEdit: true },
     },
-    { match: "/api/projects", status: 200, body: projectsBody },
   ])
   renderPage()
 
@@ -494,7 +445,6 @@ test("SC34: a viewer sees no Skip or Unskip button on the list", async () => {
       status: 200,
       body: { learnings: [LEARNING], latestRun: RUN, canEdit: false },
     },
-    { match: "/api/projects", status: 200, body: projectsBody },
   ])
   renderPage()
 
@@ -515,7 +465,6 @@ test("SC35: a refused skip says why in words, and the fix stays", async () => {
       status: 200,
       body: { learnings: [LEARNING], latestRun: RUN, canEdit: true },
     },
-    { match: "/api/projects", status: 200, body: projectsBody },
   ])
   renderPage()
   const user = userEvent.setup()
@@ -537,7 +486,6 @@ test("the card shows the fix in plain words, not the exact text, when it has one
       status: 200,
       body: { learnings: [plain], latestRun: RUN, canEdit: true },
     },
-    { match: "/api/projects", status: 200, body: projectsBody },
   ])
 
   renderPage()
@@ -556,7 +504,6 @@ test("the page has no How this page works box", async () => {
       status: 200,
       body: { learnings: [LEARNING], latestRun: RUN, canEdit: true },
     },
-    { match: "/api/projects", status: 200, body: projectsBody },
   ])
 
   renderPage()

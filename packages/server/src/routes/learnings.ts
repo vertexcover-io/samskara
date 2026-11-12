@@ -38,6 +38,7 @@ const serializeRun = (run: learningsRepo.LearningRunRow) => ({
 
 const serializeLearning = (row: learningsRepo.LearningRow) => ({
   id: row.id,
+  projectId: row.projectId,
   title: row.title,
   cause: row.cause,
   problem: row.problem,

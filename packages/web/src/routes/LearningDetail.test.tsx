@@ -9,6 +9,7 @@ import { bySession, LearningDetail } from "./LearningDetail.js"
 
 const LEARNING = {
   id: "l-1",
+  projectId: "p-1",
   title: "Helpers report while their test run is still going",
   cause: "The implement skill never tells helpers to wait for a test run to exit.",
   problem: "Coder agents end their turn saying they are waiting on jest.",
@@ -202,26 +203,29 @@ test("SC404: opening the fold shows every session's quotes, each with its own Sh
   expect(within(proof).getAllByRole("button", { name: "Show messages" })).toHaveLength(3)
 })
 
-test("SC22: Back returns to the list with its project and Show kept", async () => {
+test("SC709: Back returns to the fix's project's Fixes tab with the tab's filters kept", async () => {
   stubFetch(200, { learning: LEARNING, problems: PROBLEMS })
 
-  renderPage("/learnings/l-1?project=p-2&show=all")
+  renderPage("/learnings/l-1?show=10&type=skill")
 
   await screen.findByRole("region", { name: "The fix" })
   expect(screen.getByRole("link", { name: /Back to Fixes/ })).toHaveAttribute(
     "href",
-    "/learnings?project=p-2&show=all",
+    "/projects/p-1/fixes?show=10&type=skill",
   )
 })
 
-test("SC24: a failed load says so, with the back link", async () => {
+test("SC709: a failed load says so, and Back goes to the projects list since the project is unknown", async () => {
   stubFetch(404, { error: "learningNotFound" })
 
   renderPage()
 
   const alert = await screen.findByRole("alert")
   expect(within(alert).getByText("Retrieval failed")).toBeInTheDocument()
-  expect(screen.getByRole("link", { name: /Back to Fixes/ })).toHaveAttribute("href", "/learnings")
+  expect(screen.getByRole("link", { name: "← Back to Projects" })).toHaveAttribute(
+    "href",
+    "/projects",
+  )
 })
 
 test("SC34: a viewer sees no Skip or Unskip button on the fix page", async () => {

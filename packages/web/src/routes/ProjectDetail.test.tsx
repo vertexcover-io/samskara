@@ -1,7 +1,12 @@
-import { render, screen, waitFor } from "@testing-library/react"
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { Route, Routes } from "react-router-dom"
 import { afterEach, beforeEach, expect, test, vi } from "vitest"
-import type { ProjectDetail as ProjectDetailPayload } from "../api/types.js"
+import type {
+  LearningSummary,
+  ProjectDetail as ProjectDetailPayload,
+  SessionSummary,
+} from "../api/types.js"
 import { TestRouter } from "../tests/test-router.js"
 import { ProjectDetail } from "./ProjectDetail.js"
 
@@ -16,13 +21,69 @@ const PROJECT: ProjectDetailPayload = {
   autoReview: false,
 }
 
+const session = (id: string, title: string): SessionSummary => ({
+  id,
+  title,
+  projectId: "p-1",
+  projectName: "samskara",
+  projectSlug: "samskara",
+  userLogin: "maya",
+  tags: [],
+  messageCount: 42,
+  status: "complete",
+  startedAt: "2026-02-01T08:30:00.000Z",
+  lastActiveAt: "2026-02-01T09:30:00.000Z",
+  hasAiReview: false,
+})
+
+const LEARNING: LearningSummary = {
+  id: "l-1",
+  projectId: "p-1",
+  title: "Helpers report while their test run is still going",
+  cause: "The implement skill never tells helpers to wait for a test run to exit.",
+  problem: "Coder agents end their turn saying they are waiting on jest.",
+  priority: "high",
+  priorityReason: "it keeps happening",
+  fixType: "skill",
+  fix: "Wait for the test command to exit before reporting.",
+  impact: null,
+  impactReason: null,
+  howItHelps: null,
+  fixSummary: null,
+  story: null,
+  skippedAt: null,
+  updatedByRunId: "r-1",
+  createdAt: "2026-10-20T10:00:00.000Z",
+  updatedAt: "2026-10-20T10:00:00.000Z",
+  problemCount: 9,
+  sessionCount: 6,
+}
+
 const renderDetail = (
   project: ProjectDetailPayload,
-  options: { entry?: string; viewerCanDelete?: boolean } = {},
+  options: {
+    entry?: string
+    viewerCanDelete?: boolean
+    sessions?: ReadonlyArray<SessionSummary>
+  } = {},
 ) => {
-  const { entry = "/projects/p-1", viewerCanDelete = false } = options
+  const { entry = "/projects/p-1", viewerCanDelete = false, sessions = [] } = options
+  const urls: string[] = []
   vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
-    const url = typeof input === "string" ? input : String(input)
+    const url = input instanceof Request ? input.url : String(input)
+    urls.push(url)
+    if (url.includes("/api/learnings")) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ learnings: [LEARNING], latestRun: null, canEdit: true }), {
+          status: 200,
+        }),
+      )
+    }
+    if (url.includes("/api/sessions")) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ sessions, nextCursor: null }), { status: 200 }),
+      )
+    }
     if (url.includes("/api/projects/")) {
       return Promise.resolve(
         new Response(JSON.stringify({ project, viewerCanDelete }), { status: 200 }),
@@ -31,13 +92,14 @@ const renderDetail = (
     return Promise.resolve(new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 }))
   })
 
-  return render(
+  render(
     <TestRouter initialEntries={[entry]}>
       <Routes>
-        <Route path="/projects/:id" element={<ProjectDetail />} />
+        <Route path="/projects/:id/*" element={<ProjectDetail />} />
       </Routes>
     </TestRouter>,
   )
+  return urls
 }
 
 beforeEach(() => {
@@ -63,7 +125,7 @@ test("SC1: a project page shows the project's name, slug, owner and session coun
 })
 
 test("SC2: the owner line follows who owns the project - org slug marked as an org, user login not marked", async () => {
-  const { unmount } = renderDetail({
+  renderDetail({
     ...PROJECT,
     owner: { type: "org", slug: "vertexcover-io" },
   })
@@ -73,7 +135,7 @@ test("SC2: the owner line follows who owns the project - org slug marked as an o
     "href",
     "/orgs/vertexcover-io",
   )
-  unmount()
+  cleanup()
 
   renderDetail({ ...PROJECT, owner: { type: "user", slug: "kgritesh" } })
 
@@ -89,7 +151,7 @@ test("SC10: a viewer who may not delete is offered no delete control", async () 
 })
 
 test("SC10: a project with a linked repo renders it as a GitHub link, and a remoteless project shows no repo field", async () => {
-  const { unmount } = renderDetail({
+  renderDetail({
     ...PROJECT,
     repo: { host: "github.com", owner: "vertexcover-io", repoName: "samskara" },
   })
@@ -100,9 +162,76 @@ test("SC10: a project with a linked repo renders it as a GitHub link, and a remo
     "https://github.com/vertexcover-io/samskara",
   )
   expect(screen.getByText("Repository")).toBeInTheDocument()
-  unmount()
+  cleanup()
 
   renderDetail(PROJECT)
   await screen.findByRole("heading", { name: "samskara" })
   expect(screen.queryByText("Repository")).not.toBeInTheDocument()
+})
+
+const tabRow = () => screen.getByRole("navigation", { name: "Project" })
+const projectFetches = (urls: ReadonlyArray<string>) =>
+  urls.filter((url) => url.includes("/api/projects/p-1")).length
+
+test("SC705: the project page opens on Overview with the tab row, its fields and recent sessions, and loads no fixes", async () => {
+  const urls = renderDetail(PROJECT, {
+    sessions: [session("s-1", "Port the detail page"), session("s-2", "Fix the sync bar")],
+  })
+
+  await screen.findByRole("heading", { name: "samskara" })
+  expect(
+    within(tabRow())
+      .getAllByRole("link")
+      .map((link) => link.textContent),
+  ).toEqual(["Overview", "Fixes"])
+  expect(within(tabRow()).getByRole("link", { name: "Overview" })).toHaveAttribute(
+    "aria-current",
+    "page",
+  )
+  expect(screen.getByText("Recent sessions")).toBeInTheDocument()
+  expect(await screen.findByText("Port the detail page")).toBeInTheDocument()
+  expect(screen.getByText("Fix the sync bar")).toBeInTheDocument()
+  expect(urls.some((url) => url.includes("/api/learnings"))).toBe(false)
+})
+
+test("SC706: clicking Fixes shows the project's fixes, puts the tab in the URL and hides Overview", async () => {
+  const urls = renderDetail(PROJECT)
+  const user = userEvent.setup()
+  await screen.findByRole("heading", { name: "samskara" })
+
+  await user.click(within(tabRow()).getByRole("link", { name: "Fixes" }))
+
+  expect(await screen.findByText(LEARNING.title)).toBeInTheDocument()
+  expect(screen.getByTestId("location")).toHaveTextContent(/^\/projects\/p-1\/fixes$/)
+  expect(within(tabRow()).getByRole("link", { name: "Fixes" })).toHaveAttribute(
+    "aria-current",
+    "page",
+  )
+  expect(urls.some((url) => url.includes("/api/learnings?project=p-1"))).toBe(true)
+  expect(screen.queryByText("Recent sessions")).toBeNull()
+  expect(screen.queryByRole("combobox", { name: "Project" })).toBeNull()
+  expect(screen.queryByRole("button", { name: "Run now" })).toBeNull()
+})
+
+test("SC707: a reload on the Fixes tab lands on the Fixes tab with its Show choice, fetching the project once", async () => {
+  const urls = renderDetail(PROJECT, { entry: "/projects/p-1/fixes?show=10" })
+
+  expect(await screen.findByText(LEARNING.title)).toBeInTheDocument()
+  expect(within(tabRow()).getByRole("link", { name: "Fixes" })).toHaveAttribute(
+    "aria-current",
+    "page",
+  )
+  expect(screen.getByRole("combobox", { name: "Show" })).toHaveValue("10")
+  expect(projectFetches(urls)).toBe(1)
+})
+
+test("SC708: a path no tab owns falls back to Overview", async () => {
+  renderDetail(PROJECT, { entry: "/projects/p-1/nope" })
+
+  await screen.findByRole("heading", { name: "samskara" })
+  await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent(/^\/projects\/p-1$/))
+  expect(within(tabRow()).getByRole("link", { name: "Overview" })).toHaveAttribute(
+    "aria-current",
+    "page",
+  )
 })

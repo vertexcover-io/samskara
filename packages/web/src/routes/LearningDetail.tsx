@@ -11,6 +11,7 @@ import {
   plural,
 } from "../learnings/labels.js"
 import { SkipButton } from "../learnings/SkipButton.js"
+import { tabPath } from "../project/ProjectTabs.js"
 import { LoadingShell } from "../shell/LoadingShell.js"
 import { absoluteTime, relativeTime } from "../time.js"
 
@@ -39,10 +40,10 @@ export const bySession = (problems: ReadonlyArray<LearningProblem>): SessionProo
   return [...groups.values()]
 }
 
-/** The list's own filters, so Back lands where the reader left. */
+/** The Fixes tab's own filters, so Back lands where the reader left. */
 const listSearch = (params: URLSearchParams): string => {
   const kept = new URLSearchParams()
-  for (const name of ["project", "show"]) {
+  for (const name of ["show", "type", "from", "to"]) {
     const value = params.get(name)
     if (value !== null) kept.set(name, value)
   }
@@ -387,11 +388,20 @@ export const LearningDetail = () => {
         : current,
     )
 
-  const back = (
-    <Link to={`/learnings${listSearch(searchParams)}`} className="text-[0.82rem] underline">
-      ← Back to Fixes
-    </Link>
-  )
+  // The project is known only once the fix is loaded; before that, or when it fails, the list of projects.
+  const back =
+    state.phase === "ready" ? (
+      <Link
+        to={`${tabPath(state.payload.learning.projectId, "fixes")}${listSearch(searchParams)}`}
+        className="text-[0.82rem] underline"
+      >
+        ← Back to Fixes
+      </Link>
+    ) : (
+      <Link to="/projects" className="text-[0.82rem] underline">
+        ← Back to Projects
+      </Link>
+    )
   if (state.phase === "loading") return <LoadingShell label="Retrieving the fix" />
   if (state.phase === "failed")
     return state.error.kind === "unauthorized" ? (
@@ -418,7 +428,7 @@ export const LearningDetail = () => {
           <Proof learningId={learning.id} problems={problems} />
         </div>
       ) : (
-        <div className="flex max-w-3xl flex-col gap-6">
+        <div className="flex flex-col gap-6">
           <Fix payload={state.payload} onChange={onSkipChange} />
           <details className="border border-rule bg-panel p-4">
             <summary className="cursor-pointer font-semibold">

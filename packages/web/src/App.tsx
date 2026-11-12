@@ -4,7 +4,7 @@ import { AuthProvider, useAuth } from "./auth/AuthProvider.js"
 import { RequireAuth } from "./auth/RequireAuth.js"
 import { LearnEventDetail, LearnEvents } from "./routes/LearnEvents.js"
 import { LearningDetail } from "./routes/LearningDetail.js"
-import { Learnings } from "./routes/Learnings.js"
+import { LearningsRedirect } from "./routes/Learnings.js"
 import { Login } from "./routes/Login.js"
 import { OrgDetail } from "./routes/OrgDetail.js"
 import { Orgs } from "./routes/Orgs.js"
@@ -42,7 +42,7 @@ export const AppRoutes = () => (
       }
     />
     <Route
-      path="/projects/:id"
+      path="/projects/:id/*"
       element={
         <Protected>
           <ProjectDetail />
@@ -93,7 +93,7 @@ export const AppRoutes = () => (
       path="/learnings"
       element={
         <Protected>
-          <Learnings />
+          <LearningsRedirect />
         </Protected>
       }
     />

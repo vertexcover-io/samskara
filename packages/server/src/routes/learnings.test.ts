@@ -157,7 +157,7 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
     await teardown?.()
   })
 
-  test("LRT1: a project admin starts a run with a harness path, and then reads the learnings and their problems", async () => {
+  test("LRT1: a project admin starts a run with a harness path, and then reads the learnings, each naming its project, and their problems", async () => {
     await projectsRepo.grant(db, userId, projectId, "admin")
     await seedProblems(["A", "B"])
     const started = await request("/api/learnings/runs", {
@@ -186,14 +186,16 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
         priority: "high",
         problemCount: 2,
         sessionCount: 1,
+        projectId,
       }),
     ])
     const one = await request(`/api/learnings/${body.learnings[0]?.id}`)
     const detail = (await one.json()) as {
-      learning: { cause: string }
+      learning: { cause: string; projectId: string }
       problems: Array<{ title: string; sessionId: string }>
     }
     expect(detail.learning.cause).toBe("No wait rule.")
+    expect(detail.learning.projectId).toBe(projectId)
     expect(detail.problems.map((p) => p.title)).toEqual(["A", "B"])
   })
 
