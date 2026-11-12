@@ -213,9 +213,13 @@ export const earlierReviewMd = (earlier: EarlierReview): string =>
   [
     "# Earlier review",
     "",
-    `The part of this session before msg-${earlier.contextCount} was already reviewed.`,
-    `Records msg-0 to msg-${Math.max(earlier.contextCount - 1, 0)} are its last records, shown for context only.`,
-    `Report only problems whose evidence includes msg-${earlier.contextCount} or later; others are dropped.`,
+    ...(earlier.contextCount === 0
+      ? ["An earlier part of this session was already reviewed; every record shown here is new."]
+      : [
+          `The part of this session before msg-${earlier.contextCount} was already reviewed.`,
+          `Records msg-0 to msg-${earlier.contextCount - 1} are its last records, shown for context only.`,
+          `Report only problems whose evidence includes msg-${earlier.contextCount} or later; others are dropped.`,
+        ]),
     "",
     `Earlier outcome: ${earlier.outcome}`,
     "",

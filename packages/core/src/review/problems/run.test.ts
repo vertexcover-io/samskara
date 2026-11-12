@@ -97,6 +97,17 @@ describe("problem review run", () => {
     expect(full.prompt).not.toContain("earlier-review.md")
   })
 
+  test("a new-part reviewer with no context records is told every record is new, never that msg-0 is context", () => {
+    const earlier = { outcome: "struggled", summary: "s", problemTitles: [], contextCount: 0 }
+
+    const md = problemReviewFiles(exported, "# How to review", "- L1\n", earlier).files[
+      "earlier-review.md"
+    ]
+
+    expect(md).not.toContain("for context only")
+    expect(md).toContain("every record shown here is new")
+  })
+
   test("RR1b: without readers' leads (a dry run), leads.md holds what code finds", () => {
     expect(problemReviewFiles(exported, "# How to review").files["leads.md"]).toContain(
       "fix the build",
