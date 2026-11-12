@@ -1,21 +1,22 @@
 import { Link } from "react-router-dom"
-import type { LearningSummary } from "../api/types.js"
+import type { LearningDetailPayload, LearningSummary } from "../api/types.js"
 import { dayDate } from "../time.js"
+import { DecisionControls, DecisionNote } from "./DecisionControls.js"
 import { asSentence, PRIORITY_TONE, plural } from "./labels.js"
-import { SkipButton } from "./SkipButton.js"
 
 /** A fix: the title links to its page, stretched over the card so the whole card opens it. */
 export const LearningCard = ({
   row,
   search,
   canEdit,
-  onSkipChange,
+  onDecisionChange,
   mark,
 }: {
   readonly row: LearningSummary
   readonly search: string
   readonly canEdit: boolean
-  readonly onSkipChange: (id: string, skippedAt: string | null) => void
+  /** The fix as the server returns it after a decision; the list merges it into its row. */
+  readonly onDecisionChange: (updated: LearningDetailPayload["learning"]) => void
   /** On a run page: whether that run created this fix or updated it. */
   readonly mark?: "new" | "updated" | null | undefined
 }) => {
@@ -34,6 +35,11 @@ export const LearningCard = ({
               {mark}
             </span>
           )}
+          {row.decision === "accepted" ? (
+            <span className="mr-2 rounded-xs border border-ok/40 px-1.5 py-0.5 font-semibold text-ok">
+              accepted
+            </span>
+          ) : null}
           <span
             className={`mr-2 rounded-xs border px-1.5 py-0.5 font-semibold ${PRIORITY_TONE[row.priority] ?? PRIORITY_TONE.low}`}
           >
@@ -47,6 +53,9 @@ export const LearningCard = ({
           {`first seen ${dayDate(row.firstSeenAt)} · last seen ${dayDate(row.lastSeenAt)} · seen in ${plural(row.sessionsLast7Days, "session")} in the last 7 days`}
         </p>
       )}
+      <div className="mt-1.5">
+        <DecisionNote learning={row} />
+      </div>
       <p className="mt-1.5 text-ink-soft">{row.problem}</p>
       {row.impactReason === null ? null : (
         <p className="mt-2 text-[0.82rem]">
@@ -58,10 +67,7 @@ export const LearningCard = ({
       </p>
       {canEdit ? (
         <div className="mt-3">
-          <SkipButton
-            learning={row}
-            onChange={(updated) => onSkipChange(row.id, updated.skippedAt)}
-          />
+          <DecisionControls learning={row} onChange={onDecisionChange} />
         </div>
       ) : null}
     </article>

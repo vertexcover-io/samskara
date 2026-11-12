@@ -1,13 +1,16 @@
 import {
+  type DecisionRequest,
   type Evidence,
   evidenceMessages,
   FIX_TYPES,
+  type FixDecision,
   type LearningImpact,
   messageIdAt,
   parseStory,
+  REJECT_REASON_MAX,
   recordsInReviewOrder,
 } from "@samskara/core"
-import { type Context, Hono } from "hono"
+import { Hono } from "hono"
 import { z } from "zod"
 import type { Db } from "../db/client.js"
 import type { Env } from "../lib/env.js"
@@ -27,6 +30,22 @@ type Deps = {
 }
 
 const uuid = z.string().uuid()
+
+/** A decision as the API takes it: Reject needs a reason, one non-blank line. */
+const decisionBody = z.discriminatedUnion("decision", [
+  z.object({ decision: z.enum(["open", "accepted", "skipped"]) }).strict(),
+  z
+    .object({
+      decision: z.literal("rejected"),
+      reason: z
+        .string()
+        .trim()
+        .min(1)
+        .max(REJECT_REASON_MAX)
+        .regex(/^[^\r\n]*$/, "one line"),
+    })
+    .strict(),
+]) satisfies z.ZodType<DecisionRequest>
 
 const serializeRun = (run: learningsRepo.LearningRunRow) => ({
   id: run.id,
@@ -53,7 +72,17 @@ const serializeLearning = (row: learningsRepo.LearningRow) => ({
   howItHelps: row.howItHelps,
   fixSummary: row.fixSummary,
   story: parseStory(row.story),
-  skippedAt: row.skippedAt?.toISOString() ?? null,
+  decision: row.decision as FixDecision,
+  decidedAt: row.decidedAt?.toISOString() ?? null,
+  rejectReason: row.rejectReason,
+  skipCount: row.skipCount,
+  sessionsAtSkip: row.sessionsAtSkip,
+  // `samskara learn` from before decisions lists only fixes whose skippedAt is null; a rejected
+  // fix must stay off that list too. Nothing in this repo reads it any more.
+  skippedAt:
+    row.decision === "skipped" || row.decision === "rejected"
+      ? (row.decidedAt?.toISOString() ?? null)
+      : null,
   updatedByRunId: row.updatedByRunId,
   createdAt: row.createdAt.toISOString(),
   updatedAt: row.updatedAt.toISOString(),
@@ -101,19 +130,6 @@ export const learningsRoutes = ({ db, env, notifyWorker }: Deps) => {
   /** What the caller may do in the project, or null when they cannot see it (a 404). */
   const scopeIn = async (userId: string, projectId: string): Promise<Scope | null> =>
     uuid.safeParse(projectId).success ? authorityFor(db, userId, projectId) : null
-
-  /** The skip and unskip handlers' shared body: who may, then the change. */
-  const skip = async (c: Context<{ Variables: AuthVariables }>, skipped: boolean) => {
-    const id = c.req.param("id") ?? ""
-    const userId = c.get("user").id
-    const row = uuid.safeParse(id).success ? await learningsRepo.getLearning(db, id) : null
-    const scope = row === null ? null : await authorityFor(db, userId, row.projectId)
-    if (row === null || scope === null) return c.json({ error: "learningNotFound" }, 404)
-    if (scope === "viewer") return c.json({ error: "notEditable" }, 403)
-    const updated = await learningsRepo.setSkipped(db, row.id, skipped ? userId : null)
-    if (updated === null) return c.json({ error: "learningNotFound" }, 404)
-    return c.json({ learning: serializeLearning(updated) }, 200)
-  }
 
   return (
     new Hono<{ Variables: AuthVariables }>()
@@ -310,8 +326,22 @@ export const learningsRoutes = ({ db, env, notifyWorker }: Deps) => {
           return c.json({ messages: evidenceMessages(records, item) }, 200)
         },
       )
-      /** Skip (POST) or unskip (DELETE) a fix; an editor of its project may. */
-      .post("/:id/skip", requireAuth({ db, env }, ["web", "cli"]), (c) => skip(c, true))
-      .delete("/:id/skip", requireAuth({ db, env }, ["web", "cli"]), (c) => skip(c, false))
+      /** Set a fix's decision: accept, skip, reject with a reason, or reopen. An editor may. */
+      .post(
+        "/:id/decision",
+        requireAuth({ db, env }, ["web", "cli"]),
+        validate("json", decisionBody),
+        async (c) => {
+          const id = c.req.param("id")
+          const userId = c.get("user").id
+          const row = uuid.safeParse(id).success ? await learningsRepo.getLearning(db, id) : null
+          const scope = row === null ? null : await authorityFor(db, userId, row.projectId)
+          if (row === null || scope === null) return c.json({ error: "learningNotFound" }, 404)
+          if (scope === "viewer") return c.json({ error: "notEditable" }, 403)
+          const updated = await learningsRepo.setDecision(db, row.id, c.req.valid("json"), userId)
+          if (updated === null) return c.json({ error: "learningNotFound" }, 404)
+          return c.json({ learning: serializeLearning(updated) }, 200)
+        },
+      )
   )
 }

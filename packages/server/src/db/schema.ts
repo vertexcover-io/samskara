@@ -1,4 +1,5 @@
 import {
+  FIX_DECISIONS,
   FIX_TYPES,
   LEARNING_IMPACTS,
   LEARNING_PRIORITIES,
@@ -79,6 +80,7 @@ const problemSeverityValues = PROBLEM_SEVERITIES.map((v) => `'${v}'`).join(", ")
 const fixTypeValues = FIX_TYPES.map((v) => `'${v}'`).join(", ")
 const learningPriorityValues = LEARNING_PRIORITIES.map((v) => `'${v}'`).join(", ")
 const learningImpactValues = LEARNING_IMPACTS.map((v) => `'${v}'`).join(", ")
+const fixDecisionValues = FIX_DECISIONS.map((v) => `'${v}'`).join(", ")
 
 const createdAt = timestamp("createdAt", { withTimezone: true }).notNull().defaultNow()
 const updatedAt = timestamp("updatedAt", { withTimezone: true }).notNull().defaultNow()
@@ -676,12 +678,21 @@ export const learnings = pgTable(
      */
     story: jsonb("story").$type<LearningStory>(),
     /**
-     * Set when a project editor skips the fix: it leaves the Fixes list but stays a known
-     * learning, so a later run joins its cause here (keeping it skipped) rather than making a
-     * new one. Null while it is not skipped.
+     * What the project's editors decided (`FIX_DECISIONS`), `open` until someone decides. A
+     * decided fix stays a known learning, so a later run joins its cause here rather than
+     * making a new one; `saveBatch` says what each decision lets that run change.
      */
-    skippedAt: timestamp("skippedAt", { withTimezone: true }),
-    skippedBy: uuid("skippedBy").references(() => users.id, { onDelete: "set null" }),
+    decision: text("decision").notNull().default("open"),
+    /** When the decision was last set; null on a fix nobody has decided on. */
+    decidedAt: timestamp("decidedAt", { withTimezone: true }),
+    /** Who set it; null as well on a skipped fix that came back on its own. */
+    decidedBy: uuid("decidedBy").references(() => users.id, { onDelete: "set null" }),
+    /** Why it was rejected: set exactly while the decision is `rejected`. */
+    rejectReason: text("rejectReason"),
+    /** Every skip ever; reopening never resets it, and the third skip rejects. */
+    skipCount: integer("skipCount").notNull().default(0),
+    /** Its session count, as the Fixes card counts it, at the last skip. */
+    sessionsAtSkip: integer("sessionsAtSkip"),
     createdAt,
     updatedAt,
   },
@@ -689,6 +700,11 @@ export const learnings = pgTable(
     check("learnings_priority_check", sql`${t.priority} in (${sql.raw(learningPriorityValues)})`),
     check("learnings_fixType_check", sql`${t.fixType} in (${sql.raw(fixTypeValues)})`),
     check("learnings_impact_check", sql`${t.impact} in (${sql.raw(learningImpactValues)})`),
+    check("learnings_decision_check", sql`${t.decision} in (${sql.raw(fixDecisionValues)})`),
+    check(
+      "learnings_rejectReason_check",
+      sql`(${t.decision} = 'rejected') = (${t.rejectReason} is not null)`,
+    ),
     index("learnings_projectId_idx").on(t.projectId),
   ],
 )

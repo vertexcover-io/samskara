@@ -134,24 +134,34 @@ test("SC25: a fix card shows why it matters and wraps a long path on a phone, op
   await expect(page.locator(`#r-${QUOTED_MESSAGE}`)).toBeInViewport()
 })
 
-test("SC37: Skip takes a fix off the list, Show Skipped lists it with Unskip, and Unskip returns it", async ({
+test("SC815: Skip, Reopen and Reject work end to end in a browser", async ({
   authedPage: page,
 }) => {
   await seedFix()
   await page.goto(`/projects/${projectId(PROJECT)}/fixes`)
+  const status = page.getByRole("combobox", { name: "Status" })
 
   const card = page.locator("article", { hasText: TITLE })
   await card.getByRole("button", { name: "Skip" }).click()
   await expect(card).toHaveCount(0)
   await expect(page).toHaveURL(`/projects/${projectId(PROJECT)}/fixes`)
 
-  await page.getByRole("combobox", { name: "Show" }).selectOption("skipped")
+  await status.selectOption("skipped")
   await expect(card).toBeVisible()
-  await card.getByRole("button", { name: "Unskip" }).click()
+  await expect(card.getByText(/^Skipped/)).toBeVisible()
+  await card.getByRole("button", { name: "Reopen" }).click()
   await expect(page.getByText("No skipped fixes")).toBeVisible()
 
-  await page.getByRole("combobox", { name: "Show" }).selectOption("5")
+  await status.selectOption("open")
   await expect(card).toBeVisible()
+  await card.getByRole("button", { name: "Reject" }).click()
+  await card.getByRole("textbox", { name: "Why reject it?" }).fill("not ours")
+  await card.getByRole("button", { name: "Reject" }).click()
+  await expect(card).toHaveCount(0)
+
+  await status.selectOption("rejected")
+  await expect(card).toBeVisible()
+  await expect(card.getByText(/not ours/)).toBeVisible()
 })
 
 test("the Fixes tab fits a phone when the project has a very long name", async ({

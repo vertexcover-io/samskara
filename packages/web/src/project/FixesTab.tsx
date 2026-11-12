@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react"
 import { useSearchParams } from "react-router-dom"
 import { type ApiError, client, request } from "../api/client.js"
-import type { LearningSummary } from "../api/types.js"
+import type { LearningDetailPayload, LearningSummary } from "../api/types.js"
 import { SessionExpired } from "../auth/SessionExpired.js"
 import { LearningCard } from "../learnings/LearningCard.js"
 import { FIX_TYPE_LABEL, FIX_TYPE_ORDER } from "../learnings/labels.js"
@@ -27,28 +27,54 @@ const SHOW_CHOICES = [
   { value: "10", label: "Top 10" },
   { value: "20", label: "Top 20" },
   { value: "all", label: "All" },
-  { value: "skipped", label: "Skipped" },
 ] as const
 const DEFAULT_SHOW = "5"
 
-/** The Show choice: how many to show, and whether it lists the skipped fixes instead. */
-const showLimit = (
-  value: string | null,
-): { readonly value: string; readonly limit: number; readonly skipped: boolean } => {
+/** The Show choice: how many to show. */
+const showLimit = (value: string | null): { readonly value: string; readonly limit: number } => {
   const choice = SHOW_CHOICES.find((c) => c.value === value)?.value ?? DEFAULT_SHOW
-  const every = choice === "all" || choice === "skipped"
-  return {
-    value: choice,
-    limit: every ? Number.POSITIVE_INFINITY : Number(choice),
-    skipped: choice === "skipped",
-  }
+  return { value: choice, limit: choice === "all" ? Number.POSITIVE_INFINITY : Number(choice) }
 }
+
+/** Which decisions the tab lists. `?status=` keeps the choice. */
+const STATUS_CHOICES = [
+  { value: "open", label: "Open" },
+  { value: "accepted", label: "Accepted" },
+  { value: "skipped", label: "Skipped" },
+  { value: "rejected", label: "Rejected" },
+  { value: "all", label: "All" },
+] as const
+type StatusChoice = (typeof STATUS_CHOICES)[number]["value"]
+
+/** Open lists accepted fixes too, marked: accepting a fix keeps it in the list. */
+const inStatus = (status: StatusChoice, decision: string): boolean =>
+  status === "all" || decision === status || (status === "open" && decision === "accepted")
+
+/** What an empty decided status says. */
+const EMPTY_STATUS = {
+  accepted: {
+    title: "No accepted fixes",
+    detail: "A fix you accept stays in the Open list, marked accepted, and is listed here too.",
+  },
+  skipped: {
+    title: "No skipped fixes",
+    detail:
+      "A fix you skip moves here, and comes back to Open once later runs see it in enough more sessions.",
+  },
+  rejected: {
+    title: "No rejected fixes",
+    detail:
+      "A fix you reject moves here with its reason. Later runs add problems to it without changing it.",
+  },
+} as const
 
 export const FixesTab = ({ projectId }: { readonly projectId: string }) => {
   const [searchParams, setSearchParams] = useSearchParams()
   const [state, setState] = useState<State>({ phase: "loading" })
 
   const show = showLimit(searchParams.get("show"))
+  const status: StatusChoice =
+    STATUS_CHOICES.find((c) => c.value === searchParams.get("status"))?.value ?? "open"
   // The type and the days as the URL holds them; anything unknown is no filter.
   const type = FIX_TYPE_ORDER.find((t) => t === searchParams.get("type"))
   const from = searchParams.get("from") ?? ""
@@ -57,14 +83,14 @@ export const FixesTab = ({ projectId }: { readonly projectId: string }) => {
   // The days the reader picked, as the instants the server compares: To counts its whole day.
   const seenFrom = localDayStart(from) ?? undefined
   const seenBefore = localDayStart(to, 1) ?? undefined
-  // A skip or unskip changes one row in place; the filter below moves it between the lists.
-  const onSkipChange = (id: string, skippedAt: string | null) =>
+  // A decision changes one row in place; the status filter below moves it between the lists.
+  const onDecisionChange = (updated: LearningDetailPayload["learning"]) =>
     setState((current) =>
       current.phase === "ready"
         ? {
             ...current,
             learnings: current.learnings.map((row) =>
-              row.id === id ? { ...row, skippedAt } : row,
+              row.id === updated.id ? { ...row, ...updated } : row,
             ),
           }
         : current,
@@ -113,35 +139,46 @@ export const FixesTab = ({ projectId }: { readonly projectId: string }) => {
         <p className="mt-2 text-ink-soft">{state.error.message}</p>
       </section>
     )
-  // Skipped fixes appear only under Show "Skipped", and only they do.
+  // The status filter is applied here, so a decision moves a card without a reload.
   const listed =
-    state.phase === "ready"
-      ? state.learnings.filter((row) => (row.skippedAt !== null) === show.skipped)
-      : []
-  const empty = show.skipped
-    ? {
-        title: "No skipped fixes",
-        detail: "A fix you skip moves here, and stays here when later runs find it again.",
-      }
-    : filtered && state.phase === "ready" && state.learnings.length === 0
+    state.phase === "ready" ? state.learnings.filter((row) => inStatus(status, row.decision)) : []
+  const empty =
+    filtered && state.phase === "ready" && state.learnings.length === 0
       ? {
           title: "No fixes match these filters",
           detail: "Choose another type or widen the dates to see more.",
         }
-      : state.phase === "ready" && state.learnings.length > 0
-        ? {
-            title: "Every fix here is skipped",
-            detail: 'Choose Show "Skipped" to see them, or to unskip one.',
-          }
-        : {
-            title: "No learnings here yet",
-            detail: "Learnings appear after a learning run reads this project's reviewed sessions.",
-          }
+      : status !== "open" && status !== "all"
+        ? EMPTY_STATUS[status]
+        : state.phase === "ready" && state.learnings.length > 0
+          ? {
+              title: "Every fix here is skipped or rejected",
+              detail: 'Choose Status "All" to see them, or to reopen one.',
+            }
+          : {
+              title: "No learnings here yet",
+              detail:
+                "Learnings appear after a learning run reads this project's reviewed sessions.",
+            }
 
   return (
     <div>
       <div className="mb-4 flex flex-wrap items-end justify-between gap-2">
         <div className="flex max-w-full flex-wrap items-end gap-3">
+          <label className="flex flex-col gap-1">
+            <span className={controlLabelClass}>Status</span>
+            <select
+              className={controlClass}
+              value={status}
+              onChange={(e) => setParam("status", e.target.value === "open" ? "" : e.target.value)}
+            >
+              {STATUS_CHOICES.map((choice) => (
+                <option key={choice.value} value={choice.value}>
+                  {choice.label}
+                </option>
+              ))}
+            </select>
+          </label>
           <label className="flex flex-col gap-1">
             <span className={controlLabelClass}>Show</span>
             <select
@@ -214,7 +251,7 @@ export const FixesTab = ({ projectId }: { readonly projectId: string }) => {
               row={row}
               search={searchParams.size === 0 ? "" : `?${searchParams}`}
               canEdit={state.canEdit}
-              onSkipChange={onSkipChange}
+              onDecisionChange={onDecisionChange}
             />
           ))}
         </div>

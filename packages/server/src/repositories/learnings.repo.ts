@@ -1,7 +1,10 @@
 import {
+  type DecisionRequest,
+  type DecisionState,
   LEARNING_IMPACTS,
   LEARNING_PRIORITIES,
   type LearningInput,
+  nextDecision,
   type ProblemInput,
   parseStory,
   type WrittenLearning,
@@ -488,29 +491,50 @@ export const getLearning = async (db: Querier, id: string): Promise<LearningRow 
 }
 
 /**
- * Skips the learning for `by`, or with null unskips it. Returns the row, or null when it is gone.
- * Skipping one already skipped keeps the first skip's person and time.
+ * The fix's session count as its card shows it: the distinct sessions behind its problems that
+ * are still in the fix's project, so a session moved elsewhere is not counted.
  */
-export const setSkipped = async (
-  db: Querier,
+export const sessionCountOf = async (db: Querier, learningId: string): Promise<number> => {
+  const [row] = await db
+    .select({ count: sql<number>`count(distinct ${sessions.id})::int` })
+    .from(reviewProblems)
+    .innerJoin(learnings, eq(learnings.id, reviewProblems.learningId))
+    .innerJoin(
+      sessions,
+      and(eq(sessions.id, reviewProblems.sessionId), eq(sessions.projectId, learnings.projectId)),
+    )
+    .where(eq(reviewProblems.learningId, learningId))
+  return row?.count ?? 0
+}
+
+/**
+ * Sets the decision `by` asks for (`nextDecision`). Returns the row, or null when it is gone.
+ * The row is locked while its session count is read, so a fix run saving to it waits.
+ */
+export const setDecision = async (
+  db: Db,
   id: string,
-  by: string | null,
-): Promise<LearningRow | null> => {
-  if (by === null) {
-    const [row] = await db
+  request: DecisionRequest,
+  by: string,
+): Promise<LearningRow | null> =>
+  db.transaction(async (tx) => {
+    const [row] = await tx.select().from(learnings).where(eq(learnings.id, id)).for("update")
+    if (row === undefined) return null
+    const current = row as LearningRow & DecisionState
+    const next = nextDecision(current, request, {
+      userId: by,
+      at: new Date(),
+      sessionCount: await sessionCountOf(tx, id),
+    })
+    if (next === current) return row
+    const { decision, decidedAt, decidedBy, rejectReason, skipCount, sessionsAtSkip } = next
+    const [updated] = await tx
       .update(learnings)
-      .set({ skippedAt: null, skippedBy: null })
+      .set({ decision, decidedAt, decidedBy, rejectReason, skipCount, sessionsAtSkip })
       .where(eq(learnings.id, id))
       .returning()
-    return row ?? null
-  }
-  const [row] = await db
-    .update(learnings)
-    .set({ skippedAt: new Date(), skippedBy: by })
-    .where(and(eq(learnings.id, id), isNull(learnings.skippedAt)))
-    .returning()
-  return row ?? getLearning(db, id)
-}
+    return updated ?? null
+  })
 
 /** The problems behind a learning, with their session and evidence, so a reader can check it. */
 export const problemsOfLearning = async (db: Querier, learningId: string) =>

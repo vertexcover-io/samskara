@@ -2,7 +2,7 @@ import type { LearningStory, Problem } from "@samskara/core"
 import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import type { Db } from "../db/client.js"
-import { learningRuns, learnings, reviewProblems, users } from "../db/schema.js"
+import { learningRuns, learnings, reviewProblems, sessions, users } from "../db/schema.js"
 import { dockerAvailable, startTestDb } from "../db/testDb.js"
 import {
   problemFixture,
@@ -329,38 +329,9 @@ describe.skipIf(!dockerAvailable())("learnings repository", () => {
     return row
   }
 
-  test("SC26: skipping stamps the time and the person, unskipping clears both, and nothing else moves", async () => {
-    const before = await savedLearning()
-    const skipped = await learningsRepo.setSkipped(db, before.id, userId)
-    expect(skipped?.skippedAt).toBeInstanceOf(Date)
-    expect(skipped?.skippedBy).toBe(userId)
-    expect(skipped).toMatchObject({
-      title: before.title,
-      fix: before.fix,
-      updatedAt: before.updatedAt,
-    })
-    const unskipped = await learningsRepo.setSkipped(db, before.id, null)
-    expect(unskipped).toMatchObject({
-      skippedAt: null,
-      skippedBy: null,
-      updatedAt: before.updatedAt,
-    })
-  })
-
-  test("a second skip of an already skipped learning keeps who skipped it first, and when", async () => {
-    const before = await savedLearning()
-    const [other] = await db
-      .insert(users)
-      .values({ githubId: 7002, githubLogin: "second-skipper" })
-      .returning()
-    const first = await learningsRepo.setSkipped(db, before.id, userId)
-    const second = await learningsRepo.setSkipped(db, before.id, other?.id as string)
-    expect(second).toMatchObject({ id: before.id, skippedBy: userId, skippedAt: first?.skippedAt })
-  })
-
   test("SC27: a later run joining a skipped learning rewrites its text but keeps it skipped", async () => {
     const before = await savedLearning()
-    const skipped = await learningsRepo.setSkipped(db, before.id, userId)
+    const skipped = await learningsRepo.setDecision(db, before.id, { decision: "skipped" }, userId)
     await seedSession([problem("B")])
     const run = await learningsRepo.startRun(db, projectId)
     const [b] = await learningsRepo.unmarkedProblems(db, projectId, 10)
@@ -380,8 +351,9 @@ describe.skipIf(!dockerAvailable())("learnings repository", () => {
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({
       title: "Rewritten by the second run",
-      skippedAt: skipped?.skippedAt,
-      skippedBy: userId,
+      decision: "skipped",
+      decidedAt: skipped?.decidedAt,
+      decidedBy: userId,
     })
     const [full] = await learningsRepo.learningsWithProblems(db, [before.id])
     expect(full?.problems.map((row) => row.title).sort()).toEqual(["A", "B"])
@@ -389,10 +361,41 @@ describe.skipIf(!dockerAvailable())("learnings repository", () => {
 
   test("SC28: the grouper is still shown a skipped learning, so its cause joins it", async () => {
     const before = await savedLearning()
-    await learningsRepo.setSkipped(db, before.id, userId)
+    await learningsRepo.setDecision(db, before.id, { decision: "skipped" }, userId)
     expect((await learningsRepo.learningsForGrouping(db, projectId)).map((row) => row.id)).toEqual([
       before.id,
     ])
+  })
+
+  test("SC809: a Skip records the session count the Fixes card shows", async () => {
+    const sessionIds = [
+      await seedSession([problem("A")]),
+      await seedSession([problem("B")]),
+      await seedSession([problem("C")]),
+      await seedSession([problem("D")]),
+    ]
+    const run = await learningsRepo.startRun(db, projectId)
+    const picked = await learningsRepo.unmarkedProblems(db, projectId, 10)
+    await learningsRepo.saveBatch(db, {
+      runId: run?.id as string,
+      projectId,
+      groups: [
+        { cause: "x", learningId: null, problemIds: picked.map((row) => row.id), answer: written },
+      ],
+    })
+    const [fix] = await db.select().from(learnings)
+    // One of the four sessions has since moved to another project.
+    await db
+      .update(sessions)
+      .set({ projectId: await newProject(`moved-${counter}`) })
+      .where(eq(sessions.id, sessionIds[3] as string))
+    const skipped = await learningsRepo.setDecision(
+      db,
+      fix?.id as string,
+      { decision: "skipped" },
+      userId,
+    )
+    expect(skipped).toMatchObject({ decision: "skipped", skipCount: 1, sessionsAtSkip: 3 })
   })
 
   test("LDB6: a group whose problems were replaced by a redone review makes no empty learning", async () => {

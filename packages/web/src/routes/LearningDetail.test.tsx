@@ -22,6 +22,11 @@ const LEARNING = {
   howItHelps: "Stops untested work from shipping.",
   fixSummary: "Make helpers wait for their tests to finish before reporting.",
   story: null,
+  decision: "open",
+  decidedAt: null,
+  rejectReason: null,
+  skipCount: 0,
+  sessionsAtSkip: null,
   skippedAt: null,
   updatedByRunId: "r-1",
   createdAt: "2026-10-20T10:00:00.000Z",
@@ -228,35 +233,63 @@ test("SC709: a failed load says so, and Back goes to the projects list since the
   )
 })
 
-test("SC34: a viewer sees no Skip or Unskip button on the fix page", async () => {
-  stubFetch(200, { learning: LEARNING, problems: PROBLEMS, canEdit: false })
+test("SC812: a viewer sees a rejected fix's reason on its page, and no decision buttons", async () => {
+  const decidedAt = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()
+  const rejected = {
+    ...LEARNING,
+    decision: "rejected",
+    decidedAt,
+    rejectReason: "not ours",
+    skippedAt: decidedAt,
+  }
+  stubFetch(200, { learning: rejected, problems: PROBLEMS, canEdit: false })
 
   renderPage()
 
   const fix = await screen.findByRole("region", { name: "The fix" })
-  expect(within(fix).queryByRole("button", { name: /^(Skip|Unskip)$/ })).toBeNull()
+  expect(within(fix).getByText(/^Rejected/)).toHaveTextContent("Rejected 2 hours ago: not ours")
+  expect(within(fix).queryByRole("button", { name: /^(Accept|Skip|Reject|Reopen)$/ })).toBeNull()
 })
 
-test("SC36: an editor skips on the fix page, and the page says how long ago, the exact time on hover", async () => {
-  const skippedAt = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()
-  vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+test("SC813: an editor accepts and then reopens a fix on its page, which changes in place", async () => {
+  const decidedAt = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const method = input instanceof Request ? input.method : (init?.method ?? "GET")
+    const sent =
+      input instanceof Request && method === "POST"
+        ? ((await input.clone().json()) as { decision: string })
+        : method === "POST"
+          ? (JSON.parse(String(init?.body)) as { decision: string })
+          : null
     const body =
-      method === "POST"
-        ? { learning: { ...LEARNING, skippedAt } }
-        : { learning: LEARNING, problems: PROBLEMS, canEdit: true }
-    return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }))
+      sent === null
+        ? { learning: LEARNING, problems: PROBLEMS, canEdit: true }
+        : sent.decision === "accepted"
+          ? { learning: { ...LEARNING, decision: "accepted", decidedAt } }
+          : { learning: { ...LEARNING, decision: "open", decidedAt } }
+    return new Response(JSON.stringify(body), { status: 200 })
   })
   renderPage()
   const user = userEvent.setup()
+  const buttons = (fix: HTMLElement) =>
+    within(fix)
+      .getAllByRole("button")
+      .map((button) => button.textContent)
+      .filter((label) => ["Accept", "Skip", "Reject", "Reopen"].includes(label ?? ""))
 
   const fix = await screen.findByRole("region", { name: "The fix" })
-  expect(within(fix).queryByText(/^Skipped /)).toBeNull()
-  await user.click(within(fix).getByRole("button", { name: "Skip" }))
+  expect(within(fix).queryByText(/^Accepted /)).toBeNull()
+  await user.click(within(fix).getByRole("button", { name: "Accept" }))
 
-  expect(await within(fix).findByRole("button", { name: "Unskip" })).toBeInTheDocument()
-  expect(within(fix).getByText(/^Skipped/)).toHaveTextContent("Skipped 2 hours ago")
-  expect(within(fix).getByText("2 hours ago")).toHaveAttribute("title", absoluteTime(skippedAt))
+  expect(await within(fix).findByRole("button", { name: "Reopen" })).toBeInTheDocument()
+  expect(within(fix).getByText(/^Accepted/)).toHaveTextContent("Accepted 2 hours ago")
+  expect(within(fix).getByText("2 hours ago")).toHaveAttribute("title", absoluteTime(decidedAt))
+  expect(buttons(fix)).toEqual(["Skip", "Reject", "Reopen"])
+
+  await user.click(within(fix).getByRole("button", { name: "Reopen" }))
+  expect(await within(fix).findByRole("button", { name: "Accept" })).toBeInTheDocument()
+  expect(within(fix).queryByText(/^Accepted/)).toBeNull()
+  expect(buttons(fix)).toEqual(["Accept", "Skip", "Reject"])
 })
 
 test("Show messages opens the quoted message with the ones around it, on the page itself", async () => {
