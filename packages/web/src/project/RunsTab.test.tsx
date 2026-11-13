@@ -35,8 +35,9 @@ type Call = { readonly method: string; readonly url: string; readonly body: unkn
 type Failed = { readonly failStatus: number }
 
 /**
- * The runs list answers each read with the next of `lists` (the last one repeats), and a Run now
- * POST answers `post`. Records every call with its method, URL and JSON body.
+ * The runs list answers each read with the next of `lists` (the last one repeats), one run's own
+ * address answers with the next of `singles` (likewise), and a Run now POST answers `post`.
+ * Records every call with its method, URL and JSON body.
  */
 const stubServer = (
   lists: ReadonlyArray<ListBody | Failed>,
@@ -44,9 +45,11 @@ const stubServer = (
     status: 202,
     body: { runId: "r-new" },
   },
+  singles: ReadonlyArray<ListedRun | Failed> = [],
 ) => {
   const calls: Call[] = []
   let reads = 0
+  let singleReads = 0
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = input instanceof Request ? input.url : String(input)
     const method = input instanceof Request ? input.method : (init?.method ?? "GET")
@@ -55,6 +58,15 @@ const stubServer = (
     if (method === "POST") return new Response(JSON.stringify(post.body), { status: post.status })
     if (!url.includes("/api/learnings/runs"))
       return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 })
+    if (url.includes("/api/learnings/runs/")) {
+      const single = singles[Math.min(singleReads, singles.length - 1)]
+      singleReads += 1
+      return single === undefined || "failStatus" in single
+        ? new Response(JSON.stringify({ error: "runNotFound" }), {
+            status: single?.failStatus ?? 404,
+          })
+        : new Response(JSON.stringify({ run: single }), { status: 200 })
+    }
     const answer = lists[Math.min(reads, lists.length - 1)]
     reads += 1
     return answer !== undefined && "failStatus" in answer
@@ -66,7 +78,9 @@ const stubServer = (
 
 const posts = (calls: ReadonlyArray<Call>) => calls.filter((call) => call.method === "POST")
 const listReads = (calls: ReadonlyArray<Call>) =>
-  calls.filter((call) => call.method === "GET" && call.url.includes("/api/learnings/runs"))
+  calls.filter((call) => call.method === "GET" && call.url.includes("/api/learnings/runs?"))
+const runReads = (calls: ReadonlyArray<Call>) =>
+  calls.filter((call) => call.method === "GET" && call.url.includes("/api/learnings/runs/"))
 
 const renderTab = () =>
   render(
@@ -220,11 +234,15 @@ test("SC739: a refused run says why in plain words", async () => {
   expect(screen.getByRole("button", { name: "Run now" })).toBeEnabled()
 })
 
-test("SC740: an open run is followed until it ends, and then the polling stops", async () => {
-  const calls = stubServer([
-    list([run("r-2", { status: "running", finishedAt: null })]),
-    list([run("r-2", { fixesCreated: 1 })]),
-  ])
+test("SC740: an open run is followed by asking about that run alone, and the list is read again once it ends", async () => {
+  const calls = stubServer(
+    [
+      list([run("r-2", { status: "running", finishedAt: null }), run("r-1")]),
+      list([run("r-2", { fixesCreated: 1 }), run("r-1")]),
+    ],
+    undefined,
+    [run("r-2", { status: "running", finishedAt: null }), run("r-2")],
+  )
   // Only the poll's interval is faked, so fetches still settle on real time.
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
   renderTab()
@@ -233,20 +251,49 @@ test("SC740: an open run is followed until it ends, and then the polling stops",
   await act(async () => {
     await vi.advanceTimersByTimeAsync(RUN_POLL_MS)
   })
+  // Still running: only the open run was asked about, not the whole list.
+  await waitFor(() => expect(runReads(calls)).toHaveLength(1))
+  expect(runReads(calls)[0]?.url).toContain("/api/learnings/runs/r-2")
+  expect(listReads(calls)).toHaveLength(1)
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(RUN_POLL_MS)
+  })
   expect(await screen.findByText(/finished .* · 1 new fix, 0 updated/)).toBeInTheDocument()
-  const readsWhenDone = listReads(calls).length
+  expect(listReads(calls)).toHaveLength(2)
+  const readsWhenDone = calls.length
   await act(async () => {
     await vi.advanceTimersByTimeAsync(RUN_POLL_MS * 2)
   })
-  expect(listReads(calls)).toHaveLength(readsWhenDone)
+  expect(calls).toHaveLength(readsWhenDone)
 })
 
-test("one failed read while a run is open keeps the list on screen and keeps following the run", async () => {
-  const calls = stubServer([
-    list([run("r-2", { status: "running", finishedAt: null })]),
-    { failStatus: 503 },
-    list([run("r-2", { fixesCreated: 1 })]),
-  ])
+test("a run that moves from waiting to running shows it without reading the list", async () => {
+  const calls = stubServer(
+    [list([run("r-2", { status: "waiting", finishedAt: null })])],
+    undefined,
+    [run("r-2", { status: "running", finishedAt: null })],
+  )
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
+  renderTab()
+
+  expect(await screen.findByText(/waiting to start/)).toBeInTheDocument()
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(RUN_POLL_MS)
+  })
+  expect(await screen.findByText(/running… · 0 new fixes, 0 updated/)).toBeInTheDocument()
+  expect(listReads(calls)).toHaveLength(1)
+})
+
+test("one failed check while a run is open keeps the list on screen and keeps following the run", async () => {
+  const calls = stubServer(
+    [
+      list([run("r-2", { status: "running", finishedAt: null })]),
+      list([run("r-2", { fixesCreated: 1 })]),
+    ],
+    undefined,
+    [{ failStatus: 503 }, run("r-2")],
+  )
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
   renderTab()
 
@@ -254,7 +301,7 @@ test("one failed read while a run is open keeps the list on screen and keeps fol
   await act(async () => {
     await vi.advanceTimersByTimeAsync(RUN_POLL_MS)
   })
-  await waitFor(() => expect(listReads(calls)).toHaveLength(2))
+  await waitFor(() => expect(runReads(calls)).toHaveLength(1))
   expect(screen.queryByText("Retrieval failed")).toBeNull()
   expect(screen.getByText(/running… · 0 new fixes, 0 updated/)).toBeInTheDocument()
 
@@ -265,11 +312,11 @@ test("one failed read while a run is open keeps the list on screen and keeps fol
 })
 
 test("a 404 while a run is open (access removed, project deleted) says so and stops polling instead of showing the old list as current", async () => {
-  const calls = stubServer([
-    list([run("r-2", { status: "waiting", finishedAt: null })]),
-    { failStatus: 404 },
-    list([run("r-2", { fixesCreated: 1 })]),
-  ])
+  const calls = stubServer(
+    [list([run("r-2", { status: "waiting", finishedAt: null })])],
+    undefined,
+    [{ failStatus: 404 }],
+  )
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
   renderTab()
 
@@ -280,10 +327,11 @@ test("a 404 while a run is open (access removed, project deleted) says so and st
   expect(await screen.findByText("Retrieval failed")).toBeInTheDocument()
   expect(screen.queryByText(/waiting to start/)).toBeNull()
 
+  const callsWhenFailed = calls.length
   await act(async () => {
     await vi.advanceTimersByTimeAsync(RUN_POLL_MS * 2)
   })
-  expect(listReads(calls)).toHaveLength(2)
+  expect(calls).toHaveLength(callsWhenFailed)
 })
 
 test("SC741: a viewer is offered no Run now", async () => {

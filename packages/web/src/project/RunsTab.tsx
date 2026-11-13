@@ -9,7 +9,10 @@ import { absoluteTime } from "../time.js"
 import { tabPath } from "./ProjectTabs.js"
 import { RunNow } from "./RunNow.js"
 
-/** How often an open run is checked. A run is two agents per batch, so minutes, not seconds. */
+/**
+ * How often an open run is checked. A run is two agents per batch, so minutes, not seconds. Each
+ * check asks about that one run; the list, with every run's counts, is read again once it ends.
+ */
 export const RUN_POLL_MS = 5_000
 
 type State =
@@ -24,6 +27,8 @@ type State =
 /** Where a run's page lives, under the project's Runs tab. */
 export const runPath = (projectId: string, runId: string): string =>
   `${tabPath(projectId, "runs")}/${encodeURIComponent(runId)}`
+
+const isOpen = (status: string): boolean => status === "waiting" || status === "running"
 
 /** When a run ended, or that it has not yet. */
 const runProgress = (run: ListedRun): string =>
@@ -70,7 +75,7 @@ export const RunsTab = ({
   readonly fixRunEveryDays: number
 }) => {
   const [state, setState] = useState<State>({ phase: "loading" })
-  // Bumped to read the list again: after Run now, and while a run is open.
+  // Bumped to read the list again: after Run now, and when an open run ends.
   const [reloadCount, setReloadCount] = useState(0)
 
   // The list is not blanked to loading here: the poll reads it every few seconds.
@@ -99,14 +104,47 @@ export const RunsTab = ({
     }
   }, [projectId, reloadCount])
 
-  const anyOpen =
-    state.phase === "ready" &&
-    state.runs.some((run) => run.status === "waiting" || run.status === "running")
+  // At most one run of a project is open at a time.
+  const openRunId =
+    state.phase === "ready" ? (state.runs.find((run) => isOpen(run.status))?.id ?? null) : null
   useEffect(() => {
-    if (!anyOpen) return
-    const timer = setInterval(() => setReloadCount((count) => count + 1), RUN_POLL_MS)
-    return () => clearInterval(timer)
-  }, [anyOpen])
+    if (openRunId === null) return
+    let active = true
+    const check = async () => {
+      const result = await request(() =>
+        client.api.learnings.runs[":id"].$get({ param: { id: openRunId } }),
+      )
+      if (!active) return
+      if (!result.ok) {
+        // A network or server failure waits for the next check; a 404 or an expired session
+        // will not pass, so it shows the error, which also ends the checks.
+        if (result.error.kind !== "network" && result.error.kind !== "server")
+          setState({ phase: "failed", error: result.error })
+        return
+      }
+      const { status, finishedAt } = result.data.run
+      if (!isOpen(status)) {
+        // Ended: read the list once more, for its finish time and what it created and updated.
+        setReloadCount((count) => count + 1)
+        return
+      }
+      setState((previous) =>
+        previous.phase === "ready"
+          ? {
+              ...previous,
+              runs: previous.runs.map((run) =>
+                run.id === openRunId ? { ...run, status, finishedAt } : run,
+              ),
+            }
+          : previous,
+      )
+    }
+    const timer = setInterval(() => void check(), RUN_POLL_MS)
+    return () => {
+      active = false
+      clearInterval(timer)
+    }
+  }, [openRunId])
 
   if (state.phase === "loading") return <LoadingShell label="Retrieving fix runs" />
   if (state.phase === "failed")
