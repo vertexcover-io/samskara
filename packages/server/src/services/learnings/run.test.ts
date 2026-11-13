@@ -276,7 +276,7 @@ describe.skipIf(!dockerAvailable())("runLearnings", () => {
     const [after] = await db.select().from(learnings)
     expect(after).toEqual(rejected)
     const b = (await db.select().from(reviewProblems)).find((row) => row.title === "B")
-    expect(b).toMatchObject({ learningId: fix?.id, linkedQuietly: true })
+    expect(b).toMatchObject({ learningId: fix?.id })
     expect(readLog(runIdOf(result)).find((line) => line.step === "batch.saved")).toMatchObject({
       groups: [{ group: 1, writerGroup: null, action: "linked", learningId: fix?.id }],
       priorityUsedThisBatch: { high: 0, medium: 0 },
@@ -322,11 +322,8 @@ describe.skipIf(!dockerAvailable())("runLearnings", () => {
     const problems = await db.select().from(reviewProblems)
     const [b, c] = ["B", "C"].map((title) => problems.find((row) => row.title === title))
     const linked = [b, c].find((row) => row?.learningId === fix?.id)
-    expect(linked).toMatchObject({ linkedQuietly: true })
-    expect([b, c].find((row) => row !== linked)).toMatchObject({
-      learningId: created?.id,
-      linkedQuietly: false,
-    })
+    expect(linked).toBeDefined()
+    expect([b, c].find((row) => row !== linked)).toMatchObject({ learningId: created?.id })
   })
 
   test("LS7: groups that fail the check fail the run, and no problem is marked", async () => {

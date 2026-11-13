@@ -93,20 +93,21 @@ export type ListedRun = LearningRunRow & {
 /**
  * The project's runs, newest first, with how many fixes each created and updated: the distinct
  * learnings its problems were linked to, split by whether a learning was created during the run.
+ * A rejected fix is left out, like on the run's fix list: a run never rewrites one, and one it
+ * created drops off once someone rejects it.
  */
 export const listRuns = async (db: Querier, projectId: string): Promise<ListedRun[]> => {
   // The outer run is named in full: with no join, Drizzle renders its columns unqualified, and a
   // bare "id" inside the subquery would bind to the subquery's own row.
   const touched = sql<number>`(
     select count(distinct rp."learningId")::int from "reviewProblems" rp
-    where rp."learningRunId" = "learningRuns"."id" and rp."learningId" is not null
-      and not rp."linkedQuietly"
+    join "learnings" l on l."id" = rp."learningId"
+    where rp."learningRunId" = "learningRuns"."id" and l."decision" <> 'rejected'
   )`
   const created = sql<number>`(
     select count(distinct rp."learningId")::int from "reviewProblems" rp
     join "learnings" l on l."id" = rp."learningId"
-    where rp."learningRunId" = "learningRuns"."id"
-      and not rp."linkedQuietly"
+    where rp."learningRunId" = "learningRuns"."id" and l."decision" <> 'rejected'
       and ${createdDuring(sql`l."createdAt"`, sql`"learningRuns"`)}
   )`
   const rows = await db
@@ -410,7 +411,7 @@ export const saveBatch = async (
       const problemIds = present.map((row) => row.id)
       await tx
         .update(reviewProblems)
-        .set({ learningRunId: input.runId, learningId, linkedQuietly: linkOnly })
+        .set({ learningRunId: input.runId, learningId })
         .where(inArray(reviewProblems.id, problemIds))
       // A joined fix may be a skipped one this batch has now seen in enough more sessions.
       if (!linkOnly && learningId !== null && group.learningId !== null)
@@ -464,10 +465,9 @@ const filterConditions = (filter: LearningFilter): SQL[] => {
   const conditions: SQL[] = []
   if (filter.fixType !== undefined) conditions.push(eq(learnings.fixType, filter.fixType))
   if (filter.runId !== undefined)
-    conditions.push(sql`exists (
+    conditions.push(sql`${learnings.decision} <> 'rejected' and exists (
       select 1 from "reviewProblems" rp
       where rp."learningId" = ${learnings.id} and rp."learningRunId" = ${filter.runId}
-        and not rp."linkedQuietly"
     )`)
   if (filter.seenFrom !== undefined || filter.seenBefore !== undefined) {
     const from =

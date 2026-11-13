@@ -514,10 +514,10 @@ describe.skipIf(!dockerAvailable())("learnings repository", () => {
       .select()
       .from(reviewProblems)
       .where(eq(reviewProblems.id, late?.id as string))
-    expect(linked).toMatchObject({ learningId: before.id, linkedQuietly: true })
+    expect(linked).toMatchObject({ learningId: before.id })
   })
 
-  test("SC834: the run page neither counts nor lists a quiet link", async () => {
+  test("SC834: the run page neither counts nor lists a rejected fix", async () => {
     const [fixB, fixC] = await savedFixes(["B", "C"])
     await learningsRepo.setDecision(
       db,
@@ -566,7 +566,7 @@ describe.skipIf(!dockerAvailable())("learnings repository", () => {
     expect(ofC.map((row) => row.title).sort()).toEqual(["C", "C more"])
   })
 
-  test("SC835: an earlier run still counts a fix it created that was rejected later", async () => {
+  test("SC835: a run's page drops a fix it created once that fix is rejected", async () => {
     const before = await savedLearning()
     await learningsRepo.setDecision(
       db,
@@ -576,10 +576,11 @@ describe.skipIf(!dockerAvailable())("learnings repository", () => {
     )
     await joinRun(before.id, 1, { verdict: "link" })
     const [second, first] = await learningsRepo.listRuns(db, projectId)
-    expect(first).toMatchObject({ fixesCreated: 1, fixesUpdated: 0 })
+    expect(first).toMatchObject({ fixesCreated: 0, fixesUpdated: 0 })
     expect(second).toMatchObject({ fixesCreated: 0, fixesUpdated: 0 })
-    const ofFirst = await learningsRepo.listLearnings(db, projectId, { runId: first?.id as string })
-    expect(ofFirst.map((row) => [row.id, row.runMark])).toEqual([[before.id, "new"]])
+    expect(
+      await learningsRepo.listLearnings(db, projectId, { runId: first?.id as string }),
+    ).toEqual([])
     expect(
       await learningsRepo.listLearnings(db, projectId, { runId: second?.id as string }),
     ).toEqual([])

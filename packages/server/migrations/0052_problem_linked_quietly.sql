@@ -1,1 +1,0 @@
-ALTER TABLE "reviewProblems" ADD COLUMN "linkedQuietly" boolean DEFAULT false NOT NULL;
