@@ -19,6 +19,12 @@ const LEARNING = {
   howItHelps: null,
   fixSummary: null,
   story: null,
+  decision: "open",
+  decidedAt: null,
+  rejectReason: null,
+  skipCount: 0,
+  sessionsAtSkip: null,
+  returnsAtSessions: null,
   skippedAt: null,
   updatedByRunId: "r-1",
   createdAt: "2026-10-20T10:00:00.000Z",
@@ -228,15 +234,149 @@ test("LR10: the Show filter picks how many, and the choice is kept in the URL", 
 })
 
 const SECOND = { ...LEARNING, id: "l-2", title: "Agents edit the lockfile by hand" }
-const skippedAt = "2026-10-29T09:00:00.000Z"
+const decidedAt = "2026-10-29T09:00:00.000Z"
+const OPEN = { ...LEARNING, id: "l-o", title: "An open fix" }
+const ACCEPTED = {
+  ...LEARNING,
+  id: "l-a",
+  title: "An accepted fix",
+  decision: "accepted",
+  decidedAt,
+}
+const SKIPPED = {
+  ...LEARNING,
+  id: "l-s",
+  title: "A skipped fix",
+  decision: "skipped",
+  decidedAt,
+  skippedAt: decidedAt,
+  skipCount: 1,
+  sessionsAtSkip: 4,
+  returnsAtSessions: 14,
+}
+const REJECTED = {
+  ...LEARNING,
+  id: "l-r",
+  title: "A rejected fix",
+  decision: "rejected",
+  decidedAt,
+  skippedAt: decidedAt,
+  rejectReason: "not ours",
+}
+const FOUR = [OPEN, ACCEPTED, SKIPPED, REJECTED]
+const shownTitles = () =>
+  screen.queryAllByRole("article").map((card) => within(card).getAllByRole("link")[0]?.textContent)
 
-test("SC32: Skip on a card takes the fix out of the list at once, without opening its page", async () => {
+test("SC810: the Status filter lists each decision, Open showing accepted ones marked", async () => {
+  stubFetch([
+    {
+      match: "/api/learnings",
+      status: 200,
+      body: { learnings: FOUR, latestRun: RUN, canEdit: true },
+    },
+  ])
+  renderPage()
+  const user = userEvent.setup()
+
+  await screen.findByText(OPEN.title)
+  expect(shownTitles()).toEqual([OPEN.title, ACCEPTED.title])
+  const accepted = screen.getByText(ACCEPTED.title).closest("article") as HTMLElement
+  expect(within(accepted).getByText("accepted")).toBeInTheDocument()
+  const open = screen.getByText(OPEN.title).closest("article") as HTMLElement
+  expect(within(open).queryByText("accepted")).toBeNull()
+
+  const status = screen.getByRole("combobox", { name: "Status" })
+  await user.selectOptions(status, "accepted")
+  expect(shownTitles()).toEqual([ACCEPTED.title])
+  expect(screen.getByTestId("location")).toHaveTextContent("status=accepted")
+  await user.selectOptions(status, "skipped")
+  expect(shownTitles()).toEqual([SKIPPED.title])
+  await user.selectOptions(status, "rejected")
+  expect(shownTitles()).toEqual([REJECTED.title])
+  const rejected = screen.getByText(REJECTED.title).closest("article") as HTMLElement
+  expect(within(rejected).getByText(/not ours/)).toBeInTheDocument()
+  await user.selectOptions(status, "all")
+  expect(shownTitles()).toEqual(FOUR.map((row) => row.title))
+  // The Show count still limits whichever status is chosen.
+  expect(screen.getByRole("combobox", { name: "Show" })).toHaveValue("5")
+  expect(
+    within(screen.getByRole("combobox", { name: "Show" })).queryByRole("option", {
+      name: "Skipped",
+    }),
+  ).toBeNull()
+})
+
+test("an old ?show=skipped link lists the skipped fixes under the default Show count", async () => {
+  stubFetch([
+    {
+      match: "/api/learnings",
+      status: 200,
+      body: { learnings: FOUR, latestRun: RUN, canEdit: true },
+    },
+  ])
+  renderPage("/projects/p-1/fixes?show=skipped")
+
+  await screen.findByText(SKIPPED.title)
+  expect(shownTitles()).toEqual([SKIPPED.title])
+  expect(screen.getByRole("combobox", { name: "Status" })).toHaveValue("skipped")
+  expect(screen.getByRole("combobox", { name: "Show" })).toHaveValue("5")
+})
+
+test("from an old ?show=skipped link, choosing Open lists open fixes, and changing Show then keeps Status as chosen", async () => {
+  stubFetch([
+    {
+      match: "/api/learnings",
+      status: 200,
+      body: { learnings: FOUR, latestRun: RUN, canEdit: true },
+    },
+  ])
+  renderPage("/projects/p-1/fixes?show=skipped&type=skill")
+  const user = userEvent.setup()
+
+  await screen.findByText(SKIPPED.title)
+  expect(screen.getByTestId("location")).toHaveTextContent(
+    /^\/projects\/p-1\/fixes\?type=skill&status=skipped$/,
+  )
+
+  await user.selectOptions(screen.getByRole("combobox", { name: "Status" }), "open")
+  expect(shownTitles()).toEqual([OPEN.title, ACCEPTED.title])
+  expect(screen.getByTestId("location")).toHaveTextContent(/^\/projects\/p-1\/fixes\?type=skill$/)
+
+  await user.selectOptions(screen.getByRole("combobox", { name: "Status" }), "skipped")
+  await user.selectOptions(screen.getByRole("combobox", { name: "Show" }), "10")
+  expect(shownTitles()).toEqual([SKIPPED.title])
+  expect(screen.getByRole("combobox", { name: "Status" })).toHaveValue("skipped")
+})
+
+test("SC825: a skipped card says how many more sessions until it returns", async () => {
+  stubFetch([
+    {
+      match: "/api/learnings",
+      status: 200,
+      body: {
+        learnings: [{ ...SKIPPED, sessionCount: 7 }, ACCEPTED],
+        latestRun: RUN,
+        canEdit: true,
+      },
+    },
+  ])
+  renderPage("/projects/p-1/fixes?status=all")
+
+  const skipped = (await screen.findByText(SKIPPED.title)).closest("article") as HTMLElement
+  expect(within(skipped).getByText(/^Skipped/)).toHaveTextContent(/· back after 7 more sessions$/)
+  const accepted = screen.getByText(ACCEPTED.title).closest("article") as HTMLElement
+  expect(within(accepted).getByText(/^Accepted/)).not.toHaveTextContent(/back after/)
+})
+
+test("SC811: Reject asks for a reason before it sends anything", async () => {
   const urls = stubFetch([
     {
-      match: "/api/learnings/l-1/skip",
+      match: "/api/learnings/l-1/decision",
       method: "POST",
       status: 200,
-      body: { learning: { ...LEARNING, skippedAt } },
+      body: {
+        learning: { ...LEARNING, decision: "rejected", decidedAt, rejectReason: "not ours" },
+      },
     },
     {
       match: "/api/learnings",
@@ -244,79 +384,73 @@ test("SC32: Skip on a card takes the fix out of the list at once, without openin
       body: { learnings: [LEARNING, SECOND], latestRun: RUN, canEdit: true },
     },
   ])
+  const posted: unknown[] = []
+  const fetchSpy = vi.mocked(globalThis.fetch)
+  const original = fetchSpy.getMockImplementation()
+  fetchSpy.mockImplementation(async (input, init) => {
+    if (input instanceof Request && input.method === "POST") posted.push(await input.clone().json())
+    else if (init?.method === "POST") posted.push(JSON.parse(String(init.body)))
+    return (original as typeof fetch)(input, init)
+  })
   renderPage()
   const user = userEvent.setup()
 
   const card = (await screen.findByText(LEARNING.title)).closest("article") as HTMLElement
-  await user.click(within(card).getByRole("button", { name: "Skip" }))
+  await user.click(within(card).getByRole("button", { name: "Reject" }))
+  const reasons = within(card).getByRole("group", { name: "Why reject it?" })
+  expect(
+    within(reasons)
+      .getAllByRole("button")
+      .map((button) => button.textContent),
+  ).toEqual(["Not a real problem", "The person's own fault", "One-off", "Already fixed", "Cancel"])
+  await user.click(within(reasons).getByRole("button", { name: "Cancel" }))
+  expect(within(card).queryByRole("group", { name: "Why reject it?" })).toBeNull()
+  expect(urls.some((url) => url.startsWith("POST"))).toBe(false)
+
+  await user.click(within(card).getByRole("button", { name: "Reject" }))
+  await user.click(within(card).getByRole("button", { name: "Not a real problem" }))
 
   await waitFor(() => expect(screen.queryByText(LEARNING.title)).toBeNull())
+  expect(posted).toEqual([{ decision: "rejected", reason: "Not a real problem" }])
   expect(screen.getByText(SECOND.title)).toBeInTheDocument()
-  expect(screen.getByText("Showing 1 of 1")).toBeInTheDocument()
-  expect(
-    urls.some((url) => url.startsWith("POST") && url.includes("/api/learnings/l-1/skip")),
-  ).toBe(true)
   expect(screen.getByTestId("location")).toHaveTextContent(/^\/projects\/p-1\/fixes$/)
 })
 
-test("SC33: Show Skipped lists only skipped fixes with Unskip, and Unskip takes one out", async () => {
-  stubFetch([
-    {
-      match: "/api/learnings/l-1/skip",
-      method: "DELETE",
-      status: 200,
-      body: { learning: { ...LEARNING, skippedAt: null } },
-    },
-    {
-      match: "/api/learnings",
-      status: 200,
-      body: { learnings: [{ ...LEARNING, skippedAt }, SECOND], latestRun: RUN, canEdit: true },
-    },
-  ])
-  renderPage("/projects/p-1/fixes?show=skipped")
-  const user = userEvent.setup()
-
-  const card = (await screen.findByText(LEARNING.title)).closest("article") as HTMLElement
-  expect(screen.queryByText(SECOND.title)).toBeNull()
-  await user.click(within(card).getByRole("button", { name: "Unskip" }))
-
-  expect(await screen.findByText("No skipped fixes")).toBeInTheDocument()
-  expect(screen.queryByText(LEARNING.title)).toBeNull()
-})
-
-test("a project whose every fix is skipped says so and points to Show Skipped, not 'No learnings here yet'", async () => {
+test("a project whose every fix is skipped or rejected says so and points to Status All, not 'No learnings here yet'", async () => {
   stubFetch([
     {
       match: "/api/learnings",
       status: 200,
-      body: { learnings: [{ ...LEARNING, skippedAt }], latestRun: RUN, canEdit: true },
+      body: { learnings: [SKIPPED, REJECTED], latestRun: RUN, canEdit: true },
     },
   ])
   renderPage()
 
-  expect(await screen.findByText("Every fix here is skipped")).toBeInTheDocument()
-  expect(screen.getByText(/Show "Skipped"/)).toBeInTheDocument()
+  expect(await screen.findByText("Every fix here is skipped or rejected")).toBeInTheDocument()
+  expect(screen.getByText(/Status "All"/)).toBeInTheDocument()
   expect(screen.queryByText("No learnings here yet")).toBeNull()
 })
 
-test("SC34: a viewer sees no Skip or Unskip button on the list", async () => {
+test("SC812: a viewer sees decisions but no Accept, Skip or Reject button on the list", async () => {
   stubFetch([
     {
       match: "/api/learnings",
       status: 200,
-      body: { learnings: [LEARNING], latestRun: RUN, canEdit: false },
+      body: { learnings: [OPEN, ACCEPTED], latestRun: RUN, canEdit: false },
     },
   ])
   renderPage()
 
-  await screen.findByText(LEARNING.title)
-  expect(screen.queryByRole("button", { name: /^(Skip|Unskip)$/ })).toBeNull()
+  await screen.findByText(OPEN.title)
+  const accepted = screen.getByText(ACCEPTED.title).closest("article") as HTMLElement
+  expect(within(accepted).getByText(/^Accepted/)).toBeInTheDocument()
+  expect(screen.queryByRole("button", { name: /^(Accept|Skip|Reject)$/ })).toBeNull()
 })
 
-test("SC35: a refused skip says why in words, and the fix stays", async () => {
+test("SC35: a refused decision says why in words, and the fix stays", async () => {
   stubFetch([
     {
-      match: "/api/learnings/l-1/skip",
+      match: "/api/learnings/l-1/decision",
       method: "POST",
       status: 403,
       body: { error: "notEditable" },
@@ -334,7 +468,7 @@ test("SC35: a refused skip says why in words, and the fix stays", async () => {
   await user.click(within(card).getByRole("button", { name: "Skip" }))
 
   expect(
-    await screen.findByText("You need edit rights on this project to skip a fix."),
+    await screen.findByText("You need edit rights on this project to decide on a fix."),
   ).toBeInTheDocument()
   expect(screen.getByText(LEARNING.title)).toBeInTheDocument()
 })

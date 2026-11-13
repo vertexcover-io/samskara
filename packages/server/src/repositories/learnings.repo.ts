@@ -1,13 +1,18 @@
 import {
+  type DecisionRequest,
+  type FixDecision,
+  type KnownLearning,
   LEARNING_IMPACTS,
   LEARNING_PRIORITIES,
   type LearningInput,
+  nextDecision,
   type ProblemInput,
   parseStory,
+  returnsAtSessions,
   type WrittenLearning,
 } from "@samskara/core"
 import { and, asc, desc, eq, inArray, isNull, type SQL, sql } from "drizzle-orm"
-import type { Db, Querier } from "../db/client.js"
+import type { Db, Querier, Tx } from "../db/client.js"
 import { learningRuns, learnings, reviewProblems, sessionReviews, sessions } from "../db/schema.js"
 import { shownRun } from "./reviews.repo.js"
 
@@ -88,18 +93,21 @@ export type ListedRun = LearningRunRow & {
 /**
  * The project's runs, newest first, with how many fixes each created and updated: the distinct
  * learnings its problems were linked to, split by whether a learning was created during the run.
+ * A rejected fix is left out, like on the run's fix list: a run never rewrites one, and one it
+ * created drops off once someone rejects it.
  */
 export const listRuns = async (db: Querier, projectId: string): Promise<ListedRun[]> => {
   // The outer run is named in full: with no join, Drizzle renders its columns unqualified, and a
   // bare "id" inside the subquery would bind to the subquery's own row.
   const touched = sql<number>`(
     select count(distinct rp."learningId")::int from "reviewProblems" rp
-    where rp."learningRunId" = "learningRuns"."id" and rp."learningId" is not null
+    join "learnings" l on l."id" = rp."learningId"
+    where rp."learningRunId" = "learningRuns"."id" and l."decision" <> 'rejected'
   )`
   const created = sql<number>`(
     select count(distinct rp."learningId")::int from "reviewProblems" rp
     join "learnings" l on l."id" = rp."learningId"
-    where rp."learningRunId" = "learningRuns"."id"
+    where rp."learningRunId" = "learningRuns"."id" and l."decision" <> 'rejected'
       and ${createdDuring(sql`l."createdAt"`, sql`"learningRuns"`)}
   )`
   const rows = await db
@@ -190,13 +198,22 @@ export const unmarkedProblems = async (
     .limit(limit)
     .then((rows) => rows.map(asProblem))
 
-/** What agent 1 is shown of each learning so far: enough to tell whether a cause is the same. */
+/**
+ * What agent 1 is shown of each learning so far: enough to tell whether a cause is the same,
+ * and why a rejected one was rejected, so it joins problems there instead of copying it.
+ */
 export const learningsForGrouping = async (
   db: Querier,
   projectId: string,
-): Promise<Array<Pick<LearningInput, "id" | "title" | "cause">>> =>
+): Promise<KnownLearning[]> =>
   db
-    .select({ id: learnings.id, title: learnings.title, cause: learnings.cause })
+    .select({
+      id: learnings.id,
+      title: learnings.title,
+      cause: learnings.cause,
+      // Set exactly while the fix is rejected (learnings_rejectReason_check).
+      rejectedReason: learnings.rejectReason,
+    })
     .from(learnings)
     .where(eq(learnings.projectId, projectId))
     .orderBy(asc(learnings.createdAt))
@@ -206,7 +223,13 @@ export const learningsWithProblems = async (
   db: Querier,
   ids: ReadonlyArray<string>,
 ): Promise<
-  Array<LearningInput & { readonly updatedByRunId: string; readonly problems: ProblemInput[] }>
+  Array<
+    LearningInput & {
+      readonly updatedByRunId: string
+      readonly decision: FixDecision
+      readonly problems: ProblemInput[]
+    }
+  >
 > => {
   if (ids.length === 0) return []
   const rows = await db
@@ -222,6 +245,7 @@ export const learningsWithProblems = async (
     ...(row as LearningInput),
     story: parseStory(row.story),
     updatedByRunId: row.updatedByRunId,
+    decision: row.decision,
     problems: linked.filter((problem) => problem.learningId === row.id).map(asProblem),
   }))
 }
@@ -262,21 +286,64 @@ export const reviewSessions = async (
   }))
 }
 
+/**
+ * What a run saves for one group: agent 2's answer, or `link` for a group joining a rejected
+ * fix, which agent 2 never sees: its problems are linked and the fix is left as it is.
+ */
+export type SaveAnswer = WrittenLearning | { readonly verdict: "link" }
+
 export type SavedGroup = {
   readonly cause: string
   /** The learning this group joined, or null when it is new. */
   readonly learningId: string | null
   readonly problemIds: ReadonlyArray<string>
-  readonly answer: WrittenLearning
+  readonly answer: SaveAnswer
 }
 
 /** What saving did with one group, in group order: for the run's log. */
 export type SavedOutcome = {
-  /** `skipped`: none of its problems were left to save (a review was redone mid-run). */
-  readonly action: "created" | "updated" | "dropped" | "skipped"
+  /**
+   * `skipped`: none of its problems were left to save (a review was redone mid-run).
+   * `linked`: its problems were filed under the joined fix and the fix was not changed.
+   */
+  readonly action: "created" | "updated" | "dropped" | "skipped" | "linked"
   readonly learningId: string | null
   /** The problems actually marked. */
   readonly problemIds: ReadonlyArray<string>
+}
+
+/** A fix's decision, read with a row lock so a decision being set at the same time waits. */
+const decisionOf = async (tx: Tx, learningId: string): Promise<string | null> => {
+  const [row] = await tx
+    .select({ decision: learnings.decision })
+    .from(learnings)
+    .where(eq(learnings.id, learningId))
+    .for("update")
+  return row?.decision ?? null
+}
+
+/**
+ * Reopens a skipped fix once it has been seen in enough more sessions since its last skip
+ * (`returnsAtSessions`): 10 after the first skip, 20 after the second. Nobody decided it, so
+ * `decidedBy` is cleared; the skip count stays. Counted after the batch's problems are linked,
+ * so they count.
+ */
+const returnIfSeenEnough = async (tx: Tx, learningId: string): Promise<void> => {
+  const [row] = await tx
+    .select({
+      decision: learnings.decision,
+      skipCount: learnings.skipCount,
+      sessionsAtSkip: learnings.sessionsAtSkip,
+    })
+    .from(learnings)
+    .where(eq(learnings.id, learningId))
+    .for("update")
+  const at = row === undefined ? null : returnsAtSessions(row)
+  if (at === null || (await sessionCountOf(tx, learningId)) < at) return
+  await tx
+    .update(learnings)
+    .set({ decision: "open", decidedAt: new Date(), decidedBy: null })
+    .where(eq(learnings.id, learningId))
 }
 
 /**
@@ -314,8 +381,13 @@ export const saveBatch = async (
         outcomes.push({ action: "skipped", learningId: null, problemIds: [] })
         continue
       }
-      let learningId: string | null = null
-      if (group.answer.verdict === "learning") {
+      // Read under a lock, so a fix rejected after this run grouped its problems is still left
+      // as it is. A `link` answer is never a rewrite either.
+      const rejected =
+        group.learningId !== null && (await decisionOf(tx, group.learningId)) === "rejected"
+      const linkOnly = rejected || group.answer.verdict === "link"
+      let learningId: string | null = linkOnly ? group.learningId : null
+      if (!linkOnly && group.answer.verdict === "learning") {
         const { verdict: _, ...fields } = group.answer
         if (group.learningId === null) {
           const [row] = await tx
@@ -341,9 +413,13 @@ export const saveBatch = async (
         .update(reviewProblems)
         .set({ learningRunId: input.runId, learningId })
         .where(inArray(reviewProblems.id, problemIds))
+      // A joined fix may be a skipped one this batch has now seen in enough more sessions.
+      if (!linkOnly && learningId !== null && group.learningId !== null)
+        await returnIfSeenEnough(tx, learningId)
       outcomes.push({
-        action:
-          group.answer.verdict === "drop"
+        action: linkOnly
+          ? "linked"
+          : group.answer.verdict === "drop"
             ? "dropped"
             : group.learningId === null
               ? "created"
@@ -389,7 +465,7 @@ const filterConditions = (filter: LearningFilter): SQL[] => {
   const conditions: SQL[] = []
   if (filter.fixType !== undefined) conditions.push(eq(learnings.fixType, filter.fixType))
   if (filter.runId !== undefined)
-    conditions.push(sql`exists (
+    conditions.push(sql`${learnings.decision} <> 'rejected' and exists (
       select 1 from "reviewProblems" rp
       where rp."learningId" = ${learnings.id} and rp."learningRunId" = ${filter.runId}
     )`)
@@ -488,29 +564,49 @@ export const getLearning = async (db: Querier, id: string): Promise<LearningRow 
 }
 
 /**
- * Skips the learning for `by`, or with null unskips it. Returns the row, or null when it is gone.
- * Skipping one already skipped keeps the first skip's person and time.
+ * The fix's session count as its card shows it: the distinct sessions behind its problems that
+ * are still in the fix's project, so a session moved elsewhere is not counted.
  */
-export const setSkipped = async (
-  db: Querier,
+export const sessionCountOf = async (db: Querier, learningId: string): Promise<number> => {
+  const [row] = await db
+    .select({ count: sql<number>`count(distinct ${sessions.id})::int` })
+    .from(reviewProblems)
+    .innerJoin(learnings, eq(learnings.id, reviewProblems.learningId))
+    .innerJoin(
+      sessions,
+      and(eq(sessions.id, reviewProblems.sessionId), eq(sessions.projectId, learnings.projectId)),
+    )
+    .where(eq(reviewProblems.learningId, learningId))
+  return row?.count ?? 0
+}
+
+/**
+ * Sets the decision `by` asks for (`nextDecision`). Returns the row, or null when it is gone.
+ * The row is locked while its session count is read, so a fix run saving to it waits.
+ */
+export const setDecision = async (
+  db: Db,
   id: string,
-  by: string | null,
-): Promise<LearningRow | null> => {
-  if (by === null) {
-    const [row] = await db
+  request: DecisionRequest,
+  by: string,
+): Promise<LearningRow | null> =>
+  db.transaction(async (tx) => {
+    const [row] = await tx.select().from(learnings).where(eq(learnings.id, id)).for("update")
+    if (row === undefined) return null
+    const next = nextDecision(row, request, {
+      userId: by,
+      at: new Date(),
+      sessionCount: await sessionCountOf(tx, id),
+    })
+    if (next === row) return row
+    const { decision, decidedAt, decidedBy, rejectReason, skipCount, sessionsAtSkip } = next
+    const [updated] = await tx
       .update(learnings)
-      .set({ skippedAt: null, skippedBy: null })
+      .set({ decision, decidedAt, decidedBy, rejectReason, skipCount, sessionsAtSkip })
       .where(eq(learnings.id, id))
       .returning()
-    return row ?? null
-  }
-  const [row] = await db
-    .update(learnings)
-    .set({ skippedAt: new Date(), skippedBy: by })
-    .where(and(eq(learnings.id, id), isNull(learnings.skippedAt)))
-    .returning()
-  return row ?? getLearning(db, id)
-}
+    return updated ?? null
+  })
 
 /** The problems behind a learning, with their session and evidence, so a reader can check it. */
 export const problemsOfLearning = async (db: Querier, learningId: string) =>

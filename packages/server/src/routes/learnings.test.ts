@@ -592,20 +592,6 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
     expect(await res.json()).toEqual({ error: "learningNotFound" })
   })
 
-  /** One learning in the project, from a finished run on the server's harness. */
-  const oneLearning = async (): Promise<string> => {
-    await seedProblems(["A"])
-    const started = await request("/api/learnings/runs", {
-      method: "POST",
-      body: { project: projectId },
-      serverHarness: true,
-    })
-    const { runId } = (await started.json()) as { runId: string }
-    expect((await waitForRun(runId)).status).toBe("done")
-    const [learning] = await learningsRepo.listLearnings(db, projectId)
-    return learning?.id as string
-  }
-
   const newViewer = async (): Promise<string> => {
     const [viewer] = await db
       .insert(users)
@@ -615,41 +601,97 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
     return viewer?.id as string
   }
 
-  test("SC29: an editor skips and unskips a fix, and the list shows it skipped with canEdit", async () => {
-    const id = await oneLearning()
-    const skipped = await request(`/api/learnings/${id}/skip`, { method: "POST" })
-    expect(skipped.status).toBe(200)
-    const body = (await skipped.json()) as { learning: { skippedAt: string | null } }
-    expect(body.learning.skippedAt).toEqual(expect.any(String))
+  type Decided = {
+    learning: {
+      id: string
+      title: string
+      fix: string
+      decision: string
+      rejectReason: string | null
+      skippedAt: string | null
+      skipCount: number
+      returnsAtSessions: number | null
+    }
+  }
+  const decide = (id: string, body: unknown, as?: string) =>
+    request(`/api/learnings/${id}/decision`, {
+      method: "POST",
+      body,
+      ...(as === undefined ? {} : { as }),
+    })
+  const decisionOf = async (id: string) =>
+    (await db.select().from(learnings).where(eq(learnings.id, id)))[0]?.decision
 
+  test("SC806: an editor accepts, skips and rejects a fix through the API, and a rejected fix stays rejected", async () => {
+    const id = await seedFix("Decide me", [{ at: daysAgo(1) }])
+    const [before] = await db.select().from(learnings).where(eq(learnings.id, id))
+    const steps = [
+      { body: { decision: "accepted" }, skipped: false, reason: null, returnsAt: null },
+      // One session behind the fix at the skip, so it comes back at 11.
+      { body: { decision: "skipped" }, skipped: true, reason: null, returnsAt: 11 },
+      {
+        body: { decision: "rejected", reason: "Not a real problem" },
+        skipped: true,
+        reason: "Not a real problem",
+        returnsAt: null,
+      },
+    ]
+    for (const step of steps) {
+      const res = await decide(id, step.body)
+      expect(res.status).toBe(200)
+      const { learning } = (await res.json()) as Decided
+      expect(learning).toMatchObject({
+        id,
+        decision: step.body.decision,
+        rejectReason: step.reason,
+        returnsAtSessions: step.returnsAt,
+        title: "Decide me",
+        fix: "f",
+      })
+      expect(learning.skippedAt === null).toBe(!step.skipped)
+    }
+    const again = await decide(id, { decision: "accepted" })
+    expect(again.status).toBe(409)
+    expect(await again.json()).toEqual({ error: "fixRejected" })
+    const [after] = await db.select().from(learnings).where(eq(learnings.id, id))
+    expect(after).toMatchObject({
+      decision: "rejected",
+      title: before?.title,
+      fix: before?.fix,
+      updatedAt: before?.updatedAt,
+      skipCount: 1,
+    })
     const list = (await (await request(`/api/learnings?project=${projectId}`)).json()) as {
-      learnings: Array<{ id: string; skippedAt: string | null }>
+      learnings: Array<{ id: string; decision: string }>
       canEdit: boolean
     }
     expect(list.canEdit).toBe(true)
-    expect(list.learnings).toEqual([
-      expect.objectContaining({ id, skippedAt: body.learning.skippedAt }),
-    ])
-    const detail = (await (await request(`/api/learnings/${id}`)).json()) as { canEdit: boolean }
-    expect(detail.canEdit).toBe(true)
-
-    const unskipped = await request(`/api/learnings/${id}/skip`, { method: "DELETE" })
-    expect(unskipped.status).toBe(200)
-    expect(
-      ((await unskipped.json()) as { learning: { skippedAt: null } }).learning.skippedAt,
-    ).toBeNull()
+    expect(list.learnings).toEqual([expect.objectContaining({ id, decision: "rejected" })])
   })
 
-  test("SC30: a viewer cannot skip or unskip, and the reads say canEdit false", async () => {
-    const id = await oneLearning()
-    const viewer = await newViewer()
-    for (const method of ["POST", "DELETE"]) {
-      const res = await request(`/api/learnings/${id}/skip`, { method, as: viewer })
-      expect(res.status).toBe(403)
-      expect(await res.json()).toEqual({ error: "notEditable" })
+  test("SC807: a Reject without one of the listed reasons is refused, and so is setting a fix back to open", async () => {
+    const id = await seedFix("Reject me", [{ at: daysAgo(1) }])
+    for (const body of [
+      { decision: "rejected" },
+      { decision: "rejected", reason: "not ours" },
+      { decision: "rejected", reason: "one-off" },
+      { decision: "open" },
+    ]) {
+      expect((await decide(id, body)).status).toBe(400)
     }
-    const [row] = await db.select().from(learnings)
-    expect(row?.skippedAt).toBeNull()
+    expect(await decisionOf(id)).toBe("open")
+  })
+
+  test("SC808: only editors may decide; the reads say canEdit false to a viewer", async () => {
+    const id = await seedFix("Not yours", [{ at: daysAgo(1) }])
+    const viewer = await newViewer()
+    const asViewer = await decide(id, { decision: "accepted" }, viewer)
+    expect(asViewer.status).toBe(403)
+    expect(await asViewer.json()).toEqual({ error: "notEditable" })
+    const asStranger = await decide(id, { decision: "accepted" }, strangerId)
+    expect(asStranger.status).toBe(404)
+    expect(await asStranger.json()).toEqual({ error: "learningNotFound" })
+    expect(await decisionOf(id)).toBe("open")
     const list = (await (
       await request(`/api/learnings?project=${projectId}`, { as: viewer })
     ).json()) as { canEdit: boolean }
@@ -658,15 +700,6 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
       canEdit: boolean
     }
     expect(detail.canEdit).toBe(false)
-  })
-
-  test("SC31: someone who cannot see the project cannot skip its fix", async () => {
-    const id = await oneLearning()
-    const res = await request(`/api/learnings/${id}/skip`, { method: "POST", as: strangerId })
-    expect(res.status).toBe(404)
-    expect(await res.json()).toEqual({ error: "learningNotFound" })
-    const [row] = await db.select().from(learnings)
-    expect(row?.skippedAt).toBeNull()
   })
 
   test("LRT2: without a path in the request or the server's settings, a run is refused", async () => {

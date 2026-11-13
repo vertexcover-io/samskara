@@ -73,6 +73,46 @@ describe("groupProblems (agent 1)", () => {
     })
   })
 
+  test("SC830: the grouper's input lists each rejected learning with its reason, and its contract says to join them", async () => {
+    const read: { known?: string; contract?: string } = {}
+    const runner: HarnessRunner = {
+      run: async ({ workspaceDir }) => {
+        read.known = readFileSync(join(workspaceDir, "known-learnings.md"), "utf8")
+        read.contract = readFileSync(join(workspaceDir, "CONTRACT.md"), "utf8")
+        writeFileSync(
+          join(workspaceDir, "groups.md"),
+          "## Wait\n- **Joins:** K1\n- **Cause:** No wait rule.\n- **Problems:** P1\n",
+        )
+        return { stdout: "done", firstByteMs: 1 }
+      },
+    }
+    await groupProblems({
+      problems: [problem("a")],
+      learnings: [
+        {
+          id: "learning-1",
+          title: "Agents return early",
+          cause: "No wait rule.",
+          rejectedReason: "not ours",
+        },
+        {
+          id: "learning-2",
+          title: "Mocks everywhere",
+          cause: "Mocks allowed.",
+          rejectedReason: null,
+        },
+      ],
+      runner,
+    })
+    const [k1, k2] = (read.known ?? "").split("## K2")
+    expect(k1).toContain("Rejected by the project: not ours")
+    expect(k2).not.toContain("Rejected by the project")
+    expect(read.contract).toContain('A learning marked "Rejected by the project"')
+    expect(read.contract).toContain(
+      "Never start a `new` group whose cause is a rejected learning's cause",
+    )
+  })
+
   test("LR2: groups that fail the check fail the grouping, with the reasons", async () => {
     const result = await groupProblems({
       problems: [problem("a"), problem("b")],

@@ -22,6 +22,12 @@ const LEARNING = {
   howItHelps: "Stops untested work from shipping.",
   fixSummary: "Make helpers wait for their tests to finish before reporting.",
   story: null,
+  decision: "open",
+  decidedAt: null,
+  rejectReason: null,
+  skipCount: 0,
+  sessionsAtSkip: null,
+  returnsAtSessions: null,
   skippedAt: null,
   updatedByRunId: "r-1",
   createdAt: "2026-10-20T10:00:00.000Z",
@@ -206,12 +212,12 @@ test("SC404: opening the fold shows every session's quotes, each with its own Sh
 test("SC709: Back returns to the fix's project's Fixes tab with the tab's filters kept", async () => {
   stubFetch(200, { learning: LEARNING, problems: PROBLEMS })
 
-  renderPage("/learnings/l-1?show=10&type=skill")
+  renderPage("/learnings/l-1?status=skipped&show=10&type=skill")
 
   await screen.findByRole("region", { name: "The fix" })
   expect(screen.getByRole("link", { name: /Back to Fixes/ })).toHaveAttribute(
     "href",
-    "/projects/p-1/fixes?show=10&type=skill",
+    "/projects/p-1/fixes?status=skipped&show=10&type=skill",
   )
 })
 
@@ -228,35 +234,72 @@ test("SC709: a failed load says so, and Back goes to the projects list since the
   )
 })
 
-test("SC34: a viewer sees no Skip or Unskip button on the fix page", async () => {
-  stubFetch(200, { learning: LEARNING, problems: PROBLEMS, canEdit: false })
+test("SC812: a viewer sees a rejected fix's reason on its page, and no decision buttons", async () => {
+  const decidedAt = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()
+  const rejected = {
+    ...LEARNING,
+    decision: "rejected",
+    decidedAt,
+    rejectReason: "not ours",
+    skippedAt: decidedAt,
+  }
+  stubFetch(200, { learning: rejected, problems: PROBLEMS, canEdit: false })
 
   renderPage()
 
   const fix = await screen.findByRole("region", { name: "The fix" })
-  expect(within(fix).queryByRole("button", { name: /^(Skip|Unskip)$/ })).toBeNull()
+  expect(within(fix).getByText(/^Rejected/)).toHaveTextContent("Rejected 2 hours ago: not ours")
+  expect(within(fix).queryByRole("button", { name: /^(Accept|Skip|Reject|Reopen)$/ })).toBeNull()
 })
 
-test("SC36: an editor skips on the fix page, and the page says how long ago, the exact time on hover", async () => {
-  const skippedAt = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()
-  vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+test("SC813: an editor accepts a fix on its page, then rejects it, and a rejected fix offers no more buttons", async () => {
+  const decidedAt = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const method = input instanceof Request ? input.method : (init?.method ?? "GET")
+    const sent =
+      input instanceof Request && method === "POST"
+        ? ((await input.clone().json()) as { decision: string; reason?: string })
+        : method === "POST"
+          ? (JSON.parse(String(init?.body)) as { decision: string; reason?: string })
+          : null
     const body =
-      method === "POST"
-        ? { learning: { ...LEARNING, skippedAt } }
-        : { learning: LEARNING, problems: PROBLEMS, canEdit: true }
-    return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }))
+      sent === null
+        ? { learning: LEARNING, problems: PROBLEMS, canEdit: true }
+        : sent.decision === "accepted"
+          ? { learning: { ...LEARNING, decision: "accepted", decidedAt } }
+          : {
+              learning: {
+                ...LEARNING,
+                decision: "rejected",
+                decidedAt,
+                rejectReason: sent.reason,
+                skippedAt: decidedAt,
+              },
+            }
+    return new Response(JSON.stringify(body), { status: 200 })
   })
   renderPage()
   const user = userEvent.setup()
+  const buttons = (fix: HTMLElement) =>
+    within(fix)
+      .queryAllByRole("button")
+      .map((button) => button.textContent)
+      .filter((label) => ["Accept", "Skip", "Reject"].includes(label ?? ""))
 
   const fix = await screen.findByRole("region", { name: "The fix" })
-  expect(within(fix).queryByText(/^Skipped /)).toBeNull()
-  await user.click(within(fix).getByRole("button", { name: "Skip" }))
+  expect(within(fix).queryByText(/^Accepted /)).toBeNull()
+  await user.click(within(fix).getByRole("button", { name: "Accept" }))
 
-  expect(await within(fix).findByRole("button", { name: "Unskip" })).toBeInTheDocument()
-  expect(within(fix).getByText(/^Skipped/)).toHaveTextContent("Skipped 2 hours ago")
-  expect(within(fix).getByText("2 hours ago")).toHaveAttribute("title", absoluteTime(skippedAt))
+  expect(await within(fix).findByText(/^Accepted/)).toHaveTextContent("Accepted 2 hours ago")
+  expect(within(fix).getByText("2 hours ago")).toHaveAttribute("title", absoluteTime(decidedAt))
+  expect(buttons(fix)).toEqual(["Skip", "Reject"])
+
+  await user.click(within(fix).getByRole("button", { name: "Reject" }))
+  await user.click(within(fix).getByRole("button", { name: "Already fixed" }))
+  expect(await within(fix).findByText(/^Rejected/)).toHaveTextContent(
+    "Rejected 2 hours ago: Already fixed",
+  )
+  expect(buttons(fix)).toEqual([])
 })
 
 test("Show messages opens the quoted message with the ones around it, on the page itself", async () => {

@@ -24,7 +24,7 @@ import {
   writtenCheckScript,
 } from "./format.js"
 import { projectWords } from "./jargon.js"
-import type { LearningInput, ProblemGroup, ProblemInput, WrittenLearning } from "./types.js"
+import type { KnownLearning, ProblemGroup, ProblemInput, WrittenLearning } from "./types.js"
 
 const execFileAsync = promisify(execFile)
 
@@ -92,7 +92,7 @@ const retryPrompt = (file: string, errors: ReadonlyArray<string>): string =>
  */
 export const groupProblems = async (input: {
   readonly problems: ReadonlyArray<ProblemInput>
-  readonly learnings: ReadonlyArray<Pick<LearningInput, "id" | "title" | "cause">>
+  readonly learnings: ReadonlyArray<KnownLearning>
   readonly runner: HarnessRunner
   readonly run?: RunChoice
   readonly trace?: LearningTrace

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react"
 import { Link } from "react-router-dom"
 import { type ApiError, client, request } from "../api/client.js"
-import type { LearningRun, LearningSummary } from "../api/types.js"
+import type { LearningDetailPayload, LearningRun, LearningSummary } from "../api/types.js"
 import { SessionExpired } from "../auth/SessionExpired.js"
 import { LearningCard } from "../learnings/LearningCard.js"
 import { runStatusClass, runWork } from "../learnings/labels.js"
@@ -59,13 +59,13 @@ export const RunPage = ({
     }
   }, [projectId, runId])
 
-  const onSkipChange = (id: string, skippedAt: string | null) =>
+  const onDecisionChange = (updated: LearningDetailPayload["learning"]) =>
     setState((current) =>
       current.phase === "ready"
         ? {
             ...current,
             learnings: current.learnings.map((row) =>
-              row.id === id ? { ...row, skippedAt } : row,
+              row.id === updated.id ? { ...row, ...updated } : row,
             ),
           }
         : current,
@@ -132,7 +132,7 @@ export const RunPage = ({
               row={row}
               search=""
               canEdit={state.canEdit}
-              onSkipChange={onSkipChange}
+              onDecisionChange={onDecisionChange}
               mark={row.runMark}
             />
           ))}
