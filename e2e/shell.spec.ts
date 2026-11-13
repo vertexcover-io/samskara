@@ -46,6 +46,24 @@ test("S14: a signed-in visit to / lands on /projects showing both seeded project
   expect(overflow).toBeLessThanOrEqual(0)
 })
 
+test("SC701: a click anywhere on a project card opens the project, while View sessions keeps its own place", async ({
+  authedPage: page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await page.goto("/projects")
+
+  const samskara = page.getByRole("article").filter({ hasText: "Samskara" })
+  // The card's stretched link covers the field, so click where a person would rather than on the text node.
+  const field = await samskara.getByText("Last active").boundingBox()
+  if (field === null) throw new Error("the Last active field is not rendered")
+  await page.mouse.click(field.x + field.width / 2, field.y + field.height / 2)
+  await expect(page).toHaveURL(`/projects/${projectId("samskara")}`)
+
+  await page.goto("/projects")
+  await samskara.getByRole("link", { name: "View 2 sessions" }).click()
+  await expect(page).toHaveURL(`/sessions?project=${projectId("samskara")}`)
+})
+
 test("the footer stays pinned to the viewport bottom while a long page scrolls under it", async ({
   authedPage: page,
 }) => {

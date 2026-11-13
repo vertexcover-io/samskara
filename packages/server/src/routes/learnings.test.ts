@@ -9,6 +9,7 @@ import {
   learnings,
   messages,
   reviewProblems,
+  sessionReviews,
   sessions,
   userOrgs,
   users,
@@ -123,6 +124,71 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
     return ((await res.json()) as { run: { status: string; error: string | null } }).run
   }
 
+  const DAY = 24 * 60 * 60 * 1000
+  const daysAgo = (days: number) => new Date(Date.now() - days * DAY)
+
+  /**
+   * A fix written straight to the tables, with one session per entry of `seen`: each session
+   * holds `problems` problems (1 by default) linked to the fix, each seen at that instant. The
+   * session itself is active today, so only a problem's own time can make it look old.
+   */
+  const seedFix = async (
+    title: string,
+    seen: ReadonlyArray<{ readonly at: Date; readonly problems?: number }>,
+    options: { readonly fixType?: string; readonly priority?: string } = {},
+  ) => {
+    const run = await learningsRepo.startRun(db, projectId)
+    if (run === null) throw new Error("a run is already going")
+    await learningsRepo.finishRun(db, run.id, { status: "done" })
+    const [fix] = await db
+      .insert(learnings)
+      .values({
+        projectId,
+        updatedByRunId: run.id,
+        title,
+        cause: "c",
+        problem: "p",
+        priority: options.priority ?? "high",
+        priorityReason: "r",
+        fixType: options.fixType ?? "skill",
+        fix: "f",
+      })
+      .returning()
+    for (const entry of seen) {
+      counter += 1
+      const sessionId = `route-seen-${counter}`
+      await seedSession(db, {
+        sessionId,
+        projectId,
+        userId,
+        problems: Array.from({ length: entry.problems ?? 1 }, (_, index) =>
+          problemFixture(`${title} ${index}`),
+        ),
+      })
+      await db.update(sessions).set({ lastMessageAt: new Date() }).where(eq(sessions.id, sessionId))
+      await db
+        .update(reviewProblems)
+        .set({ learningId: fix?.id as string, learningRunId: run.id, seenAt: entry.at })
+        .where(eq(reviewProblems.sessionId, sessionId))
+    }
+    return fix?.id as string
+  }
+
+  type Listed = {
+    title: string
+    problemCount: number
+    sessionCount: number
+    firstSeenAt: string | null
+    lastSeenAt: string | null
+    sessionsLast7Days: number
+  }
+  const listed = async (query: string) => {
+    const res = await request(`/api/learnings?project=${projectId}${query}`)
+    return { status: res.status, body: (await res.json()) as { learnings: Listed[] } }
+  }
+  const titles = async (query: string) =>
+    (await listed(query)).body.learnings.map((row) => row.title)
+
   beforeAll(async () => {
     const started = await startTestDb()
     db = started.db
@@ -157,7 +223,7 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
     await teardown?.()
   })
 
-  test("LRT1: a project admin starts a run with a harness path, and then reads the learnings and their problems", async () => {
+  test("LRT1: a project admin starts a run with a harness path, and then reads the learnings, each naming its project, and their problems", async () => {
     await projectsRepo.grant(db, userId, projectId, "admin")
     await seedProblems(["A", "B"])
     const started = await request("/api/learnings/runs", {
@@ -186,14 +252,16 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
         priority: "high",
         problemCount: 2,
         sessionCount: 1,
+        projectId,
       }),
     ])
     const one = await request(`/api/learnings/${body.learnings[0]?.id}`)
     const detail = (await one.json()) as {
-      learning: { cause: string }
+      learning: { cause: string; projectId: string }
       problems: Array<{ title: string; sessionId: string }>
     }
     expect(detail.learning.cause).toBe("No wait rule.")
+    expect(detail.learning.projectId).toBe(projectId)
     expect(detail.problems.map((p) => p.title)).toEqual(["A", "B"])
   })
 
@@ -524,20 +592,6 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
     expect(await res.json()).toEqual({ error: "learningNotFound" })
   })
 
-  /** One learning in the project, from a finished run on the server's harness. */
-  const oneLearning = async (): Promise<string> => {
-    await seedProblems(["A"])
-    const started = await request("/api/learnings/runs", {
-      method: "POST",
-      body: { project: projectId },
-      serverHarness: true,
-    })
-    const { runId } = (await started.json()) as { runId: string }
-    expect((await waitForRun(runId)).status).toBe("done")
-    const [learning] = await learningsRepo.listLearnings(db, projectId)
-    return learning?.id as string
-  }
-
   const newViewer = async (): Promise<string> => {
     const [viewer] = await db
       .insert(users)
@@ -547,41 +601,97 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
     return viewer?.id as string
   }
 
-  test("SC29: an editor skips and unskips a fix, and the list shows it skipped with canEdit", async () => {
-    const id = await oneLearning()
-    const skipped = await request(`/api/learnings/${id}/skip`, { method: "POST" })
-    expect(skipped.status).toBe(200)
-    const body = (await skipped.json()) as { learning: { skippedAt: string | null } }
-    expect(body.learning.skippedAt).toEqual(expect.any(String))
+  type Decided = {
+    learning: {
+      id: string
+      title: string
+      fix: string
+      decision: string
+      rejectReason: string | null
+      skippedAt: string | null
+      skipCount: number
+      returnsAtSessions: number | null
+    }
+  }
+  const decide = (id: string, body: unknown, as?: string) =>
+    request(`/api/learnings/${id}/decision`, {
+      method: "POST",
+      body,
+      ...(as === undefined ? {} : { as }),
+    })
+  const decisionOf = async (id: string) =>
+    (await db.select().from(learnings).where(eq(learnings.id, id)))[0]?.decision
 
+  test("SC806: an editor accepts, skips and rejects a fix through the API, and a rejected fix stays rejected", async () => {
+    const id = await seedFix("Decide me", [{ at: daysAgo(1) }])
+    const [before] = await db.select().from(learnings).where(eq(learnings.id, id))
+    const steps = [
+      { body: { decision: "accepted" }, skipped: false, reason: null, returnsAt: null },
+      // One session behind the fix at the skip, so it comes back at 11.
+      { body: { decision: "skipped" }, skipped: true, reason: null, returnsAt: 11 },
+      {
+        body: { decision: "rejected", reason: "Not a real problem" },
+        skipped: true,
+        reason: "Not a real problem",
+        returnsAt: null,
+      },
+    ]
+    for (const step of steps) {
+      const res = await decide(id, step.body)
+      expect(res.status).toBe(200)
+      const { learning } = (await res.json()) as Decided
+      expect(learning).toMatchObject({
+        id,
+        decision: step.body.decision,
+        rejectReason: step.reason,
+        returnsAtSessions: step.returnsAt,
+        title: "Decide me",
+        fix: "f",
+      })
+      expect(learning.skippedAt === null).toBe(!step.skipped)
+    }
+    const again = await decide(id, { decision: "accepted" })
+    expect(again.status).toBe(409)
+    expect(await again.json()).toEqual({ error: "fixRejected" })
+    const [after] = await db.select().from(learnings).where(eq(learnings.id, id))
+    expect(after).toMatchObject({
+      decision: "rejected",
+      title: before?.title,
+      fix: before?.fix,
+      updatedAt: before?.updatedAt,
+      skipCount: 1,
+    })
     const list = (await (await request(`/api/learnings?project=${projectId}`)).json()) as {
-      learnings: Array<{ id: string; skippedAt: string | null }>
+      learnings: Array<{ id: string; decision: string }>
       canEdit: boolean
     }
     expect(list.canEdit).toBe(true)
-    expect(list.learnings).toEqual([
-      expect.objectContaining({ id, skippedAt: body.learning.skippedAt }),
-    ])
-    const detail = (await (await request(`/api/learnings/${id}`)).json()) as { canEdit: boolean }
-    expect(detail.canEdit).toBe(true)
-
-    const unskipped = await request(`/api/learnings/${id}/skip`, { method: "DELETE" })
-    expect(unskipped.status).toBe(200)
-    expect(
-      ((await unskipped.json()) as { learning: { skippedAt: null } }).learning.skippedAt,
-    ).toBeNull()
+    expect(list.learnings).toEqual([expect.objectContaining({ id, decision: "rejected" })])
   })
 
-  test("SC30: a viewer cannot skip or unskip, and the reads say canEdit false", async () => {
-    const id = await oneLearning()
-    const viewer = await newViewer()
-    for (const method of ["POST", "DELETE"]) {
-      const res = await request(`/api/learnings/${id}/skip`, { method, as: viewer })
-      expect(res.status).toBe(403)
-      expect(await res.json()).toEqual({ error: "notEditable" })
+  test("SC807: a Reject without one of the listed reasons is refused, and so is setting a fix back to open", async () => {
+    const id = await seedFix("Reject me", [{ at: daysAgo(1) }])
+    for (const body of [
+      { decision: "rejected" },
+      { decision: "rejected", reason: "not ours" },
+      { decision: "rejected", reason: "one-off" },
+      { decision: "open" },
+    ]) {
+      expect((await decide(id, body)).status).toBe(400)
     }
-    const [row] = await db.select().from(learnings)
-    expect(row?.skippedAt).toBeNull()
+    expect(await decisionOf(id)).toBe("open")
+  })
+
+  test("SC808: only editors may decide; the reads say canEdit false to a viewer", async () => {
+    const id = await seedFix("Not yours", [{ at: daysAgo(1) }])
+    const viewer = await newViewer()
+    const asViewer = await decide(id, { decision: "accepted" }, viewer)
+    expect(asViewer.status).toBe(403)
+    expect(await asViewer.json()).toEqual({ error: "notEditable" })
+    const asStranger = await decide(id, { decision: "accepted" }, strangerId)
+    expect(asStranger.status).toBe(404)
+    expect(await asStranger.json()).toEqual({ error: "learningNotFound" })
+    expect(await decisionOf(id)).toBe("open")
     const list = (await (
       await request(`/api/learnings?project=${projectId}`, { as: viewer })
     ).json()) as { canEdit: boolean }
@@ -590,15 +700,6 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
       canEdit: boolean
     }
     expect(detail.canEdit).toBe(false)
-  })
-
-  test("SC31: someone who cannot see the project cannot skip its fix", async () => {
-    const id = await oneLearning()
-    const res = await request(`/api/learnings/${id}/skip`, { method: "POST", as: strangerId })
-    expect(res.status).toBe(404)
-    expect(await res.json()).toEqual({ error: "learningNotFound" })
-    const [row] = await db.select().from(learnings)
-    expect(row?.skippedAt).toBeNull()
   })
 
   test("LRT2: without a path in the request or the server's settings, a run is refused", async () => {
@@ -618,6 +719,13 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
       serverHarness: true,
     })
     expect(res.status).toBe(409)
+  })
+
+  test("a run read on its own names its project, so a page can refuse a run of another project", async () => {
+    const run = await learningsRepo.startRun(db, projectId)
+    const res = await request(`/api/learnings/runs/${run?.id}`)
+    expect(res.status).toBe(200)
+    expect(((await res.json()) as { run: { projectId: string } }).run.projectId).toBe(projectId)
   })
 
   test("LRT4: someone who cannot see the project sees nothing and cannot start a run", async () => {
@@ -733,15 +841,18 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
     expect(rows[0]).toMatchObject({ status: "waiting", waitForReviews: false })
   })
 
-  test("SC45: Run now is refused while a run is running", async () => {
-    await learningsRepo.startRun(db, projectId)
+  test("SC45/SC733: Run now refused while a run is running names that run", async () => {
+    const running = await learningsRepo.startRun(db, projectId)
     const res = await request("/api/learnings/runs", {
       method: "POST",
       body: { project: projectId },
       serverHarness: true,
     })
     expect(res.status).toBe(409)
-    expect(await res.json()).toEqual({ error: "learningRunAlreadyRunning" })
+    expect(await res.json()).toEqual({
+      error: "learningRunAlreadyRunning",
+      runId: running?.id,
+    })
     expect(notified).toBe(0)
   })
 
@@ -768,5 +879,302 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
     expect(await withPath.json()).toEqual({ error: "harnessPathNeedsAdmin" })
     expect(await runRows()).toEqual([])
     expect(notified).toBe(0)
+  })
+
+  test("SC714: type keeps only that fix type's fixes, no type keeps them all, and an unknown type is a 400", async () => {
+    await seedFix("Skill fix", [{ at: daysAgo(1) }], { fixType: "skill" })
+    await seedFix("Code fix", [{ at: daysAgo(1) }], { fixType: "code", priority: "low" })
+
+    expect(await titles("&type=skill")).toEqual(["Skill fix"])
+    expect(await titles("")).toEqual(["Skill fix", "Code fix"])
+    expect((await listed("&type=bogus")).status).toBe(400)
+  })
+
+  test("SC715: from and to keep fixes with a problem that happened between them, still counting all their problems", async () => {
+    await seedFix("Fix A", [
+      { at: new Date("2026-11-02T12:00:00Z") },
+      { at: new Date("2026-11-20T12:00:00Z") },
+    ])
+    await seedFix("Fix B", [{ at: new Date("2026-10-01T12:00:00Z") }], { priority: "low" })
+
+    const window = await listed("&from=2026-11-01T00:00:00Z&to=2026-11-10T00:00:00Z")
+    expect(
+      window.body.learnings.map((row) => [row.title, row.problemCount, row.sessionCount]),
+    ).toEqual([["Fix A", 2, 2]])
+    expect(await titles("&from=2026-11-01T00:00:00Z")).toEqual(["Fix A"])
+    expect(await titles("&to=2026-10-02T00:00:00Z")).toEqual(["Fix B"])
+    expect((await listed("&from=not-a-date")).status).toBe(400)
+  })
+
+  test("a fix is seen when its problems happened, not when their sessions were last active", async () => {
+    const tenDays = daysAgo(10)
+    // The session was active today, but the problem in it happened ten days ago.
+    await seedFix("Old problem", [{ at: tenDays }])
+
+    const { body } = await listed("")
+    expect(body.learnings).toEqual([
+      expect.objectContaining({
+        title: "Old problem",
+        firstSeenAt: tenDays.toISOString(),
+        lastSeenAt: tenDays.toISOString(),
+        sessionsLast7Days: 0,
+      }),
+    ])
+    expect(await titles(`&from=${daysAgo(7).toISOString()}`)).toEqual([])
+    expect(await titles(`&from=${daysAgo(11).toISOString()}`)).toEqual(["Old problem"])
+  })
+
+  test("SC716: each fix carries its first and last seen dates and how many of its sessions had it in the last 7 days", async () => {
+    const twentyDays = daysAgo(20)
+    const twoDays = daysAgo(2)
+    await seedFix("Seen fix", [
+      { at: daysAgo(3) },
+      { at: twoDays, problems: 2 },
+      { at: twentyDays },
+    ])
+    const orphanId = await seedFix("Orphan fix", [{ at: daysAgo(1) }], { priority: "low" })
+    await db
+      .update(reviewProblems)
+      .set({ learningId: null })
+      .where(eq(reviewProblems.learningId, orphanId))
+
+    const { body } = await listed("")
+    expect(body.learnings).toEqual([
+      expect.objectContaining({
+        title: "Seen fix",
+        firstSeenAt: twentyDays.toISOString(),
+        lastSeenAt: twoDays.toISOString(),
+        sessionsLast7Days: 2,
+      }),
+      expect.objectContaining({
+        title: "Orphan fix",
+        firstSeenAt: null,
+        lastSeenAt: null,
+        sessionsLast7Days: 0,
+      }),
+    ])
+  })
+
+  test("a session moved to another project leaves a fix's counts, seen dates and date filter alike, so the card's count and seen line describe the same sessions", async () => {
+    const moved = daysAgo(2)
+    const stayed = daysAgo(30)
+    await seedFix("Moved fix", [{ at: stayed }, { at: moved }])
+    const elsewhere = await seedProject(
+      db,
+      await seedOrg(db, `elsewhere-${counter}`),
+      `elsewhere-${counter}`,
+    )
+    const [movedProblem] = await db
+      .select({ sessionId: reviewProblems.sessionId })
+      .from(reviewProblems)
+      .where(eq(reviewProblems.seenAt, moved))
+    await db
+      .update(sessions)
+      .set({ projectId: elsewhere })
+      .where(eq(sessions.id, movedProblem?.sessionId as string))
+
+    const { body } = await listed("")
+    expect(body.learnings).toEqual([
+      expect.objectContaining({
+        title: "Moved fix",
+        problemCount: 1,
+        sessionCount: 1,
+        firstSeenAt: stayed.toISOString(),
+        lastSeenAt: stayed.toISOString(),
+        sessionsLast7Days: 0,
+      }),
+    ])
+    expect(await titles(`&from=${daysAgo(5).toISOString()}`)).toEqual([])
+  })
+
+  /** A finished run of `project`, started at `startedAt`, written straight to the table. */
+  const insertRun = async (
+    startedAt: Date,
+    fields: { readonly status?: string; readonly error?: string; readonly project?: string } = {},
+  ) => {
+    const [run] = await db
+      .insert(learningRuns)
+      .values({
+        projectId: fields.project ?? projectId,
+        status: fields.status ?? "done",
+        error: fields.error ?? null,
+        startedAt,
+        finishedAt: new Date(startedAt.getTime() + 60_000),
+      })
+      .returning()
+    return run?.id as string
+  }
+
+  /** A fix the run `runId` last wrote, created at `createdAt` (by default now). */
+  const insertFix = async (
+    title: string,
+    runId: string,
+    priority = "high",
+    createdAt: Date = new Date(),
+  ) => {
+    const [fix] = await db
+      .insert(learnings)
+      .values({
+        projectId,
+        createdAt,
+        updatedByRunId: runId,
+        title,
+        cause: "c",
+        problem: "p",
+        priority,
+        priorityReason: "r",
+        fixType: "skill",
+        fix: "f",
+      })
+      .returning()
+    return fix?.id as string
+  }
+
+  /** One problem, in a session of its own, that `runId` considered and linked to `fixId`. */
+  const linkProblem = async (runId: string, fixId: string) => {
+    counter += 1
+    const sessionId = `route-run-${counter}`
+    await seedSession(db, { sessionId, projectId, userId, problems: [problemFixture("x")] })
+    await db
+      .update(reviewProblems)
+      .set({ learningId: fixId, learningRunId: runId })
+      .where(eq(reviewProblems.sessionId, sessionId))
+  }
+
+  /**
+   * Run A (oldest) creates L1 and L2; run B updates L1 and creates L3; run C failed and linked
+   * nothing. Another project has a run of its own.
+   */
+  const seedRuns = async () => {
+    const runA = await insertRun(new Date("2026-11-01T10:00:00Z"))
+    const runB = await insertRun(new Date("2026-11-05T10:00:00Z"))
+    const runC = await insertRun(new Date("2026-11-09T10:00:00Z"), {
+      status: "failed",
+      error: "harness timed out",
+    })
+    // Each fix is created while the run that made it was going (runs last a minute).
+    const l1 = await insertFix("L1", runB, "high", new Date("2026-11-01T10:00:30Z"))
+    const l2 = await insertFix("L2", runA, "low", new Date("2026-11-01T10:00:40Z"))
+    const l3 = await insertFix("L3", runB, "medium", new Date("2026-11-05T10:00:30Z"))
+    await linkProblem(runA, l1)
+    await linkProblem(runA, l2)
+    await linkProblem(runB, l1)
+    await linkProblem(runB, l3)
+    const other = await seedProject(
+      db,
+      await seedOrg(db, `other-org-${counter}`),
+      `other-${counter}`,
+    )
+    await insertRun(new Date("2026-11-10T10:00:00Z"), { project: other })
+    return { runA, runB, runC }
+  }
+
+  type ListedRunBody = {
+    runs: Array<{ id: string; fixesCreated: number; fixesUpdated: number; error: string | null }>
+    canEdit: boolean
+  }
+
+  test("SC724: a project's runs list newest first with how many fixes each created and updated", async () => {
+    const { runA, runB, runC } = await seedRuns()
+
+    const res = await request(`/api/learnings/runs?project=${projectId}`)
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as ListedRunBody
+    expect(body.runs.map((run) => [run.id, run.fixesCreated, run.fixesUpdated, run.error])).toEqual(
+      [
+        [runC, 0, 0, "harness timed out"],
+        [runB, 1, 1, null],
+        [runA, 2, 0, null],
+      ],
+    )
+    expect(body.canEdit).toBe(true)
+  })
+
+  test("SC725: a stranger cannot list a project's runs, and a viewer reads them with canEdit false", async () => {
+    await seedRuns()
+
+    const stranger = await request(`/api/learnings/runs?project=${projectId}`, { as: strangerId })
+    expect(stranger.status).toBe(404)
+    expect(await stranger.json()).toEqual({ error: "projectNotFound" })
+
+    const viewer = await request(`/api/learnings/runs?project=${projectId}`, {
+      as: await newViewer(),
+    })
+    expect(viewer.status).toBe(200)
+    expect(((await viewer.json()) as ListedRunBody).canEdit).toBe(false)
+  })
+
+  test("SC726: a run filter lists the fixes that run touched, in list order, each marked new or updated", async () => {
+    const { runA, runB } = await seedRuns()
+    const marks = async (query: string) => {
+      const res = await request(`/api/learnings?project=${projectId}${query}`)
+      const body = (await res.json()) as {
+        learnings: Array<{ title: string; runMark: string | null }>
+      }
+      return body.learnings.map((row) => [row.title, row.runMark])
+    }
+
+    expect(await marks(`&run=${runB}`)).toEqual([
+      ["L1", "updated"],
+      ["L3", "new"],
+    ])
+    expect(await marks(`&run=${runA}`)).toEqual([
+      ["L1", "new"],
+      ["L2", "new"],
+    ])
+    expect(await marks("")).toEqual([
+      ["L1", null],
+      ["L3", null],
+      ["L2", null],
+    ])
+    expect((await request(`/api/learnings?project=${projectId}&run=not-a-uuid`)).status).toBe(400)
+  })
+
+  test("a fix made by a run's failed first try is still new on that run, though a retry moved its start", async () => {
+    const before = await insertRun(new Date("2026-11-01T10:00:00Z"))
+    // The run's first try created the fix at 10:05 and failed; the retry reset startedAt to 10:30.
+    const retried = await insertRun(new Date("2026-11-02T10:30:00Z"))
+    const fix = await insertFix("Made in try 1", retried, "high", new Date("2026-11-02T10:05:00Z"))
+    await linkProblem(retried, fix)
+    const old = await insertFix("Older", before, "low", new Date("2026-11-01T10:00:30Z"))
+    await linkProblem(before, old)
+    await linkProblem(retried, old)
+
+    const res = await request(`/api/learnings?project=${projectId}&run=${retried}`)
+    const body = (await res.json()) as { learnings: Array<{ title: string; runMark: string }> }
+    expect(body.learnings.map((row) => [row.title, row.runMark])).toEqual([
+      ["Made in try 1", "new"],
+      ["Older", "updated"],
+    ])
+    const runs = (await (
+      await request(`/api/learnings/runs?project=${projectId}`)
+    ).json()) as ListedRunBody
+    expect(runs.runs.find((run) => run.id === retried)).toMatchObject({
+      fixesCreated: 1,
+      fixesUpdated: 1,
+    })
+  })
+
+  test("SC732: the runs list says how many of the project's reviews are waiting or running", async () => {
+    /** A session in `project` whose one review has `status`. */
+    const reviewWith = async (status: string, project = projectId) => {
+      counter += 1
+      const sessionId = `route-pending-${counter}`
+      await seedSession(db, { sessionId, projectId: project, userId, problems: [] })
+      await db
+        .update(sessionReviews)
+        .set({ status, outcome: status === "done" ? "shipped" : null })
+        .where(eq(sessionReviews.sessionId, sessionId))
+    }
+    for (const status of ["waiting", "running", "done", "failed"]) await reviewWith(status)
+    const other = await seedProject(
+      db,
+      await seedOrg(db, `pending-org-${counter}`),
+      `pending-${counter}`,
+    )
+    await reviewWith("waiting", other)
+
+    const res = await request(`/api/learnings/runs?project=${projectId}`)
+    expect(((await res.json()) as { reviewsWaiting: number }).reviewsWaiting).toBe(2)
   })
 })

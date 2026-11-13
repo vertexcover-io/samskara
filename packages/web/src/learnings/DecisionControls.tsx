@@ -1,0 +1,152 @@
+import { useState } from "react"
+import { client, request } from "../api/client.js"
+import type { LearningDetailPayload } from "../api/types.js"
+import { absoluteTime, relativeTime } from "../time.js"
+
+type Learning = LearningDetailPayload["learning"]
+type Decision = Learning["decision"]
+/** The body the decision endpoint takes, read from the API client so the two cannot drift. */
+type DecisionBody = Parameters<(typeof client.api.learnings)[":id"]["decision"]["$post"]>[0]["json"]
+
+type RejectReason = Extract<DecisionBody, { decision: "rejected" }>["reason"]
+
+/**
+ * The server's `REJECT_REASONS` in `@samskara/core`, in its order. The web cannot import core (it
+ * pulls in `better-sqlite3`; see `sync/table.ts`), so the list is repeated; typed from the API
+ * body, a reason the server does not take fails the typecheck.
+ */
+const REJECT_REASONS: ReadonlyArray<RejectReason> = [
+  "Not a real problem",
+  "The person's own fault",
+  "One-off",
+  "Already fixed",
+]
+
+const REFUSED: Readonly<Record<string, string>> = {
+  notEditable: "You need edit rights on this project to decide on a fix.",
+  learningNotFound: "This fix could not be found.",
+  fixRejected: "This fix is already rejected.",
+}
+
+/** Every button, in this order; a fix shows each but its own decision, and none once rejected. */
+const ACTIONS: ReadonlyArray<{
+  readonly decision: Exclude<Decision, "open">
+  readonly label: string
+}> = [
+  { decision: "accepted", label: "Accept" },
+  { decision: "skipped", label: "Skip" },
+  { decision: "rejected", label: "Reject" },
+]
+
+const buttonClass =
+  "h-8 rounded-xs border border-rule px-3 text-[0.78rem] font-semibold transition-colors hover:border-ink disabled:opacity-60"
+
+/**
+ * What was decided and when, with the reason on a rejected fix; nothing on an open one. With
+ * the card's session count, a skipped fix also says how many more sessions until it returns.
+ */
+export const DecisionNote = ({
+  learning,
+  sessionCount,
+}: {
+  readonly learning: Pick<Learning, "decision" | "decidedAt" | "rejectReason" | "returnsAtSessions">
+  readonly sessionCount?: number
+}) => {
+  if (learning.decision === "open" || learning.decidedAt === null) return null
+  const word = { accepted: "Accepted", skipped: "Skipped", rejected: "Rejected" }[learning.decision]
+  const at = learning.returnsAtSessions
+  const left = at === null || sessionCount === undefined ? null : Math.max(0, at - sessionCount)
+  return (
+    <p className="font-mono text-[0.72rem] text-ink-soft">
+      {word}{" "}
+      <time dateTime={learning.decidedAt} title={absoluteTime(learning.decidedAt)}>
+        {relativeTime(learning.decidedAt)}
+      </time>
+      {learning.rejectReason === null ? null : `: ${learning.rejectReason}`}
+      {left === null ? null : ` · back after ${left} more ${left === 1 ? "session" : "sessions"}`}
+    </p>
+  )
+}
+
+/** Accept, Skip and Reject for one fix. Reject asks which reason first; a rejected fix is final. */
+export const DecisionControls = ({
+  learning,
+  onChange,
+}: {
+  readonly learning: Pick<Learning, "id" | "decision">
+  readonly onChange: (updated: Learning) => void
+}) => {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  // True while Reject is asking which reason.
+  const [asking, setAsking] = useState(false)
+  const send = (json: DecisionBody) => {
+    setBusy(true)
+    setError(null)
+    request(() =>
+      client.api.learnings[":id"].decision.$post({ param: { id: learning.id }, json }),
+    ).then((result) => {
+      setBusy(false)
+      if (result.ok) {
+        setAsking(false)
+        onChange(result.data.learning)
+      } else setError(REFUSED[result.error.code ?? ""] ?? result.error.message)
+    })
+  }
+  if (learning.decision === "rejected") return null
+  const shown = ACTIONS.filter((action) => action.decision !== learning.decision)
+  return (
+    <span className="relative z-10 inline-flex flex-col items-start gap-1">
+      {!asking ? (
+        <span className="flex flex-wrap gap-2">
+          {shown.map((action) => (
+            <button
+              key={action.decision}
+              type="button"
+              disabled={busy}
+              className={buttonClass}
+              onClick={() =>
+                action.decision === "rejected"
+                  ? setAsking(true)
+                  : send({ decision: action.decision })
+              }
+            >
+              {action.label}
+            </button>
+          ))}
+        </span>
+      ) : (
+        <fieldset className="flex flex-wrap items-center gap-2">
+          <legend className="sr-only">Why reject it?</legend>
+          <span aria-hidden="true" className="text-[0.78rem] text-ink-soft">
+            Why reject it?
+          </span>
+          {REJECT_REASONS.map((reason) => (
+            <button
+              key={reason}
+              type="button"
+              disabled={busy}
+              className={buttonClass}
+              onClick={() => send({ decision: "rejected", reason })}
+            >
+              {reason}
+            </button>
+          ))}
+          <button
+            type="button"
+            disabled={busy}
+            className={buttonClass}
+            onClick={() => setAsking(false)}
+          >
+            Cancel
+          </button>
+        </fieldset>
+      )}
+      {error === null ? null : (
+        <span role="alert" className="text-[0.78rem] text-err">
+          {error}
+        </span>
+      )}
+    </span>
+  )
+}

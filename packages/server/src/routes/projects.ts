@@ -16,6 +16,7 @@ import {
   type ProjectSummaryRow,
   remove,
   setAutoReview,
+  setFixRunEveryDays,
 } from "../repositories/projects.repo.js"
 import { findOrCreateProject, reassignSessions } from "../services/projects.js"
 
@@ -49,13 +50,23 @@ export const projectsRoutes = ({ db, env }: Deps) =>
       const projectId = c.req.param("id")
       if (!UUID.test(projectId)) return c.json({ error: "projectNotFound" }, 404)
       const userId = c.get("user").id
-      const [row, deletable] = await Promise.all([
+      const [row, deletable, scope] = await Promise.all([
         findVisibleSummaryById(db, userId, projectId),
         canDelete(db, userId, projectId),
+        authorityFor(db, userId, projectId),
       ])
       if (row === null) return c.json({ error: "projectNotFound" }, 404)
       return c.json(
-        { project: { ...serialize(row), autoReview: row.autoReview }, viewerCanDelete: deletable },
+        {
+          project: {
+            ...serialize(row),
+            autoReview: row.autoReview,
+            fixRunEveryDays: row.fixRunEveryDays,
+          },
+          viewerCanDelete: deletable,
+          // The settings PATCH's own rule: only a project admin changes settings.
+          viewerCanEdit: scope === "admin",
+        },
         200,
       )
     })
@@ -70,10 +81,20 @@ export const projectsRoutes = ({ db, env }: Deps) =>
           return c.json({ error: "projectNotFound" }, 404)
         if ((await authorityFor(db, userId, projectId)) !== "admin")
           return c.json({ error: "forbidden" }, 403)
-        const { autoReview } = c.req.valid("json")
-        await setAutoReview(db, projectId, autoReview)
-        c.get("log")?.info({ projectId, autoReview }, "automatic review set")
-        return c.json({ autoReview }, 200)
+        const body = c.req.valid("json")
+        if (body.autoReview !== undefined) {
+          await setAutoReview(db, projectId, body.autoReview)
+          c.get("log")?.info({ projectId, autoReview: body.autoReview }, "automatic review set")
+        }
+        if (body.fixRunEveryDays !== undefined) {
+          await setFixRunEveryDays(db, projectId, body.fixRunEveryDays)
+          c.get("log")?.info(
+            { projectId, fixRunEveryDays: body.fixRunEveryDays },
+            "fix run interval set",
+          )
+        }
+        // Exactly what was saved, so a caller sending only autoReview gets the answer it always did.
+        return c.json(body, 200)
       },
     )
     .delete("/:id", requireAuth({ db, env }, ["web"]), async (c) => {

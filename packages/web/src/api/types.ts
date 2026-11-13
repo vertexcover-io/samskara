@@ -51,6 +51,7 @@ export type CapturedArtifact = Ok<
 type LearningList = Ok<Client["api"]["learnings"]["$get"]>
 export type LearningSummary = LearningList["learnings"][number]
 export type LearningRun = NonNullable<LearningList["latestRun"]>
+export type ListedRun = Ok<Client["api"]["learnings"]["runs"]["$get"]>["runs"][number]
 export type LearningProblem = Ok<Client["api"]["learnings"][":id"]["$get"]>["problems"][number]
 export type LearningDetailPayload = Ok<Client["api"]["learnings"][":id"]["$get"]>
 

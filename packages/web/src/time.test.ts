@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest"
-import { absoluteTime, clockTime, relativeTime } from "./time.js"
+import { absoluteTime, clockTime, dayDate, localDayStart, relativeTime } from "./time.js"
 
 // A transcript is read soon after it is written, so the near ranges are the ones that matter.
 describe("relativeTime", () => {
@@ -51,5 +51,26 @@ describe("clockTime", () => {
 
   test("reads the transcript clock to the second", () => {
     expect(clockTime("2026-02-01T09:30:15.000Z")).toBe("09:30:15")
+  })
+})
+
+describe("localDayStart", () => {
+  test.each<[string, number, string | null]>([
+    ["2026-11-12", 0, "2026-11-12T00:00:00.000Z"],
+    ["2026-11-12", 1, "2026-11-13T00:00:00.000Z"],
+    ["12/11/2026", 0, null],
+    ["", 0, null],
+  ])(
+    "SC713: localDayStart(%j, %j) is %j in the reader's (UTC) timezone",
+    (day, addDays, expected) => {
+      expect(localDayStart(day, addDays)).toBe(expected)
+    },
+  )
+})
+
+describe("dayDate", () => {
+  test("reads a day without its time, and names an unparseable one as unavailable", () => {
+    expect(dayDate("2026-11-03T18:00:00.000Z")).toBe("Nov 3, 2026")
+    expect(dayDate("not a date")).toBe("unavailable")
   })
 })

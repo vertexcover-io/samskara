@@ -194,6 +194,7 @@ export type ProjectSummaryRow = {
   readonly repoOwner: string | null
   readonly repoName: string | null
   readonly autoReview: boolean
+  readonly fixRunEveryDays: number
 }
 
 const ownSessions = sql`"sessions" where "sessions"."projectId" = "projects"."id"`
@@ -216,6 +217,7 @@ const summaryColumns = {
   repoOwner: repos.owner,
   repoName: repos.repoName,
   autoReview: projects.autoReview,
+  fixRunEveryDays: projects.fixRunEveryDays,
 }
 
 export const listAccessibleSummaries = (
@@ -263,6 +265,18 @@ export const setAutoReview = async (
   await db
     .update(projects)
     .set({ autoReview, lastNightlyPickAt, updatedAt: now })
+    .where(eq(projects.id, projectId))
+}
+
+/** The days between this project's automatic fix runs; the worker's next due-run check reads it. */
+export const setFixRunEveryDays = async (
+  db: Querier,
+  projectId: string,
+  days: number,
+): Promise<void> => {
+  await db
+    .update(projects)
+    .set({ fixRunEveryDays: days, updatedAt: new Date() })
     .where(eq(projects.id, projectId))
 }
 

@@ -435,8 +435,21 @@ export const reassignSessionsRequestSchema = z
 
 export const reassignSessionsResponseSchema = z.object({ moved: nonnegativeInteger }).strict()
 
-/** The settings a project admin can change; today only automatic review. */
-export const updateProjectRequestSchema = z.object({ autoReview: z.boolean() }).strict()
+/**
+ * The most days allowed between automatic fix runs. The worker computes `now() - interval` from
+ * this value for every project at once, so one huge value would break fix runs everywhere.
+ * `MAX_FIX_RUN_EVERY_DAYS` in packages/web/src/project/SettingsTab.tsx must match.
+ */
+export const MAX_FIX_RUN_EVERY_DAYS = 3650
+
+/** The settings a project admin can change: automatic review, and the days between automatic fix runs. */
+export const updateProjectRequestSchema = z
+  .object({
+    autoReview: z.boolean().optional(),
+    fixRunEveryDays: z.number().int().min(1).max(MAX_FIX_RUN_EVERY_DAYS).optional(),
+  })
+  .strict()
+  .refine((body) => Object.keys(body).length > 0, { message: "no fields to update" })
 
 export const updateOrgRequestSchema = z
   .object({

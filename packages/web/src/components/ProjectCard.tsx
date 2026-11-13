@@ -22,10 +22,10 @@ export const ProjectCard = ({ project, to }: Props) => {
   const dormant = sessionCount === 0
 
   return (
-    <article className="flex w-full flex-col gap-3 border border-rule bg-panel-2 p-4 text-left shadow-card transition-colors focus-within:border-ink-soft hover:border-ink-soft">
+    <article className="relative flex w-full flex-col gap-3 border border-rule bg-panel-2 p-4 text-left shadow-card transition-colors focus-within:border-ink-soft hover:border-ink-soft">
       <div className="min-w-0">
         <h2 className="truncate text-[0.9375rem] font-semibold">
-          <Link to={to} className="hover:underline">
+          <Link to={to} className="hover:underline after:absolute after:inset-0">
             {name}
           </Link>
         </h2>
@@ -34,7 +34,7 @@ export const ProjectCard = ({ project, to }: Props) => {
           {owner.type === "org" ? (
             <Link
               to={`/orgs/${encodeURIComponent(owner.slug)}`}
-              className="text-custody hover:underline"
+              className="relative z-10 text-custody hover:underline"
             >
               org · {owner.slug}
             </Link>
@@ -56,13 +56,13 @@ export const ProjectCard = ({ project, to }: Props) => {
       </div>
 
       {dormant ? (
-        <output className="block border-t border-rule-soft pt-2 text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-ink-soft">
+        <output className="relative z-10 block border-t border-rule-soft pt-2 text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-ink-soft">
           No sessions captured yet
         </output>
       ) : (
         <Link
           to={`/sessions?project=${encodeURIComponent(id)}`}
-          className="block border-t border-rule-soft pt-2 text-[0.78rem] font-semibold text-custody hover:underline"
+          className="relative z-10 block border-t border-rule-soft pt-2 text-[0.78rem] font-semibold text-custody hover:underline"
         >
           View {sessionCount} sessions
         </Link>

@@ -3,6 +3,7 @@ import { Link, useParams, useSearchParams } from "react-router-dom"
 import { type ApiError, client, request } from "../api/client.js"
 import type { LearningDetailPayload, LearningProblem } from "../api/types.js"
 import { SessionExpired } from "../auth/SessionExpired.js"
+import { DecisionControls, DecisionNote } from "../learnings/DecisionControls.js"
 import {
   asSentence,
   FIX_TYPE_LABEL,
@@ -10,9 +11,8 @@ import {
   PRIORITY_TONE,
   plural,
 } from "../learnings/labels.js"
-import { SkipButton } from "../learnings/SkipButton.js"
+import { tabPath } from "../project/ProjectTabs.js"
 import { LoadingShell } from "../shell/LoadingShell.js"
-import { absoluteTime, relativeTime } from "../time.js"
 
 type State =
   | { readonly phase: "loading" }
@@ -39,10 +39,10 @@ export const bySession = (problems: ReadonlyArray<LearningProblem>): SessionProo
   return [...groups.values()]
 }
 
-/** The list's own filters, so Back lands where the reader left. */
+/** The Fixes tab's own filters, so Back lands where the reader left. */
 const listSearch = (params: URLSearchParams): string => {
   const kept = new URLSearchParams()
-  for (const name of ["project", "show"]) {
+  for (const name of ["status", "show", "type", "from", "to"]) {
     const value = params.get(name)
     if (value !== null) kept.set(name, value)
   }
@@ -154,15 +154,8 @@ const Fix = ({
         <p className={label}>Why {learning.priority}</p>
         <p className="mt-1 text-ink-soft">{learning.priorityReason}</p>
       </div>
-      {learning.skippedAt === null ? null : (
-        <p className="font-mono text-[0.72rem] text-ink-soft">
-          Skipped{" "}
-          <time dateTime={learning.skippedAt} title={absoluteTime(learning.skippedAt)}>
-            {relativeTime(learning.skippedAt)}
-          </time>
-        </p>
-      )}
-      {payload.canEdit ? <SkipButton learning={learning} onChange={onChange} /> : null}
+      <DecisionNote learning={learning} />
+      {payload.canEdit ? <DecisionControls learning={learning} onChange={onChange} /> : null}
     </section>
   )
 }
@@ -380,18 +373,27 @@ export const LearningDetail = () => {
     }
   }, [learningId])
 
-  const onSkipChange = (learning: Learning) =>
+  const onDecisionChange = (learning: Learning) =>
     setState((current) =>
       current.phase === "ready"
         ? { phase: "ready", payload: { ...current.payload, learning } }
         : current,
     )
 
-  const back = (
-    <Link to={`/learnings${listSearch(searchParams)}`} className="text-[0.82rem] underline">
-      ← Back to Fixes
-    </Link>
-  )
+  // The project is known only once the fix is loaded; before that, or when it fails, the list of projects.
+  const back =
+    state.phase === "ready" ? (
+      <Link
+        to={`${tabPath(state.payload.learning.projectId, "fixes")}${listSearch(searchParams)}`}
+        className="text-[0.82rem] underline"
+      >
+        ← Back to Fixes
+      </Link>
+    ) : (
+      <Link to="/projects" className="text-[0.82rem] underline">
+        ← Back to Projects
+      </Link>
+    )
   if (state.phase === "loading") return <LoadingShell label="Retrieving the fix" />
   if (state.phase === "failed")
     return state.error.kind === "unauthorized" ? (
@@ -414,12 +416,12 @@ export const LearningDetail = () => {
       {back}
       {learning.story === null ? (
         <div className="grid items-start gap-6 min-[900px]:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
-          <Fix payload={state.payload} onChange={onSkipChange} />
+          <Fix payload={state.payload} onChange={onDecisionChange} />
           <Proof learningId={learning.id} problems={problems} />
         </div>
       ) : (
-        <div className="flex max-w-3xl flex-col gap-6">
-          <Fix payload={state.payload} onChange={onSkipChange} />
+        <div className="flex flex-col gap-6">
+          <Fix payload={state.payload} onChange={onDecisionChange} />
           <details className="border border-rule bg-panel p-4">
             <summary className="cursor-pointer font-semibold">
               {`Every time it happened: ${plural(problems.length, "problem")} in ${plural(sessions, "session")}`}

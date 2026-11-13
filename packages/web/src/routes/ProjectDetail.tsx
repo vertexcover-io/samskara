@@ -1,12 +1,17 @@
 import type { ReactNode } from "react"
 import { useEffect, useRef, useState } from "react"
-import { Link, useParams } from "react-router-dom"
+import { Link, Navigate, useParams } from "react-router-dom"
 import { type ApiError, client, request } from "../api/client.js"
 import type { ProjectDetail as ProjectDetailPayload, SessionSummary } from "../api/types.js"
 import { SessionExpired } from "../auth/SessionExpired.js"
 import { DeleteProjectDialog } from "../components/DeleteProjectDialog.js"
 import { RepoLink } from "../components/RepoLink.js"
 import { SessionRow } from "../components/SessionRow.js"
+import { FixesTab } from "../project/FixesTab.js"
+import { ProjectTabs, parseProjectPath, tabPath } from "../project/ProjectTabs.js"
+import { RunPage } from "../project/RunPage.js"
+import { RunsTab } from "../project/RunsTab.js"
+import { SettingsTab } from "../project/SettingsTab.js"
 import { LoadingShell } from "../shell/LoadingShell.js"
 
 type State =
@@ -15,6 +20,7 @@ type State =
       readonly phase: "ready"
       readonly project: ProjectDetailPayload
       readonly viewerCanDelete: boolean
+      readonly viewerCanEdit: boolean
     }
   | { readonly phase: "failed"; readonly error: ApiError }
 
@@ -46,7 +52,8 @@ const OwnerValue = ({ owner }: { owner: ProjectDetailPayload["owner"] }) =>
   )
 
 export const ProjectDetail = () => {
-  const { id } = useParams()
+  const { id, "*": rest = "" } = useParams()
+  const view = parseProjectPath(rest)
   const [state, setState] = useState<State>({ phase: "loading" })
   const [deleting, setDeleting] = useState(false)
   const [recent, setRecent] = useState<ReadonlyArray<SessionSummary> | null>(null)
@@ -63,6 +70,7 @@ export const ProjectDetail = () => {
               phase: "ready",
               project: result.data.project,
               viewerCanDelete: result.data.viewerCanDelete,
+              viewerCanEdit: result.data.viewerCanEdit,
             }
           : { phase: "failed", error: result.error },
       )
@@ -96,6 +104,8 @@ export const ProjectDetail = () => {
   }
 
   const { project, viewerCanDelete } = state
+  // A path under the project that no tab owns lands on Overview rather than a blank tab.
+  if (view === null) return <Navigate to={tabPath(project.id, "overview")} replace />
 
   return (
     <section>
@@ -112,65 +122,98 @@ export const ProjectDetail = () => {
         )}
         <Field label="Sessions">{project.sessionCount}</Field>
       </div>
-      <div className="mt-6 flex items-baseline justify-between gap-4">
-        <h2 className="text-[0.9375rem] font-semibold">Recent sessions</h2>
-        {project.sessionCount > 0 ? (
-          <Link
-            to={`/sessions?project=${encodeURIComponent(project.id)}`}
-            className="text-[0.78rem] font-semibold text-custody hover:underline"
-          >
-            All {project.sessionCount} sessions
-          </Link>
-        ) : null}
-      </div>
+      <ProjectTabs projectId={project.id} selected={view.tab} />
 
-      {recent === null ? (
-        <p className="mt-2 text-ink-soft">Loading sessions…</p>
-      ) : recent.length === 0 ? (
-        <p className="mt-2 border border-rule-soft bg-panel p-4 text-ink-soft">
-          Nothing captured here yet. Run{" "}
-          <code className="font-mono text-[0.78rem]">samskara watch</code> in this project to start
-          recording sessions.
-        </p>
-      ) : (
-        <ul className="mt-2 flex flex-col gap-2">
-          {recent.map((session) => (
-            <li key={session.id}>
-              <SessionRow
-                session={session}
-                to={`/sessions/${encodeURIComponent(session.id)}`}
-                showProject={false}
-              />
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {viewerCanDelete ? (
-        <div className="mt-8 border border-err/40 bg-panel p-4">
-          <h2 className="text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-err">
-            Delete this project
-          </h2>
-          <p className="mt-1 text-ink-soft">
-            Removes the project and every session captured in it. This cannot be undone.
-          </p>
-          <button
-            ref={deleteTriggerRef}
-            type="button"
-            onClick={() => setDeleting(true)}
-            className="mt-3 min-h-11 border border-err/60 bg-panel-2 px-4 py-2 text-[0.78rem] font-semibold text-err"
-          >
-            Delete project
-          </button>
+      {view.tab === "fixes" ? (
+        <div className="pt-4">
+          <FixesTab projectId={project.id} />
         </div>
-      ) : null}
+      ) : view.tab === "runs" ? (
+        <div className="pt-4">
+          {view.runId === null ? (
+            <RunsTab projectId={project.id} fixRunEveryDays={project.fixRunEveryDays} />
+          ) : (
+            <RunPage projectId={project.id} runId={view.runId} />
+          )}
+        </div>
+      ) : view.tab === "settings" ? (
+        <div className="pt-4">
+          <SettingsTab
+            projectId={project.id}
+            settings={{ autoReview: project.autoReview, fixRunEveryDays: project.fixRunEveryDays }}
+            canEdit={state.viewerCanEdit}
+            onSaved={(saved) =>
+              setState((current) =>
+                current.phase === "ready"
+                  ? { ...current, project: { ...current.project, ...saved } }
+                  : current,
+              )
+            }
+          />
+        </div>
+      ) : (
+        <>
+          <div className="mt-4 flex items-baseline justify-between gap-4">
+            <h2 className="text-[0.9375rem] font-semibold">Recent sessions</h2>
+            {project.sessionCount > 0 ? (
+              <Link
+                to={`/sessions?project=${encodeURIComponent(project.id)}`}
+                className="text-[0.78rem] font-semibold text-custody hover:underline"
+              >
+                All {project.sessionCount} sessions
+              </Link>
+            ) : null}
+          </div>
 
-      <DeleteProjectDialog
-        open={deleting}
-        project={{ id: project.id, slug: project.slug, sessionCount: project.sessionCount }}
-        onClose={() => setDeleting(false)}
-        restoreFocusTo={() => deleteTriggerRef.current}
-      />
+          {recent === null ? (
+            <p className="mt-2 text-ink-soft">Loading sessions…</p>
+          ) : recent.length === 0 ? (
+            <p className="mt-2 border border-rule-soft bg-panel p-4 text-ink-soft">
+              Nothing captured here yet. Run{" "}
+              <code className="font-mono text-[0.78rem]">samskara watch</code> in this project to
+              start recording sessions.
+            </p>
+          ) : (
+            <ul className="mt-2 flex flex-col gap-2">
+              {recent.map((session) => (
+                <li key={session.id}>
+                  <SessionRow
+                    session={session}
+                    to={`/sessions/${encodeURIComponent(session.id)}`}
+                    showProject={false}
+                  />
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {viewerCanDelete ? (
+            <div className="mt-8 border border-err/40 bg-panel p-4">
+              <h2 className="text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-err">
+                Delete this project
+              </h2>
+              <p className="mt-1 text-ink-soft">
+                Removes the project and every session captured in it. This cannot be undone.
+              </p>
+              <button
+                ref={deleteTriggerRef}
+                type="button"
+                onClick={() => setDeleting(true)}
+                className="mt-3 min-h-11 border border-err/60 bg-panel-2 px-4 py-2 text-[0.78rem] font-semibold text-err"
+              >
+                Delete project
+              </button>
+            </div>
+          ) : null}
+
+          <DeleteProjectDialog
+            open={deleting}
+            project={{ id: project.id, slug: project.slug, sessionCount: project.sessionCount }}
+            onClose={() => setDeleting(false)}
+            restoreFocusTo={() => deleteTriggerRef.current}
+          />
+        </>
+      )}
     </section>
   )
 }

@@ -11,7 +11,6 @@ import {
   type ProblemInput,
   problemExcerpt,
   recordsInReviewOrder,
-  type WrittenLearning,
   withHarnessSnapshot,
   writeLearnings,
   writerGroupId,
@@ -192,8 +191,10 @@ const runBatch = async (
   if (!grouped.ok) throw new Error(`grouping failed: ${grouped.errors.join("; ")}`)
   const groups = await writerGroups(db, grouped.groups, problems, input)
 
-  // A one-off is dropped here, whatever agent 2 would say; only the rest reach it.
-  const answers: Array<WrittenLearning | undefined> = groups.map((group) => {
+  // A group joining a rejected fix is only linked, and a one-off is dropped, whatever agent 2
+  // would say; only the rest reach it.
+  const answers: Array<learningsRepo.SaveAnswer | undefined> = groups.map((group) => {
+    if (group.rejected) return { verdict: "link" }
     const reason = group.existing === null ? oneOffReason(group.problems) : null
     return reason === null ? undefined : { verdict: "drop", reason }
   })
@@ -218,7 +219,7 @@ const runBatch = async (
     for (const [index, answer] of answers.entries())
       if (answer === undefined) answers[index] = writtenAnswers.shift()
   }
-  const final = answers as WrittenLearning[]
+  const final = answers as learningsRepo.SaveAnswer[]
 
   const saved = await learningsRepo.saveBatch(db, {
     runId: input.runId,
@@ -227,7 +228,7 @@ const runBatch = async (
       cause: group.cause,
       learningId: group.learningId,
       problemIds: group.newProblemIds,
-      answer: final[index] as WrittenLearning,
+      answer: final[index] as learningsRepo.SaveAnswer,
     })),
   })
   const counted = newPrioritiesSaved(saved, final)
@@ -287,6 +288,7 @@ const writerGroups = async (
       cause: found?.cause ?? group.cause,
       existing: found === undefined ? null : (existing as LearningInput),
       existingFromThisRun: found?.updatedByRunId === batch.runId,
+      rejected: found?.decision === "rejected",
       problems: [...linked, ...group.problemIds.map((id) => byId.get(id) as ProblemInput)],
       learningId: group.learningId,
       newProblemIds: group.problemIds,
@@ -300,7 +302,7 @@ const writerGroups = async (
  */
 const newPrioritiesSaved = (
   saved: ReadonlyArray<learningsRepo.SavedOutcome>,
-  answers: ReadonlyArray<WrittenLearning>,
+  answers: ReadonlyArray<learningsRepo.SaveAnswer>,
 ): PriorityCount => {
   const counted: PriorityCount = { high: 0, medium: 0 }
   for (const [index, outcome] of saved.entries()) {

@@ -35,6 +35,10 @@ Two problems share a cause when one fix would stop both of them.
 When a group's cause is the cause of a learning in \`known-learnings.md\`, write that learning's id
 under Joins. Only one group may join a given learning. Otherwise write \`new\`.
 
+A learning marked "Rejected by the project" is one the project decided it does not want, for
+the reason given. Problems with its cause still join it, under its id, so they are recorded
+there. Never start a \`new\` group whose cause is a rejected learning's cause put another way.
+
 ## groups.md
 
 One section per group:

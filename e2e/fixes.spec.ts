@@ -15,7 +15,11 @@ const TITLE = "Helpers report while their test run is still going"
  * file path, a word too long to wrap at phone width, the way the writing rules ask a fix to.
  */
 const seedFix = async (
-  options: { readonly project?: string; readonly story?: Record<string, unknown> } = {},
+  options: {
+    readonly project?: string
+    readonly story?: Record<string, unknown>
+    readonly title?: string
+  } = {},
 ) => {
   const slug = options.project ?? PROJECT
   await seedDatabase({
@@ -60,7 +64,7 @@ const seedFix = async (
     const [learning] = await sql`
       insert into learnings ("projectId", "updatedByRunId", title, cause, problem, priority,
         "priorityReason", "fixType", fix, impact, "impactReason", "howItHelps", story)
-      values (${project}, ${run?.id}, ${TITLE}, 'No wait rule.',
+      values (${project}, ${run?.id}, ${options.title ?? TITLE}, 'No wait rule.',
         'Coder agents end their turn while packages/server/src/repositories/learnings.repo.test.ts still runs.', 'high', 'it keeps happening',
         'skill', 'In skills/implement/SKILL.md, wait for the test command to exit.',
         'wrong_result', 'one session shipped code whose tests had not finished',
@@ -88,7 +92,7 @@ test("SC25: a fix card shows why it matters and wraps a long path on a phone, op
 }) => {
   const id = await seedFix()
   await page.setViewportSize({ width: 1280, height: 900 })
-  await page.goto(`/learnings?project=${projectId(PROJECT)}&show=10`)
+  await page.goto(`/projects/${projectId(PROJECT)}/fixes?show=10`)
 
   const card = page.locator("article", { hasText: TITLE })
   await expect(card).toContainText(
@@ -105,7 +109,7 @@ test("SC25: a fix card shows why it matters and wraps a long path on a phone, op
   await page.setViewportSize({ width: 1280, height: 900 })
 
   await card.getByRole("link", { name: TITLE }).click()
-  await expect(page).toHaveURL(`/learnings/${id}?project=${projectId(PROJECT)}&show=10`)
+  await expect(page).toHaveURL(`/learnings/${id}?show=10`)
   const fix = page.getByRole("region", { name: "The fix" })
   const proof = page.getByRole("region", { name: "The proof" })
   await expect(proof.getByRole("heading", { name: /Add the search page/ })).toBeVisible()
@@ -130,45 +134,48 @@ test("SC25: a fix card shows why it matters and wraps a long path on a phone, op
   await expect(page.locator(`#r-${QUOTED_MESSAGE}`)).toBeInViewport()
 })
 
-test("SC37: Skip takes a fix off the list, Show Skipped lists it with Unskip, and Unskip returns it", async ({
+test("SC815: Accept, then Reject with a reason, work end to end in a browser, and a rejected fix is final", async ({
   authedPage: page,
 }) => {
   await seedFix()
-  await page.goto(`/learnings?project=${projectId(PROJECT)}`)
+  await page.goto(`/projects/${projectId(PROJECT)}/fixes`)
+  const status = page.getByRole("combobox", { name: "Status" })
 
   const card = page.locator("article", { hasText: TITLE })
-  await card.getByRole("button", { name: "Skip" }).click()
+  await card.getByRole("button", { name: "Accept" }).click()
+  await expect(card.getByText(/^Accepted/)).toBeVisible()
+  await expect(card.getByRole("button", { name: "Accept" })).toHaveCount(0)
+
+  await card.getByRole("button", { name: "Reject" }).click()
+  await card.getByRole("button", { name: "Not a real problem" }).click()
   await expect(card).toHaveCount(0)
-  await expect(page).toHaveURL(/\/learnings\?/)
+  await expect(page).toHaveURL(`/projects/${projectId(PROJECT)}/fixes`)
 
-  await page.getByRole("combobox", { name: "Show" }).selectOption("skipped")
+  await status.selectOption("rejected")
   await expect(card).toBeVisible()
-  await card.getByRole("button", { name: "Unskip" }).click()
-  await expect(page.getByText("No skipped fixes")).toBeVisible()
-
-  await page.getByRole("combobox", { name: "Show" }).selectOption("5")
-  await expect(card).toBeVisible()
+  await expect(card.getByText(/Not a real problem/)).toBeVisible()
+  await expect(card.getByRole("button", { name: /^(Accept|Skip|Reject)$/ })).toHaveCount(0)
 })
 
-test("the Fixes page fits a phone when a project the user sees has a very long name", async ({
+test("the Fixes tab fits a phone when the project has a very long name", async ({
   authedPage: page,
 }) => {
+  const slug = "fixes-long-name"
   await seedDatabase({
     projects: [
-      { slug: "fixes-short", name: "Short", sessions: [] },
       {
-        slug: "fixes-long-name",
+        slug,
         name: "A project with a very long name that a real customer might give to a monorepo workspace",
         sessions: [],
       },
     ],
   })
   await page.setViewportSize({ width: 390, height: 900 })
-  await page.goto(`/learnings?project=${projectId("fixes-short")}`)
+  await page.goto(`/projects/${projectId(slug)}/fixes`)
 
-  const projectPicker = page.getByRole("combobox", { name: "Project" })
-  await expect(projectPicker).toHaveValue(projectId("fixes-short"))
-  const box = await projectPicker.boundingBox()
+  const show = page.getByRole("combobox", { name: "Show" })
+  await expect(show).toBeVisible()
+  const box = await show.boundingBox()
   expect(box === null ? Number.POSITIVE_INFINITY : box.x + box.width).toBeLessThanOrEqual(390)
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
 })
@@ -194,7 +201,7 @@ test("SC403/SC404: a fix with a story opens on its example, with every time it h
 
   for (const width of [1280, 390]) {
     await page.setViewportSize({ width, height: 900 })
-    await page.goto(`/learnings/${id}?project=${projectId(project)}`)
+    await page.goto(`/learnings/${id}`)
 
     const example = page.getByRole("region", { name: "An example" })
     await expect(example.getByRole("listitem")).toHaveText([
@@ -214,4 +221,30 @@ test("SC403/SC404: a fix with a story opens on its example, with every time it h
       await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
     ).toBe(true)
   }
+})
+
+test("a fix title holding a long file path wraps inside the card on the Fixes tab and the run page at phone width", async ({
+  authedPage: page,
+}) => {
+  const slug = "fixes-long-title"
+  const title =
+    "Agents keep writing packages/server/src/repositories/learnings.repo.integration.test.ts fixtures that read the wall clock"
+  await seedFix({ project: slug, title })
+  await page.setViewportSize({ width: 390, height: 900 })
+
+  // The page clips what overflows rather than scrolling, so the title's own box is the measure.
+  const titleFits = async () => {
+    const link = page.getByRole("link", { name: title })
+    await expect(link).toBeVisible()
+    const box = await link.boundingBox()
+    expect(box === null ? Number.POSITIVE_INFINITY : box.x + box.width).toBeLessThanOrEqual(390)
+  }
+
+  await page.goto(`/projects/${projectId(slug)}/fixes`)
+  await titleFits()
+
+  await page.goto(`/projects/${projectId(slug)}/runs`)
+  await page.locator("article").first().getByRole("link").click()
+  await expect(page.getByRole("heading", { name: /^Run · / })).toBeVisible()
+  await titleFits()
 })
