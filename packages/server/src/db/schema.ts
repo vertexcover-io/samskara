@@ -689,7 +689,7 @@ export const learnings = pgTable(
     decidedBy: uuid("decidedBy").references(() => users.id, { onDelete: "set null" }),
     /** Why it was rejected: set exactly while the decision is `rejected`. */
     rejectReason: text("rejectReason"),
-    /** Every skip ever; reopening never resets it, and the third skip rejects. */
+    /** Every skip ever; coming back never resets it, and the third skip rejects. */
     skipCount: integer("skipCount").notNull().default(0),
     /** Its session count, as the Fixes card counts it, at the last skip. */
     sessionsAtSkip: integer("sessionsAtSkip"),

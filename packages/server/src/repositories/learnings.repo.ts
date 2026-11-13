@@ -381,7 +381,7 @@ export const saveBatch = async (
         continue
       }
       // Read under a lock, so a fix rejected after this run grouped its problems is still left
-      // as it is. A `link` answer is never a rewrite either, even if the fix was reopened since.
+      // as it is. A `link` answer is never a rewrite either.
       const rejected =
         group.learningId !== null && (await decisionOf(tx, group.learningId)) === "rejected"
       const linkOnly = rejected || group.answer.verdict === "link"

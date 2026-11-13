@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest"
-import { type DecisionState, nextDecision, returnsAtSessions } from "./decisions.js"
+import { type DecisionState, isFinal, nextDecision, returnsAtSessions } from "./decisions.js"
 
 const T = new Date("2026-11-01T10:00:00Z")
 const T2 = new Date("2026-11-02T10:00:00Z")
@@ -60,7 +60,7 @@ describe("nextDecision", () => {
     })
   })
 
-  test("SC804: Reject keeps the trimmed reason; Reopen clears it and keeps the skip count", () => {
+  test("SC804: an accepted fix can be rejected with one of the reasons, or skipped", () => {
     const accepted: DecisionState = {
       ...openFix,
       decision: "accepted",
@@ -70,14 +70,29 @@ describe("nextDecision", () => {
       sessionsAtSkip: 3,
     }
     const by = { userId: "U", at: T2, sessionCount: 5 }
-    const rejected = nextDecision(accepted, { decision: "rejected", reason: "  not ours  " }, by)
-    expect(rejected).toMatchObject({ decision: "rejected", rejectReason: "not ours", skipCount: 1 })
-    expect(nextDecision(rejected, { decision: "open" }, by)).toMatchObject({
-      decision: "open",
-      rejectReason: null,
-      skipCount: 1,
-      decidedBy: "U",
+    expect(
+      nextDecision(accepted, { decision: "rejected", reason: "Already fixed" }, by),
+    ).toMatchObject({ decision: "rejected", rejectReason: "Already fixed", skipCount: 1 })
+    expect(nextDecision(accepted, { decision: "skipped" }, by)).toMatchObject({
+      decision: "skipped",
+      skipCount: 2,
+      sessionsAtSkip: 5,
     })
+  })
+
+  test("a rejected fix is final: no request changes it", () => {
+    const rejected: DecisionState = {
+      ...openFix,
+      decision: "rejected",
+      decidedAt: T,
+      decidedBy: "V",
+      rejectReason: "One-off",
+    }
+    const by = { userId: "U", at: T2, sessionCount: 5 }
+    expect(isFinal(rejected)).toBe(true)
+    expect(isFinal({ decision: "accepted" })).toBe(false)
+    for (const request of [{ decision: "accepted" }, { decision: "skipped" }] as const)
+      expect(nextDecision(rejected, request, by)).toBe(rejected)
   })
 })
 

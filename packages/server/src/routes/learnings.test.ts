@@ -622,7 +622,7 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
   const decisionOf = async (id: string) =>
     (await db.select().from(learnings).where(eq(learnings.id, id)))[0]?.decision
 
-  test("SC806: an editor accepts, skips, rejects and reopens a fix through the API", async () => {
+  test("SC806: an editor accepts, skips and rejects a fix through the API, and a rejected fix stays rejected", async () => {
     const id = await seedFix("Decide me", [{ at: daysAgo(1) }])
     const [before] = await db.select().from(learnings).where(eq(learnings.id, id))
     const steps = [
@@ -630,12 +630,11 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
       // One session behind the fix at the skip, so it comes back at 11.
       { body: { decision: "skipped" }, skipped: true, reason: null, returnsAt: 11 },
       {
-        body: { decision: "rejected", reason: "not ours" },
+        body: { decision: "rejected", reason: "Not a real problem" },
         skipped: true,
-        reason: "not ours",
+        reason: "Not a real problem",
         returnsAt: null,
       },
-      { body: { decision: "open" }, skipped: false, reason: null, returnsAt: null },
     ]
     for (const step of steps) {
       const res = await decide(id, step.body)
@@ -651,8 +650,12 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
       })
       expect(learning.skippedAt === null).toBe(!step.skipped)
     }
+    const again = await decide(id, { decision: "accepted" })
+    expect(again.status).toBe(409)
+    expect(await again.json()).toEqual({ error: "fixRejected" })
     const [after] = await db.select().from(learnings).where(eq(learnings.id, id))
     expect(after).toMatchObject({
+      decision: "rejected",
       title: before?.title,
       fix: before?.fix,
       updatedAt: before?.updatedAt,
@@ -663,16 +666,16 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
       canEdit: boolean
     }
     expect(list.canEdit).toBe(true)
-    expect(list.learnings).toEqual([expect.objectContaining({ id, decision: "open" })])
+    expect(list.learnings).toEqual([expect.objectContaining({ id, decision: "rejected" })])
   })
 
-  test("SC807: a Reject without a one-line reason is refused", async () => {
+  test("SC807: a Reject without one of the listed reasons is refused, and so is setting a fix back to open", async () => {
     const id = await seedFix("Reject me", [{ at: daysAgo(1) }])
     for (const body of [
       { decision: "rejected" },
-      { decision: "rejected", reason: "   " },
-      { decision: "rejected", reason: "a\nb" },
-      { decision: "rejected", reason: "x".repeat(201) },
+      { decision: "rejected", reason: "not ours" },
+      { decision: "rejected", reason: "one-off" },
+      { decision: "open" },
     ]) {
       expect((await decide(id, body)).status).toBe(400)
     }

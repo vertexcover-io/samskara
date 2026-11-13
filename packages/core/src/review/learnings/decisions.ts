@@ -11,8 +11,14 @@ export type FixDecision = (typeof FIX_DECISIONS)[number]
 export const SKIPS_TO_REJECT = 3
 export const SKIPPED_TOO_OFTEN = "Skipped 3 times"
 
-/** The longest reason a person may give for rejecting a fix: one short line. */
-export const REJECT_REASON_MAX = 200
+/** Why a person rejects a fix: one of these, picked from a list. */
+export const REJECT_REASONS = [
+  "Not a real problem",
+  "The person's own fault",
+  "One-off",
+  "Already fixed",
+] as const
+export type RejectReason = (typeof REJECT_REASONS)[number]
 
 /** How many more sessions a skipped fix must be seen in to come back: after skip 1, skip 2. */
 export const SKIP_RETURNS_AFTER = [10, 20] as const
@@ -26,20 +32,25 @@ export type DecisionState = {
   readonly decidedBy: string | null
   /** Set exactly while the decision is `rejected`. */
   readonly rejectReason: string | null
-  /** Every skip ever; reopening never resets it. */
+  /** Every skip ever; coming back never resets it. */
   readonly skipCount: number
   /** The fix's session count at its last skip; null if it was never skipped. */
   readonly sessionsAtSkip: number | null
 }
 
-/** What a person asks for. Only Reject carries a reason. */
+/** What a person asks for. Only Reject carries a reason. Nobody sets a fix back to open. */
 export type DecisionRequest =
-  | { readonly decision: "open" | "accepted" | "skipped" }
-  | { readonly decision: "rejected"; readonly reason: string }
+  | { readonly decision: "accepted" | "skipped" }
+  | { readonly decision: "rejected"; readonly reason: RejectReason }
+
+/** A rejected fix is final: no person changes it again, and it never comes back on its own. */
+export const isFinal = (fix: Pick<DecisionState, "decision">): boolean =>
+  fix.decision === "rejected"
 
 /**
- * The decision after `by` asks for `request`. Asking for the decision the fix already has
- * returns `current` itself, so a second Skip keeps the first one's person and time. Every Skip
+ * The decision after `by` asks for `request`. Asking for the decision the fix already has, or
+ * for anything on a rejected fix, returns `current` itself, so a second Skip keeps the first
+ * one's person and time. Every Skip
  * adds one to the skip count and records the fix's session count at that moment; the skip that
  * reaches `SKIPS_TO_REJECT` rejects the fix with `SKIPPED_TOO_OFTEN` instead.
  */
@@ -48,7 +59,7 @@ export const nextDecision = (
   request: DecisionRequest,
   by: { readonly userId: string; readonly at: Date; readonly sessionCount: number },
 ): DecisionState => {
-  if (request.decision === current.decision) return current
+  if (request.decision === current.decision || isFinal(current)) return current
   const decided = { decidedAt: by.at, decidedBy: by.userId }
   if (request.decision === "skipped") {
     const skipCount = current.skipCount + 1
@@ -64,7 +75,7 @@ export const nextDecision = (
   return {
     ...decided,
     decision: request.decision,
-    rejectReason: request.decision === "rejected" ? request.reason.trim() : null,
+    rejectReason: request.decision === "rejected" ? request.reason : null,
     skipCount: current.skipCount,
     sessionsAtSkip: current.sessionsAtSkip,
   }

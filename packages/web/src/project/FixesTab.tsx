@@ -162,7 +162,7 @@ export const FixesTab = ({ projectId }: { readonly projectId: string }) => {
         : state.phase === "ready" && state.learnings.length > 0
           ? {
               title: "Every fix here is skipped or rejected",
-              detail: 'Choose Status "All" to see them, or to reopen one.',
+              detail: 'Choose Status "All" to see them.',
             }
           : {
               title: "No learnings here yet",

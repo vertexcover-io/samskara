@@ -469,14 +469,14 @@ describe.skipIf(!dockerAvailable())("learnings repository", () => {
     await learningsRepo.setDecision(
       db,
       rejected as string,
-      { decision: "rejected", reason: "not ours" },
+      { decision: "rejected", reason: "Not a real problem" },
       userId,
     )
     await learningsRepo.setDecision(db, skipped as string, { decision: "skipped" }, userId)
     const known = await learningsRepo.learningsForGrouping(db, projectId)
     expect(known).toHaveLength(3)
     expect(Object.fromEntries(known.map((row) => [row.id, row.rejectedReason]))).toEqual({
-      [rejected as string]: "not ours",
+      [rejected as string]: "Not a real problem",
       [skipped as string]: null,
       [open as string]: null,
     })
@@ -487,7 +487,7 @@ describe.skipIf(!dockerAvailable())("learnings repository", () => {
     const rejected = await learningsRepo.setDecision(
       db,
       before.id,
-      { decision: "rejected", reason: "not ours" },
+      { decision: "rejected", reason: "Not a real problem" },
       userId,
     )
     await seedSession([problem("Late")])
@@ -522,7 +522,7 @@ describe.skipIf(!dockerAvailable())("learnings repository", () => {
     await learningsRepo.setDecision(
       db,
       fixC as string,
-      { decision: "rejected", reason: "not ours" },
+      { decision: "rejected", reason: "Not a real problem" },
       userId,
     )
     for (const title of ["A new", "B more", "C more"]) await seedSession([problem(title)])
@@ -571,7 +571,7 @@ describe.skipIf(!dockerAvailable())("learnings repository", () => {
     await learningsRepo.setDecision(
       db,
       before.id,
-      { decision: "rejected", reason: "not ours" },
+      { decision: "rejected", reason: "Not a real problem" },
       userId,
     )
     await joinRun(before.id, 1, { verdict: "link" })
@@ -583,21 +583,6 @@ describe.skipIf(!dockerAvailable())("learnings repository", () => {
     expect(
       await learningsRepo.listLearnings(db, projectId, { runId: second?.id as string }),
     ).toEqual([])
-  })
-
-  test("a fix rejected at grouping but reopened before save is linked quietly, not counted as updated", async () => {
-    const before = await savedLearning()
-    await joinRun(before.id, 1, { verdict: "link" })
-    const [latest] = await learningsRepo.listRuns(db, projectId)
-    expect(latest).toMatchObject({ fixesCreated: 0, fixesUpdated: 0 })
-    expect(
-      await learningsRepo.listLearnings(db, projectId, { runId: latest?.id as string }),
-    ).toEqual([])
-    const linked = await db
-      .select()
-      .from(reviewProblems)
-      .where(eq(reviewProblems.learningRunId, latest?.id as string))
-    expect(linked.map((row) => row.linkedQuietly)).toEqual([true])
   })
 
   test("SC836: a rejected fix never comes back on its own", async () => {

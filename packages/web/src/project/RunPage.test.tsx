@@ -85,7 +85,8 @@ test("accepting a fix on the run page updates its card in place, keeping its cou
 
   expect(await within(card).findByText(/^Accepted/)).toBeInTheDocument()
   expect(within(card).queryByRole("button", { name: "Accept" })).toBeNull()
-  expect(within(card).getByRole("button", { name: "Reopen" })).toBeInTheDocument()
+  expect(within(card).getByRole("button", { name: "Skip" })).toBeInTheDocument()
+  expect(within(card).getByRole("button", { name: "Reject" })).toBeInTheDocument()
   expect(within(card).getByText(/9 problems in 6 sessions/)).toBeInTheDocument()
   expect(within(card).getByText("new")).toBeInTheDocument()
   expect(screen.getByText(/1 new fix, 0 updated/)).toBeInTheDocument()

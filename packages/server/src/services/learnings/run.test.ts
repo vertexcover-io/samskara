@@ -264,14 +264,14 @@ describe.skipIf(!dockerAvailable())("runLearnings", () => {
     const rejected = await learningsRepo.setDecision(
       db,
       fix?.id as string,
-      { decision: "rejected", reason: "not ours" },
+      { decision: "rejected", reason: "Not a real problem" },
       userId,
     )
     await seedSession(["B"], high)
     const { runner, seen } = fakeAgents()
     const result = await run(runner)
 
-    expect(seen.knownLearningsMd[0]).toContain("Rejected by the project: not ours")
+    expect(seen.knownLearningsMd[0]).toContain("Rejected by the project: Not a real problem")
     expect(seen.writerMd).toEqual([])
     const [after] = await db.select().from(learnings)
     expect(after).toEqual(rejected)
@@ -290,7 +290,7 @@ describe.skipIf(!dockerAvailable())("runLearnings", () => {
     const rejected = await learningsRepo.setDecision(
       db,
       fix?.id as string,
-      { decision: "rejected", reason: "not ours" },
+      { decision: "rejected", reason: "Not a real problem" },
       userId,
     )
     await seedSession(["B", "C"], high)

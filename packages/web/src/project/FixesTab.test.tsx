@@ -397,18 +397,21 @@ test("SC811: Reject asks for a reason before it sends anything", async () => {
 
   const card = (await screen.findByText(LEARNING.title)).closest("article") as HTMLElement
   await user.click(within(card).getByRole("button", { name: "Reject" }))
-  expect(within(card).getByRole("textbox", { name: "Why reject it?" })).toBeInTheDocument()
-  expect(within(card).getByRole("button", { name: "Reject" })).toBeDisabled()
-  await user.click(within(card).getByRole("button", { name: "Cancel" }))
-  expect(within(card).queryByRole("textbox")).toBeNull()
+  const reasons = within(card).getByRole("group", { name: "Why reject it?" })
+  expect(
+    within(reasons)
+      .getAllByRole("button")
+      .map((button) => button.textContent),
+  ).toEqual(["Not a real problem", "The person's own fault", "One-off", "Already fixed", "Cancel"])
+  await user.click(within(reasons).getByRole("button", { name: "Cancel" }))
+  expect(within(card).queryByRole("group", { name: "Why reject it?" })).toBeNull()
   expect(urls.some((url) => url.startsWith("POST"))).toBe(false)
 
   await user.click(within(card).getByRole("button", { name: "Reject" }))
-  await user.type(within(card).getByRole("textbox", { name: "Why reject it?" }), "not ours")
-  await user.click(within(card).getByRole("button", { name: "Reject" }))
+  await user.click(within(card).getByRole("button", { name: "Not a real problem" }))
 
   await waitFor(() => expect(screen.queryByText(LEARNING.title)).toBeNull())
-  expect(posted).toEqual([{ decision: "rejected", reason: "not ours" }])
+  expect(posted).toEqual([{ decision: "rejected", reason: "Not a real problem" }])
   expect(screen.getByText(SECOND.title)).toBeInTheDocument()
   expect(screen.getByTestId("location")).toHaveTextContent(/^\/projects\/p-1\/fixes$/)
 })
@@ -428,7 +431,7 @@ test("a project whose every fix is skipped or rejected says so and points to Sta
   expect(screen.queryByText("No learnings here yet")).toBeNull()
 })
 
-test("SC812: a viewer sees decisions but no Accept, Skip, Reject or Reopen button on the list", async () => {
+test("SC812: a viewer sees decisions but no Accept, Skip or Reject button on the list", async () => {
   stubFetch([
     {
       match: "/api/learnings",
@@ -441,7 +444,7 @@ test("SC812: a viewer sees decisions but no Accept, Skip, Reject or Reopen butto
   await screen.findByText(OPEN.title)
   const accepted = screen.getByText(ACCEPTED.title).closest("article") as HTMLElement
   expect(within(accepted).getByText(/^Accepted/)).toBeInTheDocument()
-  expect(screen.queryByRole("button", { name: /^(Accept|Skip|Reject|Reopen)$/ })).toBeNull()
+  expect(screen.queryByRole("button", { name: /^(Accept|Skip|Reject)$/ })).toBeNull()
 })
 
 test("SC35: a refused decision says why in words, and the fix stays", async () => {

@@ -3,10 +3,11 @@ import {
   type Evidence,
   evidenceMessages,
   FIX_TYPES,
+  isFinal,
   type LearningImpact,
   messageIdAt,
   parseStory,
-  REJECT_REASON_MAX,
+  REJECT_REASONS,
   recordsInReviewOrder,
   returnsAtSessions,
 } from "@samskara/core"
@@ -31,20 +32,10 @@ type Deps = {
 
 const uuid = z.string().uuid()
 
-/** A decision as the API takes it: Reject needs a reason, one non-blank line. */
+/** A decision as the API takes it: Reject needs one of the listed reasons. */
 const decisionBody = z.discriminatedUnion("decision", [
-  z.object({ decision: z.enum(["open", "accepted", "skipped"]) }).strict(),
-  z
-    .object({
-      decision: z.literal("rejected"),
-      reason: z
-        .string()
-        .trim()
-        .min(1)
-        .max(REJECT_REASON_MAX)
-        .regex(/^[^\r\n]*$/, "one line"),
-    })
-    .strict(),
+  z.object({ decision: z.enum(["accepted", "skipped"]) }).strict(),
+  z.object({ decision: z.literal("rejected"), reason: z.enum(REJECT_REASONS) }).strict(),
 ]) satisfies z.ZodType<DecisionRequest>
 
 const serializeRun = (run: learningsRepo.LearningRunRow) => ({
@@ -328,7 +319,7 @@ export const learningsRoutes = ({ db, env, notifyWorker }: Deps) => {
           return c.json({ messages: evidenceMessages(records, item) }, 200)
         },
       )
-      /** Set a fix's decision: accept, skip, reject with a reason, or reopen. An editor may. */
+      /** Set a fix's decision: accept, skip, or reject with a reason. An editor may; a rejected fix is final. */
       .post(
         "/:id/decision",
         requireAuth({ db, env }, ["web", "cli"]),
@@ -340,6 +331,7 @@ export const learningsRoutes = ({ db, env, notifyWorker }: Deps) => {
           const scope = row === null ? null : await authorityFor(db, userId, row.projectId)
           if (row === null || scope === null) return c.json({ error: "learningNotFound" }, 404)
           if (scope === "viewer") return c.json({ error: "notEditable" }, 403)
+          if (isFinal(row)) return c.json({ error: "fixRejected" }, 409)
           const updated = await learningsRepo.setDecision(db, row.id, c.req.valid("json"), userId)
           if (updated === null) return c.json({ error: "learningNotFound" }, 404)
           return c.json({ learning: serializeLearning(updated) }, 200)

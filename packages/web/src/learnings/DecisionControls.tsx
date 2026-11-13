@@ -1,4 +1,4 @@
-import { type FormEvent, useState } from "react"
+import { useState } from "react"
 import { client, request } from "../api/client.js"
 import type { LearningDetailPayload } from "../api/types.js"
 import { absoluteTime, relativeTime } from "../time.js"
@@ -8,23 +8,34 @@ type Decision = Learning["decision"]
 /** The body the decision endpoint takes, read from the API client so the two cannot drift. */
 type DecisionBody = Parameters<(typeof client.api.learnings)[":id"]["decision"]["$post"]>[0]["json"]
 
+type RejectReason = Extract<DecisionBody, { decision: "rejected" }>["reason"]
+
 /**
- * The server's `REJECT_REASON_MAX` in `@samskara/core`. The web cannot import core (it pulls in
- * `better-sqlite3`; see `sync/table.ts`), so the number is repeated; the server refuses longer.
+ * The server's `REJECT_REASONS` in `@samskara/core`, in its order. The web cannot import core (it
+ * pulls in `better-sqlite3`; see `sync/table.ts`), so the list is repeated; typed from the API
+ * body, a reason the server does not take fails the typecheck.
  */
-const REJECT_REASON_MAX = 200
+const REJECT_REASONS: ReadonlyArray<RejectReason> = [
+  "Not a real problem",
+  "The person's own fault",
+  "One-off",
+  "Already fixed",
+]
 
 const REFUSED: Readonly<Record<string, string>> = {
   notEditable: "You need edit rights on this project to decide on a fix.",
   learningNotFound: "This fix could not be found.",
+  fixRejected: "This fix is already rejected.",
 }
 
-/** Every button, in this order; a fix shows each but its own decision, and Reopen once decided. */
-const ACTIONS: ReadonlyArray<{ readonly decision: Decision; readonly label: string }> = [
+/** Every button, in this order; a fix shows each but its own decision, and none once rejected. */
+const ACTIONS: ReadonlyArray<{
+  readonly decision: Exclude<Decision, "open">
+  readonly label: string
+}> = [
   { decision: "accepted", label: "Accept" },
   { decision: "skipped", label: "Skip" },
   { decision: "rejected", label: "Reject" },
-  { decision: "open", label: "Reopen" },
 ]
 
 const buttonClass =
@@ -57,7 +68,7 @@ export const DecisionNote = ({
   )
 }
 
-/** Accept, Skip, Reject and Reopen for one fix. Reject asks for a one-line reason first. */
+/** Accept, Skip and Reject for one fix. Reject asks which reason first; a rejected fix is final. */
 export const DecisionControls = ({
   learning,
   onChange,
@@ -67,8 +78,8 @@ export const DecisionControls = ({
 }) => {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  // Null while not asking; the reason typed so far while the Reject field is open.
-  const [reason, setReason] = useState<string | null>(null)
+  // True while Reject is asking which reason.
+  const [asking, setAsking] = useState(false)
   const send = (json: DecisionBody) => {
     setBusy(true)
     setError(null)
@@ -77,24 +88,16 @@ export const DecisionControls = ({
     ).then((result) => {
       setBusy(false)
       if (result.ok) {
-        setReason(null)
+        setAsking(false)
         onChange(result.data.learning)
       } else setError(REFUSED[result.error.code ?? ""] ?? result.error.message)
     })
   }
-  const reject = (event: FormEvent) => {
-    event.preventDefault()
-    if (reason !== null && reason.trim() !== "")
-      send({ decision: "rejected", reason: reason.trim() })
-  }
-  const shown = ACTIONS.filter(
-    (action) =>
-      action.decision !== learning.decision &&
-      (action.decision !== "open" || learning.decision !== "open"),
-  )
+  if (learning.decision === "rejected") return null
+  const shown = ACTIONS.filter((action) => action.decision !== learning.decision)
   return (
     <span className="relative z-10 inline-flex flex-col items-start gap-1">
-      {reason === null ? (
+      {!asking ? (
         <span className="flex flex-wrap gap-2">
           {shown.map((action) => (
             <button
@@ -103,7 +106,9 @@ export const DecisionControls = ({
               disabled={busy}
               className={buttonClass}
               onClick={() =>
-                action.decision === "rejected" ? setReason("") : send({ decision: action.decision })
+                action.decision === "rejected"
+                  ? setAsking(true)
+                  : send({ decision: action.decision })
               }
             >
               {action.label}
@@ -111,27 +116,31 @@ export const DecisionControls = ({
           ))}
         </span>
       ) : (
-        <form onSubmit={reject} className="flex flex-wrap items-center gap-2">
-          <input
-            aria-label="Why reject it?"
-            placeholder="Why reject it?"
-            value={reason}
-            maxLength={REJECT_REASON_MAX}
-            onChange={(e) => setReason(e.target.value)}
-            className="h-8 min-w-0 flex-1 rounded-xs border border-rule bg-panel px-2 text-[0.82rem]"
-          />
-          <button type="submit" disabled={busy || reason.trim() === ""} className={buttonClass}>
-            Reject
-          </button>
+        <fieldset className="flex flex-wrap items-center gap-2">
+          <legend className="sr-only">Why reject it?</legend>
+          <span aria-hidden="true" className="text-[0.78rem] text-ink-soft">
+            Why reject it?
+          </span>
+          {REJECT_REASONS.map((reason) => (
+            <button
+              key={reason}
+              type="button"
+              disabled={busy}
+              className={buttonClass}
+              onClick={() => send({ decision: "rejected", reason })}
+            >
+              {reason}
+            </button>
+          ))}
           <button
             type="button"
             disabled={busy}
             className={buttonClass}
-            onClick={() => setReason(null)}
+            onClick={() => setAsking(false)}
           >
             Cancel
           </button>
-        </form>
+        </fieldset>
       )}
       {error === null ? null : (
         <span role="alert" className="text-[0.78rem] text-err">
