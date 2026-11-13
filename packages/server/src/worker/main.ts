@@ -104,7 +104,7 @@ const loop = createWorkLoop({
   // Reviews run on AI_REVIEW_HARNESS, which the server refuses to boot without.
   nightlyReview: env.nightlyReview,
   maxAttempts: env.maxAttempts,
-  // Unset: no GitHub call, and the nightly pick goes by the 6-hour rule alone.
+  // Unset: no GitHub call, and the nightly pick goes by the quiet-hours rule alone.
   pullRequestLookup: createPullRequestLookup(env.githubReadToken),
 })
 

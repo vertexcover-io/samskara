@@ -40,7 +40,7 @@ export type WorkLoopDeps = {
   readonly nightlyReview?: NightlyReview
   /**
    * Asks GitHub for pull request states before the nightly pick; undefined when the server has
-   * no token, and the pick then goes by the 6-hour rule alone.
+   * no token, and the pick then goes by the quiet-hours rule alone.
    */
   readonly pullRequestLookup?: PullRequestLookup
   /** The clock the nightly pick reads; tests set it, production leaves it to the real one. */
@@ -180,9 +180,12 @@ export const createWorkLoop = (deps: WorkLoopDeps): WorkLoop => {
       const unseen = answers.filter((a) => a.state === null).length
       deps.log.info({ asked: prs.length, saved, ended, unseen }, "pull request states checked")
       if (failures.length > 0)
-        deps.log.warn({ failures }, "pull request checks failed; those wait for the 6-hour rule")
+        deps.log.warn(
+          { failures },
+          "pull request checks failed; those wait for the quiet-hours rule",
+        )
     } catch (error) {
-      deps.log.warn({ err: error }, "pull request check failed; picking on the 6-hour rule")
+      deps.log.warn({ err: error }, "pull request check failed; picking on the quiet-hours rule")
     }
   }
 

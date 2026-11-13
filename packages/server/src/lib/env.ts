@@ -135,7 +135,7 @@ const BaseEnvSchema = z.object({
     .optional(),
   /**
    * A read-only GitHub token: it clones a private LEARNINGS_HARNESS_REPO, and the worker's
-   * nightly pick reads pull request states with it. Unset, the pick uses the 6-hour rule alone.
+   * nightly pick reads pull request states with it. Unset, the pick uses the quiet-hours rule alone.
    */
   LEARNINGS_HARNESS_GITHUB_TOKEN: z.string().min(1).optional(),
   LEARNINGS_HARNESS_PATH: z.string().min(1).optional(),
