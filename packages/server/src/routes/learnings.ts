@@ -275,6 +275,9 @@ export const learningsRoutes = ({ db, env, notifyWorker }: Deps) => {
             problems: problems.map((problem) =>
               serializeProblem(problem, sources.get(problem.reviewId)),
             ),
+            // The card's count, which a skipped fix's countdown is held against; counting
+            // `problems` instead would include sessions moved to another project.
+            sessionCount: await learningsRepo.sessionCountOf(db, row.id),
             canEdit: scope !== "viewer",
           },
           200,

@@ -154,7 +154,7 @@ const Fix = ({
         <p className={label}>Why {learning.priority}</p>
         <p className="mt-1 text-ink-soft">{learning.priorityReason}</p>
       </div>
-      <DecisionNote learning={learning} />
+      <DecisionNote learning={learning} sessionCount={payload.sessionCount} />
       {payload.canEdit ? <DecisionControls learning={learning} onChange={onChange} /> : null}
     </section>
   )

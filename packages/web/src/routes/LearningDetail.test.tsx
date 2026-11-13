@@ -221,6 +221,30 @@ test("SC709: Back returns to the fix's project's Fixes tab with the tab's filter
   )
 })
 
+test("a skipped fix's page says how many more sessions until it comes back, as its card does", async () => {
+  const decidedAt = new Date(Date.now() - 60 * 60 * 1000).toISOString()
+  stubFetch(200, {
+    learning: {
+      ...LEARNING,
+      decision: "skipped",
+      decidedAt,
+      skipCount: 1,
+      sessionsAtSkip: 4,
+      returnsAtSessions: 14,
+    },
+    problems: PROBLEMS,
+    sessionCount: 9,
+    canEdit: true,
+  })
+
+  renderPage()
+
+  const fix = await screen.findByRole("region", { name: "The fix" })
+  expect(within(fix).getByText(/^Skipped/)).toHaveTextContent(
+    "Skipped 1 hour ago · back after 5 more sessions",
+  )
+})
+
 test("SC709: a failed load says so, and Back goes to the projects list since the project is unknown", async () => {
   stubFetch(404, { error: "learningNotFound" })
 
