@@ -116,6 +116,14 @@ describe.skipIf(!dockerAvailable())("work queue: fix runs", () => {
     expect(await runById(second.id)).toMatchObject({ status: "waiting", attempts: 2 })
   })
 
+  test("a worker start fails a running fix run on the configured last try", async () => {
+    const second = await run(await project("p"), { status: "running", attempts: 2 })
+
+    expect(await requeueRunningFixRuns(db, [], 2)).toBe(1)
+
+    expect(await runById(second.id)).toMatchObject({ status: "failed", attempts: 2 })
+  })
+
   test("SC35: a fix run that waits is not claimed while its project has a review waiting or running", async () => {
     const p = await project("p")
     const waiting = await run(p, { status: "waiting", waitForReviews: true })

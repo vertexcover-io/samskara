@@ -12,13 +12,9 @@ import {
   users,
 } from "../db/schema.js"
 import { dockerAvailable, startTestDb } from "../db/testDb.js"
+import { DEFAULT_MIN_NEW_USER_MESSAGES } from "../lib/env.js"
 import { insertOpened } from "./pullRequests.repo.js"
-import {
-  MIN_NEW_USER_MESSAGES,
-  PR_CHECK_LIMIT,
-  pullRequestsToCheck,
-  queueNightlyReviews,
-} from "./workQueue.repo.js"
+import { PR_CHECK_LIMIT, pullRequestsToCheck, queueNightlyReviews } from "./workQueue.repo.js"
 
 const ANALYZER = "ai-problems-v2"
 const HOUR_MS = 60 * 60 * 1000
@@ -227,6 +223,25 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
 
     expect(result).toEqual({ picked: 1, queued: 1 })
     expect(await reviewedIds()).toEqual([recent])
+  })
+
+  test("the quiet time and the look-back window follow the settings", async () => {
+    const now = ist(11, 2)
+    const on = await project({ autoReview: true })
+    const quietThreeHours = await quietSession(on, now, 3)
+    await busySession(on, now, 1)
+    const twentyDaysAgo = await quietSession(on, now, 20 * 24)
+    await quietSession(on, now, 40 * 24)
+
+    const result = await queueNightlyReviews(db, {
+      ...DEFAULTS,
+      now,
+      quietHours: 2,
+      pickWithinDays: 30,
+    })
+
+    expect(result).toEqual({ picked: 1, queued: 2 })
+    expect(await reviewedIds()).toEqual([quietThreeHours, twentyDaysAgo].sort())
   })
 
   test("SC7: a second pick the same day picks nothing", async () => {
@@ -476,6 +491,18 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
       })
     })
 
+    test("which sessions count as not yet quiet follows the quiet-time setting", async () => {
+      const now = ist(11, 2)
+      const a = await project({ autoReview: true })
+      const stillBusy = await linkPullRequest(await busySession(a, now, 1), "open")
+      // Busy by the 6-hour default, quiet by a 2-hour setting: the pick takes it anyway.
+      await linkPullRequest(await busySession(a, now, 3), "open")
+
+      const listed = await pullRequestsToCheck(db, { ...DEFAULTS, now, quietHours: 2 })
+
+      expect(listed.map((pr) => pr.id)).toEqual([stillBusy])
+    })
+
     test("SC13: at most 200 are listed, never-checked first", async () => {
       const now = ist(11, 2)
       const on = await project({ autoReview: true })
@@ -562,7 +589,11 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
     }
 
     /** `count` user messages in the main conversation, a minute apart from `at`. */
-    const userTurns = async (sessionId: string, at: Date, count = MIN_NEW_USER_MESSAGES) => {
+    const userTurns = async (
+      sessionId: string,
+      at: Date,
+      count = DEFAULT_MIN_NEW_USER_MESSAGES,
+    ) => {
       for (let turn = 0; turn < count; turn += 1)
         await message(sessionId, new Date(at.getTime() + turn * 60_000))
     }
@@ -613,9 +644,20 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
 
       await queueNightlyReviews(db, { ...DEFAULTS, now })
 
-      expect(MIN_NEW_USER_MESSAGES).toBe(3)
+      expect(DEFAULT_MIN_NEW_USER_MESSAGES).toBe(3)
       expect(await waitingFor(two)).toEqual([])
       expect(await waitingFor(three)).toHaveLength(1)
+    })
+
+    test("the number of new user messages a re-review needs follows the setting", async () => {
+      const now = ist(11, 2)
+      const on = await project({ autoReview: true })
+      const { id } = await reviewedQuiet(on, now, false)
+      await userTurns(id, hoursBefore(now, 8), 1)
+
+      await queueNightlyReviews(db, { ...DEFAULTS, now, minNewUserMessages: 1 })
+
+      expect(await waitingFor(id)).toHaveLength(1)
     })
 
     test("SC30: a reviewed quiet session with nothing after its review is skipped", async () => {

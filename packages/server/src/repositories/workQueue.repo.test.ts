@@ -102,6 +102,14 @@ describe.skipIf(!dockerAvailable())("work queue: reviews", () => {
     expect(await rowById(second.id)).toMatchObject({ status: "waiting", attempts: 2 })
   })
 
+  test("a worker start fails a running review on the configured last try", async () => {
+    const second = await seedReview("s-second", { status: "running", attempts: 2 })
+
+    expect(await requeueRunningReviews(db, [], 2)).toBe(1)
+
+    expect(await rowById(second.id)).toMatchObject({ status: "failed", attempts: 2 })
+  })
+
   test("SC2: claiming takes the oldest waiting review and counts the try", async () => {
     const middle = await seedReview("s-2", {
       status: "waiting",

@@ -16,8 +16,8 @@ const PIECE_CHARS = 500_000
 /** The most leads one reader may hand back; past it, it is listing, not judging. */
 const MAX_LEADS_PER_PIECE = 40
 
-/** How many readers run at once. */
-const READER_CONCURRENCY = 4
+/** How many readers run at once, unless the caller says otherwise. */
+export const DEFAULT_READER_CONCURRENCY = 4
 
 /** How much of the start and of the end of a long tool input or failed output a reader is shown. */
 const EDGE_CHARS = 1000
@@ -246,6 +246,8 @@ export const findAgentLeads = async (input: {
   readonly run?: Pick<HarnessRunInput, "harness" | "model">
   /** Replies kept from an earlier try of this review; absent, every reader runs. */
   readonly replies?: ReaderReplyStore
+  /** How many readers run at once; absent, `DEFAULT_READER_CONCURRENCY`. */
+  readonly readerConcurrency?: number
 }): Promise<FoundLeads> => {
   const pieces = splitIntoPieces(input.exported.records.map(shortenForReader))
   // Checked against the full records: a quote from what a reader was shown is in them too.
@@ -253,36 +255,40 @@ export const findAgentLeads = async (input: {
   // must really be there.
   const check = quoteChecker(input.exported.records, Number.POSITIVE_INFINITY)
   const saved = (await input.replies?.load()) ?? new Map<string, string>()
-  const outcomes = await inBatches(pieces, READER_CONCURRENCY, async (piece) => {
-    const key = pieceHash(piece)
-    const kept = saved.get(key)
-    if (kept !== undefined)
-      return { piece, found: parseFoundLeads(kept).slice(0, MAX_LEADS_PER_PIECE), reused: true }
-    // The folder holds nothing: it is only the run's cwd, and its home when sandboxed.
-    return withWorkspace("samskara-review-reader-", {}, async (workspaceDir) => {
-      const prompt = readerPrompt(
-        piece.label,
-        input.instructions,
-        sessionJsonText({ ...input.exported, records: piece.records }),
-      )
-      const { stdout } = await input.runner.run({
-        ...input.run,
-        prompt,
-        workspaceDir,
-        oneShot: true,
-      })
-      if (stdout.trim() === "") return { piece, failed: "replied with nothing" }
-      const found = parseFoundLeads(stdout).slice(0, MAX_LEADS_PER_PIECE)
-      // A reply with no lead and no "Nothing found" (a refusal, a cut-off answer) is not kept,
-      // so a later try reads the piece again instead of reusing a non-answer.
-      if (found.length > 0 || stdout.includes("Nothing found"))
-        await input.replies?.save(key, stdout)
-      return { piece, found, reused: false }
-    }).catch((error: unknown) => ({
-      piece,
-      failed: error instanceof Error ? error.message : String(error),
-    }))
-  })
+  const outcomes = await inBatches(
+    pieces,
+    input.readerConcurrency ?? DEFAULT_READER_CONCURRENCY,
+    async (piece) => {
+      const key = pieceHash(piece)
+      const kept = saved.get(key)
+      if (kept !== undefined)
+        return { piece, found: parseFoundLeads(kept).slice(0, MAX_LEADS_PER_PIECE), reused: true }
+      // The folder holds nothing: it is only the run's cwd, and its home when sandboxed.
+      return withWorkspace("samskara-review-reader-", {}, async (workspaceDir) => {
+        const prompt = readerPrompt(
+          piece.label,
+          input.instructions,
+          sessionJsonText({ ...input.exported, records: piece.records }),
+        )
+        const { stdout } = await input.runner.run({
+          ...input.run,
+          prompt,
+          workspaceDir,
+          oneShot: true,
+        })
+        if (stdout.trim() === "") return { piece, failed: "replied with nothing" }
+        const found = parseFoundLeads(stdout).slice(0, MAX_LEADS_PER_PIECE)
+        // A reply with no lead and no "Nothing found" (a refusal, a cut-off answer) is not kept,
+        // so a later try reads the piece again instead of reusing a non-answer.
+        if (found.length > 0 || stdout.includes("Nothing found"))
+          await input.replies?.save(key, stdout)
+        return { piece, found, reused: false }
+      }).catch((error: unknown) => ({
+        piece,
+        failed: error instanceof Error ? error.message : String(error),
+      }))
+    },
+  )
 
   const leads: Array<Evidence & { piece: string }> = []
   const dropped: string[] = []

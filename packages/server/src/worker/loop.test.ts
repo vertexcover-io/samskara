@@ -161,6 +161,26 @@ describe.skipIf(!dockerAvailable())("work loop: reviews", () => {
     expect(row).toMatchObject({ status: "failed", attempts: 3, error: "harnessFailed: boom" })
   })
 
+  test("a failing review is tried as many times as the setting allows", async () => {
+    await queue(1)
+    let calls = 0
+    const loop = createWorkLoop({
+      db,
+      log,
+      maxAttempts: 2,
+      runReview: async () => {
+        calls += 1
+        return { kind: "error", code: "harnessFailed", detail: { message: "boom" } }
+      },
+    })
+
+    await loop.tick()
+    await until(async () => (await statuses())[0] === "failed")
+    await loop.idle()
+
+    expect(calls).toBe(2)
+  })
+
   test("SC10: a review that throws counts as a failed try", async () => {
     await queue(1)
     let calls = 0
@@ -306,6 +326,27 @@ describe.skipIf(!dockerAvailable())("work loop: fix runs", () => {
     const [row] = await runs()
     expect(row).toMatchObject({ status: "failed", attempts: 3, error: "snapshot failed" })
     expect(row?.finishedAt).not.toBeNull()
+  })
+
+  test("a failing fix run is tried as many times as the setting allows", async () => {
+    await queueRuns(1)
+    let calls = 0
+    const loop = createWorkLoop({
+      db,
+      log,
+      maxAttempts: 1,
+      runReview: noReviews,
+      runFixRun: async (): Promise<RunOutcome> => {
+        calls += 1
+        return { status: "failed", error: "snapshot failed" }
+      },
+    })
+
+    await loop.tick()
+    await until(async () => (await runs())[0]?.status === "failed")
+    await loop.idle()
+
+    expect(calls).toBe(1)
   })
 
   test("SC39: a successful fix run is saved done", async () => {

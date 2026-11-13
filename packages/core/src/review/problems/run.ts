@@ -175,6 +175,8 @@ export const prepareProblems = async (input: {
   readonly run?: Pick<HarnessRunInput, "harness" | "model">
   /** Replies kept from an earlier try of this review; absent, every reader runs. */
   readonly replies?: ReaderReplyStore
+  /** How many readers run at once; absent, the finder's default. */
+  readonly readerConcurrency?: number
 }): Promise<PreparedProblems> => {
   const found = await findAgentLeads(input)
   const leads = findLeads(input.exported.records, found.leads)
