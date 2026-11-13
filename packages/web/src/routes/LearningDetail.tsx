@@ -42,7 +42,7 @@ export const bySession = (problems: ReadonlyArray<LearningProblem>): SessionProo
 /** The Fixes tab's own filters, so Back lands where the reader left. */
 const listSearch = (params: URLSearchParams): string => {
   const kept = new URLSearchParams()
-  for (const name of ["show", "type", "from", "to"]) {
+  for (const name of ["status", "show", "type", "from", "to"]) {
     const value = params.get(name)
     if (value !== null) kept.set(name, value)
   }

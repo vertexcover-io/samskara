@@ -212,12 +212,12 @@ test("SC404: opening the fold shows every session's quotes, each with its own Sh
 test("SC709: Back returns to the fix's project's Fixes tab with the tab's filters kept", async () => {
   stubFetch(200, { learning: LEARNING, problems: PROBLEMS })
 
-  renderPage("/learnings/l-1?show=10&type=skill")
+  renderPage("/learnings/l-1?status=skipped&show=10&type=skill")
 
   await screen.findByRole("region", { name: "The fix" })
   expect(screen.getByRole("link", { name: /Back to Fixes/ })).toHaveAttribute(
     "href",
-    "/projects/p-1/fixes?show=10&type=skill",
+    "/projects/p-1/fixes?status=skipped&show=10&type=skill",
   )
 })
 
