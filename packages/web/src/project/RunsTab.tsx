@@ -162,20 +162,20 @@ export const RunsTab = ({
   const latest = state.runs[0]
   return (
     <div>
-      <div className="mb-4 flex flex-wrap items-end justify-between gap-2">
-        <p className="font-mono text-[0.72rem] text-ink-soft">
-          {`Automatic fix run every ${plural(fixRunEveryDays, "day")}`}
-        </p>
-        <div className="flex flex-wrap items-center gap-3">
-          <p className="font-mono text-[0.72rem] text-ink-soft">
+      {/* Both lines on the left: Run now's refusal message grows the right side, and a line
+          beside it would float to that side's middle. */}
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-2">
+        <div className="font-mono text-[0.72rem] text-ink-soft">
+          <p>{`Automatic fix run every ${plural(fixRunEveryDays, "day")}`}</p>
+          <p className="mt-1">
             {latest === undefined
               ? "No fix run yet"
               : `Last run ${absoluteTime(latest.startedAt)} · ${latest.status}`}
           </p>
-          {state.canEdit ? (
-            <RunNow projectId={projectId} onStarted={() => setReloadCount((count) => count + 1)} />
-          ) : null}
         </div>
+        {state.canEdit ? (
+          <RunNow projectId={projectId} onStarted={() => setReloadCount((count) => count + 1)} />
+        ) : null}
       </div>
       {state.runs.length === 0 ? (
         <section className="border border-dashed border-rule bg-panel p-8 text-center">

@@ -165,9 +165,8 @@ export const FixesTab = ({ projectId }: { readonly projectId: string }) => {
               detail: 'Choose Status "All" to see them.',
             }
           : {
-              title: "No learnings here yet",
-              detail:
-                "Learnings appear after a learning run reads this project's reviewed sessions.",
+              title: "No fixes here yet",
+              detail: "Fixes appear after a fix run reads this project's reviewed sessions.",
             }
 
   return (

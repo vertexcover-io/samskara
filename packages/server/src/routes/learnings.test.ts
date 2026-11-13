@@ -259,8 +259,11 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
     const detail = (await one.json()) as {
       learning: { cause: string; projectId: string }
       problems: Array<{ title: string; sessionId: string }>
+      sessionCount: number
     }
     expect(detail.learning.cause).toBe("No wait rule.")
+    // The same count as the list's card, which a skipped fix's countdown is held against.
+    expect(detail.sessionCount).toBe(1)
     expect(detail.learning.projectId).toBe(projectId)
     expect(detail.problems.map((p) => p.title)).toEqual(["A", "B"])
   })

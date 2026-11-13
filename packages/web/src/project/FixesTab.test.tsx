@@ -168,7 +168,7 @@ test("SC402: an older fix's card shows its own problem text and exact fix, and n
   expect(card.textContent).not.toMatch(/Why it matters/)
 })
 
-test("LR4: a project with no learnings says when they appear", async () => {
+test("LR4: a project with no fixes says when they appear", async () => {
   stubFetch([
     {
       match: "/api/learnings",
@@ -179,7 +179,10 @@ test("LR4: a project with no learnings says when they appear", async () => {
 
   renderPage()
 
-  expect(await screen.findByText("No learnings here yet")).toBeInTheDocument()
+  expect(await screen.findByText("No fixes here yet")).toBeInTheDocument()
+  expect(
+    screen.getByText("Fixes appear after a fix run reads this project's reviewed sessions."),
+  ).toBeInTheDocument()
 })
 
 test("LR5: a failed load surfaces the error, not a silent blank", async () => {
@@ -416,7 +419,7 @@ test("SC811: Reject asks for a reason before it sends anything", async () => {
   expect(screen.getByTestId("location")).toHaveTextContent(/^\/projects\/p-1\/fixes$/)
 })
 
-test("a project whose every fix is skipped or rejected says so and points to Status All, not 'No learnings here yet'", async () => {
+test("a project whose every fix is skipped or rejected says so and points to Status All, not 'No fixes here yet'", async () => {
   stubFetch([
     {
       match: "/api/learnings",
@@ -428,7 +431,7 @@ test("a project whose every fix is skipped or rejected says so and points to Sta
 
   expect(await screen.findByText("Every fix here is skipped or rejected")).toBeInTheDocument()
   expect(screen.getByText(/Status "All"/)).toBeInTheDocument()
-  expect(screen.queryByText("No learnings here yet")).toBeNull()
+  expect(screen.queryByText("No fixes here yet")).toBeNull()
 })
 
 test("SC812: a viewer sees decisions but no Accept, Skip or Reject button on the list", async () => {
@@ -597,5 +600,5 @@ test("SC720: filters that match nothing say so, not that the project has no fixe
   renderPage("/projects/p-1/fixes?type=human")
 
   expect(await screen.findByText("No fixes match these filters")).toBeInTheDocument()
-  expect(screen.queryByText("No learnings here yet")).toBeNull()
+  expect(screen.queryByText("No fixes here yet")).toBeNull()
 })
