@@ -69,15 +69,16 @@ export const latestRun = async (db: Querier, projectId: string): Promise<Learnin
 }
 
 /**
- * True when the learning has a problem from a run that started before the given instant: it
- * existed before that run, so the run updated it rather than created it. `startedAt` is reset
- * when the worker claims a run, so "before" is the order runs read problems in.
+ * True when the learning was created during `run` (a `"learningRuns"` row or alias): after the
+ * project's previous run finished. A project runs one fix run at a time, so whatever was created
+ * since the last one ended was this run's. Not after this run's `startedAt`: a retry resets it,
+ * and a fix saved by an earlier batch of a failed try would then read as older than its run.
  */
-const hadEarlierProblem = (learningId: SQL, before: SQL): SQL => sql`exists (
-  select 1 from "reviewProblems" earlier
-  join "learningRuns" er on er."id" = earlier."learningRunId"
-  where earlier."learningId" = ${learningId} and er."startedAt" < ${before}
-)`
+const createdDuring = (createdAt: SQL, run: SQL): SQL => sql`${createdAt} > coalesce((
+  select max(prev."finishedAt") from "learningRuns" prev
+  where prev."projectId" = ${run}."projectId" and prev."id" <> ${run}."id"
+    and prev."finishedAt" <= ${run}."startedAt"
+), '-infinity'::timestamptz)`
 
 export type ListedRun = LearningRunRow & {
   readonly fixesCreated: number
@@ -86,8 +87,7 @@ export type ListedRun = LearningRunRow & {
 
 /**
  * The project's runs, newest first, with how many fixes each created and updated: the distinct
- * learnings its problems were linked to, split by whether a learning had problems from an
- * earlier run.
+ * learnings its problems were linked to, split by whether a learning was created during the run.
  */
 export const listRuns = async (db: Querier, projectId: string): Promise<ListedRun[]> => {
   // The outer run is named in full: with no join, Drizzle renders its columns unqualified, and a
@@ -98,8 +98,9 @@ export const listRuns = async (db: Querier, projectId: string): Promise<ListedRu
   )`
   const created = sql<number>`(
     select count(distinct rp."learningId")::int from "reviewProblems" rp
-    where rp."learningRunId" = "learningRuns"."id" and rp."learningId" is not null
-      and not ${hadEarlierProblem(sql`rp."learningId"`, sql`"learningRuns"."startedAt"`)}
+    join "learnings" l on l."id" = rp."learningId"
+    where rp."learningRunId" = "learningRuns"."id"
+      and ${createdDuring(sql`l."createdAt"`, sql`"learningRuns"`)}
   )`
   const rows = await db
     .select({ run: learningRuns, touched, created })
@@ -441,10 +442,10 @@ export const listLearnings = async (
   const runMark =
     filter.runId === undefined
       ? sql<"new" | "updated" | null>`null`
-      : sql<"new" | "updated">`case when ${hadEarlierProblem(
-          sql`${learnings.id}`,
-          sql`(select "startedAt" from "learningRuns" where "id" = ${filter.runId})`,
-        )} then 'updated' else 'new' end`
+      : sql<"new" | "updated">`(
+          select case when ${createdDuring(sql`${learnings.createdAt}`, sql`r`)} then 'new' else 'updated' end
+          from "learningRuns" r where r."id" = ${filter.runId}
+        )`
   const rows = await db
     .select({
       learning: learnings,

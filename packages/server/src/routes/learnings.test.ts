@@ -972,11 +972,18 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
     return run?.id as string
   }
 
-  const insertFix = async (title: string, runId: string, priority = "high") => {
+  /** A fix the run `runId` last wrote, created at `createdAt` (by default now). */
+  const insertFix = async (
+    title: string,
+    runId: string,
+    priority = "high",
+    createdAt: Date = new Date(),
+  ) => {
     const [fix] = await db
       .insert(learnings)
       .values({
         projectId,
+        createdAt,
         updatedByRunId: runId,
         title,
         cause: "c",
@@ -1012,9 +1019,10 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
       status: "failed",
       error: "harness timed out",
     })
-    const l1 = await insertFix("L1", runB, "high")
-    const l2 = await insertFix("L2", runA, "low")
-    const l3 = await insertFix("L3", runB, "medium")
+    // Each fix is created while the run that made it was going (runs last a minute).
+    const l1 = await insertFix("L1", runB, "high", new Date("2026-11-01T10:00:30Z"))
+    const l2 = await insertFix("L2", runA, "low", new Date("2026-11-01T10:00:40Z"))
+    const l3 = await insertFix("L3", runB, "medium", new Date("2026-11-05T10:00:30Z"))
     await linkProblem(runA, l1)
     await linkProblem(runA, l2)
     await linkProblem(runB, l1)
@@ -1087,6 +1095,31 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
       ["L2", null],
     ])
     expect((await request(`/api/learnings?project=${projectId}&run=not-a-uuid`)).status).toBe(400)
+  })
+
+  test("a fix made by a run's failed first try is still new on that run, though a retry moved its start", async () => {
+    const before = await insertRun(new Date("2026-11-01T10:00:00Z"))
+    // The run's first try created the fix at 10:05 and failed; the retry reset startedAt to 10:30.
+    const retried = await insertRun(new Date("2026-11-02T10:30:00Z"))
+    const fix = await insertFix("Made in try 1", retried, "high", new Date("2026-11-02T10:05:00Z"))
+    await linkProblem(retried, fix)
+    const old = await insertFix("Older", before, "low", new Date("2026-11-01T10:00:30Z"))
+    await linkProblem(before, old)
+    await linkProblem(retried, old)
+
+    const res = await request(`/api/learnings?project=${projectId}&run=${retried}`)
+    const body = (await res.json()) as { learnings: Array<{ title: string; runMark: string }> }
+    expect(body.learnings.map((row) => [row.title, row.runMark])).toEqual([
+      ["Made in try 1", "new"],
+      ["Older", "updated"],
+    ])
+    const runs = (await (
+      await request(`/api/learnings/runs?project=${projectId}`)
+    ).json()) as ListedRunBody
+    expect(runs.runs.find((run) => run.id === retried)).toMatchObject({
+      fixesCreated: 1,
+      fixesUpdated: 1,
+    })
   })
 
   test("SC732: the runs list says how many of the project's reviews are waiting or running", async () => {
