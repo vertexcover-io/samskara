@@ -7,9 +7,28 @@ import { visibleToUser } from "./projects.repo.js"
 export type ReviewProblemRow = typeof reviewProblems.$inferSelect
 
 /**
+ * When a problem happened: the earliest time among the messages its evidence cites. Evidence
+ * names them as msg-N, the Nth record of the export the reviewer read. Null when none of them
+ * is in `records` or has a time.
+ */
+export const problemSeenAt = (
+  problem: Pick<Problem, "evidence">,
+  records: ReadonlyArray<{ readonly ts?: number }>,
+): Date | null => {
+  const times = problem.evidence.flatMap((item) => {
+    const match = /^msg-(\d+)$/.exec(item.from)
+    const ts = match === null ? undefined : records[Number(match[1])]?.ts
+    return ts === undefined ? [] : [ts]
+  })
+  return times.length === 0 ? null : new Date(Math.min(...times))
+}
+
+/**
  * Saves a run's problems as a set. Only problems of `reviewId` are replaced: a fresh run has
  * none, and a retried try of the same run swaps its own partial set. Runs inside the caller's
- * transaction, with the review row itself.
+ * transaction, with the review row itself. `records` is the export the reviewer read, so each
+ * problem is stamped with when it happened (`problemSeenAt`); without it, or when no cited
+ * message has a time, a problem is seen when it is saved.
  */
 export const replaceReviewProblems = async (
   db: Querier,
@@ -18,6 +37,7 @@ export const replaceReviewProblems = async (
     readonly sessionId: string
     readonly projectId: string
     readonly problems: ReadonlyArray<Problem>
+    readonly records?: ReadonlyArray<{ readonly ts?: number }>
   },
 ): Promise<void> => {
   await db.delete(reviewProblems).where(eq(reviewProblems.reviewId, input.reviewId))
@@ -37,6 +57,7 @@ export const replaceReviewProblems = async (
       evidence: problem.evidence,
       learning: problem.learning,
       extra: problem.extra,
+      ...seenAtOf(problem, input.records),
     })),
   )
 }
@@ -77,4 +98,12 @@ export const problemTitlesOf = async (
     .where(inArray(reviewProblems.reviewId, [...reviewIds]))
     .orderBy(desc(reviewProblems.createdAt), asc(reviewProblems.position))
   return rows.map((row) => row.title)
+}
+
+const seenAtOf = (
+  problem: Problem,
+  records: ReadonlyArray<{ readonly ts?: number }> | undefined,
+): { seenAt?: Date } => {
+  const seenAt = records === undefined ? null : problemSeenAt(problem, records)
+  return seenAt === null ? {} : { seenAt }
 }

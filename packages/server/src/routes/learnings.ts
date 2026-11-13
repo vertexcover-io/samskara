@@ -197,7 +197,7 @@ export const learningsRoutes = ({ db, env, notifyWorker }: Deps) => {
       /**
        * The project's learnings, high priority first, with how many problems and sessions each
        * has and when they were seen. `type` keeps one fix type; `from` and `to` (instants, `to`
-       * exclusive) keep learnings with a problem from a session active between them.
+       * exclusive) keep learnings with a problem that happened between them.
        */
       .get(
         "/",

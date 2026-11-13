@@ -91,6 +91,38 @@ describe.skipIf(!dockerAvailable())("review problems repository", () => {
     })
   })
 
+  test("a problem is seen when the earliest message its evidence cites was, not when it was saved", async () => {
+    const { userId, projectId, reviewId } = await seedReview("problems-seen")
+    const at = (iso: string) => Date.parse(iso)
+    const cited = {
+      ...problem("Cited"),
+      evidence: [
+        { from: "msg-2", to: "msg-2", quote: "q", why: "w" },
+        { from: "msg-1", to: "msg-2", quote: "q", why: "w" },
+      ],
+    }
+    const uncited = {
+      ...problem("Uncited"),
+      evidence: [{ from: "msg-9", to: "msg-9", quote: "q", why: "w" }],
+    }
+    const before = Date.now()
+    await problemsRepo.replaceReviewProblems(db, {
+      reviewId,
+      sessionId: "problems-seen",
+      projectId,
+      problems: [cited, uncited],
+      records: [
+        { ts: at("2026-11-01T09:00:00Z") },
+        { ts: at("2026-11-02T09:00:00Z") },
+        { ts: at("2026-11-03T09:00:00Z") },
+      ],
+    })
+    const [first, second] = await problemsRepo.listProblemsForSession(db, userId, "problems-seen")
+    expect(first?.seenAt.toISOString()).toBe("2026-11-02T09:00:00.000Z")
+    // msg-9 is not in the export, so the problem falls back to when it was saved.
+    expect(second?.seenAt.getTime()).toBeGreaterThanOrEqual(before - 1000)
+  })
+
   test("RP-DB2: redoing a review replaces its problems instead of adding to them", async () => {
     const { userId, projectId, reviewId } = await seedReview("problems-2")
     const input = { reviewId, sessionId: "problems-2", projectId }

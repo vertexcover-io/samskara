@@ -335,6 +335,7 @@ export const runAiReview = async (
         sessionId,
         projectId: detail.session.projectId,
         problems: kept.review.problems,
+        records: sessionExport.records,
       })
       return row
     })

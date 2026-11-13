@@ -777,6 +777,13 @@ export const reviewProblems = pgTable(
       onDelete: "set null",
     }),
     learningId: uuid("learningId").references(() => learnings.id, { onDelete: "set null" }),
+    /**
+     * When the problem happened: the time of the earliest message its evidence cites. A fix's
+     * first and last seen dates come from here, never from its sessions' activity, since a
+     * session still in use today can hold a problem from days ago. When no cited message has a
+     * time, when the problem was saved.
+     */
+    seenAt: timestamp("seenAt", { withTimezone: true }).notNull().defaultNow(),
     createdAt,
   },
   (t) => [

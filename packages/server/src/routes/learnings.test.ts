@@ -128,8 +128,9 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
   const daysAgo = (days: number) => new Date(Date.now() - days * DAY)
 
   /**
-   * A fix written straight to the tables, with one session per entry of `seen`: each session is
-   * active at that instant and holds `problems` problems (1 by default) linked to the fix.
+   * A fix written straight to the tables, with one session per entry of `seen`: each session
+   * holds `problems` problems (1 by default) linked to the fix, each seen at that instant. The
+   * session itself is active today, so only a problem's own time can make it look old.
    */
   const seedFix = async (
     title: string,
@@ -164,10 +165,10 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
           problemFixture(`${title} ${index}`),
         ),
       })
-      await db.update(sessions).set({ lastMessageAt: entry.at }).where(eq(sessions.id, sessionId))
+      await db.update(sessions).set({ lastMessageAt: new Date() }).where(eq(sessions.id, sessionId))
       await db
         .update(reviewProblems)
-        .set({ learningId: fix?.id as string, learningRunId: run.id })
+        .set({ learningId: fix?.id as string, learningRunId: run.id, seenAt: entry.at })
         .where(eq(reviewProblems.sessionId, sessionId))
     }
     return fix?.id as string
@@ -856,7 +857,7 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
     expect((await listed("&type=bogus")).status).toBe(400)
   })
 
-  test("SC715: from and to keep fixes with a session active between them, still counting all their problems", async () => {
+  test("SC715: from and to keep fixes with a problem that happened between them, still counting all their problems", async () => {
     await seedFix("Fix A", [
       { at: new Date("2026-11-02T12:00:00Z") },
       { at: new Date("2026-11-20T12:00:00Z") },
@@ -872,7 +873,25 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
     expect((await listed("&from=not-a-date")).status).toBe(400)
   })
 
-  test("SC716: each fix carries its first and last seen dates and how many of its sessions were active in the last 7 days", async () => {
+  test("a fix is seen when its problems happened, not when their sessions were last active", async () => {
+    const tenDays = daysAgo(10)
+    // The session was active today, but the problem in it happened ten days ago.
+    await seedFix("Old problem", [{ at: tenDays }])
+
+    const { body } = await listed("")
+    expect(body.learnings).toEqual([
+      expect.objectContaining({
+        title: "Old problem",
+        firstSeenAt: tenDays.toISOString(),
+        lastSeenAt: tenDays.toISOString(),
+        sessionsLast7Days: 0,
+      }),
+    ])
+    expect(await titles(`&from=${daysAgo(7).toISOString()}`)).toEqual([])
+    expect(await titles(`&from=${daysAgo(11).toISOString()}`)).toEqual(["Old problem"])
+  })
+
+  test("SC716: each fix carries its first and last seen dates and how many of its sessions had it in the last 7 days", async () => {
     const twentyDays = daysAgo(20)
     const twoDays = daysAgo(2)
     await seedFix("Seen fix", [
@@ -912,7 +931,14 @@ describe.skipIf(!dockerAvailable())("learnings routes", () => {
       await seedOrg(db, `elsewhere-${counter}`),
       `elsewhere-${counter}`,
     )
-    await db.update(sessions).set({ projectId: elsewhere }).where(eq(sessions.lastMessageAt, moved))
+    const [movedProblem] = await db
+      .select({ sessionId: reviewProblems.sessionId })
+      .from(reviewProblems)
+      .where(eq(reviewProblems.seenAt, moved))
+    await db
+      .update(sessions)
+      .set({ projectId: elsewhere })
+      .where(eq(sessions.id, movedProblem?.sessionId as string))
 
     const { body } = await listed("")
     expect(body.learnings).toEqual([

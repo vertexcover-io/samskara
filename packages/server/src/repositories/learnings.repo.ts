@@ -8,14 +8,7 @@ import {
 } from "@samskara/core"
 import { and, asc, desc, eq, inArray, isNull, type SQL, sql } from "drizzle-orm"
 import type { Db, Querier } from "../db/client.js"
-import {
-  learningRuns,
-  learnings,
-  reviewProblems,
-  sessionActivityAt,
-  sessionReviews,
-  sessions,
-} from "../db/schema.js"
+import { learningRuns, learnings, reviewProblems, sessionReviews, sessions } from "../db/schema.js"
 import { shownRun } from "./reviews.repo.js"
 
 export type LearningRunRow = typeof learningRuns.$inferSelect
@@ -364,10 +357,10 @@ export const saveBatch = async (
 export type ListedLearning = LearningRow & {
   readonly problemCount: number
   readonly sessionCount: number
-  /** The earliest and latest activity date of the sessions behind its problems; null with no problems. */
+  /** When its earliest and latest problem happened (`reviewProblems.seenAt`); null with no problems. */
   readonly firstSeenAt: Date | null
   readonly lastSeenAt: Date | null
-  /** How many of those sessions were active in the last 7 days. */
+  /** How many sessions had one of its problems in the last 7 days. */
   readonly sessionsLast7Days: number
   /** With a run filter: whether that run created this learning or updated it; otherwise null. */
   readonly runMark: "new" | "updated" | null
@@ -376,7 +369,7 @@ export type ListedLearning = LearningRow & {
 /** Which of a project's learnings to list. Every field narrows; an empty filter lists them all. */
 export type LearningFilter = {
   readonly fixType?: string | undefined
-  /** Only learnings with a problem from a session active at or after this instant… */
+  /** Only learnings with a problem that happened at or after this instant… */
   readonly seenFrom?: Date | undefined
   /** …and before this one. */
   readonly seenBefore?: Date | undefined
@@ -403,11 +396,11 @@ const filterConditions = (filter: LearningFilter): SQL[] => {
     const from =
       filter.seenFrom === undefined
         ? sql``
-        : sql` and coalesce(s."lastMessageAt", s."updatedAt") >= ${filter.seenFrom.toISOString()}::timestamptz`
+        : sql` and rp."seenAt" >= ${filter.seenFrom.toISOString()}::timestamptz`
     const before =
       filter.seenBefore === undefined
         ? sql``
-        : sql` and coalesce(s."lastMessageAt", s."updatedAt") < ${filter.seenBefore.toISOString()}::timestamptz`
+        : sql` and rp."seenAt" < ${filter.seenBefore.toISOString()}::timestamptz`
     conditions.push(sql`exists (
       select 1 from "reviewProblems" rp
       join "sessions" s on s."id" = rp."sessionId" and s."projectId" = ${learnings.projectId}
@@ -427,8 +420,9 @@ const IMPACT_ORDER = sql`array_position(${sql.raw(`array[${LEARNING_IMPACTS.map(
 
 /**
  * The project's learnings: high priority first, then worst impact, then most sessions. A
- * learning is seen when one of its problems' sessions is active, by the session's activity
- * date (`sessionActivityAt`), the date the sessions list shows.
+ * learning is seen when one of its problems happened (`reviewProblems.seenAt`), not when the
+ * problem's session was last active: a session still in use today can hold a problem from
+ * weeks ago, and its activity would make every fix in it look current.
  */
 export const listLearnings = async (
   db: Querier,
@@ -439,9 +433,11 @@ export const listLearnings = async (
   // as it leaves the seen dates, and a card's count and seen line describe the same sessions.
   const problemCount = sql<number>`count(${sessions.id})::int`
   const sessionCount = sql<number>`count(distinct ${sessions.id})::int`
-  const firstSeenAt = sql<string | null>`min(${sessionActivityAt})`
-  const lastSeenAt = sql<string | null>`max(${sessionActivityAt})`
-  const sessionsLast7Days = sql<number>`(count(distinct ${reviewProblems.sessionId}) filter (where ${sessionActivityAt} >= now() - interval '7 days'))::int`
+  // Only problems whose session is still in this project, like the counts above.
+  const inProject = sql`${sessions.id} is not null`
+  const firstSeenAt = sql<string | null>`min(${reviewProblems.seenAt}) filter (where ${inProject})`
+  const lastSeenAt = sql<string | null>`max(${reviewProblems.seenAt}) filter (where ${inProject})`
+  const sessionsLast7Days = sql<number>`(count(distinct ${sessions.id}) filter (where ${reviewProblems.seenAt} >= now() - interval '7 days'))::int`
   const runMark =
     filter.runId === undefined
       ? sql<"new" | "updated" | null>`null`
