@@ -1246,14 +1246,21 @@ describe.skipIf(!dockerAvailable())("PATCH /api/projects/:id", () => {
     expect(await autoReviewOf(projectId)).toBe(true)
   })
 
-  test.each([
-    { label: "an org member (editor)", scope: null },
-    { label: "a user with a viewer grant", scope: "viewer" as const },
-  ])("SC17: $label cannot change it", async ({ scope }) => {
+  test("SC17: an org member (editor) can turn it on", async () => {
+    const member = await seedUser(db, 1209, "sc17-auto-member")
+    const { orgId, projectId } = await orgProject("sc17-auto-member-org")
+    await db.insert(userOrgs).values({ userId: member, orgId })
+
+    const { status } = await patchAs(member, projectId, { autoReview: true })
+
+    expect(status).toBe(200)
+    expect(await autoReviewOf(projectId)).toBe(true)
+  })
+
+  test("SC17: a user with a viewer grant cannot change it", async () => {
     const caller = await seedUser(db, 1202, "sc17-auto-caller")
-    const { orgId, projectId } = await orgProject("sc17-auto-org")
-    if (scope === null) await db.insert(userOrgs).values({ userId: caller, orgId })
-    else await projectsRepo.grant(db, caller, projectId, scope)
+    const { projectId } = await orgProject("sc17-auto-org")
+    await projectsRepo.grant(db, caller, projectId, "viewer")
 
     const { status, body } = await patchAs(caller, projectId, { autoReview: true })
 
@@ -1300,17 +1307,30 @@ describe.skipIf(!dockerAvailable())("PATCH /api/projects/:id", () => {
     expect(await fixRunEveryDaysOf(projectId)).toBe(7)
   })
 
-  test("SC746: an org member who is not a project admin cannot change the interval, and reads viewerCanEdit false", async () => {
+  test("SC746: an org member (editor) changes the interval and reads viewerCanEdit true", async () => {
     const member = await seedUser(db, 1208, "sc746-member")
     const { orgId, projectId } = await orgProject("sc746-org")
     await db.insert(userOrgs).values({ userId: member, orgId })
 
     expect(await patchAs(member, projectId, { fixRunEveryDays: 2 })).toEqual({
+      status: 200,
+      body: { fixRunEveryDays: 2 },
+    })
+    expect(await fixRunEveryDaysOf(projectId)).toBe(2)
+    expect(await getAs(member, projectId)).toMatchObject({ viewerCanEdit: true })
+  })
+
+  test("SC746: a user with a viewer grant cannot change the interval, and reads viewerCanEdit false", async () => {
+    const viewer = await seedUser(db, 1210, "sc746-viewer")
+    const { projectId } = await orgProject("sc746-viewer-org")
+    await projectsRepo.grant(db, viewer, projectId, "viewer")
+
+    expect(await patchAs(viewer, projectId, { fixRunEveryDays: 2 })).toEqual({
       status: 403,
       body: { error: "forbidden" },
     })
     expect(await fixRunEveryDaysOf(projectId)).toBe(7)
-    expect(await getAs(member, projectId)).toMatchObject({ viewerCanEdit: false })
+    expect(await getAs(viewer, projectId)).toMatchObject({ viewerCanEdit: false })
   })
 
   test.each([
