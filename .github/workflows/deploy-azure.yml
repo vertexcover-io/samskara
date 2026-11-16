@@ -84,6 +84,8 @@ jobs:
           file: ./Dockerfile
           push: true
           tags: ${{ steps.set-tags.outputs.tags }}
+          build-args: |
+            GIT_COMMIT=${{ github.event.deployment.sha }}
           cache-from: type=gha
           # A failed cache export must not abort the solve — it skips the image
           # push and the App Service restart, blocking the deploy over a cache
