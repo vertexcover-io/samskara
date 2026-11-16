@@ -109,7 +109,7 @@ describe("groupProblems (agent 1)", () => {
     expect(k2).not.toContain("Rejected by the project")
     expect(read.contract).toContain('A learning marked "Rejected by the project"')
     expect(read.contract).toContain(
-      "Never start a `new` group whose cause is a rejected learning's cause",
+      "Never start a `new` group whose habit is a rejected learning's habit",
     )
   })
 

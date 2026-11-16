@@ -2,11 +2,11 @@ import { WRITING_RULES } from "../writingRules.js"
 import { CAUSE_MAX, ONE_OFF_BELOW, WRITTEN_LIMITS } from "./format.js"
 import { LEARNING_IMPACTS } from "./types.js"
 
-/** Agent 1's instructions: put the new problems into groups by cause. */
-export const GROUPER_CONTRACT = `# Group problems by cause
+/** Agent 1's instructions: put the new problems into groups by the agent's habit. */
+export const GROUPER_CONTRACT = `# Group problems by habit
 
 You get problems found in reviews of recorded AI agent sessions, and the learnings found so
-far. Put problems with the same cause into one group.
+far. Put problems that are the same habit into one group.
 
 ## Your working directory
 
@@ -18,42 +18,62 @@ far. Put problems with the same cause into one group.
 - \`groups.md\` — your answer, which you write.
 - \`check.mjs\` — run \`node check.mjs\`. You are done when it says every problem is in a group.
 
-## What a cause is
+## What a habit is
 
-The cause is why it happened, not what was seen. "The implement skill has no rule to wait for
-a background run to exit" is a cause; "the agent returned early" is what was seen.
+A habit is the thing the agent does wrong, said so that it covers every time it happens. Name
+it by two things:
 
-Two problems share a cause when one fix would stop both of them.
+1. What kind of thing the agent did: a claim it made to the person, an action it took, a
+   question it asked or failed to ask, or text it wrote.
+2. What it skipped or got wrong in doing it: for example checking, asking, reading what the
+   person said, or following a rule it was given.
 
-- The same thing seen, for different reasons: different groups.
-- Different things seen, for one reason: one group.
-- Work the cause out from the title, description and learning. When a problem's cause is not
+Two problems are the same habit when both are the same kind of thing and skip the same thing,
+even when they show up at different moments or in different parts of the work. Group by the
+habit, not by how a fix for it would be worded: one habit can need a different change at each
+moment, and the next step writes all of them into one fix.
+
+For example, only to show the rule:
+
+- One habit: "keeps using tabs after the person asked for spaces" and "commits straight to
+  the main branch after the person said to use a branch". Both are actions that skip an
+  instruction the person gave, at two different moments.
+- Two habits: "commits to the main branch after being told not to" and "asks the person a
+  question it could have answered by reading the file". The first skips an instruction; the
+  second skips looking it up.
+
+- The same thing seen, for different habits: different groups.
+- A habit is still specific: "the agent makes mistakes" is not one. Name the kind of thing
+  and what it skips, so one learning can tell it what to do instead.
+- Never split one habit into several groups because it shows up at many moments.
+- Work the habit out from the title, description and learning. When a problem's habit is not
   clear, give it a group of its own. A group of one is fine.
 
 ## Joining a learning
 
-When a group's cause is the cause of a learning in \`known-learnings.md\`, write that learning's id
-under Joins. Only one group may join a given learning. Otherwise write \`new\`.
+When a group's habit is the habit of a learning in \`known-learnings.md\`, write that learning's
+id under Joins, even when that learning was written for one moment and this group shows the
+habit at another. Only one group may join a given learning. Otherwise write \`new\`.
 
 A learning marked "Rejected by the project" is one the project decided it does not want, for
-the reason given. Problems with its cause still join it, under its id, so they are recorded
-there. Never start a \`new\` group whose cause is a rejected learning's cause put another way.
+the reason given. Problems with its habit still join it, under its id, so they are recorded
+there. Never start a \`new\` group whose habit is a rejected learning's habit put another way.
 
 ## groups.md
 
 One section per group:
 
 \`\`\`markdown
-## Helpers stop before background runs finish
+## Ignores instructions the person gave
 
 - **Joins:** new
-- **Cause:** The implement skill never tells helper agents to wait for a test or build run to
-  exit before they report, so they report while it is still running.
+- **Cause:** The agent takes actions that go against an instruction the person already gave,
+  such as a style, a branch or a tool to use, because it does not check what was asked.
 - **Problems:** P1, P4, P9
 \`\`\`
 
-- The heading is a short name for the cause.
-- Cause: at most ${CAUSE_MAX} characters. It must make sense with every project name removed.
+- The heading is a short name for the habit.
+- Cause: the habit, at most ${CAUSE_MAX} characters. It must make sense with every project name removed.
 - Every problem is in exactly one group.
 
 Your final reply is one short line, for example "groups.md ready: 12 groups".
@@ -61,7 +81,7 @@ Your final reply is one short line, for example "groups.md ready: 12 groups".
 
 export const buildGrouperPrompt = (): string =>
   [
-    "You are grouping problems from AI agent session reviews by their cause.",
+    "You are grouping problems from AI agent session reviews by the agent's habit: the thing it does wrong.",
     "",
     "Read `CONTRACT.md` first: it says how to group and exactly how to write `groups.md`.",
     "Then read `problems.md` and `known-learnings.md`, write `groups.md`, and run `node check.mjs` until it passes.",
@@ -72,7 +92,8 @@ export const buildGrouperPrompt = (): string =>
 export const WRITER_CONTRACT = `# Turn groups of problems into learnings
 
 Each group in \`groups.md\` is a set of problems, from reviews of recorded AI agent sessions,
-that share one cause. \`harness/\` is the code of the agent harness those sessions ran: its
+that share one habit: one thing the agent does wrong, which may show up at different moments.
+Write one learning per habit. \`harness/\` is the code of the agent harness those sessions ran: its
 skills, agents, hooks, commands and docs. For each group, decide whether it is worth a
 learning, and if it is, write what should change.
 
@@ -93,7 +114,9 @@ dropped. The existing fix did not stop them:
 
 1. Read its current fix, and check it against all its problems, the old and the new, and
    against \`harness/\` as it is now. If the fix is already in the harness, it is not working.
-2. Write one fix that would stop all of them, not only the new ones.
+2. Write one fix that would stop all of them, not only the new ones. When the new problems
+   show the habit at a moment the current fix does not cover, add the change for that moment
+   and keep the changes that still hold.
 3. Set the priority again from all its problems. Keep the title unless it is wrong, over
    ${WRITTEN_LIMITS.title} characters, or uses a word the list lines may not hold (see
    learnings.md below); then write a new one.
@@ -130,8 +153,14 @@ Set it from the problems and their evidence:
 
 - high: it keeps happening or will, and each time costs a wrong result, real time, or a
   person stepping in.
-- medium: it costs time more than once, but the agent or a check recovers.
+- medium: it costs time more than once, but the agent or an automatic check recovers on its
+  own.
 - low: small, rare, or caught early.
+
+Recovered means the agent or an automatic check fixed it without help. When the person had to
+re-run it, retry it, chase it or ask about it, the person stepped in: that is not recovered. A
+release or other ship step that failed, or work left stuck for hours, is high unless it
+happened once and cost almost nothing.
 
 How often is not the only measure. A problem that happens whenever someone works on one part
 of the system, and costs a lot each time, ranks above a frequent one that costs seconds.
@@ -141,7 +170,8 @@ of the system, and costs a lot each time, ranks above a frequent one that costs 
 What happens when the problem happens, the worst its evidence shows. One of:
 
 - wrong_result: without this fix the output can be wrong, or untested work ships.
-- person_stepped_in: a person had to notice it and correct the agent.
+- person_stepped_in: a person had to notice it, correct the agent, or re-run or chase what
+  the agent left failing or stuck.
 - time_only: the agent got there, but wasted time or tokens.
 
 Then a dash and one sentence that says what happened, with the numbers.
@@ -217,7 +247,8 @@ implement: say what that step does instead.
   characters.
 - Impact: one of ${LEARNING_IMPACTS.join(", ")}, a dash, then one sentence, at most
   ${WRITTEN_LIMITS.impactReason} characters. The sentence is why it matters, with the numbers.
-- Fix: at most ${WRITTEN_LIMITS.fix} characters.
+- Fix: at most ${WRITTEN_LIMITS.fix} characters. For a habit seen at different moments,
+  give the change for each moment, one sentence each.
 - In plain words: the fix in one line a person who never opened the code would follow, then
   why it works, with no file paths or code, at most ${WRITTEN_LIMITS.fixSummary} characters.
   It is shown first; the Fix field's exact text sits under it.
