@@ -2,8 +2,8 @@ import { describe, expect, test } from "vitest"
 import { REVIEW_OUTPUT_CONTRACT } from "../problems/contract.js"
 import { LIMITS } from "../problems/reviewMd.js"
 import { WRITING_RULES } from "../writingRules.js"
-import { WRITER_CONTRACT } from "./contract.js"
-import { CAUSE_MAX, parseWrittenMd, WRITTEN_LIMITS } from "./format.js"
+import { buildGrouperPrompt, GROUPER_CONTRACT, WRITER_CONTRACT } from "./contract.js"
+import { CAUSE_MAX, parseGroupsMd, parseWrittenMd, WRITTEN_LIMITS } from "./format.js"
 
 const FIX_TYPES = ["skill", "code", "project_guidelines", "knowledge_base", "human"]
 
@@ -112,4 +112,70 @@ test("spec-3: the contract says what check.mjs refuses in the four list lines, a
   expect(flat).toContain(
     `Keep the title unless it is wrong, over ${WRITTEN_LIMITS.title} characters, or uses a word the list lines may not hold`,
   )
+})
+
+describe("the grouping contract", () => {
+  const flat = GROUPER_CONTRACT.replace(/\s+/g, " ")
+
+  test("SC530: the grouping instructions define a habit by the kind of thing done and what it skipped", () => {
+    expect(flat).toContain("What kind of thing the agent did")
+    expect(flat).toContain("What it skipped or got wrong in doing it")
+    expect(flat).toContain(
+      "the same kind of thing and skip the same thing, even when they show up at different moments",
+    )
+    expect(flat).toContain(
+      "Never split one habit into several groups because it shows up at many moments",
+    )
+    expect(flat).toContain(
+      "even when that learning was written for one moment and this group shows the habit at another",
+    )
+    expect(flat).not.toContain("one fix would stop both")
+    expect(buildGrouperPrompt()).toContain("by the agent's habit")
+  })
+
+  test("SC532: the examples teach the rule without naming habits a real run is judged on", () => {
+    expect(flat).toContain('"keeps using tabs after the person asked for spaces"')
+    for (const hint of ["something is done", "how things work", "speaks or acts", "too dense"])
+      expect(flat).not.toContain(hint)
+  })
+
+  test("SC531: the grouping instructions' groups.md example still passes the grouping check", () => {
+    const example = /```markdown\n([\s\S]*?)```/.exec(GROUPER_CONTRACT)?.[1] ?? ""
+    const parsed = parseGroupsMd(example, ["P1", "P4", "P9"], [])
+    expect(parsed.errors).toEqual([])
+    expect(parsed.groups).toHaveLength(1)
+    expect(parsed.groups[0]).toMatchObject({ joins: null, problems: ["P1", "P4", "P9"] })
+  })
+})
+
+describe("one fix per habit", () => {
+  const flat = WRITER_CONTRACT.replace(/\s+/g, " ")
+
+  test("SC537: the writer writes one learning per habit, with each moment's change in its one fix", () => {
+    expect(flat).toContain("Write one learning per habit")
+    expect(flat).toContain("give the change for each moment, one sentence each")
+    expect(flat).toContain("add the change for that moment and keep the changes that still hold")
+  })
+})
+
+describe("who stepped in decides the priority", () => {
+  const flat = WRITER_CONTRACT.replace(/\s+/g, " ")
+
+  test("SC533: a person re-running or chasing a failure is stepping in, not recovering", () => {
+    expect(flat).toContain("Recovered means the agent or an automatic check fixed it without help")
+    expect(flat).toContain("re-run it, retry it, chase it or ask about it, the person stepped in")
+    expect(flat).toContain("re-run or chase what the agent left failing or stuck")
+  })
+
+  test("SC534: a failed release or work stuck for hours is high", () => {
+    expect(flat).toContain(
+      "A release or other ship step that failed, or work left stuck for hours, is high",
+    )
+  })
+
+  test("SC535: every writer is told to name who did it, never someone", () => {
+    expect(WRITING_RULES.replace(/\s+/g, " ")).toContain(
+      'Say who did it: the agent, the person, or a named tool or check. Never "someone"',
+    )
+  })
 })

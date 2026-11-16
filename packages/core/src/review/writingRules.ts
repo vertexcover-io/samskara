@@ -9,6 +9,8 @@ Write for someone who never saw the session or the code.
 
 - Write the way you would say it out loud to the person next to you.
 - Say what happened plainly, with the real names, numbers and error messages.
+- Say who did it: the agent, the person, or a named tool or check. Never "someone" or "it was
+  re-run": who re-ran it decides whether the agent recovered or the person had to step in.
 - Use short sentences, one idea each.
 - Use everyday words: use, fix, broke. Not utilize, leverage, remediate.
 - No jargon or shorthand. Not \`$?\`, "exit status", "baseline" or "lead": say "whether the
