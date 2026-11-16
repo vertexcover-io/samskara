@@ -11,6 +11,7 @@ import { validate } from "../lib/validate.js"
 import {
   authorityFor,
   canDelete,
+  canWrite,
   findVisibleSummaryById,
   listAccessibleSummaries,
   type ProjectSummaryRow,
@@ -64,8 +65,8 @@ export const projectsRoutes = ({ db, env }: Deps) =>
             fixRunEveryDays: row.fixRunEveryDays,
           },
           viewerCanDelete: deletable,
-          // The settings PATCH's own rule: only a project admin changes settings.
-          viewerCanEdit: scope === "admin",
+          // The settings PATCH's own rule: an editor or admin changes settings, a viewer reads them.
+          viewerCanEdit: scope === "editor" || scope === "admin",
         },
         200,
       )
@@ -79,8 +80,7 @@ export const projectsRoutes = ({ db, env }: Deps) =>
         const userId = c.get("user").id
         if (!UUID.test(projectId) || (await findVisibleSummaryById(db, userId, projectId)) === null)
           return c.json({ error: "projectNotFound" }, 404)
-        if ((await authorityFor(db, userId, projectId)) !== "admin")
-          return c.json({ error: "forbidden" }, 403)
+        if (!(await canWrite(db, userId, projectId))) return c.json({ error: "forbidden" }, 403)
         const body = c.req.valid("json")
         if (body.autoReview !== undefined) {
           await setAutoReview(db, projectId, body.autoReview)

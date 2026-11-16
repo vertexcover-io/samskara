@@ -12,7 +12,7 @@ type Status =
   | { readonly kind: "failed"; readonly message: string }
 
 const REFUSED: Readonly<Record<string, string>> = {
-  forbidden: "Only a project admin can change these settings.",
+  forbidden: "Only editors of this project can change these settings.",
   projectNotFound: "This project could not be found.",
 }
 
@@ -130,7 +130,9 @@ export const SettingsTab = ({
         </Row>
       </div>
       {canEdit ? null : (
-        <p className="text-[0.82rem] text-ink-soft">Only a project admin can change these.</p>
+        <p className="text-[0.82rem] text-ink-soft">
+          Only editors of this project can change these.
+        </p>
       )}
       {/* A pending days edit is not saved, whichever control saved last. */}
       {status.kind === "saved" && days === String(settings.fixRunEveryDays) ? (

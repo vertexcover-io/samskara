@@ -522,17 +522,17 @@ test("SC750: a refused save says why and puts the saved value back", async () =>
   await user.click(screen.getByRole("button", { name: "Save" }))
 
   expect(await screen.findByRole("alert")).toHaveTextContent(
-    "Only a project admin can change these settings.",
+    "Only editors of this project can change these settings.",
   )
   expect(daysField()).toHaveValue(7)
 })
 
-test("SC751: someone who is not an admin sees the settings as text, with no controls", async () => {
+test("SC751: a viewer sees the settings as text, with no controls", async () => {
   renderDetail(PROJECT, { entry: "/projects/p-1/settings", viewerCanEdit: false })
 
   expect(await screen.findByText("Off")).toBeInTheDocument()
   expect(screen.getByText("7 days")).toBeInTheDocument()
-  expect(screen.getByText("Only a project admin can change these.")).toBeInTheDocument()
+  expect(screen.getByText("Only editors of this project can change these.")).toBeInTheDocument()
   expect(screen.queryByRole("checkbox")).toBeNull()
   expect(screen.queryByRole("spinbutton")).toBeNull()
   expect(screen.queryByRole("button", { name: "Save" })).toBeNull()

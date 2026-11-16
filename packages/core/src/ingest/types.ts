@@ -442,7 +442,7 @@ export const reassignSessionsResponseSchema = z.object({ moved: nonnegativeInteg
  */
 export const MAX_FIX_RUN_EVERY_DAYS = 3650
 
-/** The settings a project admin can change: automatic review, and the days between automatic fix runs. */
+/** The settings an editor of a project can change: automatic review, and the days between automatic fix runs. */
 export const updateProjectRequestSchema = z
   .object({
     autoReview: z.boolean().optional(),
