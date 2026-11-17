@@ -900,6 +900,20 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
       ])
       expect(BRANCH_CHECK_LIMIT).toBe(200)
     })
+
+    test("a session linked only to a closed pull request is still listed, so a later merge on its branch is found", async () => {
+      const now = ist(11, 2)
+      const due = await project({ autoReview: true })
+      const a = await repo()
+      const reopened = await onBranch(due, now, a.id, "feat/q")
+      await linkPullRequest(reopened, "closed")
+
+      const listed = await branchesToLookUp(db, { ...DEFAULTS, now })
+
+      expect(listed.map((b) => ({ branch: b.branch, sessionIds: b.sessionIds }))).toEqual([
+        { branch: "feat/q", sessionIds: [reopened] },
+      ])
+    })
   })
   describe("sessions that grew after their review", () => {
     const run = async (

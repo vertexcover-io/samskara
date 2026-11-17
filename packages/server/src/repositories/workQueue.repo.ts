@@ -455,8 +455,9 @@ export const pullRequestsToCheck = async (
 export const BRANCH_CHECK_LIMIT = 200
 
 /**
- * The github.com branches tonight's candidate sessions worked on, for the sessions no pull
- * request is linked to yet: each (repo, branch) once, with every such session on it. The branch
+ * The github.com branches tonight's candidate sessions worked on, for the sessions no open or
+ * merged pull request is linked to yet: each (repo, branch) once, with every such session on it.
+ * A closed link does not count, since a new pull request on the same branch may merge later. The branch
  * comes from the session's messages (`repoId`, `gitBranch`); `main` and `master` are taken as
  * default branches and left out. At most `BRANCH_CHECK_LIMIT`, the branches of sessions active
  * longest ago first, the order the pick reads them in. A branch with no pull request yet is asked
@@ -483,7 +484,9 @@ export const branchesToLookUp = async (
         and ${sessionActivityAt} > ${activeSince}
         and ${pickableSession(input)}
         and not exists (
-          select 1 from "sessionPullRequests" spr where spr."sessionId" = "sessions"."id"
+          select 1 from "sessionPullRequests" spr
+          join "pullRequests" lpr on lpr."id" = spr."prId"
+          where spr."sessionId" = "sessions"."id" and lpr."state" <> 'closed'
         )
         and m."repoId" is not null
         and m."gitBranch" is not null and m."gitBranch" not in ('main', 'master')
