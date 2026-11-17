@@ -19,6 +19,20 @@ type State =
   | { readonly phase: "failed"; readonly error: ApiError }
 
 /**
+ * The tab's own filters as a query, and nothing else: a fix page's Back returns to the tab with
+ * them, and a stray `run` must not ride along, since the fix page reads it as "opened from a run".
+ */
+export const fixesSearch = (params: URLSearchParams): string => {
+  const kept = new URLSearchParams()
+  for (const name of ["status", "show", "type", "from", "to"]) {
+    const value = params.get(name)
+    if (value !== null) kept.set(name, value)
+  }
+  const text = kept.toString()
+  return text === "" ? "" : `?${text}`
+}
+
+/**
  * How many fixes the tab shows: the top few by default, since the server ranks them most
  * important first and the point is what to fix next. `?show=` keeps the choice.
  */
@@ -257,7 +271,7 @@ export const FixesTab = ({ projectId }: { readonly projectId: string }) => {
             <LearningCard
               key={row.id}
               row={row}
-              search={searchParams.size === 0 ? "" : `?${searchParams}`}
+              search={fixesSearch(searchParams)}
               canEdit={state.canEdit}
               onDecisionChange={onDecisionChange}
             />
