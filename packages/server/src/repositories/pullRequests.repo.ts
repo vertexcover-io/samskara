@@ -23,6 +23,31 @@ export type PullRequestAnswer = {
   readonly closedAt: Date | null
 }
 
+/** One branch of tonight's candidate sessions with no linked pull request, and those sessions. */
+export type BranchRef = {
+  readonly repoId: string
+  readonly owner: string
+  readonly repo: string
+  readonly branch: string
+  readonly sessionIds: ReadonlyArray<string>
+}
+
+/** A pull request GitHub found with a branch as its head, in any state. */
+export type FoundPullRequest = {
+  readonly number: number
+  readonly title: string | null
+  readonly baseBranch: string | null
+  readonly headBranch: string | null
+  readonly state: PullRequestState
+  readonly closedAt: Date | null
+}
+
+/** GitHub's answer for one branch: every pull request with it as head, often none. */
+export type BranchAnswer = {
+  readonly branch: BranchRef
+  readonly pullRequests: ReadonlyArray<FoundPullRequest>
+}
+
 export type ObservedPullRequest = {
   readonly repoId: string
   readonly number: number
@@ -101,4 +126,48 @@ export const savePullRequestStates = async (
     where pr."id" = x."id"
     returning pr."id"`)
   return saved.length
+}
+
+/**
+ * Saves the pull requests GitHub found on each branch, with the state it gave stamped as checked
+ * at `checkedAt`, and links every session on that branch to each of them. GitHub's state replaces
+ * the stored one, being newer; a stored title or branch is kept when GitHub sends none. Not one
+ * transaction on purpose: a pull request that fails to save must not undo the links already made
+ * for other branches. Returns the session links made; one that already existed is not counted.
+ */
+export const linkBranchPullRequests = async (
+  db: Querier,
+  answers: ReadonlyArray<BranchAnswer>,
+  checkedAt: Date,
+): Promise<number> => {
+  const found = answers.flatMap((answer) => answer.pullRequests.map((pr) => ({ answer, pr })))
+  const linked = await Promise.all(
+    found.map(async ({ answer, pr }) => {
+      const [row] = await db
+        .insert(pullRequests)
+        .values({ repoId: answer.branch.repoId, ...pr, checkedAt })
+        .onConflictDoUpdate({
+          target: [pullRequests.repoId, pullRequests.number],
+          set: {
+            title: enrich(pullRequests.title),
+            baseBranch: enrich(pullRequests.baseBranch),
+            headBranch: enrich(pullRequests.headBranch),
+            state: pr.state,
+            closedAt: pr.closedAt,
+            checkedAt,
+            updatedAt: sql`now()`,
+          },
+        })
+        .returning({ id: pullRequests.id })
+      if (!row) throw new Error("pull request upsert resolved no row")
+      if (answer.branch.sessionIds.length === 0) return 0
+      const links = await db
+        .insert(sessionPullRequests)
+        .values(answer.branch.sessionIds.map((sessionId) => ({ sessionId, prId: row.id })))
+        .onConflictDoNothing()
+        .returning({ sessionId: sessionPullRequests.sessionId })
+      return links.length
+    }),
+  )
+  return linked.reduce((sum, count) => sum + count, 0)
 }

@@ -14,7 +14,13 @@ import {
 import { dockerAvailable, startTestDb } from "../db/testDb.js"
 import { DEFAULT_MIN_NEW_USER_MESSAGES } from "../lib/env.js"
 import { insertOpened } from "./pullRequests.repo.js"
-import { PR_CHECK_LIMIT, pullRequestsToCheck, queueNightlyReviews } from "./workQueue.repo.js"
+import {
+  BRANCH_CHECK_LIMIT,
+  branchesToLookUp,
+  PR_CHECK_LIMIT,
+  pullRequestsToCheck,
+  queueNightlyReviews,
+} from "./workQueue.repo.js"
 
 const ANALYZER = "ai-problems-v2"
 const HOUR_MS = 60 * 60 * 1000
@@ -757,7 +763,7 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
     })
   })
   describe("the pull requests the nightly check asks GitHub about", () => {
-    test("SC12: only open github.com pull requests of tonight's not-yet-quiet candidate sessions are listed", async () => {
+    test("SC12: only open github.com pull requests of tonight's candidate sessions are listed", async () => {
       const now = ist(11, 2)
       const a = await project({ autoReview: true })
       const candidate = await busySession(a, now)
@@ -773,8 +779,8 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
         status: "waiting",
       })
       await linkPullRequest(await busySession(a, now, 15 * 24), "open")
-      // Quiet for 6 hours already, so the pick takes it whatever GitHub says.
-      await linkPullRequest(await quietSession(a, now), "open")
+      // Quiet already, but a merge would still rank it above the other quiet sessions.
+      const quietWanted = await linkPullRequest(await quietSession(a, now), "open")
       const b = await project()
       await linkPullRequest(await busySession(b, now), "open")
       const c = await project({ autoReview: true, lastNightlyPickAt: ist(11, 1, 30) })
@@ -782,13 +788,13 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
 
       const listed = await pullRequestsToCheck(db, { ...DEFAULTS, now })
 
-      expect(listed).toHaveLength(1)
+      expect(listed.map((pr) => pr.id).sort()).toEqual([wanted, quietWanted].sort())
       const [repo] = await db
         .select({ owner: repos.owner, repoName: repos.repoName, number: pullRequests.number })
         .from(pullRequests)
         .innerJoin(repos, eq(repos.id, pullRequests.repoId))
         .where(eq(pullRequests.id, wanted))
-      expect(listed[0]).toEqual({
+      expect(listed.find((pr) => pr.id === wanted)).toEqual({
         id: wanted,
         owner: repo?.owner,
         repo: repo?.repoName,
@@ -796,16 +802,16 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
       })
     })
 
-    test("which sessions count as not yet quiet follows the quiet-time setting", async () => {
+    test("SC21: the state check covers quiet candidates, but not a pull request already checked tonight", async () => {
       const now = ist(11, 2)
       const a = await project({ autoReview: true })
-      const stillBusy = await linkPullRequest(await busySession(a, now, 1), "open")
-      // Busy by the 6-hour default, quiet by a 2-hour setting: the pick takes it anyway.
-      await linkPullRequest(await busySession(a, now, 3), "open")
+      const quiet = await linkPullRequest(await quietSession(a, now, 30), "open")
+      const justFound = await linkPullRequest(await quietSession(a, now, 30), "open")
+      await db.update(pullRequests).set({ checkedAt: now }).where(eq(pullRequests.id, justFound))
 
-      const listed = await pullRequestsToCheck(db, { ...DEFAULTS, now, quietHours: 2 })
+      const listed = await pullRequestsToCheck(db, { ...DEFAULTS, now })
 
-      expect(listed.map((pr) => pr.id)).toEqual([stillBusy])
+      expect(listed.map((pr) => pr.id)).toEqual([quiet])
     })
 
     test("SC13: at most 200 are listed, never-checked first", async () => {
@@ -838,6 +844,61 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
       expect(PR_CHECK_LIMIT).toBe(200)
       expect(listed).toHaveLength(200)
       for (const id of checkedIds) expect(listed.map((pr) => pr.id)).not.toContain(id)
+    })
+  })
+  describe("the branches the nightly check asks GitHub about", () => {
+    const repo = async (host = "github.com") => {
+      counter += 1
+      const [row] = await db
+        .insert(repos)
+        .values({ host, owner: "acme", repoName: `branchy-${counter}`, ownerUserId: userId })
+        .returning({ id: repos.id, owner: repos.owner, repoName: repos.repoName })
+      return row as { id: string; owner: string; repoName: string }
+    }
+
+    /** A quiet session whose `typed` messages were typed on `branch` of `repoId`. */
+    const onBranch = async (
+      projectId: string,
+      now: Date,
+      repoId: string,
+      branch: string,
+      typed = DEFAULT_MIN_NEW_USER_MESSAGES,
+    ) => {
+      const id = await session(projectId, {
+        lastMessageAt: hoursBefore(now, 8),
+        updatedAt: hoursBefore(now, 1),
+        typed: 0,
+      })
+      for (let i = 0; i < typed; i += 1)
+        await message(id, TYPED_AT, undefined, "message", {}, { repoId, gitBranch: branch })
+      return id
+    }
+
+    test("SC17: only unlinked candidate sessions' non-default github.com branches are listed", async () => {
+      const now = ist(11, 2)
+      const due = await project({ autoReview: true })
+      const a = await repo()
+      const x1 = await onBranch(due, now, a.id, "feat/x")
+      const x2 = await onBranch(due, now, a.id, "feat/x")
+      await onBranch(due, now, a.id, "main")
+      await onBranch(due, now, a.id, "master")
+      await linkPullRequest(await onBranch(due, now, a.id, "feat/y"), "open")
+      await onBranch(due, now, (await repo("gitlab.com")).id, "feat/z")
+      await onBranch(due, now, a.id, "feat/w", 3)
+      await onBranch(await project(), now, a.id, "feat/v")
+
+      const listed = await branchesToLookUp(db, { ...DEFAULTS, now })
+
+      expect(listed).toEqual([
+        {
+          repoId: a.id,
+          owner: a.owner,
+          repo: a.repoName,
+          branch: "feat/x",
+          sessionIds: [x1, x2].sort(),
+        },
+      ])
+      expect(BRANCH_CHECK_LIMIT).toBe(200)
     })
   })
   describe("sessions that grew after their review", () => {

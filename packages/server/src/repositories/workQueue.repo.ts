@@ -9,7 +9,7 @@ import {
   DEFAULT_QUIET_HOURS,
   type NightlyReview,
 } from "../lib/env.js"
-import type { PullRequestRef } from "./pullRequests.repo.js"
+import type { BranchRef, PullRequestRef } from "./pullRequests.repo.js"
 import { deleteReaderReplies } from "./readerReplies.repo.js"
 import { newUserMessagesAfter, SILENT_TYPES, shownRun } from "./reviews.repo.js"
 
@@ -418,23 +418,24 @@ const yokRun = (sessionId: SQL): SQL => sql`exists (
 )`
 
 /**
- * The open github.com pull requests opened by a session tonight's pick could take only through
- * its pull request (one not yet quiet for `quietHours`), for the check that asks GitHub before
- * the pick: at most `PR_CHECK_LIMIT`, never-checked first, then
- * the ones checked longest ago. Empty unless some project's pick is due, so the every-minute
- * claim pass makes no GitHub call. Reads only.
+ * The open github.com pull requests linked to a session tonight's pick could take, quiet or not,
+ * for the check that asks GitHub before the pick: a merge ranks a session above every quiet one.
+ * At most `PR_CHECK_LIMIT`, never-checked first, then the ones checked longest ago; one already
+ * checked at `now` (just found by branch) is left out. Empty unless some project's pick is due,
+ * so the every-minute claim pass makes no GitHub call. Reads only.
  */
 export const pullRequestsToCheck = async (
   db: Querier,
   input: NightlyInput,
 ): Promise<ReadonlyArray<PullRequestRef>> => {
-  const { due, quietSince, activeSince } = nightlyClock(input)
+  const { now, due, activeSince } = nightlyClock(input)
   const rows = await db.execute<PullRequestRef>(sql`
     select pr."id", r."owner", r."repoName" as "repo", pr."number"
     from "pullRequests" pr
     join "repos" r on r."id" = pr."repoId"
     where pr."state" = 'open'
       and lower(r."host") = 'github.com'
+      and (pr."checkedAt" is null or pr."checkedAt" < ${now})
       and exists (
         select 1 from "sessionPullRequests" spr
         join "sessions" on "sessions"."id" = spr."sessionId"
@@ -443,11 +444,55 @@ export const pullRequestsToCheck = async (
         where spr."prId" = pr."id"
           and ${due}
           and ${sessionActivityAt} > ${activeSince}
-          and ${sessionActivityAt} > ${quietSince}
           and ${pickableSession(input)}
       )
     order by pr."checkedAt" asc nulls first, pr."id"
     limit ${PR_CHECK_LIMIT}`)
+  return [...rows]
+}
+
+/** How many branches the check before one nightly pick asks GitHub about, at most. */
+export const BRANCH_CHECK_LIMIT = 200
+
+/**
+ * The github.com branches tonight's candidate sessions worked on, for the sessions no pull
+ * request is linked to yet: each (repo, branch) once, with every such session on it. The branch
+ * comes from the session's messages (`repoId`, `gitBranch`); `main` and `master` are taken as
+ * default branches and left out. At most `BRANCH_CHECK_LIMIT`, the branches of sessions active
+ * longest ago first, the order the pick reads them in. A branch with no pull request yet is asked
+ * again on a later night: recording "asked, none found" would also hide a pull request opened on
+ * it later, and the cap bounds the repeat cost. Empty unless some project's pick is due. Reads
+ * only.
+ */
+export const branchesToLookUp = async (
+  db: Querier,
+  input: NightlyInput,
+): Promise<ReadonlyArray<BranchRef>> => {
+  const { due, activeSince } = nightlyClock(input)
+  const rows = await db.execute<BranchRef>(sql`
+    select b."repoId", r."owner", r."repoName" as "repo", b."branch",
+      array_agg(b."sessionId" order by b."sessionId") as "sessionIds"
+    from (
+      select distinct "sessions"."id" as "sessionId", ${sessionActivityAt} as "activityAt",
+        m."repoId", m."gitBranch" as "branch"
+      from "sessions"
+      join "projects" on "projects"."id" = "sessions"."projectId"
+      left join lateral ${lastRun(input.analyzer)} "last" on true
+      join "messages" m on m."sessionId" = "sessions"."id"
+      where ${due}
+        and ${sessionActivityAt} > ${activeSince}
+        and ${pickableSession(input)}
+        and not exists (
+          select 1 from "sessionPullRequests" spr where spr."sessionId" = "sessions"."id"
+        )
+        and m."repoId" is not null
+        and m."gitBranch" is not null and m."gitBranch" not in ('main', 'master')
+    ) b
+    join "repos" r on r."id" = b."repoId"
+    where lower(r."host") = 'github.com'
+    group by b."repoId", r."owner", r."repoName", b."branch"
+    order by min(b."activityAt"), b."repoId", b."branch"
+    limit ${BRANCH_CHECK_LIMIT}`)
   return [...rows]
 }
 

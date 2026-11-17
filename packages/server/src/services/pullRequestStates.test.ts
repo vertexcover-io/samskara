@@ -1,6 +1,10 @@
 import { describe, expect, test, vi } from "vitest"
-import type { PullRequestRef } from "../repositories/pullRequests.repo.js"
-import { createPullRequestLookup, LOOKUP_BATCH } from "./pullRequestStates.js"
+import type { BranchRef, PullRequestRef } from "../repositories/pullRequests.repo.js"
+import {
+  createBranchPullRequestLookup,
+  createPullRequestLookup,
+  LOOKUP_BATCH,
+} from "./pullRequestStates.js"
 
 type RequestBody = {
   readonly query: string
@@ -161,4 +165,127 @@ describe("createPullRequestLookup", () => {
       expect(result?.failures).toHaveLength(3)
     },
   )
+})
+
+const branches = (count: number): ReadonlyArray<BranchRef> =>
+  Array.from({ length: count }, (_, i) => ({
+    repoId: `repo-${i % 2}`,
+    owner: "acme-owner",
+    repo: `widget-${i % 2}`,
+    branch: `feat/b${i}`,
+    sessionIds: [`s-${i}-a`, `s-${i}-b`],
+  }))
+
+describe("createBranchPullRequestLookup", () => {
+  test("SC13: each branch is asked about once, in one request, for pull requests in any state", async () => {
+    const fakeFetch = vi.fn<typeof fetch>(async () =>
+      json({ data: { b0: null, b1: null, b2: null } }),
+    )
+    const lookup = createBranchPullRequestLookup("t", fakeFetch)
+
+    await lookup?.(branches(3))
+
+    expect(fakeFetch).toHaveBeenCalledTimes(1)
+    const body = bodyOf(fakeFetch.mock.calls[0]?.[1])
+    expect(body.variables).toEqual({
+      o0: "acme-owner",
+      n0: "widget-0",
+      h0: "feat/b0",
+      o1: "acme-owner",
+      n1: "widget-1",
+      h1: "feat/b1",
+      o2: "acme-owner",
+      n2: "widget-0",
+      h2: "feat/b2",
+    })
+    expect(body.query).toContain("pullRequests(headRefName: $h0")
+    expect(body.query).toContain("states: [OPEN, CLOSED, MERGED]")
+    expect(body.query).not.toContain("feat/b0")
+  })
+
+  test("SC14: GitHub's pull requests become found pull requests with their state", async () => {
+    const fakeFetch = vi.fn<typeof fetch>(async () =>
+      json({
+        data: {
+          b0: {
+            pullRequests: {
+              nodes: [
+                {
+                  number: 41,
+                  title: "Ship it",
+                  baseRefName: "main",
+                  headRefName: "feat/b0",
+                  state: "MERGED",
+                  mergedAt: "2026-11-10T08:00:00Z",
+                  closedAt: "2026-11-10T08:00:00Z",
+                },
+                {
+                  number: 42,
+                  title: "Follow-up",
+                  baseRefName: "main",
+                  headRefName: "feat/b0",
+                  state: "OPEN",
+                  mergedAt: null,
+                  closedAt: null,
+                },
+              ],
+            },
+          },
+          b1: { pullRequests: { nodes: [] } },
+          b2: null,
+        },
+      }),
+    )
+    const asked = branches(3)
+
+    const result = await createBranchPullRequestLookup("t", fakeFetch)?.(asked)
+
+    expect(result?.failures).toEqual([])
+    expect(result?.answers).toEqual([
+      {
+        branch: asked[0],
+        pullRequests: [
+          {
+            number: 41,
+            title: "Ship it",
+            baseBranch: "main",
+            headBranch: "feat/b0",
+            state: "merged",
+            closedAt: new Date("2026-11-10T08:00:00Z"),
+          },
+          {
+            number: 42,
+            title: "Follow-up",
+            baseBranch: "main",
+            headBranch: "feat/b0",
+            state: "open",
+            closedAt: null,
+          },
+        ],
+      },
+      { branch: asked[1], pullRequests: [] },
+      { branch: asked[2], pullRequests: [] },
+    ])
+  })
+
+  test("SC15: a rate-limited branch lookup stops and reports the rest as unsent", async () => {
+    const fakeFetch = vi.fn<typeof fetch>(async () => json({ message: "slow down" }, 429))
+
+    const result = await createBranchPullRequestLookup("t", fakeFetch)?.(branches(120))
+
+    expect(fakeFetch).toHaveBeenCalledTimes(1)
+    expect(result?.answers).toEqual([])
+    expect(result?.failures).toEqual([
+      "github branch lookup failed (429)",
+      "not sent after a rate limit",
+      "not sent after a rate limit",
+    ])
+  })
+
+  test("SC16: without a token there is no branch lookup, and nothing is fetched", () => {
+    const fakeFetch = vi.fn<typeof fetch>()
+
+    expect(createBranchPullRequestLookup(undefined, fakeFetch)).toBeUndefined()
+    expect(fakeFetch).not.toHaveBeenCalled()
+  })
 })
