@@ -121,6 +121,24 @@ test("SC23: a card's link opens its fix page carrying the list's filters, and Sh
   expect(within(card).queryByRole("button", { name: "Show problems" })).toBeNull()
 })
 
+test("a Fixes tab URL carrying run=r-1 links its cards with the filters only, so a fix opened from it never offers Back to run", async () => {
+  stubFetch([
+    {
+      match: "/api/learnings",
+      status: 200,
+      body: { learnings: [LEARNING], latestRun: RUN, canEdit: true },
+    },
+  ])
+
+  renderPage("/projects/p-1/fixes?run=r-1&show=10")
+
+  const card = (await screen.findByText(LEARNING.title)).closest("article") as HTMLElement
+  expect(within(card).getByRole("link", { name: LEARNING.title })).toHaveAttribute(
+    "href",
+    "/learnings/l-1?show=10",
+  )
+})
+
 test("SC401: a card shows only its title row, what goes wrong, why it matters and the plain fix", async () => {
   const written = {
     ...LEARNING,

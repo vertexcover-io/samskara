@@ -130,7 +130,7 @@ export const RunPage = ({
             <LearningCard
               key={row.id}
               row={row}
-              search=""
+              search={`?run=${encodeURIComponent(runId)}`}
               canEdit={state.canEdit}
               onDecisionChange={onDecisionChange}
               mark={row.runMark}

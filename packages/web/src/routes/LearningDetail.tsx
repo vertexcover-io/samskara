@@ -11,7 +11,9 @@ import {
   PRIORITY_TONE,
   plural,
 } from "../learnings/labels.js"
+import { fixesSearch } from "../project/FixesTab.js"
 import { tabPath } from "../project/ProjectTabs.js"
+import { runPath } from "../project/RunsTab.js"
 import { LoadingShell } from "../shell/LoadingShell.js"
 
 type State =
@@ -37,17 +39,6 @@ export const bySession = (problems: ReadonlyArray<LearningProblem>): SessionProo
     })
   }
   return [...groups.values()]
-}
-
-/** The Fixes tab's own filters, so Back lands where the reader left. */
-const listSearch = (params: URLSearchParams): string => {
-  const kept = new URLSearchParams()
-  for (const name of ["status", "show", "type", "from", "to"]) {
-    const value = params.get(name)
-    if (value !== null) kept.set(name, value)
-  }
-  const text = kept.toString()
-  return text === "" ? "" : `?${text}`
 }
 
 const label = "font-mono text-[0.656rem] font-semibold uppercase tracking-[0.12em] text-stamp"
@@ -381,17 +372,26 @@ export const LearningDetail = () => {
     )
 
   // The project is known only once the fix is loaded; before that, or when it fails, the list of projects.
+  // Opened from a run's page, the URL names the run (`?run=`), and Back returns to it.
+  const runId = searchParams.get("run") ?? ""
   const back =
-    state.phase === "ready" ? (
+    state.phase !== "ready" ? (
+      <Link to="/projects" className="text-[0.82rem] underline">
+        ← Back to Projects
+      </Link>
+    ) : runId !== "" ? (
       <Link
-        to={`${tabPath(state.payload.learning.projectId, "fixes")}${listSearch(searchParams)}`}
+        to={runPath(state.payload.learning.projectId, runId)}
+        className="text-[0.82rem] underline"
+      >
+        ← Back to run
+      </Link>
+    ) : (
+      <Link
+        to={`${tabPath(state.payload.learning.projectId, "fixes")}${fixesSearch(searchParams)}`}
         className="text-[0.82rem] underline"
       >
         ← Back to Fixes
-      </Link>
-    ) : (
-      <Link to="/projects" className="text-[0.82rem] underline">
-        ← Back to Projects
       </Link>
     )
   if (state.phase === "loading") return <LoadingShell label="Retrieving the fix" />
