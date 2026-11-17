@@ -67,10 +67,50 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
     return row?.id as string
   }
 
-  /** A session whose last activity is `lastMessageAt`, or `updatedAt` when it has no message. */
+  /**
+   * A message at `at`, stored at `storedAt` (by default the same instant). `extra` sets any other
+   * column, such as `subType`, `details` or `content`.
+   */
+  const message = async (
+    sessionId: string,
+    at: Date | null,
+    storedAt?: Date,
+    msgType: "message" | "usage" | "turnEvent" | "custom" | "toolResult" = "message",
+    who: { role?: "user" | "assistant"; trackId?: string } = {},
+    extra: Partial<typeof messages.$inferInsert> = {},
+  ) => {
+    counter += 1
+    const [row] = await db
+      .insert(messages)
+      .values({
+        sessionId,
+        lineUuid: crypto.randomUUID(),
+        subIndex: 0,
+        msgType,
+        role: msgType === "message" ? (who.role ?? "user") : (who.role ?? null),
+        trackId: who.trackId ?? "main",
+        lineNumber: counter,
+        raw: {},
+        sourceSchemaVersion: 1,
+        content: { type: "text", value: "hi" },
+        timestamp: at,
+        createdAt: storedAt ?? at ?? new Date(0),
+        ...extra,
+      })
+      .returning({ id: messages.id })
+    return row?.id as string
+  }
+
+  /** Long before every review the tests write, so these messages are never new after a run. */
+  const TYPED_AT = new Date(Date.UTC(2026, 0, 1))
+
+  /**
+   * A session whose last activity is `lastMessageAt`, or `updatedAt` when it has no message, with
+   * `typed` messages the person typed (by default enough to be picked).
+   */
   const session = async (
     projectId: string,
-    activity: { lastMessageAt?: Date; updatedAt: Date },
+    activity: { lastMessageAt?: Date; updatedAt: Date; typed?: number },
   ): Promise<string> => {
     counter += 1
     const id = `nightly-${counter}`
@@ -82,6 +122,8 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
       lastMessageAt: activity.lastMessageAt ?? null,
       updatedAt: activity.updatedAt,
     })
+    for (let i = 0; i < (activity.typed ?? DEFAULT_MIN_NEW_USER_MESSAGES); i += 1)
+      await message(id, TYPED_AT)
     return id
   }
 
@@ -145,7 +187,7 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
     expect(await lastPick(on)).toEqual(now)
   })
 
-  test("SC5: only sessions quiet for 6 hours with no review row are picked; rows are left alone", async () => {
+  test("SC5: only sessions quiet for 6 hours, with enough typed messages and no review row, are picked; rows are left alone", async () => {
     const now = ist(11, 2)
     const on = await project({ autoReview: true })
     const quiet = await quietSession(on, now, 7)
@@ -153,8 +195,13 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
       lastMessageAt: hoursBefore(now, 5),
       updatedAt: hoursBefore(now, 5),
     })
-    const noMessages = await session(on, { updatedAt: hoursBefore(now, 7) })
-    const doneRow = await quietSession(on, now, 9)
+    const noMessages = await session(on, { updatedAt: hoursBefore(now, 7), typed: 0 })
+    // Its done run read nothing, so every message would count as new after it.
+    const doneRow = await session(on, {
+      lastMessageAt: hoursBefore(now, 9),
+      updatedAt: hoursBefore(now, 1),
+      typed: 0,
+    })
     const failedRow = await quietSession(on, now, 9)
     const earlier = new Date(Date.UTC(2026, 0, 1))
     await db.insert(sessionReviews).values([
@@ -183,10 +230,11 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
 
     const result = await queueNightlyReviews(db, { ...DEFAULTS, now })
 
-    expect(result).toEqual({ picked: 1, queued: 2 })
+    expect(result).toEqual({ picked: 1, queued: 1 })
     const rows = await reviewRows()
     const waiting = rows.filter((row) => row.status === "waiting")
-    expect(waiting.map((row) => row.sessionId).sort()).toEqual([quiet, noMessages].sort())
+    expect(waiting.map((row) => row.sessionId)).toEqual([quiet])
+    expect(rows.some((row) => row.sessionId === noMessages)).toBe(false)
     for (const row of waiting) {
       expect(row).toMatchObject({ harness: null, model: null, prompt: null, attempts: 0 })
     }
@@ -319,6 +367,71 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
       await queueNightlyReviews(db, { ...utc, now: new Date(Date.UTC(2026, 10, 11, 1, 0)) }),
     ).toEqual({ picked: 1, queued: 2 })
   })
+  describe("the messages a session needs the person to have typed", () => {
+    /** A quiet, never-reviewed session the person typed `typed` messages in. */
+    const quietTyped = (projectId: string, now: Date, typed: number): Promise<string> =>
+      session(projectId, {
+        lastMessageAt: hoursBefore(now, 8),
+        updatedAt: hoursBefore(now, 1),
+        typed,
+      })
+
+    test("SC1: a never-reviewed session needs four typed messages to be picked", async () => {
+      const now = ist(11, 2)
+      const on = await project({ autoReview: true })
+      const three = await quietTyped(on, now, 3)
+      const four = await quietTyped(on, now, 4)
+
+      const result = await queueNightlyReviews(db, { ...DEFAULTS, now })
+
+      expect(result).toEqual({ picked: 1, queued: 1 })
+      const rows = await reviewRows()
+      expect(rows).toEqual([
+        expect.objectContaining({
+          sessionId: four,
+          status: "waiting",
+          newPartOnly: false,
+          basedOn: null,
+        }),
+      ])
+      expect(rows.some((row) => row.sessionId === three)).toBe(false)
+    })
+
+    test("SC2: only messages the person typed count toward the minimum", async () => {
+      const now = ist(11, 2)
+      const on = await project({ autoReview: true })
+      const id = await quietTyped(on, now, 3)
+      await message(id, TYPED_AT, undefined, "message", { role: "assistant" })
+      await message(id, TYPED_AT, undefined, "message", { role: "assistant" })
+      await message(id, TYPED_AT, undefined, "message", { trackId: "agent-1" })
+      await message(id, TYPED_AT, undefined, "message", {}, { subType: "toolInjection" })
+      await message(id, TYPED_AT, undefined, "message", {}, { details: { isMeta: true } })
+      await message(
+        id,
+        TYPED_AT,
+        undefined,
+        "toolResult",
+        { role: "user" },
+        { content: null, details: { output: "done" } },
+      )
+
+      const result = await queueNightlyReviews(db, { ...DEFAULTS, now })
+
+      expect(result).toEqual({ picked: 1, queued: 0 })
+      expect(await reviewRows()).toEqual([])
+    })
+
+    test("SC4: the default is 4 and follows the setting", async () => {
+      const now = ist(11, 2)
+      const on = await project({ autoReview: true })
+      const id = await quietTyped(on, now, 1)
+
+      await queueNightlyReviews(db, { ...DEFAULTS, now, minNewUserMessages: 1 })
+
+      expect(DEFAULT_MIN_NEW_USER_MESSAGES).toBe(4)
+      expect((await reviewRows()).map((row) => row.sessionId)).toEqual([id])
+    })
+  })
   describe("a session whose pull request is merged or closed", () => {
     test.each(["merged", "closed"] as const)(
       "SC1: a session whose pull request is %s is queued before it goes quiet",
@@ -353,7 +466,12 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
     test("SC3: a reviewed or two-week-old session is left alone even when its pull request ended", async () => {
       const now = ist(11, 2)
       const on = await project({ autoReview: true })
-      const reviewed = await busySession(on, now)
+      // Its done run read nothing, so every message would count as new after it.
+      const reviewed = await session(on, {
+        lastMessageAt: hoursBefore(now, 1),
+        updatedAt: hoursBefore(now, 1),
+        typed: 0,
+      })
       await linkPullRequest(reviewed, "merged")
       const old = await busySession(on, now, 15 * 24)
       await linkPullRequest(old, "merged")
@@ -536,35 +654,6 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
     })
   })
   describe("sessions that grew after their review", () => {
-    /** A message at `at`, stored at `storedAt` (by default the same instant). */
-    const message = async (
-      sessionId: string,
-      at: Date | null,
-      storedAt?: Date,
-      msgType: "message" | "usage" | "turnEvent" | "custom" = "message",
-      who: { role?: "user" | "assistant"; trackId?: string } = {},
-    ) => {
-      counter += 1
-      const [row] = await db
-        .insert(messages)
-        .values({
-          sessionId,
-          lineUuid: crypto.randomUUID(),
-          subIndex: 0,
-          msgType,
-          role: msgType === "message" ? (who.role ?? "user") : null,
-          trackId: who.trackId ?? "main",
-          lineNumber: counter,
-          raw: {},
-          sourceSchemaVersion: 1,
-          content: { type: "text", value: "hi" },
-          timestamp: at,
-          createdAt: storedAt ?? at ?? new Date(0),
-        })
-        .returning({ id: messages.id })
-      return row?.id as string
-    }
-
     const run = async (
       sessionId: string,
       projectId: string,
@@ -627,7 +716,7 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
       ])
     })
 
-    test("a reviewed session needs 3 new user messages, not counting replies, tool calls or subagent prompts", async () => {
+    test("SC3: a reviewed session needs 4 new user messages, not counting replies, tool calls or subagent prompts", async () => {
       const now = ist(11, 2)
       const on = await project({ autoReview: true })
       const grown = async (userMessages: number) => {
@@ -639,14 +728,14 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
         await message(id, at, at, "message", { trackId: "agent-1" })
         return id
       }
-      const two = await grown(2)
       const three = await grown(3)
+      const four = await grown(4)
 
       await queueNightlyReviews(db, { ...DEFAULTS, now })
 
-      expect(DEFAULT_MIN_NEW_USER_MESSAGES).toBe(3)
-      expect(await waitingFor(two)).toEqual([])
-      expect(await waitingFor(three)).toHaveLength(1)
+      expect(DEFAULT_MIN_NEW_USER_MESSAGES).toBe(4)
+      expect(await waitingFor(three)).toEqual([])
+      expect(await waitingFor(four)).toEqual([expect.objectContaining({ newPartOnly: true })])
     })
 
     test("the number of new user messages a re-review needs follows the setting", async () => {

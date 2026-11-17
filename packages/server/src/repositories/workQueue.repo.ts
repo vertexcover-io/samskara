@@ -361,22 +361,26 @@ const lastRun = (analyzer: string): SQL => sql`(
 
 /**
  * Whether tonight's pick may take `"sessions"`, given its newest run `last` (null when never
- * reviewed). Never reviewed: yes. Newest run done: when the person typed at least
- * `minNewUserMessages` messages that run did not read (`newUserMessagesAfter`). Newest run failed: once a message other than a silent one
- * (`SILENT_TYPES`) was stored after it failed, so a failure is not retried every night on the
- * same messages; a failed run has no
+ * reviewed). Never reviewed: once the person typed at least `minNewUserMessages` messages in it,
+ * which leaves out the automated sessions of one to three prompts. Newest run done: when the
+ * person typed that many messages the run did not read (`newUserMessagesAfter`). Newest run
+ * failed: once a message other than a silent one (`SILENT_TYPES`) was stored after it failed, so
+ * a failure is not retried every night on the same messages; a failed run has no
  * `lastMessageId`, so the new-messages rule would call every message new. Waiting or running: no.
  */
-const pickableSession = (input: NightlyInput): SQL => sql`(
-  "last"."id" is null
+const pickableSession = (input: NightlyInput): SQL => {
+  const atLeast = input.minNewUserMessages ?? DEFAULT_MIN_NEW_USER_MESSAGES
+  return sql`(
+  ("last"."id" is null and ${newUserMessagesAfter(sql`"sessions"."id"`, null, atLeast)})
   or ("last"."status" = 'done'
-    and ${newUserMessagesAfter(sql`"sessions"."id"`, sql`"last"`, input.minNewUserMessages ?? DEFAULT_MIN_NEW_USER_MESSAGES)})
+    and ${newUserMessagesAfter(sql`"sessions"."id"`, sql`"last"`, atLeast)})
   or ("last"."status" = 'failed' and exists (
     select 1 from "messages" fm
     where fm."sessionId" = "sessions"."id" and fm."createdAt" > "last"."updatedAt"
       and fm."msgType" not in ${SILENT_TYPES}
   ))
 )`
+}
 
 /**
  * The open github.com pull requests opened by a session tonight's pick could take only through
@@ -415,8 +419,9 @@ export const pullRequestsToCheck = async (
 /**
  * The nightly rule. Each project with automatic review on, whose pick for today is due and not
  * yet made, is stamped as picked and gets `waiting` reviews for its `limit` ready sessions. A
- * session is a candidate when `pickableSession` holds: never reviewed, reviewed with at least
- * `minNewUserMessages` new user messages, or failed with messages since. It is ready once quiet for `quietHours`, or once a pull
+ * session is a candidate when `pickableSession` holds: never reviewed with at least
+ * `minNewUserMessages` typed messages, reviewed with that many new ones, or failed with messages
+ * since. It is ready once quiet for `quietHours`, or once a pull
  * request it opened is merged or closed (for a reviewed session, after its last run). Never
  * reviewed go first, then an ended pull request, then the ones active longest ago. A session
  * with a done run gets a new-part run based on its newest one; others get a full run. "Today"

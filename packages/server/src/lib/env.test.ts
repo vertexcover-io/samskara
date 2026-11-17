@@ -43,7 +43,7 @@ describe("loadEnv", () => {
         limit: 10,
         quietHours: 6,
         pickWithinDays: 14,
-        minNewUserMessages: 3,
+        minNewUserMessages: 4,
       },
     })
   })
@@ -55,7 +55,7 @@ describe("loadEnv", () => {
       limit: 10,
       quietHours: 6,
       pickWithinDays: 14,
-      minNewUserMessages: 3,
+      minNewUserMessages: 4,
     })
   })
 

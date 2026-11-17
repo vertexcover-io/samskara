@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from "vitest"
 import type { Db } from "../db/client.js"
 import {
+  messages,
   projects,
   pullRequests,
   repos,
@@ -63,6 +64,26 @@ describe.skipIf(!dockerAvailable())("work loop: the nightly pick", () => {
     projectId = project?.id as string
   })
 
+  /** `count` messages the person typed in the session, all on 1 January 2026. */
+  const typedMessages = async (sessionId: string, count = 4): Promise<void> => {
+    for (let i = 0; i < count; i += 1) {
+      counter += 1
+      await db.insert(messages).values({
+        sessionId,
+        lineUuid: crypto.randomUUID(),
+        subIndex: 0,
+        msgType: "message",
+        role: "user",
+        trackId: "main",
+        lineNumber: counter,
+        raw: {},
+        sourceSchemaVersion: 1,
+        content: { type: "text", value: "hi" },
+        timestamp: new Date(Date.UTC(2026, 0, 1)),
+      })
+    }
+  }
+
   /** A session last active well before any `now` these tests use. */
   const readySession = async (): Promise<string> => {
     counter += 1
@@ -76,6 +97,7 @@ describe.skipIf(!dockerAvailable())("work loop: the nightly pick", () => {
       lastMessageAt: quietSince,
       updatedAt: quietSince,
     })
+    await typedMessages(id)
     return id
   }
 
@@ -224,6 +246,7 @@ describe.skipIf(!dockerAvailable())("work loop: the nightly pick", () => {
         lastMessageAt: at,
         updatedAt: at,
       })
+      await typedMessages(id)
       return id
     }
 
