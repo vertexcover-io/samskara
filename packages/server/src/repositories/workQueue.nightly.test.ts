@@ -750,6 +750,20 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
             },
           ),
       },
+      {
+        shape: "(d) a subagent's user message holding the command",
+        add: (id: string) =>
+          message(
+            id,
+            TYPED_AT,
+            undefined,
+            "message",
+            { trackId: "agent-1" },
+            {
+              content: { type: "text", value: TYPED_COMMAND },
+            },
+          ),
+      },
     ])("SC11: $shape does not make a yok run", async ({ add }) => {
       const now = ist(11, 2)
       const on = await project({ autoReview: true })
