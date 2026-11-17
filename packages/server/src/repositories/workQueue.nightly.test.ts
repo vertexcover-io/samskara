@@ -931,6 +931,53 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
       expect(listed.map((b) => b.branch)).toEqual(["feat/new", "feat/old"])
     })
 
+    test("201 waiting branches list the 200 worked on most recently, leaving out the oldest", async () => {
+      const now = ist(11, 2)
+      const due = await project({ autoReview: true })
+      const a = await repo()
+      const branches = Array.from({ length: BRANCH_CHECK_LIMIT + 1 }, (_, i) => ({
+        id: `capped-${i}`,
+        branch: `feat/b${i}`,
+        lastMessageAt: hoursBefore(now, 8 + i),
+      }))
+      await db.insert(sessions).values(
+        branches.map((b) => ({
+          id: b.id,
+          source: "claude_code" as const,
+          userId,
+          projectId: due,
+          lastMessageAt: b.lastMessageAt,
+          updatedAt: hoursBefore(now, 1),
+        })),
+      )
+      await db.insert(messages).values(
+        branches.flatMap((b) =>
+          Array.from({ length: DEFAULT_MIN_NEW_USER_MESSAGES }, (_, n) => ({
+            sessionId: b.id,
+            lineUuid: crypto.randomUUID(),
+            subIndex: 0,
+            msgType: "message" as const,
+            role: "user" as const,
+            trackId: "main",
+            lineNumber: n + 1,
+            raw: {},
+            sourceSchemaVersion: 1,
+            content: { type: "text", value: "hi" },
+            timestamp: TYPED_AT,
+            createdAt: TYPED_AT,
+            repoId: a.id,
+            gitBranch: b.branch,
+          })),
+        ),
+      )
+
+      const listed = await branchesToLookUp(db, { ...DEFAULTS, now })
+
+      expect(listed.map((b) => b.branch)).toEqual(
+        branches.slice(0, BRANCH_CHECK_LIMIT).map((b) => b.branch),
+      )
+    })
+
     test("a session linked only to a closed pull request is still listed, so a later merge on its branch is found", async () => {
       const now = ist(11, 2)
       const due = await project({ autoReview: true })
