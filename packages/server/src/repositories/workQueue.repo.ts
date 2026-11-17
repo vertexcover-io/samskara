@@ -1,3 +1,4 @@
+import { MAIN_TRACK } from "@samskara/core"
 import { and, desc, eq, inArray, notInArray, type SQL, sql } from "drizzle-orm"
 import type { Querier } from "../db/client.js"
 import { learningRuns, sessionActivityAt, sessionReviews } from "../db/schema.js"
@@ -8,7 +9,7 @@ import {
   DEFAULT_QUIET_HOURS,
   type NightlyReview,
 } from "../lib/env.js"
-import type { PullRequestRef } from "./pullRequests.repo.js"
+import type { BranchRef, PullRequestRef } from "./pullRequests.repo.js"
 import { deleteReaderReplies } from "./readerReplies.repo.js"
 import { newUserMessagesAfter, SILENT_TYPES, shownRun } from "./reviews.repo.js"
 
@@ -361,41 +362,80 @@ const lastRun = (analyzer: string): SQL => sql`(
 
 /**
  * Whether tonight's pick may take `"sessions"`, given its newest run `last` (null when never
- * reviewed). Never reviewed: yes. Newest run done: when the person typed at least
- * `minNewUserMessages` messages that run did not read (`newUserMessagesAfter`). Newest run failed: once a message other than a silent one
- * (`SILENT_TYPES`) was stored after it failed, so a failure is not retried every night on the
- * same messages; a failed run has no
+ * reviewed). Never reviewed: once the person typed at least `minNewUserMessages` messages in it,
+ * which leaves out the automated sessions of one to three prompts. Newest run done: when the
+ * person typed that many messages the run did not read (`newUserMessagesAfter`). Newest run
+ * failed: once a message other than a silent one (`SILENT_TYPES`) was stored after it failed, so
+ * a failure is not retried every night on the same messages; a failed run has no
  * `lastMessageId`, so the new-messages rule would call every message new. Waiting or running: no.
  */
-const pickableSession = (input: NightlyInput): SQL => sql`(
-  "last"."id" is null
+const pickableSession = (input: NightlyInput): SQL => {
+  const atLeast = input.minNewUserMessages ?? DEFAULT_MIN_NEW_USER_MESSAGES
+  return sql`(
+  ("last"."id" is null and ${newUserMessagesAfter(sql`"sessions"."id"`, null, atLeast)})
   or ("last"."status" = 'done'
-    and ${newUserMessagesAfter(sql`"sessions"."id"`, sql`"last"`, input.minNewUserMessages ?? DEFAULT_MIN_NEW_USER_MESSAGES)})
+    and ${newUserMessagesAfter(sql`"sessions"."id"`, sql`"last"`, atLeast)})
   or ("last"."status" = 'failed' and exists (
     select 1 from "messages" fm
     where fm."sessionId" = "sessions"."id" and fm."createdAt" > "last"."updatedAt"
       and fm."msgType" not in ${SILENT_TYPES}
   ))
 )`
+}
+
+/** The yok orchestrate command, as a typed slash command's text and as a `localCommand` row. */
+const YOK_COMMAND = "/yok:orchestrate"
+const YOK_COMMAND_TAG = `<command-name>${YOK_COMMAND}</command-name>`
+/** How the orchestrate skill's body opens when it arrives as a line's first block. */
+const SKILL_BODY_START = "Base directory for this skill:"
+const ORCHESTRATE_SKILL = "/skills/orchestrate"
 
 /**
- * The open github.com pull requests opened by a session tonight's pick could take only through
- * its pull request (one not yet quiet for `quietHours`), for the check that asks GitHub before
- * the pick: at most `PR_CHECK_LIMIT`, never-checked first, then
- * the ones checked longest ago. Empty unless some project's pick is due, so the every-minute
- * claim pass makes no GitHub call. Reads only.
+ * Whether session `sessionId` is a yok run: one of the person's main-track messages holds the
+ * orchestrate command in any shape the collector has stored it in. That is a user message whose
+ * text holds `YOK_COMMAND_TAG`, a `localCommand` row (no role, no text) whose `command` is
+ * `YOK_COMMAND`, or a line's first block (`subIndex` 0) opening with the orchestrate skill's
+ * body. Not the strict `typedByPerson` filter: newer uploads store the command as a
+ * `localCommand` row and the skill body with a `subType`, which it leaves out, and on prod only
+ * 9 of 15 yok runs passed it. A tool result never counts, whatever it quotes, and neither does
+ * an assistant message or a subagent's. Reads one session's rows through the `sessionId` index,
+ * and only the text and command fields; `strpos` and `starts_with`, not `like`, as the needles
+ * hold no pattern characters to escape.
+ */
+const yokRun = (sessionId: SQL): SQL => sql`exists (
+  select 1 from "messages" ym
+  where ym."sessionId" = ${sessionId}
+    and ym."trackId" = ${MAIN_TRACK}
+    and ym."msgType" <> 'toolResult'
+    and (
+      (ym."msgType" = 'localCommand' and ym."details"->>'command' = ${YOK_COMMAND})
+      or (ym."role" = 'user' and (
+        strpos(ym."content"->>'value', ${YOK_COMMAND_TAG}) > 0
+        or (ym."subIndex" = 0
+          and starts_with(ym."content"->>'value', ${SKILL_BODY_START})
+          and strpos(ym."content"->>'value', ${ORCHESTRATE_SKILL}) > 0)))
+    )
+)`
+
+/**
+ * The open github.com pull requests linked to a session tonight's pick could take, quiet or not,
+ * for the check that asks GitHub before the pick: a merge ranks a session above every quiet one.
+ * At most `PR_CHECK_LIMIT`, never-checked first, then the ones checked longest ago; one already
+ * checked at `now` (just found by branch) is left out. Empty unless some project's pick is due,
+ * so the every-minute claim pass makes no GitHub call. Reads only.
  */
 export const pullRequestsToCheck = async (
   db: Querier,
   input: NightlyInput,
 ): Promise<ReadonlyArray<PullRequestRef>> => {
-  const { due, quietSince, activeSince } = nightlyClock(input)
+  const { now, due, activeSince } = nightlyClock(input)
   const rows = await db.execute<PullRequestRef>(sql`
     select pr."id", r."owner", r."repoName" as "repo", pr."number"
     from "pullRequests" pr
     join "repos" r on r."id" = pr."repoId"
     where pr."state" = 'open'
       and lower(r."host") = 'github.com'
+      and (pr."checkedAt" is null or pr."checkedAt" < ${now})
       and exists (
         select 1 from "sessionPullRequests" spr
         join "sessions" on "sessions"."id" = spr."sessionId"
@@ -404,7 +444,6 @@ export const pullRequestsToCheck = async (
         where spr."prId" = pr."id"
           and ${due}
           and ${sessionActivityAt} > ${activeSince}
-          and ${sessionActivityAt} > ${quietSince}
           and ${pickableSession(input)}
       )
     order by pr."checkedAt" asc nulls first, pr."id"
@@ -412,13 +451,64 @@ export const pullRequestsToCheck = async (
   return [...rows]
 }
 
+/** How many branches the check before one nightly pick asks GitHub about, at most. */
+export const BRANCH_CHECK_LIMIT = 200
+
+/**
+ * The github.com branches tonight's candidate sessions worked on, for the sessions no open or
+ * merged pull request is linked to yet: each (repo, branch) once, with every such session on it.
+ * A closed link does not count, since a new pull request on the same branch may merge later. The
+ * branch comes from the session's messages (`repoId`, `gitBranch`); `main` and `master` are taken
+ * as default branches and left out. At most `BRANCH_CHECK_LIMIT`, the branches worked on most
+ * recently first: a branch with no pull request yet is asked again every night (recording "asked,
+ * none found" would also hide a pull request opened on it later), so oldest-first would let those
+ * fill the cap and starve the newly merged branches. Empty unless some project's pick is due.
+ * Reads only.
+ */
+export const branchesToLookUp = async (
+  db: Querier,
+  input: NightlyInput,
+): Promise<ReadonlyArray<BranchRef>> => {
+  const { due, activeSince } = nightlyClock(input)
+  const rows = await db.execute<BranchRef>(sql`
+    select b."repoId", r."owner", r."repoName" as "repo", b."branch",
+      array_agg(b."sessionId" order by b."sessionId") as "sessionIds"
+    from (
+      select distinct "sessions"."id" as "sessionId", ${sessionActivityAt} as "activityAt",
+        m."repoId", m."gitBranch" as "branch"
+      from "sessions"
+      join "projects" on "projects"."id" = "sessions"."projectId"
+      left join lateral ${lastRun(input.analyzer)} "last" on true
+      join "messages" m on m."sessionId" = "sessions"."id"
+      where ${due}
+        and ${sessionActivityAt} > ${activeSince}
+        and ${pickableSession(input)}
+        and not exists (
+          select 1 from "sessionPullRequests" spr
+          join "pullRequests" lpr on lpr."id" = spr."prId"
+          where spr."sessionId" = "sessions"."id" and lpr."state" <> 'closed'
+        )
+        and m."repoId" is not null
+        and m."gitBranch" is not null and m."gitBranch" not in ('main', 'master')
+    ) b
+    join "repos" r on r."id" = b."repoId"
+    where lower(r."host") = 'github.com'
+    group by b."repoId", r."owner", r."repoName", b."branch"
+    order by max(b."activityAt") desc, b."repoId", b."branch"
+    limit ${BRANCH_CHECK_LIMIT}`)
+  return [...rows]
+}
+
 /**
  * The nightly rule. Each project with automatic review on, whose pick for today is due and not
  * yet made, is stamped as picked and gets `waiting` reviews for its `limit` ready sessions. A
- * session is a candidate when `pickableSession` holds: never reviewed, reviewed with at least
- * `minNewUserMessages` new user messages, or failed with messages since. It is ready once quiet for `quietHours`, or once a pull
- * request it opened is merged or closed (for a reviewed session, after its last run). Never
- * reviewed go first, then an ended pull request, then the ones active longest ago. A session
+ * session is a candidate when `pickableSession` holds: never reviewed with at least
+ * `minNewUserMessages` typed messages, reviewed with that many new ones, or failed with messages
+ * since. Candidates rank in three groups, oldest activity first inside each: 1, a yok run
+ * (`yokRun`) whose pull request is merged; 2, any session whose pull request is merged; 3, a
+ * session quiet for `quietHours`. Groups 1 and 2 need no quiet wait; for a reviewed session only
+ * a merge after its last run counts. A pull request closed without merging counts for nothing.
+ * A session
  * with a done run gets a new-part run based on its newest one; others get a full run. "Today"
  * and the time of day are read in `timeZone`, so a worker started after midnight but before
  * `at` makes no pick for the night before. One statement, so a crash cannot stamp a project
@@ -436,7 +526,6 @@ export const queueNightlyReviews = async (
       returning "id"
     ), "candidates" as (
       select "sessions"."id", "sessions"."projectId", ${sessionActivityAt} as "activityAt",
-        "last"."id" is null as "neverReviewed",
         (
           select d."id" from "sessionReviews" d
           where d."sessionId" = "sessions"."id" and d."analyzer" = ${input.analyzer}
@@ -446,25 +535,32 @@ export const queueNightlyReviews = async (
         exists (
           select 1 from "sessionPullRequests" spr
           join "pullRequests" pr on pr."id" = spr."prId"
-          where spr."sessionId" = "sessions"."id" and pr."state" in ('merged', 'closed')
-            -- A reviewed session counts only a pull request that ended after its last run.
+          where spr."sessionId" = "sessions"."id" and pr."state" = 'merged'
+            -- A reviewed session counts only a pull request merged after its last run.
             and ("last"."id" is null or pr."closedAt" > "last"."updatedAt")
-        ) as "prEnded"
+        ) as "prMerged"
       from "sessions"
       left join lateral ${lastRun(input.analyzer)} "last" on true
       where "sessions"."projectId" in (select "id" from "picked")
         and ${sessionActivityAt} > ${activeSince}
         and ${pickableSession(input)}
+    ), "grouped" as (
+      -- The yok check runs only behind a merged pull request: case evaluates its arms in order,
+      -- so it never reads the messages of a plain quiet session.
+      select "id", "projectId", "basedOn", "activityAt",
+        case when not "prMerged" then 3 when ${yokRun(sql`"candidates"."id"`)} then 1 else 2 end
+          as "group"
+      from "candidates"
+      where "prMerged" or "activityAt" <= ${quietSince}
     ), "ready" as (
-      -- Never reviewed first; then an ended pull request, which is recent, so oldest-first alone
-      -- would leave it behind every quiet session of a busy project; then the oldest.
+      -- By group, then the oldest first: a merged session is recent, so oldest-first alone would
+      -- leave it behind every quiet session of a busy project.
       select "id", "projectId", "basedOn",
         row_number() over (
           partition by "projectId"
-          order by "neverReviewed" desc, "prEnded" desc, "activityAt", "id"
+          order by "group", "activityAt", "id"
         ) as "rank"
-      from "candidates"
-      where "prEnded" or "activityAt" <= ${quietSince}
+      from "grouped"
     ), "queued" as (
       -- The one-active-run index makes "on conflict" a race guard: pickableSession already
       -- leaves out a session with a run waiting or running.

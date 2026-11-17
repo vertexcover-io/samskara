@@ -34,10 +34,11 @@ export const DEFAULT_QUIET_HOURS = 6
  */
 export const DEFAULT_PICK_WITHIN_DAYS = 14
 /**
- * A reviewed session is picked again only once the person typed this many messages after its
- * newest run: one or two ("ok", "push") are not worth a review. Review by hand has no minimum.
+ * A session is picked only once the person typed this many messages in it, and a reviewed one
+ * again only once they typed this many after its newest run: automated sessions of one to
+ * three prompts, or an "ok" and a "push", are not worth a review. Review by hand has no minimum.
  */
-export const DEFAULT_MIN_NEW_USER_MESSAGES = 3
+export const DEFAULT_MIN_NEW_USER_MESSAGES = 4
 
 /** When the worker makes each night's pick, and how many sessions it takes per project. */
 export type NightlyReview = {

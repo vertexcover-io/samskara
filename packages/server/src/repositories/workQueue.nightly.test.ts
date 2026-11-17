@@ -14,7 +14,13 @@ import {
 import { dockerAvailable, startTestDb } from "../db/testDb.js"
 import { DEFAULT_MIN_NEW_USER_MESSAGES } from "../lib/env.js"
 import { insertOpened } from "./pullRequests.repo.js"
-import { PR_CHECK_LIMIT, pullRequestsToCheck, queueNightlyReviews } from "./workQueue.repo.js"
+import {
+  BRANCH_CHECK_LIMIT,
+  branchesToLookUp,
+  PR_CHECK_LIMIT,
+  pullRequestsToCheck,
+  queueNightlyReviews,
+} from "./workQueue.repo.js"
 
 const ANALYZER = "ai-problems-v2"
 const HOUR_MS = 60 * 60 * 1000
@@ -67,10 +73,56 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
     return row?.id as string
   }
 
-  /** A session whose last activity is `lastMessageAt`, or `updatedAt` when it has no message. */
+  /**
+   * A message at `at`, stored at `storedAt` (by default the same instant). `extra` sets any other
+   * column, such as `subType`, `details` or `content`.
+   */
+  const message = async (
+    sessionId: string,
+    at: Date | null,
+    storedAt?: Date,
+    msgType:
+      | "message"
+      | "usage"
+      | "turnEvent"
+      | "custom"
+      | "toolResult"
+      | "localCommand" = "message",
+    who: { role?: "user" | "assistant"; trackId?: string } = {},
+    extra: Partial<typeof messages.$inferInsert> = {},
+  ) => {
+    counter += 1
+    const [row] = await db
+      .insert(messages)
+      .values({
+        sessionId,
+        lineUuid: crypto.randomUUID(),
+        subIndex: 0,
+        msgType,
+        role: msgType === "message" ? (who.role ?? "user") : (who.role ?? null),
+        trackId: who.trackId ?? "main",
+        lineNumber: counter,
+        raw: {},
+        sourceSchemaVersion: 1,
+        content: { type: "text", value: "hi" },
+        timestamp: at,
+        createdAt: storedAt ?? at ?? new Date(0),
+        ...extra,
+      })
+      .returning({ id: messages.id })
+    return row?.id as string
+  }
+
+  /** Long before every review the tests write, so these messages are never new after a run. */
+  const TYPED_AT = new Date(Date.UTC(2026, 0, 1))
+
+  /**
+   * A session whose last activity is `lastMessageAt`, or `updatedAt` when it has no message, with
+   * `typed` messages the person typed (by default enough to be picked).
+   */
   const session = async (
     projectId: string,
-    activity: { lastMessageAt?: Date; updatedAt: Date },
+    activity: { lastMessageAt?: Date; updatedAt: Date; typed?: number },
   ): Promise<string> => {
     counter += 1
     const id = `nightly-${counter}`
@@ -82,8 +134,35 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
       lastMessageAt: activity.lastMessageAt ?? null,
       updatedAt: activity.updatedAt,
     })
+    for (let i = 0; i < (activity.typed ?? DEFAULT_MIN_NEW_USER_MESSAGES); i += 1)
+      await message(id, TYPED_AT)
     return id
   }
+
+  /** A message the person typed in the session holding `value`, as block `subIndex` of its line. */
+  const yokCommand = (sessionId: string, value: string, subIndex = 0) =>
+    message(
+      sessionId,
+      TYPED_AT,
+      undefined,
+      "message",
+      {},
+      {
+        content: { type: "text", value },
+        subIndex,
+      },
+    )
+
+  /** A tool's output, stored as the collector stores it: no content, the text in `details`. */
+  const toolResult = (sessionId: string, output: string) =>
+    message(
+      sessionId,
+      TYPED_AT,
+      undefined,
+      "toolResult",
+      { role: "user" },
+      { content: null, details: { output } },
+    )
 
   const quietSession = (projectId: string, now: Date, hours = 8): Promise<string> =>
     session(projectId, { lastMessageAt: hoursBefore(now, hours), updatedAt: hoursBefore(now, 1) })
@@ -145,7 +224,7 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
     expect(await lastPick(on)).toEqual(now)
   })
 
-  test("SC5: only sessions quiet for 6 hours with no review row are picked; rows are left alone", async () => {
+  test("SC5: only sessions quiet for 6 hours, with enough typed messages and no review row, are picked; rows are left alone", async () => {
     const now = ist(11, 2)
     const on = await project({ autoReview: true })
     const quiet = await quietSession(on, now, 7)
@@ -153,8 +232,13 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
       lastMessageAt: hoursBefore(now, 5),
       updatedAt: hoursBefore(now, 5),
     })
-    const noMessages = await session(on, { updatedAt: hoursBefore(now, 7) })
-    const doneRow = await quietSession(on, now, 9)
+    const noMessages = await session(on, { updatedAt: hoursBefore(now, 7), typed: 0 })
+    // Its done run read nothing, so every message would count as new after it.
+    const doneRow = await session(on, {
+      lastMessageAt: hoursBefore(now, 9),
+      updatedAt: hoursBefore(now, 1),
+      typed: 0,
+    })
     const failedRow = await quietSession(on, now, 9)
     const earlier = new Date(Date.UTC(2026, 0, 1))
     await db.insert(sessionReviews).values([
@@ -183,10 +267,11 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
 
     const result = await queueNightlyReviews(db, { ...DEFAULTS, now })
 
-    expect(result).toEqual({ picked: 1, queued: 2 })
+    expect(result).toEqual({ picked: 1, queued: 1 })
     const rows = await reviewRows()
     const waiting = rows.filter((row) => row.status === "waiting")
-    expect(waiting.map((row) => row.sessionId).sort()).toEqual([quiet, noMessages].sort())
+    expect(waiting.map((row) => row.sessionId)).toEqual([quiet])
+    expect(rows.some((row) => row.sessionId === noMessages)).toBe(false)
     for (const row of waiting) {
       expect(row).toMatchObject({ harness: null, model: null, prompt: null, attempts: 0 })
     }
@@ -319,23 +404,85 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
       await queueNightlyReviews(db, { ...utc, now: new Date(Date.UTC(2026, 10, 11, 1, 0)) }),
     ).toEqual({ picked: 1, queued: 2 })
   })
-  describe("a session whose pull request is merged or closed", () => {
-    test.each(["merged", "closed"] as const)(
-      "SC1: a session whose pull request is %s is queued before it goes quiet",
-      async (state) => {
-        const now = ist(11, 2)
-        const on = await project({ autoReview: true })
-        const ended = await busySession(on, now)
-        await linkPullRequest(ended, state)
+  describe("the messages a session needs the person to have typed", () => {
+    /** A quiet, never-reviewed session the person typed `typed` messages in. */
+    const quietTyped = (projectId: string, now: Date, typed: number): Promise<string> =>
+      session(projectId, {
+        lastMessageAt: hoursBefore(now, 8),
+        updatedAt: hoursBefore(now, 1),
+        typed,
+      })
 
-        const result = await queueNightlyReviews(db, { ...DEFAULTS, now })
+    test("SC1: a never-reviewed session needs four typed messages to be picked", async () => {
+      const now = ist(11, 2)
+      const on = await project({ autoReview: true })
+      const three = await quietTyped(on, now, 3)
+      const four = await quietTyped(on, now, 4)
 
-        expect(result).toEqual({ picked: 1, queued: 1 })
-        const rows = await reviewRows()
-        expect(rows.map((row) => row.sessionId)).toEqual([ended])
-        expect(rows[0]?.status).toBe("waiting")
-      },
-    )
+      const result = await queueNightlyReviews(db, { ...DEFAULTS, now })
+
+      expect(result).toEqual({ picked: 1, queued: 1 })
+      const rows = await reviewRows()
+      expect(rows).toEqual([
+        expect.objectContaining({
+          sessionId: four,
+          status: "waiting",
+          newPartOnly: false,
+          basedOn: null,
+        }),
+      ])
+      expect(rows.some((row) => row.sessionId === three)).toBe(false)
+    })
+
+    test("SC2: only messages the person typed count toward the minimum", async () => {
+      const now = ist(11, 2)
+      const on = await project({ autoReview: true })
+      const id = await quietTyped(on, now, 3)
+      await message(id, TYPED_AT, undefined, "message", { role: "assistant" })
+      await message(id, TYPED_AT, undefined, "message", { role: "assistant" })
+      await message(id, TYPED_AT, undefined, "message", { trackId: "agent-1" })
+      await message(id, TYPED_AT, undefined, "message", {}, { subType: "toolInjection" })
+      await message(id, TYPED_AT, undefined, "message", {}, { details: { isMeta: true } })
+      await message(
+        id,
+        TYPED_AT,
+        undefined,
+        "toolResult",
+        { role: "user" },
+        { content: null, details: { output: "done" } },
+      )
+
+      const result = await queueNightlyReviews(db, { ...DEFAULTS, now })
+
+      expect(result).toEqual({ picked: 1, queued: 0 })
+      expect(await reviewRows()).toEqual([])
+    })
+
+    test("SC4: the default is 4 and follows the setting", async () => {
+      const now = ist(11, 2)
+      const on = await project({ autoReview: true })
+      const id = await quietTyped(on, now, 1)
+
+      await queueNightlyReviews(db, { ...DEFAULTS, now, minNewUserMessages: 1 })
+
+      expect(DEFAULT_MIN_NEW_USER_MESSAGES).toBe(4)
+      expect((await reviewRows()).map((row) => row.sessionId)).toEqual([id])
+    })
+  })
+  describe("a session whose pull request is merged", () => {
+    test("SC1: a session whose pull request is merged is queued before it goes quiet", async () => {
+      const now = ist(11, 2)
+      const on = await project({ autoReview: true })
+      const ended = await busySession(on, now)
+      await linkPullRequest(ended, "merged")
+
+      const result = await queueNightlyReviews(db, { ...DEFAULTS, now })
+
+      expect(result).toEqual({ picked: 1, queued: 1 })
+      const rows = await reviewRows()
+      expect(rows.map((row) => row.sessionId)).toEqual([ended])
+      expect(rows[0]?.status).toBe("waiting")
+    })
 
     test("SC2: a session whose pull request is still open waits for the 6-hour rule", async () => {
       const now = ist(11, 2)
@@ -353,7 +500,12 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
     test("SC3: a reviewed or two-week-old session is left alone even when its pull request ended", async () => {
       const now = ist(11, 2)
       const on = await project({ autoReview: true })
-      const reviewed = await busySession(on, now)
+      // Its done run read nothing, so every message would count as new after it.
+      const reviewed = await session(on, {
+        lastMessageAt: hoursBefore(now, 1),
+        updatedAt: hoursBefore(now, 1),
+        typed: 0,
+      })
       await linkPullRequest(reviewed, "merged")
       const old = await busySession(on, now, 15 * 24)
       await linkPullRequest(old, "merged")
@@ -451,8 +603,181 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
       ).rejects.toThrow(/pullRequests_state_check/)
     })
   })
+  describe("merged yok runs, then merged sessions, then quiet ones", () => {
+    const TYPED_COMMAND =
+      "<command-message>yok:orchestrate</command-message>\n<command-name>/yok:orchestrate</command-name>"
+    const SKILL_BODY =
+      "Base directory for this skill: /u/.claude/plugins/cache/yok/yok/0.0.8/skills/orchestrate\n\n# orchestrate"
+
+    /** A never-reviewed session last active `hours` ago whose pull request is merged. */
+    const merged = async (projectId: string, now: Date, hours: number): Promise<string> => {
+      const id = await busySession(projectId, now, hours)
+      await linkPullRequest(id, "merged")
+      return id
+    }
+
+    /** `merged`, and a yok run: the person typed the orchestrate command. */
+    const mergedYokRun = async (projectId: string, now: Date, hours: number) => {
+      const id = await merged(projectId, now, hours)
+      await yokCommand(id, TYPED_COMMAND)
+      return id
+    }
+
+    test("SC5: merged yok runs go first, then merged sessions, then quiet ones", async () => {
+      const now = ist(11, 2)
+      const on = await project({ autoReview: true })
+      const quiet20 = await quietSession(on, now, 20)
+      const mergedPlain = await merged(on, now, 2)
+      const yokRun = await mergedYokRun(on, now, 1)
+      const quiet30 = await quietSession(on, now, 30)
+
+      const result = await queueNightlyReviews(db, { ...DEFAULTS, limit: 3, now })
+
+      expect(result).toEqual({ picked: 1, queued: 3 })
+      expect(await reviewedIds()).toEqual([yokRun, mergedPlain, quiet30].sort())
+      expect(await reviewedIds()).not.toContain(quiet20)
+    })
+
+    test("SC6: when merged sessions fill the limit no quiet session is taken", async () => {
+      const now = ist(11, 2)
+      const on = await project({ autoReview: true })
+      const yokRun = await mergedYokRun(on, now, 1)
+      const mergedPlain = await merged(on, now, 2)
+      for (const hours of [30, 40, 50]) await quietSession(on, now, hours)
+
+      await queueNightlyReviews(db, { ...DEFAULTS, limit: 2, now })
+
+      expect(await reviewedIds()).toEqual([yokRun, mergedPlain].sort())
+    })
+
+    test("SC7: inside a group the oldest activity goes first", async () => {
+      const now = ist(11, 2)
+      const on = await project({ autoReview: true })
+      const oneHour = await merged(on, now, 1)
+      const threeHours = await merged(on, now, 3)
+      const fiveHours = await merged(on, now, 5)
+
+      await queueNightlyReviews(db, { ...DEFAULTS, limit: 2, now })
+
+      expect(await reviewedIds()).toEqual([threeHours, fiveHours].sort())
+      expect(await reviewedIds()).not.toContain(oneHour)
+    })
+
+    test("SC8: a pull request closed without merging waits out the quiet hours", async () => {
+      const now = ist(11, 2)
+      const on = await project({ autoReview: true })
+      const busy = await busySession(on, now, 1)
+      await linkPullRequest(busy, "closed")
+      const quiet = await quietSession(on, now, 8)
+      await linkPullRequest(quiet, "closed")
+
+      await queueNightlyReviews(db, { ...DEFAULTS, now })
+
+      expect(await reviewedIds()).toEqual([quiet])
+    })
+
+    test.each([
+      { shape: "(a) the typed slash command", add: (id: string) => yokCommand(id, TYPED_COMMAND) },
+      {
+        shape: "(b) the skill body as the first block",
+        add: (id: string) => yokCommand(id, SKILL_BODY),
+      },
+      {
+        shape: "(c) a localCommand row",
+        add: (id: string) =>
+          message(
+            id,
+            TYPED_AT,
+            undefined,
+            "localCommand",
+            {},
+            {
+              content: null,
+              details: { command: "/yok:orchestrate", commandType: "slash", status: "unknown" },
+            },
+          ),
+      },
+      {
+        shape: "(d) the skill body stamped as a tool injection",
+        add: (id: string) =>
+          message(
+            id,
+            TYPED_AT,
+            undefined,
+            "message",
+            {},
+            {
+              content: { type: "text", value: SKILL_BODY },
+              subType: "toolInjection",
+              details: { isMeta: true },
+            },
+          ),
+      },
+    ])("SC10: $shape makes a yok run", async ({ add }) => {
+      const now = ist(11, 2)
+      const on = await project({ autoReview: true })
+      const plain = await merged(on, now, 3)
+      const yokRun = await merged(on, now, 1)
+      await add(yokRun)
+
+      await queueNightlyReviews(db, { ...DEFAULTS, limit: 1, now })
+
+      expect(await reviewedIds()).toEqual([yokRun])
+      expect(await reviewedIds()).not.toContain(plain)
+    })
+
+    test.each([
+      {
+        shape: "(a) a tool result quoting the command",
+        add: (id: string) =>
+          toolResult(id, `ran /yok:orchestrate\n<command-name>/yok:orchestrate</command-name>`),
+      },
+      {
+        shape: "(b) a skill body that is not the line's first block",
+        add: (id: string) => yokCommand(id, SKILL_BODY, 1),
+      },
+      {
+        shape: "(c) an assistant message holding the command",
+        add: (id: string) =>
+          message(
+            id,
+            TYPED_AT,
+            undefined,
+            "message",
+            { role: "assistant" },
+            {
+              content: { type: "text", value: TYPED_COMMAND },
+            },
+          ),
+      },
+      {
+        shape: "(d) a subagent's user message holding the command",
+        add: (id: string) =>
+          message(
+            id,
+            TYPED_AT,
+            undefined,
+            "message",
+            { trackId: "agent-1" },
+            {
+              content: { type: "text", value: TYPED_COMMAND },
+            },
+          ),
+      },
+    ])("SC11: $shape does not make a yok run", async ({ add }) => {
+      const now = ist(11, 2)
+      const on = await project({ autoReview: true })
+      const older = await merged(on, now, 3)
+      const younger = await merged(on, now, 1)
+      await add(younger)
+
+      await queueNightlyReviews(db, { ...DEFAULTS, limit: 1, now })
+
+      expect(await reviewedIds()).toEqual([older])
+    })
+  })
   describe("the pull requests the nightly check asks GitHub about", () => {
-    test("SC12: only open github.com pull requests of tonight's not-yet-quiet candidate sessions are listed", async () => {
+    test("SC12: only open github.com pull requests of tonight's candidate sessions are listed", async () => {
       const now = ist(11, 2)
       const a = await project({ autoReview: true })
       const candidate = await busySession(a, now)
@@ -468,8 +793,8 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
         status: "waiting",
       })
       await linkPullRequest(await busySession(a, now, 15 * 24), "open")
-      // Quiet for 6 hours already, so the pick takes it whatever GitHub says.
-      await linkPullRequest(await quietSession(a, now), "open")
+      // Quiet already, but a merge would still rank it above the other quiet sessions.
+      const quietWanted = await linkPullRequest(await quietSession(a, now), "open")
       const b = await project()
       await linkPullRequest(await busySession(b, now), "open")
       const c = await project({ autoReview: true, lastNightlyPickAt: ist(11, 1, 30) })
@@ -477,13 +802,13 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
 
       const listed = await pullRequestsToCheck(db, { ...DEFAULTS, now })
 
-      expect(listed).toHaveLength(1)
+      expect(listed.map((pr) => pr.id).sort()).toEqual([wanted, quietWanted].sort())
       const [repo] = await db
         .select({ owner: repos.owner, repoName: repos.repoName, number: pullRequests.number })
         .from(pullRequests)
         .innerJoin(repos, eq(repos.id, pullRequests.repoId))
         .where(eq(pullRequests.id, wanted))
-      expect(listed[0]).toEqual({
+      expect(listed.find((pr) => pr.id === wanted)).toEqual({
         id: wanted,
         owner: repo?.owner,
         repo: repo?.repoName,
@@ -491,16 +816,16 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
       })
     })
 
-    test("which sessions count as not yet quiet follows the quiet-time setting", async () => {
+    test("SC21: the state check covers quiet candidates, but not a pull request already checked tonight", async () => {
       const now = ist(11, 2)
       const a = await project({ autoReview: true })
-      const stillBusy = await linkPullRequest(await busySession(a, now, 1), "open")
-      // Busy by the 6-hour default, quiet by a 2-hour setting: the pick takes it anyway.
-      await linkPullRequest(await busySession(a, now, 3), "open")
+      const quiet = await linkPullRequest(await quietSession(a, now, 30), "open")
+      const justFound = await linkPullRequest(await quietSession(a, now, 30), "open")
+      await db.update(pullRequests).set({ checkedAt: now }).where(eq(pullRequests.id, justFound))
 
-      const listed = await pullRequestsToCheck(db, { ...DEFAULTS, now, quietHours: 2 })
+      const listed = await pullRequestsToCheck(db, { ...DEFAULTS, now })
 
-      expect(listed.map((pr) => pr.id)).toEqual([stillBusy])
+      expect(listed.map((pr) => pr.id)).toEqual([quiet])
     })
 
     test("SC13: at most 200 are listed, never-checked first", async () => {
@@ -535,36 +860,139 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
       for (const id of checkedIds) expect(listed.map((pr) => pr.id)).not.toContain(id)
     })
   })
-  describe("sessions that grew after their review", () => {
-    /** A message at `at`, stored at `storedAt` (by default the same instant). */
-    const message = async (
-      sessionId: string,
-      at: Date | null,
-      storedAt?: Date,
-      msgType: "message" | "usage" | "turnEvent" | "custom" = "message",
-      who: { role?: "user" | "assistant"; trackId?: string } = {},
-    ) => {
+  describe("the branches the nightly check asks GitHub about", () => {
+    const repo = async (host = "github.com") => {
       counter += 1
       const [row] = await db
-        .insert(messages)
-        .values({
-          sessionId,
-          lineUuid: crypto.randomUUID(),
-          subIndex: 0,
-          msgType,
-          role: msgType === "message" ? (who.role ?? "user") : null,
-          trackId: who.trackId ?? "main",
-          lineNumber: counter,
-          raw: {},
-          sourceSchemaVersion: 1,
-          content: { type: "text", value: "hi" },
-          timestamp: at,
-          createdAt: storedAt ?? at ?? new Date(0),
-        })
-        .returning({ id: messages.id })
-      return row?.id as string
+        .insert(repos)
+        .values({ host, owner: "acme", repoName: `branchy-${counter}`, ownerUserId: userId })
+        .returning({ id: repos.id, owner: repos.owner, repoName: repos.repoName })
+      return row as { id: string; owner: string; repoName: string }
     }
 
+    /** A quiet session whose `typed` messages were typed on `branch` of `repoId`. */
+    const onBranch = async (
+      projectId: string,
+      now: Date,
+      repoId: string,
+      branch: string,
+      typed = DEFAULT_MIN_NEW_USER_MESSAGES,
+    ) => {
+      const id = await session(projectId, {
+        lastMessageAt: hoursBefore(now, 8),
+        updatedAt: hoursBefore(now, 1),
+        typed: 0,
+      })
+      for (let i = 0; i < typed; i += 1)
+        await message(id, TYPED_AT, undefined, "message", {}, { repoId, gitBranch: branch })
+      return id
+    }
+
+    test("SC17: only unlinked candidate sessions' non-default github.com branches are listed", async () => {
+      const now = ist(11, 2)
+      const due = await project({ autoReview: true })
+      const a = await repo()
+      const x1 = await onBranch(due, now, a.id, "feat/x")
+      const x2 = await onBranch(due, now, a.id, "feat/x")
+      await onBranch(due, now, a.id, "main")
+      await onBranch(due, now, a.id, "master")
+      await linkPullRequest(await onBranch(due, now, a.id, "feat/y"), "open")
+      await onBranch(due, now, (await repo("gitlab.com")).id, "feat/z")
+      await onBranch(due, now, a.id, "feat/w", 3)
+      await onBranch(await project(), now, a.id, "feat/v")
+
+      const listed = await branchesToLookUp(db, { ...DEFAULTS, now })
+
+      expect(listed).toEqual([
+        {
+          repoId: a.id,
+          owner: a.owner,
+          repo: a.repoName,
+          branch: "feat/x",
+          sessionIds: [x1, x2].sort(),
+        },
+      ])
+      expect(BRANCH_CHECK_LIMIT).toBe(200)
+    })
+
+    test("branches worked on most recently are listed first, so the cap leaves out the oldest", async () => {
+      const now = ist(11, 2)
+      const due = await project({ autoReview: true })
+      const a = await repo()
+      const old = await onBranch(due, now, a.id, "feat/old")
+      await db
+        .update(sessions)
+        .set({ lastMessageAt: hoursBefore(now, 5 * 24) })
+        .where(eq(sessions.id, old))
+      await onBranch(due, now, a.id, "feat/new")
+
+      const listed = await branchesToLookUp(db, { ...DEFAULTS, now })
+
+      expect(listed.map((b) => b.branch)).toEqual(["feat/new", "feat/old"])
+    })
+
+    test("201 waiting branches list the 200 worked on most recently, leaving out the oldest", async () => {
+      const now = ist(11, 2)
+      const due = await project({ autoReview: true })
+      const a = await repo()
+      const branches = Array.from({ length: BRANCH_CHECK_LIMIT + 1 }, (_, i) => ({
+        id: `capped-${i}`,
+        branch: `feat/b${i}`,
+        lastMessageAt: hoursBefore(now, 8 + i),
+      }))
+      await db.insert(sessions).values(
+        branches.map((b) => ({
+          id: b.id,
+          source: "claude_code" as const,
+          userId,
+          projectId: due,
+          lastMessageAt: b.lastMessageAt,
+          updatedAt: hoursBefore(now, 1),
+        })),
+      )
+      await db.insert(messages).values(
+        branches.flatMap((b) =>
+          Array.from({ length: DEFAULT_MIN_NEW_USER_MESSAGES }, (_, n) => ({
+            sessionId: b.id,
+            lineUuid: crypto.randomUUID(),
+            subIndex: 0,
+            msgType: "message" as const,
+            role: "user" as const,
+            trackId: "main",
+            lineNumber: n + 1,
+            raw: {},
+            sourceSchemaVersion: 1,
+            content: { type: "text", value: "hi" },
+            timestamp: TYPED_AT,
+            createdAt: TYPED_AT,
+            repoId: a.id,
+            gitBranch: b.branch,
+          })),
+        ),
+      )
+
+      const listed = await branchesToLookUp(db, { ...DEFAULTS, now })
+
+      expect(listed.map((b) => b.branch)).toEqual(
+        branches.slice(0, BRANCH_CHECK_LIMIT).map((b) => b.branch),
+      )
+    })
+
+    test("a session linked only to a closed pull request is still listed, so a later merge on its branch is found", async () => {
+      const now = ist(11, 2)
+      const due = await project({ autoReview: true })
+      const a = await repo()
+      const reopened = await onBranch(due, now, a.id, "feat/q")
+      await linkPullRequest(reopened, "closed")
+
+      const listed = await branchesToLookUp(db, { ...DEFAULTS, now })
+
+      expect(listed.map((b) => ({ branch: b.branch, sessionIds: b.sessionIds }))).toEqual([
+        { branch: "feat/q", sessionIds: [reopened] },
+      ])
+    })
+  })
+  describe("sessions that grew after their review", () => {
     const run = async (
       sessionId: string,
       projectId: string,
@@ -627,7 +1055,7 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
       ])
     })
 
-    test("a reviewed session needs 3 new user messages, not counting replies, tool calls or subagent prompts", async () => {
+    test("SC3: a reviewed session needs 4 new user messages, not counting replies, tool calls or subagent prompts", async () => {
       const now = ist(11, 2)
       const on = await project({ autoReview: true })
       const grown = async (userMessages: number) => {
@@ -639,14 +1067,14 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
         await message(id, at, at, "message", { trackId: "agent-1" })
         return id
       }
-      const two = await grown(2)
       const three = await grown(3)
+      const four = await grown(4)
 
       await queueNightlyReviews(db, { ...DEFAULTS, now })
 
-      expect(DEFAULT_MIN_NEW_USER_MESSAGES).toBe(3)
-      expect(await waitingFor(two)).toEqual([])
-      expect(await waitingFor(three)).toHaveLength(1)
+      expect(DEFAULT_MIN_NEW_USER_MESSAGES).toBe(4)
+      expect(await waitingFor(three)).toEqual([])
+      expect(await waitingFor(four)).toEqual([expect.objectContaining({ newPartOnly: true })])
     })
 
     test("the number of new user messages a re-review needs follows the setting", async () => {
@@ -715,7 +1143,7 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
       expect(await waitingFor(id)).toEqual([])
     })
 
-    test("SC32: for a reviewed session only a pull request that ended after its last review counts", async () => {
+    test("SC12: for a reviewed session only a pull request merged after its last review counts", async () => {
       const now = ist(11, 2)
       const on = await project({ autoReview: true })
       const grownBusy = async () => {
@@ -726,9 +1154,9 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
         return id
       }
       const endedBefore = await grownBusy()
-      await linkPullRequest(endedBefore, "closed", "github.com", hoursBefore(now, 4))
+      await linkPullRequest(endedBefore, "merged", "github.com", hoursBefore(now, 4))
       const endedAfter = await grownBusy()
-      await linkPullRequest(endedAfter, "closed", "github.com", hoursBefore(now, 2))
+      await linkPullRequest(endedAfter, "merged", "github.com", hoursBefore(now, 2))
 
       await queueNightlyReviews(db, { ...DEFAULTS, now })
 
@@ -736,22 +1164,26 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
       expect(await waitingFor(endedAfter)).toHaveLength(1)
     })
 
-    test("SC33: never reviewed goes first, then an ended pull request, and the oldest reviewed one waits", async () => {
+    test("SC9: a merged reviewed session goes ahead of a quiet never-reviewed one", async () => {
       const now = ist(11, 2)
       const on = await project({ autoReview: true })
-      const { id: oldestReviewed } = await reviewedQuiet(on, now, true, 20)
       const prSession = await busySession(on, now)
       const read = await message(prSession, hoursBefore(now, 5))
-      await run(prSession, on, { status: "done", at: hoursBefore(now, 3), lastMessageId: read })
+      const done = await run(prSession, on, {
+        status: "done",
+        at: hoursBefore(now, 3),
+        lastMessageId: read,
+      })
       await userTurns(prSession, hoursBefore(now, 1))
       await linkPullRequest(prSession, "merged", "github.com", hoursBefore(now, 2))
       const neverReviewed = await quietSession(on, now, 8)
 
-      await queueNightlyReviews(db, { ...DEFAULTS, limit: 2, now })
+      await queueNightlyReviews(db, { ...DEFAULTS, limit: 1, now })
 
-      expect(await waitingFor(neverReviewed)).toHaveLength(1)
-      expect(await waitingFor(prSession)).toHaveLength(1)
-      expect(await waitingFor(oldestReviewed)).toEqual([])
+      expect(await waitingFor(prSession)).toEqual([
+        expect.objectContaining({ newPartOnly: true, basedOn: done }),
+      ])
+      expect(await waitingFor(neverReviewed)).toEqual([])
     })
 
     test("SC34: a session with a run waiting is never picked again, even with new messages", async () => {

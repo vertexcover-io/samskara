@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from "vitest"
 import type { Db } from "../db/client.js"
 import {
+  messages,
   projects,
   pullRequests,
   repos,
@@ -17,7 +18,7 @@ import { captureLogger } from "../lib/test-logger.js"
 import { finishReview } from "../repositories/reviews.repo.js"
 import type { ClaimedReview } from "../repositories/workQueue.repo.js"
 import type { AiReviewResult } from "../services/ai-review/pipeline.js"
-import type { PullRequestLookup } from "../services/pullRequestStates.js"
+import type { BranchPullRequestLookup, PullRequestLookup } from "../services/pullRequestStates.js"
 import { createWorkLoop, type WorkLoopDeps } from "./loop.js"
 
 const ANALYZER = "ai-problems-v2"
@@ -63,6 +64,34 @@ describe.skipIf(!dockerAvailable())("work loop: the nightly pick", () => {
     projectId = project?.id as string
   })
 
+  /**
+   * `count` messages the person typed in the session, all on 1 January 2026, on `where`'s repo
+   * and branch when given.
+   */
+  const typedMessages = async (
+    sessionId: string,
+    count = 4,
+    where: { repoId?: string; gitBranch?: string } = {},
+  ): Promise<void> => {
+    for (let i = 0; i < count; i += 1) {
+      counter += 1
+      await db.insert(messages).values({
+        sessionId,
+        lineUuid: crypto.randomUUID(),
+        subIndex: 0,
+        msgType: "message",
+        role: "user",
+        trackId: "main",
+        lineNumber: counter,
+        raw: {},
+        sourceSchemaVersion: 1,
+        content: { type: "text", value: "hi" },
+        timestamp: new Date(Date.UTC(2026, 0, 1)),
+        ...where,
+      })
+    }
+  }
+
   /** A session last active well before any `now` these tests use. */
   const readySession = async (): Promise<string> => {
     counter += 1
@@ -76,6 +105,7 @@ describe.skipIf(!dockerAvailable())("work loop: the nightly pick", () => {
       lastMessageAt: quietSince,
       updatedAt: quietSince,
     })
+    await typedMessages(id)
     return id
   }
 
@@ -224,6 +254,7 @@ describe.skipIf(!dockerAvailable())("work loop: the nightly pick", () => {
         lastMessageAt: at,
         updatedAt: at,
       })
+      await typedMessages(id)
       return id
     }
 
@@ -362,6 +393,126 @@ describe.skipIf(!dockerAvailable())("work loop: the nightly pick", () => {
       expect(all.map((row) => row.sessionId)).toEqual([merged])
       expect(all[0]?.status).toBe("done")
       expect(captured.at("warn").length).toBeGreaterThan(0)
+    })
+
+    /** A github.com repo, as `repos` stores it. */
+    const githubRepo = async () => {
+      counter += 1
+      const [repo] = await db
+        .insert(repos)
+        .values({
+          host: "github.com",
+          owner: "acme",
+          repoName: `branchy-${counter}`,
+          ownerUserId: userId,
+        })
+        .returning({ id: repos.id, owner: repos.owner, repoName: repos.repoName })
+      return repo as { id: string; owner: string; repoName: string }
+    }
+
+    test("SC18: the branch lookup links every session on a branch to what it finds, and the pick takes them", async () => {
+      const now = ist(2)
+      const repo = await githubRepo()
+      const onBranch = async () => {
+        const id = await busySession(now)
+        await typedMessages(id, 1, { repoId: repo.id, gitBranch: "feat/x" })
+        return id
+      }
+      const sessionIds = [await onBranch(), await onBranch(), await onBranch()].sort()
+      const mergedAt = new Date(now.getTime() - 30 * 60 * 1000)
+      const branchLookup = vi.fn<BranchPullRequestLookup>(async (branches) => ({
+        answers: branches.map((branch) => ({
+          branch,
+          pullRequests: [
+            {
+              number: 7,
+              title: "Ship x",
+              baseBranch: "main",
+              headBranch: "feat/x",
+              state: "merged" as const,
+              closedAt: mergedAt,
+            },
+            {
+              number: 8,
+              title: "More x",
+              baseBranch: "main",
+              headBranch: "feat/x",
+              state: "open" as const,
+              closedAt: null,
+            },
+          ],
+        })),
+        failures: [],
+      }))
+      const stateLookup = vi.fn<PullRequestLookup>(async () => ({ answers: [], failures: [] }))
+      const loop = loopAt(now, {
+        branchPullRequestLookup: branchLookup,
+        pullRequestLookup: stateLookup,
+      })
+
+      await loop.tick()
+      await loop.idle()
+
+      expect(branchLookup).toHaveBeenCalledTimes(1)
+      expect(branchLookup.mock.calls[0]?.[0]).toEqual([
+        { repoId: repo.id, owner: repo.owner, repo: repo.repoName, branch: "feat/x", sessionIds },
+      ])
+      const saved = await db
+        .select()
+        .from(pullRequests)
+        .where(eq(pullRequests.repoId, repo.id))
+        .orderBy(pullRequests.number)
+      expect(saved).toEqual([
+        expect.objectContaining({
+          number: 7,
+          title: "Ship x",
+          headBranch: "feat/x",
+          state: "merged",
+          closedAt: mergedAt,
+          checkedAt: now,
+        }),
+        expect.objectContaining({ number: 8, state: "open", closedAt: null, checkedAt: now }),
+      ])
+      const links = await db.select().from(sessionPullRequests)
+      for (const pr of saved)
+        expect(
+          links
+            .filter((link) => link.prId === pr.id)
+            .map((link) => link.sessionId)
+            .sort(),
+        ).toEqual(sessionIds)
+      expect((await rows()).map((row) => row.sessionId).sort()).toEqual(sessionIds)
+      // Both were just checked by the branch lookup: the state check has nothing left to ask.
+      expect(stateLookup).not.toHaveBeenCalled()
+    })
+
+    test("SC19: a failed branch lookup leaves the state check and the pick running", async () => {
+      const now = ist(2)
+      const repo = await githubRepo()
+      const quiet = await readySession()
+      await typedMessages(quiet, 1, { repoId: repo.id, gitBranch: "feat/q" })
+      const busy = await busySession(now)
+      await openPullRequest(busy)
+      const branchLookup = vi.fn<BranchPullRequestLookup>(async () => {
+        throw new Error("network down")
+      })
+      const stateLookup = vi.fn<PullRequestLookup>(async () => ({ answers: [], failures: [] }))
+      const captured = captureLogger()
+      const loop = loopAt(now, {
+        log: captured.log,
+        branchPullRequestLookup: branchLookup,
+        pullRequestLookup: stateLookup,
+      })
+
+      await loop.tick()
+      await loop.idle()
+
+      expect(branchLookup).toHaveBeenCalledTimes(1)
+      expect(captured.at("warn").map((line) => line.msg)).toContain(
+        "branch lookup failed; picking without it",
+      )
+      expect(stateLookup).toHaveBeenCalledTimes(1)
+      expect((await rows()).map((row) => row.sessionId)).toEqual([quiet])
     })
 
     test("SC19: no GitHub call outside the due minute", async () => {

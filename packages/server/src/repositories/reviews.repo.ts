@@ -68,18 +68,27 @@ const readAfter = (message: SQL, run: SQL): SQL => sql`(
 )`
 
 /**
- * True when session `sessionId` has at least `atLeast` messages the person typed after what run
- * `run` read: user messages of the main conversation, leaving out injected ones (a `subType`,
- * or `isMeta`) and subagent prompts. Stops counting at `atLeast`.
+ * Whether message `um` (a raw SQL alias) is one the person typed: a user message of the main
+ * conversation, leaving out injected ones (a `subType`, or `isMeta`) and subagent prompts. A
+ * tool result is its own `msgType`, so it never passes.
  */
-export const newUserMessagesAfter = (sessionId: SQL, run: SQL, atLeast: number): SQL => sql`(
+export const typedByPerson = (um: SQL): SQL => sql`(
+  ${um}."msgType" = 'message' and ${um}."role" = 'user' and ${um}."trackId" = ${MAIN_TRACK}
+  and ${um}."subType" is null
+  and coalesce(${um}."details"->>'isMeta', 'false') <> 'true'
+)`
+
+/**
+ * True when session `sessionId` has at least `atLeast` messages the person typed
+ * (`typedByPerson`) after what run `run` read, or in the whole session when `run` is null.
+ * Stops counting at `atLeast`, so a long session costs no more than a short one.
+ */
+export const newUserMessagesAfter = (sessionId: SQL, run: SQL | null, atLeast: number): SQL => sql`(
   select count(*) from (
     select 1 from "messages" um
     where um."sessionId" = ${sessionId}
-      and um."msgType" = 'message' and um."role" = 'user' and um."trackId" = ${MAIN_TRACK}
-      and um."subType" is null
-      and coalesce(um."details"->>'isMeta', 'false') <> 'true'
-      and ${readAfter(sql`um`, run)}
+      and ${typedByPerson(sql`um`)}
+      and ${run === null ? sql`true` : readAfter(sql`um`, run)}
     limit ${atLeast}
   ) typed
 ) >= ${atLeast}`

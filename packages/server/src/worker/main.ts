@@ -6,7 +6,10 @@ import { requeueRunningFixRuns, requeueRunningReviews } from "../repositories/wo
 import { runAiReview } from "../services/ai-review/pipeline.js"
 import { defaultAiReviewRunner } from "../services/ai-review/runner.js"
 import { executeLearningRun } from "../services/learnings/run.js"
-import { createPullRequestLookup } from "../services/pullRequestStates.js"
+import {
+  createBranchPullRequestLookup,
+  createPullRequestLookup,
+} from "../services/pullRequestStates.js"
 import { agentGroupsDir, canRecordAgents, createAgentGroups } from "./agentGroups.js"
 import { withAgentSlots } from "./agentSlots.js"
 import { watchLock } from "./lockWatch.js"
@@ -106,6 +109,7 @@ const loop = createWorkLoop({
   maxAttempts: env.maxAttempts,
   // Unset: no GitHub call, and the nightly pick goes by the quiet-hours rule alone.
   pullRequestLookup: createPullRequestLookup(env.githubReadToken),
+  branchPullRequestLookup: createBranchPullRequestLookup(env.githubReadToken),
 })
 
 stopLoop = () => {

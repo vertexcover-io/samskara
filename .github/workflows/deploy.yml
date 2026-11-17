@@ -153,11 +153,12 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          LEARNINGS_HARNESS_GITHUB_TOKEN: ${{ secrets.LEARNINGS_HARNESS_GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           jq -rn --argjson v "$VARS" --arg tag "$VERSION" '
               ($v | del(.DEPLOY_HOST, .DEPLOY_USER, .DOMAIN))
-              + ($ENV | {CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY, OPENCODE_API_KEY} | with_entries(select(.value != null and .value != "")))
+              + ($ENV | {CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY, OPENCODE_API_KEY, LEARNINGS_HARNESS_GITHUB_TOKEN} | with_entries(select(.value != null and .value != "")))
               + {SAMSKARA_TAG: $tag}
               | to_entries[] | "\(.key)=\(.value)"' \
           | ssh "$DEPLOY_USER@$HOST" 'cd /opt/samskara && flock -w 300 /var/lock/samskara-deploy sh -euc "

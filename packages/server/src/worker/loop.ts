@@ -3,8 +3,9 @@ import type pino from "pino"
 import type { Db } from "../db/client.js"
 import type { NightlyReview, ReviewHarness } from "../lib/env.js"
 import { finishRun, type RunOutcome } from "../repositories/learnings.repo.js"
-import { savePullRequestStates } from "../repositories/pullRequests.repo.js"
+import { linkBranchPullRequests, savePullRequestStates } from "../repositories/pullRequests.repo.js"
 import {
+  branchesToLookUp,
   type ClaimedFixRun,
   type ClaimedReview,
   claimFixRun,
@@ -22,7 +23,7 @@ import {
   type AiReviewResult,
   PROBLEMS_ANALYZER,
 } from "../services/ai-review/pipeline.js"
-import type { PullRequestLookup } from "../services/pullRequestStates.js"
+import type { BranchPullRequestLookup, PullRequestLookup } from "../services/pullRequestStates.js"
 
 /** How many reviews this worker runs at once; the machine has room for no more. */
 export const REVIEW_SLOTS = 2
@@ -43,6 +44,11 @@ export type WorkLoopDeps = {
    * no token, and the pick then goes by the quiet-hours rule alone.
    */
   readonly pullRequestLookup?: PullRequestLookup
+  /**
+   * Asks GitHub which pull requests have a branch as head, so a session is linked to its pull
+   * request by the branch it worked on; undefined when the server has no token.
+   */
+  readonly branchPullRequestLookup?: BranchPullRequestLookup
   /** The clock the nightly pick reads; tests set it, production leaves it to the real one. */
   readonly now?: () => Date
   readonly reviewSlots?: number
@@ -153,8 +159,31 @@ export const createWorkLoop = (deps: WorkLoopDeps): WorkLoop => {
   let toldNoToken = false
 
   /**
-   * Asks GitHub about the open pull requests of sessions tonight's pick could take, and saves
-   * the answers, so the pick sees merged and closed ones. Never throws: the pick goes on.
+   * Asks GitHub for the pull requests of the branches tonight's unlinked candidates worked on,
+   * and links each session on a branch to them. Never throws: the state check and the pick go on.
+   */
+  const linkByBranch = async (input: NightlyReview & { now: Date; analyzer: string }) => {
+    const lookup = deps.branchPullRequestLookup
+    if (lookup === undefined) return
+    try {
+      const branches = await branchesToLookUp(deps.db, input)
+      if (branches.length === 0) return
+      const { answers, failures } = await lookup(branches)
+      const linked = await linkBranchPullRequests(deps.db, answers, input.now)
+      const found = answers.reduce((sum, answer) => sum + answer.pullRequests.length, 0)
+      deps.log.info({ branches: branches.length, found, linked }, "pull requests found by branch")
+      if (failures.length > 0)
+        deps.log.warn({ failures }, "branch lookups failed; those sessions stay unlinked tonight")
+    } catch (error) {
+      deps.log.warn({ err: error }, "branch lookup failed; picking without it")
+    }
+  }
+
+  /**
+   * Links tonight's candidates to pull requests by branch, then asks GitHub about the open pull
+   * requests of sessions the pick could take and saves the answers, so the pick sees merged
+   * ones. The branch lookup goes first: the state check skips a pull request it just saved.
+   * Never throws: the pick goes on.
    */
   const checkPullRequests = async (nightly: NightlyReview, now: Date): Promise<void> => {
     const lookup = deps.pullRequestLookup
@@ -166,12 +195,10 @@ export const createWorkLoop = (deps: WorkLoopDeps): WorkLoop => {
       toldNoToken = true
       return
     }
+    const input = { ...nightly, now, analyzer: PROBLEMS_ANALYZER }
+    await linkByBranch(input)
     try {
-      const prs = await pullRequestsToCheck(deps.db, {
-        ...nightly,
-        now,
-        analyzer: PROBLEMS_ANALYZER,
-      })
+      const prs = await pullRequestsToCheck(deps.db, input)
       if (prs.length === 0) return
       const { answers, failures } = await lookup(prs)
       const saved = await savePullRequestStates(deps.db, answers, now)

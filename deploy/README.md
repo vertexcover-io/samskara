@@ -153,6 +153,7 @@ In the repository, create an environment named `production` and add the followin
 | variable | `DOMAIN` | the public domain |
 | variable | `DEPLOY_USER` | only when `APP_USER` was changed from its default |
 | secret | `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, `OPENCODE_API_KEY` | optional. The AI reviewer's credential, if it should be managed from GitHub rather than set once at provisioning |
+| secret | `LEARNINGS_HARNESS_GITHUB_TOKEN` | optional. Read-only GitHub token: the nightly pick reads pull request states and finds each session's pull request by branch with it, and learning runs clone a private harness repo |
 
 Every other variable in the environment is treated as application configuration and merged into
 `/opt/samskara/.env` on each deploy. This is how a setting such as `LOG_LEVEL` or
