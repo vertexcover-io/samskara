@@ -248,3 +248,25 @@ test("a fix title holding a long file path wraps inside the card on the Fixes ta
   await expect(page.getByRole("heading", { name: /^Run · / })).toBeVisible()
   await titleFits()
 })
+
+test("SC3: a fix opened from a run's page goes back to that run, and keeps that Back after a reload", async ({
+  authedPage: page,
+}) => {
+  const slug = "fixes-run-back"
+  const id = await seedFix({ project: slug })
+  await page.goto(`/projects/${projectId(slug)}/runs`)
+  await page.locator("article").first().getByRole("link").click()
+  await expect(page.getByRole("heading", { name: /^Run · / })).toBeVisible()
+  const runUrl = page.url()
+  const runId = runUrl.split("/runs/")[1] ?? ""
+
+  await page.getByRole("link", { name: TITLE }).click()
+  await expect(page).toHaveURL(`/learnings/${id}?run=${runId}`)
+  await page.reload()
+  const back = page.getByRole("link", { name: "← Back to run" })
+  await expect(back).toBeVisible()
+
+  await back.click()
+  await expect(page).toHaveURL(runUrl)
+  await expect(page.getByRole("heading", { name: /^Run · / })).toBeVisible()
+})

@@ -221,6 +221,57 @@ test("SC709: Back returns to the fix's project's Fixes tab with the tab's filter
   )
 })
 
+test("SC1: opened from a run's page, Back returns to that run and not to the Fixes tab", async () => {
+  stubFetch(200, { learning: LEARNING, problems: PROBLEMS })
+
+  renderPage("/learnings/l-1?run=r-7")
+
+  await screen.findByRole("region", { name: "The fix" })
+  expect(screen.getByRole("link", { name: "← Back to run" })).toHaveAttribute(
+    "href",
+    "/projects/p-1/runs/r-7",
+  )
+  expect(screen.queryByRole("link", { name: /Back to Fixes/ })).toBeNull()
+})
+
+test("SC2: a run id a path cannot hold is encoded once in Back's href", async () => {
+  stubFetch(200, { learning: LEARNING, problems: PROBLEMS })
+
+  renderPage("/learnings/l-1?run=r%2F7")
+
+  await screen.findByRole("region", { name: "The fix" })
+  expect(screen.getByRole("link", { name: "← Back to run" })).toHaveAttribute(
+    "href",
+    "/projects/p-1/runs/r%2F7",
+  )
+})
+
+test("SC5: opened with no query, Back goes to the bare Fixes tab", async () => {
+  stubFetch(200, { learning: LEARNING, problems: PROBLEMS })
+
+  renderPage()
+
+  await screen.findByRole("region", { name: "The fix" })
+  expect(screen.getByRole("link", { name: "← Back to Fixes" })).toHaveAttribute(
+    "href",
+    "/projects/p-1/fixes",
+  )
+  expect(screen.queryByRole("link", { name: /Back to run/ })).toBeNull()
+})
+
+test("SC6: an empty run in the URL counts as no run", async () => {
+  stubFetch(200, { learning: LEARNING, problems: PROBLEMS })
+
+  renderPage("/learnings/l-1?run=")
+
+  await screen.findByRole("region", { name: "The fix" })
+  expect(screen.getByRole("link", { name: "← Back to Fixes" })).toHaveAttribute(
+    "href",
+    "/projects/p-1/fixes",
+  )
+  expect(screen.queryByRole("link", { name: /Back to run/ })).toBeNull()
+})
+
 test("a skipped fix's page says how many more sessions until it comes back, as its card does", async () => {
   const decidedAt = new Date(Date.now() - 60 * 60 * 1000).toISOString()
   stubFetch(200, {

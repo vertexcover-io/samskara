@@ -91,3 +91,20 @@ test("accepting a fix on the run page updates its card in place, keeping its cou
   expect(within(card).getByText("new")).toBeInTheDocument()
   expect(screen.getByText(/1 new fix, 0 updated/)).toBeInTheDocument()
 })
+
+test("SC7: a fix card on a run's page links to the fix with the run in its URL", async () => {
+  stubFetch()
+  render(
+    <TestRouter initialEntries={["/projects/p-1/runs/r-1"]}>
+      <Routes>
+        <Route path="/projects/:id/*" element={<RunPage projectId="p-1" runId="r-1" />} />
+      </Routes>
+    </TestRouter>,
+  )
+
+  const card = (await screen.findByText(LEARNING.title)).closest("article") as HTMLElement
+  expect(within(card).getByRole("link", { name: LEARNING.title })).toHaveAttribute(
+    "href",
+    "/learnings/l-1?run=r-1",
+  )
+})

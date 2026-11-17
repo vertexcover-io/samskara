@@ -12,6 +12,7 @@ import {
   plural,
 } from "../learnings/labels.js"
 import { tabPath } from "../project/ProjectTabs.js"
+import { runPath } from "../project/RunsTab.js"
 import { LoadingShell } from "../shell/LoadingShell.js"
 
 type State =
@@ -381,17 +382,26 @@ export const LearningDetail = () => {
     )
 
   // The project is known only once the fix is loaded; before that, or when it fails, the list of projects.
+  // Opened from a run's page, the URL names the run (`?run=`), and Back returns to it.
+  const runId = searchParams.get("run") ?? ""
   const back =
-    state.phase === "ready" ? (
+    state.phase !== "ready" ? (
+      <Link to="/projects" className="text-[0.82rem] underline">
+        ← Back to Projects
+      </Link>
+    ) : runId !== "" ? (
+      <Link
+        to={runPath(state.payload.learning.projectId, runId)}
+        className="text-[0.82rem] underline"
+      >
+        ← Back to run
+      </Link>
+    ) : (
       <Link
         to={`${tabPath(state.payload.learning.projectId, "fixes")}${listSearch(searchParams)}`}
         className="text-[0.82rem] underline"
       >
         ← Back to Fixes
-      </Link>
-    ) : (
-      <Link to="/projects" className="text-[0.82rem] underline">
-        ← Back to Projects
       </Link>
     )
   if (state.phase === "loading") return <LoadingShell label="Retrieving the fix" />
