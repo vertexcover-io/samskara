@@ -901,6 +901,22 @@ describe.skipIf(!dockerAvailable())("work queue: the nightly pick", () => {
       expect(BRANCH_CHECK_LIMIT).toBe(200)
     })
 
+    test("branches worked on most recently are listed first, so the cap leaves out the oldest", async () => {
+      const now = ist(11, 2)
+      const due = await project({ autoReview: true })
+      const a = await repo()
+      const old = await onBranch(due, now, a.id, "feat/old")
+      await db
+        .update(sessions)
+        .set({ lastMessageAt: hoursBefore(now, 5 * 24) })
+        .where(eq(sessions.id, old))
+      await onBranch(due, now, a.id, "feat/new")
+
+      const listed = await branchesToLookUp(db, { ...DEFAULTS, now })
+
+      expect(listed.map((b) => b.branch)).toEqual(["feat/new", "feat/old"])
+    })
+
     test("a session linked only to a closed pull request is still listed, so a later merge on its branch is found", async () => {
       const now = ist(11, 2)
       const due = await project({ autoReview: true })

@@ -457,13 +457,13 @@ export const BRANCH_CHECK_LIMIT = 200
 /**
  * The github.com branches tonight's candidate sessions worked on, for the sessions no open or
  * merged pull request is linked to yet: each (repo, branch) once, with every such session on it.
- * A closed link does not count, since a new pull request on the same branch may merge later. The branch
- * comes from the session's messages (`repoId`, `gitBranch`); `main` and `master` are taken as
- * default branches and left out. At most `BRANCH_CHECK_LIMIT`, the branches of sessions active
- * longest ago first, the order the pick reads them in. A branch with no pull request yet is asked
- * again on a later night: recording "asked, none found" would also hide a pull request opened on
- * it later, and the cap bounds the repeat cost. Empty unless some project's pick is due. Reads
- * only.
+ * A closed link does not count, since a new pull request on the same branch may merge later. The
+ * branch comes from the session's messages (`repoId`, `gitBranch`); `main` and `master` are taken
+ * as default branches and left out. At most `BRANCH_CHECK_LIMIT`, the branches worked on most
+ * recently first: a branch with no pull request yet is asked again every night (recording "asked,
+ * none found" would also hide a pull request opened on it later), so oldest-first would let those
+ * fill the cap and starve the newly merged branches. Empty unless some project's pick is due.
+ * Reads only.
  */
 export const branchesToLookUp = async (
   db: Querier,
@@ -494,7 +494,7 @@ export const branchesToLookUp = async (
     join "repos" r on r."id" = b."repoId"
     where lower(r."host") = 'github.com'
     group by b."repoId", r."owner", r."repoName", b."branch"
-    order by min(b."activityAt"), b."repoId", b."branch"
+    order by max(b."activityAt") desc, b."repoId", b."branch"
     limit ${BRANCH_CHECK_LIMIT}`)
   return [...rows]
 }
