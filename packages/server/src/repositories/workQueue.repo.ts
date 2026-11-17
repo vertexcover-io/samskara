@@ -1,3 +1,4 @@
+import { MAIN_TRACK } from "@samskara/core"
 import { and, desc, eq, inArray, notInArray, type SQL, sql } from "drizzle-orm"
 import type { Querier } from "../db/client.js"
 import { learningRuns, sessionActivityAt, sessionReviews } from "../db/schema.js"
@@ -382,6 +383,40 @@ const pickableSession = (input: NightlyInput): SQL => {
 )`
 }
 
+/** The yok orchestrate command, as a typed slash command's text and as a `localCommand` row. */
+const YOK_COMMAND = "/yok:orchestrate"
+const YOK_COMMAND_TAG = `<command-name>${YOK_COMMAND}</command-name>`
+/** How the orchestrate skill's body opens when it arrives as a line's first block. */
+const SKILL_BODY_START = "Base directory for this skill:"
+const ORCHESTRATE_SKILL = "/skills/orchestrate"
+
+/**
+ * Whether session `sessionId` is a yok run: one of the person's main-track messages holds the
+ * orchestrate command in any shape the collector has stored it in. That is a user message whose
+ * text holds `YOK_COMMAND_TAG`, a `localCommand` row (no role, no text) whose `command` is
+ * `YOK_COMMAND`, or a line's first block (`subIndex` 0) opening with the orchestrate skill's
+ * body. Not the strict `typedByPerson` filter: newer uploads store the command as a
+ * `localCommand` row and the skill body with a `subType`, which it leaves out, and on prod only
+ * 9 of 15 yok runs passed it. A tool result never counts, whatever it quotes, and neither does
+ * an assistant message or a subagent's. Reads one session's rows through the `sessionId` index,
+ * and only the text and command fields; `strpos` and `starts_with`, not `like`, as the needles
+ * hold no pattern characters to escape.
+ */
+const yokRun = (sessionId: SQL): SQL => sql`exists (
+  select 1 from "messages" ym
+  where ym."sessionId" = ${sessionId}
+    and ym."trackId" = ${MAIN_TRACK}
+    and ym."msgType" <> 'toolResult'
+    and (
+      (ym."msgType" = 'localCommand' and ym."details"->>'command' = ${YOK_COMMAND})
+      or (ym."role" = 'user' and (
+        strpos(ym."content"->>'value', ${YOK_COMMAND_TAG}) > 0
+        or (ym."subIndex" = 0
+          and starts_with(ym."content"->>'value', ${SKILL_BODY_START})
+          and strpos(ym."content"->>'value', ${ORCHESTRATE_SKILL}) > 0)))
+    )
+)`
+
 /**
  * The open github.com pull requests opened by a session tonight's pick could take only through
  * its pull request (one not yet quiet for `quietHours`), for the check that asks GitHub before
@@ -421,9 +456,11 @@ export const pullRequestsToCheck = async (
  * yet made, is stamped as picked and gets `waiting` reviews for its `limit` ready sessions. A
  * session is a candidate when `pickableSession` holds: never reviewed with at least
  * `minNewUserMessages` typed messages, reviewed with that many new ones, or failed with messages
- * since. It is ready once quiet for `quietHours`, or once a pull
- * request it opened is merged or closed (for a reviewed session, after its last run). Never
- * reviewed go first, then an ended pull request, then the ones active longest ago. A session
+ * since. Candidates rank in three groups, oldest activity first inside each: 1, a yok run
+ * (`yokRun`) whose pull request is merged; 2, any session whose pull request is merged; 3, a
+ * session quiet for `quietHours`. Groups 1 and 2 need no quiet wait; for a reviewed session only
+ * a merge after its last run counts. A pull request closed without merging counts for nothing.
+ * A session
  * with a done run gets a new-part run based on its newest one; others get a full run. "Today"
  * and the time of day are read in `timeZone`, so a worker started after midnight but before
  * `at` makes no pick for the night before. One statement, so a crash cannot stamp a project
@@ -441,7 +478,6 @@ export const queueNightlyReviews = async (
       returning "id"
     ), "candidates" as (
       select "sessions"."id", "sessions"."projectId", ${sessionActivityAt} as "activityAt",
-        "last"."id" is null as "neverReviewed",
         (
           select d."id" from "sessionReviews" d
           where d."sessionId" = "sessions"."id" and d."analyzer" = ${input.analyzer}
@@ -451,25 +487,32 @@ export const queueNightlyReviews = async (
         exists (
           select 1 from "sessionPullRequests" spr
           join "pullRequests" pr on pr."id" = spr."prId"
-          where spr."sessionId" = "sessions"."id" and pr."state" in ('merged', 'closed')
-            -- A reviewed session counts only a pull request that ended after its last run.
+          where spr."sessionId" = "sessions"."id" and pr."state" = 'merged'
+            -- A reviewed session counts only a pull request merged after its last run.
             and ("last"."id" is null or pr."closedAt" > "last"."updatedAt")
-        ) as "prEnded"
+        ) as "prMerged"
       from "sessions"
       left join lateral ${lastRun(input.analyzer)} "last" on true
       where "sessions"."projectId" in (select "id" from "picked")
         and ${sessionActivityAt} > ${activeSince}
         and ${pickableSession(input)}
+    ), "grouped" as (
+      -- The yok check runs only behind a merged pull request: case evaluates its arms in order,
+      -- so it never reads the messages of a plain quiet session.
+      select "id", "projectId", "basedOn", "activityAt",
+        case when not "prMerged" then 3 when ${yokRun(sql`"candidates"."id"`)} then 1 else 2 end
+          as "group"
+      from "candidates"
+      where "prMerged" or "activityAt" <= ${quietSince}
     ), "ready" as (
-      -- Never reviewed first; then an ended pull request, which is recent, so oldest-first alone
-      -- would leave it behind every quiet session of a busy project; then the oldest.
+      -- By group, then the oldest first: a merged session is recent, so oldest-first alone would
+      -- leave it behind every quiet session of a busy project.
       select "id", "projectId", "basedOn",
         row_number() over (
           partition by "projectId"
-          order by "neverReviewed" desc, "prEnded" desc, "activityAt", "id"
+          order by "group", "activityAt", "id"
         ) as "rank"
-      from "candidates"
-      where "prEnded" or "activityAt" <= ${quietSince}
+      from "grouped"
     ), "queued" as (
       -- The one-active-run index makes "on conflict" a race guard: pickableSession already
       -- leaves out a session with a run waiting or running.
